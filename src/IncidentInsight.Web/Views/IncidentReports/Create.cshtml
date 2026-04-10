@@ -8,6 +8,9 @@
     <label asp-for="Title"></label>
     <input asp-for="Title" />
 
+    <label asp-for="Department"></label>
+    <input asp-for="Department" />
+
     <label asp-for="OccurredAt"></label>
     <input asp-for="OccurredAt" type="datetime-local" value="@Model.OccurredAt.ToString("yyyy-MM-ddTHH:mm")" />
 
@@ -17,11 +20,23 @@
     <label asp-for="Severity"></label>
     <input asp-for="Severity" type="number" min="1" max="5" />
 
+    <label asp-for="RecurrenceRisk"></label>
+    <input asp-for="RecurrenceRisk" type="number" min="1" max="5" />
+
+    <label asp-for="LifecycleStatus"></label>
+    <select asp-for="LifecycleStatus" asp-items="Html.GetEnumSelectList<IncidentLifecycleStatus>()"></select>
+
     <label asp-for="Description"></label>
     <textarea asp-for="Description"></textarea>
 
     <label asp-for="InitialResponse"></label>
     <textarea asp-for="InitialResponse"></textarea>
+
+    <label asp-for="RootCauseSummary"></label>
+    <textarea asp-for="RootCauseSummary"></textarea>
+
+    <label asp-for="PotentialImpact"></label>
+    <textarea asp-for="PotentialImpact"></textarea>
 
     <h3>再発防止策（初回登録）</h3>
     <label>再発防止策</label>

@@ -13,6 +13,10 @@
         <h3>@Model.OpenCountermeasures</h3>
         <p>未完了の再発防止策</p>
     </article>
+    <article>
+        <h3>@Model.HighRiskRatio%</h3>
+        <p>高再発リスク比率（4-5）</p>
+    </article>
 </div>
 
 <div class="grid">
@@ -26,19 +30,49 @@
     </article>
 </div>
 
+<article>
+    <h4>部署別の件数（上位5件）</h4>
+    <canvas id="departmentChart"></canvas>
+</article>
+
+<article>
+    <h4>4バージョン比較（統合設計）</h4>
+    <p>4つの運用バージョンを比較し、単一システムに統合した運用の観点です。</p>
+    <table>
+        <thead>
+            <tr>
+                <th>バージョン</th>
+                <th>主眼</th>
+                <th>指標</th>
+                <th>改善アクション</th>
+            </tr>
+        </thead>
+        <tbody>
+        @foreach (var row in Model.FourVersionComparisons)
+        {
+            <tr>
+                <td>@row.VersionName</td>
+                <td>@row.Focus</td>
+                <td>@row.Indicator</td>
+                <td>@row.ImprovementAction</td>
+            </tr>
+        }
+        </tbody>
+    </table>
+</article>
+
 @section Scripts {
 <script>
 const categoryLabels = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.CategoryStats.Select(x => x.Category)));
 const categoryData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.CategoryStats.Select(x => x.Count)));
 const monthlyLabels = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.MonthlyStats.Select(x => x.Month)));
 const monthlyData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.MonthlyStats.Select(x => x.Count)));
+const departmentLabels = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.DepartmentStats.Select(x => x.Department)));
+const departmentData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.DepartmentStats.Select(x => x.Count)));
 
 new Chart(document.getElementById('categoryChart'), {
   type: 'pie',
-  data: {
-    labels: categoryLabels,
-    datasets: [{ data: categoryData }]
-  }
+  data: { labels: categoryLabels, datasets: [{ data: categoryData }] }
 });
 
 new Chart(document.getElementById('monthlyChart'), {
@@ -46,6 +80,14 @@ new Chart(document.getElementById('monthlyChart'), {
   data: {
     labels: monthlyLabels,
     datasets: [{ label: '件数', data: monthlyData, fill: false, tension: 0.25 }]
+  }
+});
+
+new Chart(document.getElementById('departmentChart'), {
+  type: 'bar',
+  data: {
+    labels: departmentLabels,
+    datasets: [{ label: '件数', data: departmentData }]
   }
 });
 </script>

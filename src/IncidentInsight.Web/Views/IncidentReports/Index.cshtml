@@ -8,9 +8,11 @@
     <thead>
     <tr>
         <th>発生日時</th>
+        <th>部署</th>
         <th>タイトル</th>
         <th>原因分類</th>
-        <th>重症度</th>
+        <th>重症度/再発リスク</th>
+        <th>ステータス</th>
         <th>防止策数</th>
         <th></th>
     </tr>
@@ -20,9 +22,11 @@
     {
         <tr>
             <td>@item.OccurredAt.ToString("yyyy-MM-dd HH:mm")</td>
+            <td>@item.Department</td>
             <td>@item.Title</td>
             <td>@item.CauseCategory</td>
-            <td>@item.Severity</td>
+            <td>@item.Severity / @item.RecurrenceRisk</td>
+            <td>@item.LifecycleStatus</td>
             <td>@item.Countermeasures.Count</td>
             <td><a asp-action="Details" asp-route-id="@item.Id">詳細</a></td>
         </tr>

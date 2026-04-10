@@ -19,5 +19,9 @@ public class AppDbContext(DbContextOptions<AppDbContext> options) : DbContext(op
         modelBuilder.Entity<IncidentReport>()
             .Property(i => i.CauseCategory)
             .HasConversion<string>();
+
+        modelBuilder.Entity<IncidentReport>()
+            .Property(i => i.LifecycleStatus)
+            .HasConversion<string>();
     }
 }

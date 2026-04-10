@@ -27,7 +27,11 @@ public class IncidentReportsController(AppDbContext db) : Controller
         return View(incident);
     }
 
-    public IActionResult Create() => View(new IncidentReport());
+    public IActionResult Create() => View(new IncidentReport
+    {
+        OccurredAt = DateTime.UtcNow,
+        LifecycleStatus = IncidentLifecycleStatus.Reported
+    });
 
     [HttpPost]
     [ValidateAntiForgeryToken]
@@ -40,8 +44,9 @@ public class IncidentReportsController(AppDbContext db) : Controller
             model.Countermeasures.Add(new Countermeasure
             {
                 ActionPlan = countermeasureAction,
-                Owner = owner ?? string.Empty,
-                IsCompleted = false
+                Owner = owner?.Trim() ?? string.Empty,
+                IsCompleted = false,
+                ReviewNote = "初期登録"
             });
         }
 

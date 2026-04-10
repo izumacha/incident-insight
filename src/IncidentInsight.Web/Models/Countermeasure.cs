@@ -23,5 +23,16 @@ public class Countermeasure
     [Display(Name = "完了済み")]
     public bool IsCompleted { get; set; }
 
+    [Range(1, 5)]
+    [Display(Name = "有効性評価(1-5)")]
+    public int EffectivenessScore { get; set; } = 3;
+
+    [Display(Name = "評価日")]
+    public DateOnly? ReviewDate { get; set; }
+
+    [StringLength(1000)]
+    [Display(Name = "評価コメント")]
+    public string ReviewNote { get; set; } = string.Empty;
+
     public IncidentReport? IncidentReport { get; set; }
 }

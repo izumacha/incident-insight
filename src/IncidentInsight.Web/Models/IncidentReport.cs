@@ -11,6 +11,11 @@ public class IncidentReport
     public string Title { get; set; } = string.Empty;
 
     [Required]
+    [StringLength(80)]
+    [Display(Name = "発生部署")]
+    public string Department { get; set; } = string.Empty;
+
+    [Required]
     [StringLength(2000)]
     public string Description { get; set; } = string.Empty;
 
@@ -24,9 +29,24 @@ public class IncidentReport
     [Display(Name = "重症度(1-5)")]
     public int Severity { get; set; } = 3;
 
+    [Range(1, 5)]
+    [Display(Name = "再発リスク(1-5)")]
+    public int RecurrenceRisk { get; set; } = 3;
+
     [StringLength(2000)]
     [Display(Name = "初期対応")]
     public string InitialResponse { get; set; } = string.Empty;
+
+    [StringLength(1200)]
+    [Display(Name = "根本原因サマリ(5Why/要因分析)")]
+    public string RootCauseSummary { get; set; } = string.Empty;
+
+    [StringLength(1000)]
+    [Display(Name = "潜在影響")]
+    public string PotentialImpact { get; set; } = string.Empty;
+
+    [Display(Name = "対応ステータス")]
+    public IncidentLifecycleStatus LifecycleStatus { get; set; } = IncidentLifecycleStatus.Reported;
 
     public ICollection<Countermeasure> Countermeasures { get; set; } = new List<Countermeasure>();
 }

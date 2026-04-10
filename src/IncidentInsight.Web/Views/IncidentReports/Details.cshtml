@@ -4,11 +4,15 @@
 }
 
 <h2>@Model.Title</h2>
+<p><strong>部署:</strong> @Model.Department</p>
 <p><strong>発生日時:</strong> @Model.OccurredAt.ToString("yyyy-MM-dd HH:mm")</p>
 <p><strong>原因分類:</strong> @Model.CauseCategory</p>
-<p><strong>重症度:</strong> @Model.Severity</p>
+<p><strong>重症度 / 再発リスク:</strong> @Model.Severity / @Model.RecurrenceRisk</p>
+<p><strong>対応ステータス:</strong> @Model.LifecycleStatus</p>
 <p><strong>内容:</strong> @Model.Description</p>
 <p><strong>初期対応:</strong> @Model.InitialResponse</p>
+<p><strong>根本原因:</strong> @Model.RootCauseSummary</p>
+<p><strong>潜在影響:</strong> @Model.PotentialImpact</p>
 
 <h3>再発防止策</h3>
 @if (!Model.Countermeasures.Any())
@@ -20,7 +24,13 @@ else
     <ul>
     @foreach (var cm in Model.Countermeasures)
     {
-        <li>@cm.ActionPlan（担当: @cm.Owner / 完了: @(cm.IsCompleted ? "済" : "未")）</li>
+        <li>
+            @cm.ActionPlan（担当: @cm.Owner / 完了: @(cm.IsCompleted ? "済" : "未") / 有効性: @cm.EffectivenessScore）
+            @if (!string.IsNullOrWhiteSpace(cm.ReviewNote))
+            {
+                <br /><small>評価コメント: @cm.ReviewNote</small>
+            }
+        </li>
     }
     </ul>
 }
