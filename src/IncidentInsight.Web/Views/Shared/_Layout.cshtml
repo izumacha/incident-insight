@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>@ViewData["Title"] - Incident Insight</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+</head>
+<body>
+<header class="container">
+    <nav>
+        <ul><li><strong>Incident Insight</strong></li></ul>
+        <ul>
+            <li><a asp-controller="Dashboard" asp-action="Index">ダッシュボード</a></li>
+            <li><a asp-controller="IncidentReports" asp-action="Index">報告一覧</a></li>
+            <li><a asp-controller="IncidentReports" asp-action="Create" role="button">新規報告</a></li>
+        </ul>
+    </nav>
+</header>
+<main class="container">
+    @RenderBody()
+</main>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+@await RenderSectionAsync("Scripts", required: false)
+</body>
+</html>
