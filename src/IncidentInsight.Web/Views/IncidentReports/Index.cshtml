@@ -1,0 +1,31 @@
+@model IEnumerable<IncidentReport>
+@{
+    ViewData["Title"] = "報告一覧";
+}
+
+<h2>インシデント報告一覧</h2>
+<table>
+    <thead>
+    <tr>
+        <th>発生日時</th>
+        <th>タイトル</th>
+        <th>原因分類</th>
+        <th>重症度</th>
+        <th>防止策数</th>
+        <th></th>
+    </tr>
+    </thead>
+    <tbody>
+    @foreach (var item in Model)
+    {
+        <tr>
+            <td>@item.OccurredAt.ToString("yyyy-MM-dd HH:mm")</td>
+            <td>@item.Title</td>
+            <td>@item.CauseCategory</td>
+            <td>@item.Severity</td>
+            <td>@item.Countermeasures.Count</td>
+            <td><a asp-action="Details" asp-route-id="@item.Id">詳細</a></td>
+        </tr>
+    }
+    </tbody>
+</table>
