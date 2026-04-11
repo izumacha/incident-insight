@@ -7,6 +7,8 @@ namespace IncidentInsight.Web.Controllers;
 
 public class IncidentReportsController(AppDbContext db) : Controller
 {
+    private static readonly TimeZoneInfo JapanTimeZone = ResolveJapanTimeZone();
+
     public async Task<IActionResult> Index()
     {
         var incidents = await db.IncidentReports
@@ -29,21 +31,35 @@ public class IncidentReportsController(AppDbContext db) : Controller
 
     public IActionResult Create() => View(new IncidentReport
     {
-        OccurredAt = DateTime.UtcNow,
+        OccurredAt = TimeZoneInfo.ConvertTime(DateTime.UtcNow, JapanTimeZone),
         LifecycleStatus = IncidentLifecycleStatus.Reported
     });
 
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> Create(IncidentReport model, string? countermeasureAction, string? owner)
+    public async Task<IActionResult> Create(
+        [Bind("Title,Department,Description,OccurredAt,CauseCategory,Severity,RecurrenceRisk,InitialResponse,RootCauseSummary,PotentialImpact,LifecycleStatus")]
+        IncidentReport model,
+        string? countermeasureAction,
+        string? owner)
     {
+        model.Title = model.Title.Trim();
+        model.Department = model.Department.Trim();
+        model.Description = model.Description.Trim();
+        model.InitialResponse = model.InitialResponse.Trim();
+        model.RootCauseSummary = model.RootCauseSummary.Trim();
+        model.PotentialImpact = model.PotentialImpact.Trim();
+        model.OccurredAt = TimeZoneInfo.ConvertTime(
+            DateTime.SpecifyKind(model.OccurredAt, DateTimeKind.Local),
+            JapanTimeZone);
+
         if (!ModelState.IsValid) return View(model);
 
         if (!string.IsNullOrWhiteSpace(countermeasureAction))
         {
             model.Countermeasures.Add(new Countermeasure
             {
-                ActionPlan = countermeasureAction,
+                ActionPlan = countermeasureAction.Trim(),
                 Owner = owner?.Trim() ?? string.Empty,
                 IsCompleted = false,
                 ReviewNote = "初期登録"
@@ -53,5 +69,17 @@ public class IncidentReportsController(AppDbContext db) : Controller
         db.IncidentReports.Add(model);
         await db.SaveChangesAsync();
         return RedirectToAction(nameof(Index));
+    }
+
+    private static TimeZoneInfo ResolveJapanTimeZone()
+    {
+        try
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            return TimeZoneInfo.FindSystemTimeZoneById("Tokyo Standard Time");
+        }
     }
 }

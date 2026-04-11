@@ -5,29 +5,37 @@
 
 <h2>インシデント報告登録</h2>
 <form asp-action="Create" method="post">
+    <div asp-validation-summary="ModelOnly"></div>
+
     <label asp-for="Title"></label>
     <input asp-for="Title" />
+    <span asp-validation-for="Title"></span>
 
     <label asp-for="Department"></label>
     <input asp-for="Department" />
+    <span asp-validation-for="Department"></span>
 
     <label asp-for="OccurredAt"></label>
     <input asp-for="OccurredAt" type="datetime-local" value="@Model.OccurredAt.ToString("yyyy-MM-ddTHH:mm")" />
+    <span asp-validation-for="OccurredAt"></span>
 
     <label asp-for="CauseCategory"></label>
     <select asp-for="CauseCategory" asp-items="Html.GetEnumSelectList<CauseCategory>()"></select>
 
     <label asp-for="Severity"></label>
     <input asp-for="Severity" type="number" min="1" max="5" />
+    <span asp-validation-for="Severity"></span>
 
     <label asp-for="RecurrenceRisk"></label>
     <input asp-for="RecurrenceRisk" type="number" min="1" max="5" />
+    <span asp-validation-for="RecurrenceRisk"></span>
 
     <label asp-for="LifecycleStatus"></label>
     <select asp-for="LifecycleStatus" asp-items="Html.GetEnumSelectList<IncidentLifecycleStatus>()"></select>
 
     <label asp-for="Description"></label>
     <textarea asp-for="Description"></textarea>
+    <span asp-validation-for="Description"></span>
 
     <label asp-for="InitialResponse"></label>
     <textarea asp-for="InitialResponse"></textarea>
