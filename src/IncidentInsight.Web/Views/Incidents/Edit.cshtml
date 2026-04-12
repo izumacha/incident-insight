@@ -69,14 +69,7 @@
                               placeholder="発生直後の応急処置・報告先・患者への対応内容（任意）"></textarea>
                     <div class="form-text">任意項目です。</div>
                 </div>
-                <div class="col-12 d-flex justify-content-between">
-                    <form asp-action="Delete" asp-route-id="@Model.Id" method="post" class="d-inline">
-                        @Html.AntiForgeryToken()
-                        <button type="submit" class="btn btn-outline-danger"
-                                onclick="return confirm('このインシデントを削除しますか？\n関連する原因分析と再発防止策も削除されます。')">
-                            <i class="bi bi-trash me-1"></i>削除
-                        </button>
-                    </form>
+                <div class="col-12 d-flex justify-content-end">
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-circle me-1"></i>保存
                     </button>
@@ -84,6 +77,16 @@
             </div>
         </form>
     </div>
+</div>
+
+<div class="mt-3">
+    <form asp-action="Delete" asp-route-id="@Model.Id" method="post">
+        @Html.AntiForgeryToken()
+        <button type="submit" class="btn btn-outline-danger"
+                onclick="return confirm('このインシデントを削除しますか？\n関連する原因分析と再発防止策も削除されます。')">
+            <i class="bi bi-trash me-1"></i>このインシデントを削除
+        </button>
+    </form>
 </div>
 
 @section Scripts {

@@ -1,25 +1,38 @@
 using IncidentInsight.Web.Models;
 using Microsoft.AspNetCore.Identity;
+using Microsoft.Extensions.Configuration;
 
 namespace IncidentInsight.Web.Data;
 
 /// <summary>
-/// 初回起動時にロールと管理者アカウントを作成する
+/// 起動時にロールとデモアカウントを作成する。
+/// デモアカウントは appsettings.Development.json の SeedAccounts セクションが存在する場合のみ作成。
+/// 本番環境では SeedAccounts を設定しないことで自動作成を防止する。
 /// </summary>
 public static class IdentitySeeder
 {
-    public static async Task SeedAsync(RoleManager<IdentityRole> roleManager, UserManager<ApplicationUser> userManager)
+    public static async Task SeedAsync(
+        RoleManager<IdentityRole> roleManager,
+        UserManager<ApplicationUser> userManager,
+        IConfiguration configuration)
     {
-        // ロールを作成
+        // ロールを作成（全環境共通）
         foreach (var role in AppRoles.All)
         {
             if (!await roleManager.RoleExistsAsync(role))
                 await roleManager.CreateAsync(new IdentityRole(role));
         }
 
-        // 管理者アカウントを作成（存在しない場合のみ）
-        const string adminEmail = "admin@hospital.local";
-        const string adminPassword = "Admin1234";
+        // デモアカウントは SeedAccounts 設定がある場合のみ作成
+        var seedSection = configuration.GetSection("SeedAccounts");
+        if (!seedSection.Exists()) return;
+
+        var adminEmail    = seedSection["AdminEmail"];
+        var adminPassword = seedSection["AdminPassword"];
+        var rmEmail       = seedSection["RiskManagerEmail"];
+        var rmPassword    = seedSection["RiskManagerPassword"];
+
+        if (string.IsNullOrEmpty(adminEmail) || string.IsNullOrEmpty(adminPassword)) return;
 
         if (await userManager.FindByEmailAsync(adminEmail) == null)
         {
@@ -36,11 +49,8 @@ public static class IdentitySeeder
                 await userManager.AddToRoleAsync(admin, AppRoles.Admin);
         }
 
-        // リスクマネージャーアカウントを作成（デモ用）
-        const string rmEmail = "riskmanager@hospital.local";
-        const string rmPassword = "Risk1234";
-
-        if (await userManager.FindByEmailAsync(rmEmail) == null)
+        if (!string.IsNullOrEmpty(rmEmail) && !string.IsNullOrEmpty(rmPassword)
+            && await userManager.FindByEmailAsync(rmEmail) == null)
         {
             var rm = new ApplicationUser
             {
