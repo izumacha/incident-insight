@@ -129,5 +129,6 @@ public class HomeController : Controller
         return View(vm);
     }
 
+    [AllowAnonymous]
     public IActionResult Error() => View();
 }
