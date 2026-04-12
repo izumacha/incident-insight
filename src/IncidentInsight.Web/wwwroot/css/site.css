@@ -1,0 +1,149 @@
+html {
+  font-size: 14px;
+}
+
+@media (min-width: 768px) {
+  html {
+    font-size: 16px;
+  }
+}
+
+.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
+  box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
+}
+
+html {
+  position: relative;
+  min-height: 100%;
+}
+
+body {
+  margin-bottom: 60px;
+  background-color: #f8f9fa;
+}
+
+/* ────────────────────────────────────
+   Utility
+──────────────────────────────────── */
+.x-small {
+  font-size: 0.72rem;
+}
+
+.cursor-pointer {
+  cursor: pointer;
+}
+
+/* ────────────────────────────────────
+   5 Whys chain visualization
+──────────────────────────────────── */
+.why-chain {
+  margin: 8px 0;
+}
+
+.why-item {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 12px;
+  margin: 4px 0;
+  border-left: 4px solid #0d6efd;
+  background: #f8f9fa;
+  border-radius: 0 6px 6px 0;
+  font-size: 0.9rem;
+}
+
+.why-item.why-root {
+  border-left-color: #dc3545;
+  background: #fff8e1;
+  font-weight: 600;
+}
+
+.why-label {
+  display: inline-block;
+  flex-shrink: 0;
+  font-weight: 700;
+  font-size: 0.72rem;
+  color: #fff;
+  background: #0d6efd;
+  padding: 2px 7px;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.why-root .why-label {
+  background: #dc3545;
+}
+
+.why-arrow {
+  text-align: center;
+  margin: 2px 0;
+  color: #6c757d;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+/* ────────────────────────────────────
+   Timeline
+──────────────────────────────────── */
+.timeline {
+  position: relative;
+  padding-left: 28px;
+}
+
+.timeline::before {
+  content: '';
+  position: absolute;
+  left: 10px;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: #dee2e6;
+}
+
+.timeline-item {
+  position: relative;
+  margin-bottom: 16px;
+}
+
+.timeline-badge {
+  position: absolute;
+  left: -24px;
+  top: 4px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  border: 2px solid #fff;
+  display: block;
+}
+
+.timeline-content {
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+/* ────────────────────────────────────
+   Dashboard KPI card hover
+──────────────────────────────────── */
+.card {
+  transition: box-shadow 0.15s ease;
+}
+
+.card:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.10) !important;
+}
+
+/* ────────────────────────────────────
+   Navbar active link highlight
+──────────────────────────────────── */
+.navbar-dark .navbar-nav .nav-link.active,
+.navbar-dark .navbar-nav .nav-link:hover {
+  background: rgba(255,255,255,0.15);
+  border-radius: 6px;
+}
+
+/* ────────────────────────────────────
+   Kanban measure cards
+──────────────────────────────────── */
+.measure-row {
+  transition: border-color 0.15s;
+}

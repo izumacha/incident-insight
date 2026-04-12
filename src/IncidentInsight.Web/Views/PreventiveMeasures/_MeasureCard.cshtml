@@ -1,0 +1,89 @@
+@model IncidentInsight.Web.Models.PreventiveMeasure
+
+@{
+    var m = Model;
+}
+
+<div class="card border-0 mb-2 shadow-sm @(m.IsOverdue ? "border-danger border" : "")">
+    <div class="card-body p-2">
+        <div class="d-flex justify-content-between align-items-start mb-1">
+            <div class="d-flex gap-1 flex-wrap">
+                <span class="badge bg-@m.PriorityColor">@m.PriorityLabel</span>
+                <span class="badge bg-@m.MeasureTypeColor">@m.MeasureTypeLabel</span>
+                @if (m.IsOverdue)
+                {
+                    <span class="badge bg-danger">期限超過 @((int)(DateTime.Today - m.DueDate).TotalDays)日</span>
+                }
+            </div>
+            <a asp-controller="PreventiveMeasures" asp-action="Edit" asp-route-id="@m.Id"
+               class="btn btn-outline-secondary btn-sm py-0 ms-1">編集</a>
+        </div>
+
+        <p class="small mb-1 fw-medium">@(m.Description.Length > 70 ? m.Description[..70] + "…" : m.Description)</p>
+
+        <div class="d-flex justify-content-between align-items-center">
+            <div class="text-muted x-small">
+                <i class="bi bi-person me-1"></i>@m.ResponsiblePerson (@m.ResponsibleDepartment)
+            </div>
+            <div class="text-muted x-small">
+                期限: <span class="@(m.IsOverdue ? "text-danger fw-bold" : "")">@m.DueDate.ToString("MM/dd")</span>
+            </div>
+        </div>
+
+        @if (!string.IsNullOrEmpty(m.CompletionNote))
+        {
+            <div class="text-muted x-small mt-1">
+                <i class="bi bi-check2 me-1 text-success"></i>@(m.CompletionNote.Length > 50 ? m.CompletionNote[..50] + "…" : m.CompletionNote)
+            </div>
+        }
+
+        @if (m.EffectivenessRating.HasValue)
+        {
+            <div class="mt-1 small">
+                <span class="text-warning">@m.EffectivenessStars</span>
+                @if (m.RecurrenceObserved == true)
+                {
+                    <span class="badge bg-danger ms-1">再発あり</span>
+                }
+                else if (m.RecurrenceObserved == false)
+                {
+                    <span class="badge bg-success ms-1">再発なし</span>
+                }
+            </div>
+        }
+
+        <!-- Quick actions -->
+        <div class="d-flex gap-1 mt-2">
+            @if (m.Status != "Completed")
+            {
+                <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id" method="post" class="d-inline">
+                    @Html.AntiForgeryToken()
+                    <button type="submit" class="btn btn-success btn-sm py-0">
+                        <i class="bi bi-check2 me-1"></i>完了
+                    </button>
+                </form>
+            }
+            @if (m.Status == "Completed" && !m.EffectivenessRating.HasValue)
+            {
+                <a asp-controller="PreventiveMeasures" asp-action="Review" asp-route-id="@m.Id"
+                   class="btn btn-warning btn-sm py-0">
+                    <i class="bi bi-star me-1"></i>有効性評価
+                </a>
+            }
+            @if (m.Status == "Planned")
+            {
+                <form asp-controller="PreventiveMeasures" asp-action="UpdateStatus" asp-route-id="@m.Id" method="post" class="d-inline">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="status" value="InProgress" />
+                    <button type="submit" class="btn btn-primary btn-sm py-0">
+                        <i class="bi bi-play me-1"></i>着手
+                    </button>
+                </form>
+            }
+            <a asp-controller="Incidents" asp-action="Details" asp-route-id="@m.IncidentId"
+               class="btn btn-outline-secondary btn-sm py-0 ms-auto">
+                <i class="bi bi-link-45deg"></i>
+            </a>
+        </div>
+    </div>
+</div>

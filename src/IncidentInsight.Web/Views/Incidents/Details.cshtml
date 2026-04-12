@@ -1,0 +1,522 @@
+@model IncidentInsight.Web.Models.ViewModels.IncidentDetailViewModel
+@{
+    ViewData["Title"] = "インシデント詳細";
+    var incident = Model.Incident;
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">
+        <i class="bi bi-clipboard2-pulse me-2 text-primary"></i>インシデント詳細
+        <span class="badge bg-@incident.SeverityColor ms-2">@incident.SeverityLabel</span>
+    </h2>
+    <div>
+        <a asp-action="Edit" asp-route-id="@incident.Id" class="btn btn-outline-secondary me-2">
+            <i class="bi bi-pencil me-1"></i>編集
+        </a>
+        <a asp-action="Index" class="btn btn-outline-primary">
+            <i class="bi bi-list me-1"></i>一覧へ
+        </a>
+    </div>
+</div>
+
+<!-- Recurrence Warning Banner -->
+@if (Model.HasRecurrenceWarning)
+{
+    <div class="alert alert-warning border-warning shadow-sm mb-4">
+        <h6 class="alert-heading"><i class="bi bi-arrow-repeat me-2"></i>再発警告：類似インシデントが過去に発生しています</h6>
+        <p class="mb-1">
+            <strong>@incident.Department / @incident.IncidentType</strong> の組み合わせで
+            過去に @Model.SimilarIncidents.Count 件の類似インシデントが報告されています。
+            現在の対策が根本原因に対処しているか確認してください。
+        </p>
+        <ul class="mb-0 small">
+            @foreach (var sim in Model.SimilarIncidents.Take(3))
+            {
+                <li>
+                    @sim.OccurredAt.ToString("yyyy/MM/dd") — @sim.Severity —
+                    @(sim.Description.Length > 50 ? sim.Description[..50] + "…" : sim.Description)
+                    <a asp-action="Details" asp-route-id="@sim.Id" class="ms-1">詳細</a>
+                </li>
+            }
+        </ul>
+    </div>
+}
+
+<!-- Section 1: Incident Summary -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-white">
+        <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>インシデント概要</h5>
+    </div>
+    <div class="card-body">
+        <dl class="row mb-0">
+            <dt class="col-sm-3">発生日時</dt>
+            <dd class="col-sm-9">@incident.OccurredAt.ToString("yyyy年MM月dd日 HH:mm")</dd>
+
+            <dt class="col-sm-3">発生部署</dt>
+            <dd class="col-sm-9">@incident.Department</dd>
+
+            <dt class="col-sm-3">インシデント種別</dt>
+            <dd class="col-sm-9"><span class="badge bg-secondary">@incident.IncidentType</span></dd>
+
+            <dt class="col-sm-3">重症度</dt>
+            <dd class="col-sm-9"><span class="badge bg-@incident.SeverityColor">@incident.SeverityLabel</span></dd>
+
+            <dt class="col-sm-3">状況・経緯</dt>
+            <dd class="col-sm-9">@incident.Description</dd>
+
+            @if (!string.IsNullOrEmpty(incident.ImmediateActions))
+            {
+                <dt class="col-sm-3">発生直後の対応</dt>
+                <dd class="col-sm-9">@incident.ImmediateActions</dd>
+            }
+
+            <dt class="col-sm-3">報告者</dt>
+            <dd class="col-sm-9">@incident.ReporterName</dd>
+
+            <dt class="col-sm-3">報告日時</dt>
+            <dd class="col-sm-9">@incident.ReportedAt.ToString("yyyy年MM月dd日 HH:mm")</dd>
+        </dl>
+    </div>
+</div>
+
+<!-- Section 2: Cause Analysis (5 Whys) -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h5 class="mb-0"><i class="bi bi-search me-2"></i>原因分析（なぜなぜ分析）</h5>
+        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addCauseForm">
+            <i class="bi bi-plus-circle me-1"></i>原因分析を追加
+        </button>
+    </div>
+    <div class="card-body">
+        @if (!incident.CauseAnalyses.Any())
+        {
+            <p class="text-muted">まだ原因分析が登録されていません。</p>
+        }
+        else
+        {
+            @foreach (var analysis in incident.CauseAnalyses)
+            {
+                <div class="border rounded-3 p-3 mb-3 bg-light">
+                    <div class="d-flex justify-content-between align-items-start mb-2">
+                        <div>
+                            <span class="badge bg-primary me-2">@analysis.CauseCategory?.FullName</span>
+                            @if (!string.IsNullOrEmpty(analysis.AnalystName))
+                            {
+                                <small class="text-muted">分析者: @analysis.AnalystName</small>
+                            }
+                        </div>
+                        <form asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
+                            @Html.AntiForgeryToken()
+                            <button type="submit" class="btn btn-outline-danger btn-sm py-0"
+                                    onclick="return confirm('この原因分析を削除しますか？')">
+                                <i class="bi bi-trash"></i>
+                            </button>
+                        </form>
+                    </div>
+                    <!-- 5 Whys vertical chain -->
+                    <div class="why-chain">
+                        <div class="why-item @(string.IsNullOrEmpty(analysis.Why2) ? "why-root" : "")">
+                            <span class="why-label">なぜ1</span>
+                            <span>@analysis.Why1</span>
+                        </div>
+                        @if (!string.IsNullOrEmpty(analysis.Why2))
+                        {
+                            <div class="why-arrow">↓</div>
+                            <div class="why-item @(string.IsNullOrEmpty(analysis.Why3) ? "why-root" : "")">
+                                <span class="why-label">なぜ2</span>
+                                <span>@analysis.Why2</span>
+                            </div>
+                        }
+                        @if (!string.IsNullOrEmpty(analysis.Why3))
+                        {
+                            <div class="why-arrow">↓</div>
+                            <div class="why-item @(string.IsNullOrEmpty(analysis.Why4) ? "why-root" : "")">
+                                <span class="why-label">なぜ3</span>
+                                <span>@analysis.Why3</span>
+                            </div>
+                        }
+                        @if (!string.IsNullOrEmpty(analysis.Why4))
+                        {
+                            <div class="why-arrow">↓</div>
+                            <div class="why-item @(string.IsNullOrEmpty(analysis.Why5) ? "why-root" : "")">
+                                <span class="why-label">なぜ4</span>
+                                <span>@analysis.Why4</span>
+                            </div>
+                        }
+                        @if (!string.IsNullOrEmpty(analysis.Why5))
+                        {
+                            <div class="why-arrow">↓</div>
+                            <div class="why-item why-root">
+                                <span class="why-label">なぜ5（根本原因）</span>
+                                <span>@analysis.Why5</span>
+                            </div>
+                        }
+                    </div>
+                    @if (!string.IsNullOrEmpty(analysis.RootCauseSummary))
+                    {
+                        <div class="mt-2 p-2 bg-warning bg-opacity-10 rounded border-start border-warning border-3">
+                            <strong><i class="bi bi-exclamation-diamond me-1"></i>根本原因まとめ:</strong>
+                            @analysis.RootCauseSummary
+                        </div>
+                    }
+                    @if (!string.IsNullOrEmpty(analysis.AdditionalNotes))
+                    {
+                        <div class="mt-2 text-muted small"><i class="bi bi-chat-text me-1"></i>@analysis.AdditionalNotes</div>
+                    }
+                </div>
+            }
+        }
+
+        <!-- Add Cause Analysis form (collapsible) -->
+        <div class="collapse" id="addCauseForm">
+            <div class="border rounded-3 p-3 bg-white mt-3">
+                <h6 class="mb-3">原因分析を追加</h6>
+                <form asp-action="AddCauseAnalysis" method="post">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" asp-for="NewCauseAnalysis.IncidentId" />
+                    <div class="row g-2">
+                        <div class="col-md-6">
+                            <label class="form-label small">原因分類 <span class="text-danger">*</span></label>
+                            <select asp-for="NewCauseAnalysis.CauseCategoryId"
+                                    asp-items="Model.CauseCategoryOptions"
+                                    class="form-select form-select-sm">
+                                <option value="">-- 選択してください --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label class="form-label small">分析者</label>
+                            <input asp-for="NewCauseAnalysis.AnalystName" class="form-control form-control-sm" placeholder="氏名" />
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">なぜ1（直接原因） <span class="text-danger">*</span></label>
+                            <textarea asp-for="NewCauseAnalysis.Why1" class="form-control form-control-sm" rows="2"
+                                      placeholder="何が起きたか、なぜそれが起きたか（直接原因）"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">なぜ2</label>
+                            <textarea asp-for="NewCauseAnalysis.Why2" class="form-control form-control-sm" rows="2" placeholder="なぜ1が起きた原因"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">なぜ3</label>
+                            <textarea asp-for="NewCauseAnalysis.Why3" class="form-control form-control-sm" rows="2"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">なぜ4</label>
+                            <textarea asp-for="NewCauseAnalysis.Why4" class="form-control form-control-sm" rows="2"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">なぜ5（根本原因）</label>
+                            <textarea asp-for="NewCauseAnalysis.Why5" class="form-control form-control-sm" rows="2"
+                                      placeholder="これ以上掘り下げられない根本的な原因"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label class="form-label small">根本原因まとめ</label>
+                            <input asp-for="NewCauseAnalysis.RootCauseSummary" class="form-control form-control-sm"
+                                   placeholder="根本原因を一文で要約" />
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-primary btn-sm">追加</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#addCauseForm">キャンセル</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Section 3: Preventive Measures (most prominent) -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+            <i class="bi bi-shield-check me-2 text-success"></i>再発防止策
+            @{
+                var overduePmCount = incident.PreventiveMeasures.Count(m => m.IsOverdue);
+                if (overduePmCount > 0)
+                {
+                    <span class="badge bg-danger ms-2">@overduePmCount 件期限超過</span>
+                }
+            }
+        </h5>
+        <button class="btn btn-outline-success btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMeasureForm">
+            <i class="bi bi-plus-circle me-1"></i>対策を追加
+        </button>
+    </div>
+    <div class="card-body">
+        @if (!incident.PreventiveMeasures.Any())
+        {
+            <p class="text-muted">まだ再発防止策が登録されていません。</p>
+        }
+        else
+        {
+            <div class="table-responsive">
+                <table class="table table-sm align-middle">
+                    <thead class="table-light">
+                        <tr>
+                            <th>対策内容</th>
+                            <th>種別</th>
+                            <th>担当</th>
+                            <th>期限</th>
+                            <th>優先度</th>
+                            <th>ステータス</th>
+                            <th>有効性</th>
+                            <th>操作</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.Priority).ThenBy(m => m.DueDate))
+                        {
+                            <tr class="@(m.IsOverdue ? "table-danger" : "")">
+                                <td style="max-width:200px">
+                                    <div>@(m.Description.Length > 45 ? m.Description[..45] + "…" : m.Description)</div>
+                                    @if (!string.IsNullOrEmpty(m.CompletionNote))
+                                    {
+                                        <div class="text-muted x-small"><i class="bi bi-check2 me-1"></i>@(m.CompletionNote.Length > 30 ? m.CompletionNote[..30] + "…" : m.CompletionNote)</div>
+                                    }
+                                </td>
+                                <td><span class="badge bg-@m.MeasureTypeColor">@m.MeasureTypeLabel</span></td>
+                                <td>
+                                    <div class="small">@m.ResponsiblePerson</div>
+                                    <div class="text-muted x-small">@m.ResponsibleDepartment</div>
+                                </td>
+                                <td>
+                                    <div class="small @(m.IsOverdue ? "text-danger fw-bold" : "")">
+                                        @m.DueDate.ToString("MM/dd")
+                                        @if (m.IsOverdue)
+                                        {
+                                            <span class="badge bg-danger ms-1">超過</span>
+                                        }
+                                    </div>
+                                </td>
+                                <td><span class="badge bg-@m.PriorityColor">@m.PriorityLabel</span></td>
+                                <td><span class="badge bg-@m.StatusColor">@m.StatusLabel</span></td>
+                                <td>
+                                    @if (m.EffectivenessRating.HasValue)
+                                    {
+                                        <span class="text-warning">@m.EffectivenessStars</span>
+                                        @if (m.RecurrenceObserved == true)
+                                        {
+                                            <span class="badge bg-danger ms-1 small">再発あり</span>
+                                        }
+                                        else if (m.RecurrenceObserved == false)
+                                        {
+                                            <span class="badge bg-success ms-1 small">再発なし</span>
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <span class="text-muted small">未評価</span>
+                                    }
+                                </td>
+                                <td>
+                                    @if (m.Status != "Completed")
+                                    {
+                                        <button class="btn btn-success btn-sm py-0 me-1"
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#completeModal"
+                                                data-measure-id="@m.Id">完了</button>
+                                    }
+                                    @if (m.Status == "Completed" && !m.EffectivenessRating.HasValue)
+                                    {
+                                        <button class="btn btn-warning btn-sm py-0 me-1"
+                                                data-bs-toggle="modal"
+                                                data-bs-target="#rateModal"
+                                                data-measure-id="@m.Id">評価</button>
+                                    }
+                                    <a asp-controller="PreventiveMeasures" asp-action="Edit" asp-route-id="@m.Id"
+                                       class="btn btn-outline-secondary btn-sm py-0">編集</a>
+                                </td>
+                            </tr>
+                        }
+                    </tbody>
+                </table>
+            </div>
+        }
+
+        <!-- Add Measure inline form (collapsible) -->
+        <div class="collapse" id="addMeasureForm">
+            <div class="border rounded-3 p-3 bg-white mt-3">
+                <h6 class="mb-3">再発防止策を追加</h6>
+                <form asp-action="AddMeasure" method="post">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" asp-for="NewMeasure.IncidentId" />
+                    <div class="row g-2">
+                        <div class="col-12">
+                            <label class="form-label small">対策内容 <span class="text-danger">*</span></label>
+                            <textarea asp-for="NewMeasure.Description" class="form-control form-control-sm" rows="2"
+                                      placeholder="具体的な再発防止策を記入（何を、誰が、いつまでに）"></textarea>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">対策種別</label>
+                            <select asp-for="NewMeasure.MeasureType" class="form-select form-select-sm">
+                                <option value="ShortTerm">短期対策</option>
+                                <option value="LongTerm">長期対策</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">担当者 <span class="text-danger">*</span></label>
+                            <input asp-for="NewMeasure.ResponsiblePerson" class="form-control form-control-sm" />
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
+                            <input asp-for="NewMeasure.ResponsibleDepartment" class="form-control form-control-sm" />
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                            <input type="date" asp-for="NewMeasure.DueDate" class="form-control form-control-sm" />
+                        </div>
+                        <div class="col-md-1">
+                            <label class="form-label small">優先度</label>
+                            <select asp-for="NewMeasure.Priority" class="form-select form-select-sm">
+                                <option value="1">高</option>
+                                <option value="2" selected>中</option>
+                                <option value="3">低</option>
+                            </select>
+                        </div>
+                        <div class="col-12">
+                            <button type="submit" class="btn btn-success btn-sm">追加</button>
+                            <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#addMeasureForm">キャンセル</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Timeline -->
+<div class="card border-0 shadow-sm mb-4">
+    <div class="card-header bg-white">
+        <h5 class="mb-0"><i class="bi bi-clock me-2"></i>対応タイムライン</h5>
+    </div>
+    <div class="card-body">
+        <div class="timeline">
+            <div class="timeline-item">
+                <span class="timeline-badge bg-danger"></span>
+                <div class="timeline-content">
+                    <strong>@incident.OccurredAt.ToString("yyyy/MM/dd HH:mm")</strong> インシデント発生
+                </div>
+            </div>
+            <div class="timeline-item">
+                <span class="timeline-badge bg-primary"></span>
+                <div class="timeline-content">
+                    <strong>@incident.ReportedAt.ToString("yyyy/MM/dd HH:mm")</strong> インシデント報告
+                    （発生から @((int)(incident.ReportedAt - incident.OccurredAt).TotalHours) 時間後）
+                </div>
+            </div>
+            @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.DueDate))
+            {
+                <div class="timeline-item">
+                    <span class="timeline-badge bg-@m.StatusColor"></span>
+                    <div class="timeline-content">
+                        <strong>@m.DueDate.ToString("yyyy/MM/dd")</strong> 期限：@(m.Description.Length > 40 ? m.Description[..40] + "…" : m.Description)
+                        <span class="badge bg-@m.StatusColor ms-1">@m.StatusLabel</span>
+                    </div>
+                </div>
+                @if (m.CompletedAt.HasValue)
+                {
+                    <div class="timeline-item">
+                        <span class="timeline-badge bg-success"></span>
+                        <div class="timeline-content">
+                            <strong>@m.CompletedAt.Value.ToString("yyyy/MM/dd")</strong> 完了：@(m.Description.Length > 40 ? m.Description[..40] + "…" : m.Description)
+                        </div>
+                    </div>
+                }
+            }
+        </div>
+    </div>
+</div>
+
+<!-- Complete Measure Modal -->
+<div class="modal fade" id="completeModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-check-circle me-2 text-success"></i>対策完了報告</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="completeForm" action="/Incidents/CompleteMeasure/0" method="post">
+                @Html.AntiForgeryToken()
+                <div class="modal-body">
+                    <label class="form-label">完了報告内容（任意）</label>
+                    <textarea name="completionNote" class="form-control" rows="3"
+                              placeholder="実施した内容・結果を記入してください"></textarea>
+                    <div class="mt-2 small text-muted">
+                        <i class="bi bi-info-circle me-1"></i>完了後は有効性評価を忘れずに行ってください。
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">キャンセル</button>
+                    <button type="submit" class="btn btn-success">完了登録</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+<!-- Rate Measure Modal -->
+<div class="modal fade" id="rateModal" tabindex="-1">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title"><i class="bi bi-star me-2 text-warning"></i>有効性評価</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+            </div>
+            <form id="rateForm" action="/Incidents/RateMeasure/0" method="post">
+                @Html.AntiForgeryToken()
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <label class="form-label fw-bold">有効性評価 <span class="text-danger">*</span></label>
+                        <div class="d-flex gap-2">
+                            @for (int i = 1; i <= 5; i++)
+                            {
+                                <div class="form-check">
+                                    <input class="form-check-input" type="radio" name="effectivenessRating"
+                                           id="rating@i" value="@i" @(i == 3 ? "checked" : "") />
+                                    <label class="form-check-label" for="rating@i">@i</label>
+                                </div>
+                            }
+                        </div>
+                        <div class="text-muted small mt-1">1=効果なし / 3=普通 / 5=非常に効果あり</div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label fw-bold text-danger">対策実施後に再発を確認しましたか？ <span class="text-danger">*</span></label>
+                        <div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="noRecurrence" value="false" checked />
+                                <label class="form-check-label" for="noRecurrence">再発なし（対策有効）</label>
+                            </div>
+                            <div class="form-check form-check-inline">
+                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="yesRecurrence" value="true" />
+                                <label class="form-check-label text-danger" for="yesRecurrence">再発あり（追加対策必要）</label>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">評価コメント（任意）</label>
+                        <textarea name="effectivenessNote" class="form-control" rows="2"
+                                  placeholder="対策の効果や課題を記入"></textarea>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">キャンセル</button>
+                    <button type="submit" class="btn btn-warning">評価を登録</button>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+    // Set measure ID in modal forms
+    document.getElementById('completeModal').addEventListener('show.bs.modal', function(e) {
+        const id = e.relatedTarget.dataset.measureId;
+        document.getElementById('completeForm').action = '/Incidents/CompleteMeasure/' + id;
+    });
+    document.getElementById('rateModal').addEventListener('show.bs.modal', function(e) {
+        const id = e.relatedTarget.dataset.measureId;
+        document.getElementById('rateForm').action = '/Incidents/RateMeasure/' + id;
+    });
+</script>
+}
