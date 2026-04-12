@@ -1,0 +1,333 @@
+@model IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel
+@{
+    ViewData["Title"] = "インシデント新規登録";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-plus-circle me-2 text-primary"></i>インシデント新規登録</h2>
+    <a asp-action="Index" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-1"></i>一覧へ
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <form asp-action="Create" method="post" id="createForm" onsubmit="reindexMeasures()">
+            @Html.AntiForgeryToken()
+
+            @if (!ViewData.ModelState.IsValid)
+            {
+                <div class="alert alert-danger mb-4" id="errorSummary">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    <strong>入力内容を確認してください</strong>
+                    <div asp-validation-summary="All" class="mt-1 mb-0 small"></div>
+                </div>
+            }
+
+            <!-- Wizard Tabs -->
+            <ul class="nav nav-tabs mb-4" id="wizardTabs" role="tablist">
+                <li class="nav-item">
+                    <button class="nav-link active" id="tab1-tab" data-bs-toggle="tab" data-bs-target="#tab1" type="button">
+                        <span class="badge bg-primary me-1">1</span> 基本情報
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link" id="tab2-tab" data-bs-toggle="tab" data-bs-target="#tab2" type="button">
+                        <span class="badge bg-secondary me-1">2</span> 原因分析
+                    </button>
+                </li>
+                <li class="nav-item">
+                    <button class="nav-link" id="tab3-tab" data-bs-toggle="tab" data-bs-target="#tab3" type="button">
+                        <span class="badge bg-secondary me-1">3</span> 再発防止策
+                    </button>
+                </li>
+            </ul>
+
+            <div class="tab-content" id="wizardContent">
+                <!-- Tab 1: Basic Info -->
+                <div class="tab-pane fade show active" id="tab1">
+                    <div class="row g-3">
+                        <div class="col-md-4">
+                            <label asp-for="OccurredAt" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <input asp-for="OccurredAt" type="datetime-local" class="form-control" />
+                            <span asp-validation-for="OccurredAt" class="text-danger small"></span>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <select asp-for="Department" class="form-select">
+                                <option value="">-- 選択してください --</option>
+                                @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                                {
+                                    <option value="@d">@d</option>
+                                }
+                            </select>
+                            <span asp-validation-for="Department" class="text-danger small"></span>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="IncidentType" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <select asp-for="IncidentType" class="form-select">
+                                <option value="">-- 選択してください --</option>
+                                @foreach (var t in IncidentInsight.Web.Models.Incident.IncidentTypes)
+                                {
+                                    <option value="@t">@t</option>
+                                }
+                            </select>
+                            <span asp-validation-for="IncidentType" class="text-danger small"></span>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="Severity" class="form-label fw-medium"></label>
+                            <select asp-for="Severity" class="form-select">
+                                @foreach (var kv in IncidentInsight.Web.Models.Incident.SeverityLevels)
+                                {
+                                    <option value="@kv.Key">@kv.Value</option>
+                                }
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <label asp-for="ReporterName" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <input asp-for="ReporterName" class="form-control" placeholder="氏名（例：山田 花子）" />
+                            <span asp-validation-for="ReporterName" class="text-danger small"></span>
+                        </div>
+                        <div class="col-12">
+                            <label asp-for="Description" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <textarea asp-for="Description" class="form-control" rows="4"
+                                      placeholder="いつ・どこで・誰が・何を・どのようにしたかを具体的に記述（例：夜勤帯にAさんの薬をBさんに投与した）"></textarea>
+                            <span asp-validation-for="Description" class="text-danger small"></span>
+                        </div>
+                        <div class="col-12">
+                            <label asp-for="ImmediateActions" class="form-label fw-medium"></label>
+                            <textarea asp-for="ImmediateActions" class="form-control" rows="3"
+                                      placeholder="発生直後の応急処置・報告先・患者への対応内容（任意）"></textarea>
+                            <div class="form-text">任意項目です。発生直後に取った対応があれば記入してください。</div>
+                        </div>
+                        <div class="col-12 d-flex justify-content-end">
+                            <button type="button" class="btn btn-primary" onclick="goToTab('tab2')">
+                                次へ：原因分析 <i class="bi bi-arrow-right ms-1"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 2: Cause Analysis -->
+                <div class="tab-pane fade" id="tab2">
+                    <div class="alert alert-info small mb-3">
+                        <i class="bi bi-lightbulb me-2"></i>
+                        <strong>なぜなぜ分析のポイント：</strong>
+                        「なぜ1」から始めて「なぜ？」を繰り返すことで、表面的な原因ではなく<strong>根本原因</strong>まで掘り下げます。
+                        なぜ5まで掘り下げることで、再発防止に本当に効果ある対策が立案できます。
+                    </div>
+                    <div class="row g-3">
+                        <div class="col-md-6">
+                            <label asp-for="CauseAnalysis.CauseCategoryId" class="form-label fw-medium"></label>
+                            <select asp-for="CauseAnalysis.CauseCategoryId"
+                                    asp-items="Model.CauseCategoryOptions"
+                                    class="form-select">
+                                <option value="">-- 原因分類を選択 --</option>
+                            </select>
+                        </div>
+                        <div class="col-md-6">
+                            <label asp-for="CauseAnalysis.AnalystName" class="form-label fw-medium"></label>
+                            <input asp-for="CauseAnalysis.AnalystName" class="form-control" placeholder="分析者氏名" />
+                        </div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.Why1" class="form-label fw-medium text-primary"></label>
+                            <textarea asp-for="CauseAnalysis.Why1" class="form-control" rows="2"
+                                      placeholder="何が起きたか・直接の原因は何か"></textarea>
+                        </div>
+                        <div class="col-12 text-center text-muted">↓ なぜ？</div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.Why2" class="form-label fw-medium"></label>
+                            <textarea asp-for="CauseAnalysis.Why2" class="form-control" rows="2" placeholder="なぜ1が起きた原因"></textarea>
+                        </div>
+                        <div class="col-12 text-center text-muted">↓ なぜ？</div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.Why3" class="form-label fw-medium"></label>
+                            <textarea asp-for="CauseAnalysis.Why3" class="form-control" rows="2" placeholder="なぜ2が起きた原因"></textarea>
+                        </div>
+                        <div class="col-12 text-center text-muted">↓ なぜ？</div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.Why4" class="form-label fw-medium"></label>
+                            <textarea asp-for="CauseAnalysis.Why4" class="form-control" rows="2" placeholder="なぜ3が起きた原因"></textarea>
+                        </div>
+                        <div class="col-12 text-center text-muted">↓ なぜ？</div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.Why5" class="form-label fw-medium text-danger"></label>
+                            <textarea asp-for="CauseAnalysis.Why5" class="form-control border-danger" rows="2"
+                                      placeholder="これ以上掘り下げられない根本的な原因（対策はここに向けて立案する）"></textarea>
+                        </div>
+                        <div class="col-12">
+                            <label asp-for="CauseAnalysis.RootCauseSummary" class="form-label fw-medium"></label>
+                            <input asp-for="CauseAnalysis.RootCauseSummary" class="form-control"
+                                   placeholder="根本原因を一文で要約してください" />
+                        </div>
+                        <div class="col-12 d-flex justify-content-between">
+                            <button type="button" class="btn btn-outline-secondary" onclick="goToTab('tab1')">
+                                <i class="bi bi-arrow-left me-1"></i>前へ
+                            </button>
+                            <button type="button" class="btn btn-primary" onclick="goToTab('tab3')">
+                                次へ：再発防止策 <i class="bi bi-arrow-right ms-1"></i>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Tab 3: Preventive Measures -->
+                <div class="tab-pane fade" id="tab3">
+                    <div class="alert alert-success small mb-3">
+                        <i class="bi bi-shield-check me-2"></i>
+                        <strong>効果的な再発防止策のポイント：</strong>
+                        根本原因に対応した対策を立案してください。
+                        「誰が」「何を」「いつまでに」を明確にし、短期対策と長期対策の両方を検討しましょう。
+                    </div>
+                    <div id="measuresContainer">
+                        <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="0">
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0">対策 1</h6>
+                            </div>
+                            <div class="row g-2">
+                                <div class="col-12">
+                                    <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
+                                    <textarea name="Measures[0].Description" class="form-control form-control-sm" rows="2"
+                                              placeholder="具体的な再発防止策（5W1Hで記載）"></textarea>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">対策種別</label>
+                                    <select name="Measures[0].MeasureType" class="form-select form-select-sm">
+                                        <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
+                                        <option value="LongTerm">長期対策（仕組み改善）</option>
+                                    </select>
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">担当者 <span class="text-danger">*</span></label>
+                                    <input name="Measures[0].ResponsiblePerson" class="form-control form-control-sm" />
+                                </div>
+                                <div class="col-md-3">
+                                    <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
+                                    <input name="Measures[0].ResponsibleDepartment" class="form-control form-control-sm" />
+                                </div>
+                                <div class="col-md-2">
+                                    <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                                    <input type="date" name="Measures[0].DueDate" class="form-control form-control-sm"
+                                           value="@DateTime.Today.AddDays(30).ToString("yyyy-MM-dd")" />
+                                </div>
+                                <div class="col-md-1">
+                                    <label class="form-label small">優先度</label>
+                                    <select name="Measures[0].Priority" class="form-select form-select-sm">
+                                        <option value="1">高</option>
+                                        <option value="2" selected>中</option>
+                                        <option value="3">低</option>
+                                    </select>
+                                </div>
+                                <div class="col-12">
+                                    <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                                    <textarea name="Measures[0].AnalysisNote" class="form-control form-control-sm" rows="1"
+                                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+
+                    <button type="button" class="btn btn-outline-success btn-sm mb-4" onclick="addMeasureRow()">
+                        <i class="bi bi-plus-circle me-1"></i>対策を追加
+                    </button>
+
+                    <div class="d-flex justify-content-between">
+                        <button type="button" class="btn btn-outline-secondary" onclick="goToTab('tab2')">
+                            <i class="bi bi-arrow-left me-1"></i>前へ
+                        </button>
+                        <button type="submit" class="btn btn-success btn-lg">
+                            <i class="bi bi-check-circle me-2"></i>インシデントを登録する
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+<partial name="_ValidationScriptsPartial" />
+<script>
+function goToTab(tabId) {
+    document.getElementById(tabId + '-tab').click();
+    document.getElementById(tabId + '-tab').classList.add('active');
+}
+
+// On page load: if validation errors exist, jump to the tab containing the first error field
+document.addEventListener('DOMContentLoaded', function() {
+    const errorSummary = document.getElementById('errorSummary');
+    if (!errorSummary) return;
+    const firstInvalid = document.querySelector('.field-validation-error, [class*="input-validation-error"]');
+    if (!firstInvalid) return;
+    const tab = firstInvalid.closest('.tab-pane');
+    if (tab) goToTab(tab.id);
+});
+
+// Reindex measure rows before submit to close any gaps from deletions
+function reindexMeasures() {
+    document.querySelectorAll('#measuresContainer .measure-row').forEach((row, i) => {
+        row.querySelectorAll('[name]').forEach(el => {
+            el.name = el.name.replace(/Measures\[\d+\]/, `Measures[${i}]`);
+        });
+    });
+}
+
+let measureCount = 1;
+function addMeasureRow() {
+    const container = document.getElementById('measuresContainer');
+    const idx = measureCount++;
+    const tomorrow = new Date();
+    tomorrow.setDate(tomorrow.getDate() + 30);
+    const dateStr = tomorrow.toISOString().split('T')[0];
+
+    const div = document.createElement('div');
+    div.className = 'measure-row border rounded-3 p-3 mb-3 bg-light';
+    div.innerHTML = `
+        <div class="d-flex justify-content-between align-items-center mb-2">
+            <h6 class="mb-0">対策 ${idx + 1}</h6>
+            <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="this.closest('.measure-row').remove()">
+                <i class="bi bi-trash"></i>
+            </button>
+        </div>
+        <div class="row g-2">
+            <div class="col-12">
+                <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
+                <textarea name="Measures[${idx}].Description" class="form-control form-control-sm" rows="2"></textarea>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small">対策種別</label>
+                <select name="Measures[${idx}].MeasureType" class="form-select form-select-sm">
+                    <option value="ShortTerm">短期対策</option>
+                    <option value="LongTerm">長期対策</option>
+                </select>
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small">担当者</label>
+                <input name="Measures[${idx}].ResponsiblePerson" class="form-control form-control-sm" />
+            </div>
+            <div class="col-md-3">
+                <label class="form-label small">担当部署</label>
+                <input name="Measures[${idx}].ResponsibleDepartment" class="form-control form-control-sm" />
+            </div>
+            <div class="col-md-2">
+                <label class="form-label small">実施期限</label>
+                <input type="date" name="Measures[${idx}].DueDate" class="form-control form-control-sm" value="${dateStr}" />
+            </div>
+            <div class="col-md-1">
+                <label class="form-label small">優先度</label>
+                <select name="Measures[${idx}].Priority" class="form-select form-select-sm">
+                    <option value="1">高</option>
+                    <option value="2" selected>中</option>
+                    <option value="3">低</option>
+                </select>
+            </div>
+            <div class="col-12">
+                <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                <textarea name="Measures[${idx}].AnalysisNote" class="form-control form-control-sm" rows="1"
+                          placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
+            </div>
+        </div>`;
+    container.appendChild(div);
+}
+</script>
+}

@@ -1,0 +1,94 @@
+@model IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+@{
+    ViewData["Title"] = "再発防止策 新規登録";
+    var incident = ViewBag.Incident as IncidentInsight.Web.Models.Incident;
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-plus-circle me-2 text-success"></i>再発防止策 新規登録</h2>
+    @if (incident != null)
+    {
+        <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
+           class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>インシデント詳細へ
+        </a>
+    }
+</div>
+
+@if (incident != null)
+{
+    <div class="alert alert-light border mb-3">
+        <small class="text-muted">対象インシデント：</small>
+        <strong>@incident.Department</strong> — @incident.IncidentType —
+        @incident.OccurredAt.ToString("yyyy/MM/dd")
+        <span class="badge bg-@incident.SeverityColor ms-2">@incident.SeverityLabel</span>
+    </div>
+}
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <div class="alert alert-success small mb-4">
+            <i class="bi bi-shield-check me-2"></i>
+            <strong>効果的な対策を立案するポイント：</strong>
+            なぜなぜ分析で特定した<strong>根本原因</strong>に対応した対策を記入してください。
+            「誰が」「何を」「いつまでに」を明確にしましょう。
+        </div>
+
+        <form asp-action="Create" method="post">
+            @Html.AntiForgeryToken()
+            <input type="hidden" asp-for="IncidentId" />
+            <div class="row g-3">
+                <div class="col-12">
+                    <label asp-for="Description" class="form-label fw-medium"></label>
+                    <textarea asp-for="Description" class="form-control" rows="3"
+                              placeholder="具体的な再発防止策（5W1Hで記載：誰が・何を・いつまでに・どこで・なぜ・どのように）"></textarea>
+                    <span asp-validation-for="Description" class="text-danger small"></span>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="MeasureType" class="form-label fw-medium"></label>
+                    <select asp-for="MeasureType" class="form-select">
+                        <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
+                        <option value="LongTerm">長期対策（仕組み改善）</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="ResponsiblePerson" class="form-label fw-medium"></label>
+                    <input asp-for="ResponsiblePerson" class="form-control" placeholder="担当者氏名" />
+                    <span asp-validation-for="ResponsiblePerson" class="text-danger small"></span>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="ResponsibleDepartment" class="form-label fw-medium"></label>
+                    <input asp-for="ResponsibleDepartment" class="form-control" placeholder="担当部署名" />
+                    <span asp-validation-for="ResponsibleDepartment" class="text-danger small"></span>
+                </div>
+                <div class="col-md-2">
+                    <label asp-for="DueDate" class="form-label fw-medium"></label>
+                    <input asp-for="DueDate" type="date" class="form-control" />
+                    <span asp-validation-for="DueDate" class="text-danger small"></span>
+                </div>
+                <div class="col-md-1">
+                    <label asp-for="Priority" class="form-label fw-medium"></label>
+                    <select asp-for="Priority" class="form-select">
+                        <option value="1">高</option>
+                        <option value="2">中</option>
+                        <option value="3">低</option>
+                    </select>
+                </div>
+                <div class="col-12 d-flex justify-content-end gap-2">
+                    @if (incident != null)
+                    {
+                        <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
+                           class="btn btn-outline-secondary">キャンセル</a>
+                    }
+                    <button type="submit" class="btn btn-success">
+                        <i class="bi bi-plus-circle me-1"></i>登録
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+<partial name="_ValidationScriptsPartial" />
+}

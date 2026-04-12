@@ -1,0 +1,86 @@
+@model IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+@{
+    ViewData["Title"] = "再発防止策 編集";
+    var incident = ViewBag.Incident as IncidentInsight.Web.Models.Incident;
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-pencil me-2 text-secondary"></i>再発防止策 編集</h2>
+    @if (incident != null)
+    {
+        <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
+           class="btn btn-outline-secondary">
+            <i class="bi bi-arrow-left me-1"></i>インシデント詳細へ
+        </a>
+    }
+</div>
+
+@if (incident != null)
+{
+    <div class="alert alert-light border mb-3">
+        <small class="text-muted">対象インシデント：</small>
+        <strong>@incident.Department</strong> — @incident.IncidentType —
+        @incident.OccurredAt.ToString("yyyy/MM/dd")
+    </div>
+}
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <form asp-action="Edit" asp-route-id="@Model.Id" method="post">
+            @Html.AntiForgeryToken()
+            <div class="row g-3">
+                <div class="col-12">
+                    <label asp-for="Description" class="form-label fw-medium"></label>
+                    <textarea asp-for="Description" class="form-control" rows="3"></textarea>
+                    <span asp-validation-for="Description" class="text-danger small"></span>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="MeasureType" class="form-label fw-medium"></label>
+                    <select asp-for="MeasureType" class="form-select">
+                        <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
+                        <option value="LongTerm">長期対策（仕組み改善）</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="ResponsiblePerson" class="form-label fw-medium"></label>
+                    <input asp-for="ResponsiblePerson" class="form-control" />
+                    <span asp-validation-for="ResponsiblePerson" class="text-danger small"></span>
+                </div>
+                <div class="col-md-3">
+                    <label asp-for="ResponsibleDepartment" class="form-label fw-medium"></label>
+                    <input asp-for="ResponsibleDepartment" class="form-control" />
+                    <span asp-validation-for="ResponsibleDepartment" class="text-danger small"></span>
+                </div>
+                <div class="col-md-2">
+                    <label asp-for="DueDate" class="form-label fw-medium"></label>
+                    <input asp-for="DueDate" type="date" class="form-control" />
+                    <span asp-validation-for="DueDate" class="text-danger small"></span>
+                </div>
+                <div class="col-md-1">
+                    <label asp-for="Priority" class="form-label fw-medium"></label>
+                    <select asp-for="Priority" class="form-select">
+                        <option value="1">高</option>
+                        <option value="2">中</option>
+                        <option value="3">低</option>
+                    </select>
+                </div>
+                <div class="col-12">
+                    <label asp-for="AnalysisNote" class="form-label fw-medium"></label>
+                    <textarea asp-for="AnalysisNote" class="form-control" rows="2"
+                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入（任意）"></textarea>
+                    <span asp-validation-for="AnalysisNote" class="text-danger small"></span>
+                </div>
+                <div class="col-12 d-flex justify-content-end gap-2">
+                    <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-outline-secondary">キャンセル</a>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-circle me-1"></i>保存
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+<partial name="_ValidationScriptsPartial" />
+}

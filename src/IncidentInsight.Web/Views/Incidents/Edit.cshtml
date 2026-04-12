@@ -1,0 +1,91 @@
+@model IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel
+@{
+    ViewData["Title"] = "インシデント編集";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-pencil me-2 text-secondary"></i>インシデント編集</h2>
+    <a asp-action="Details" asp-route-id="@Model.Id" class="btn btn-outline-secondary">
+        <i class="bi bi-arrow-left me-1"></i>詳細へ
+    </a>
+</div>
+
+<div class="card border-0 shadow-sm">
+    <div class="card-body p-4">
+        <form asp-action="Edit" asp-route-id="@Model.Id" method="post">
+            @Html.AntiForgeryToken()
+            <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label asp-for="OccurredAt" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                    <input asp-for="OccurredAt" type="datetime-local" class="form-control" />
+                    <span asp-validation-for="OccurredAt" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                    <select asp-for="Department" class="form-select">
+                        <option value="">-- 選択してください --</option>
+                        @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                        {
+                            <option value="@d">@d</option>
+                        }
+                    </select>
+                    <span asp-validation-for="Department" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="IncidentType" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                    <select asp-for="IncidentType" class="form-select">
+                        <option value="">-- 選択してください --</option>
+                        @foreach (var t in IncidentInsight.Web.Models.Incident.IncidentTypes)
+                        {
+                            <option value="@t">@t</option>
+                        }
+                    </select>
+                    <span asp-validation-for="IncidentType" class="text-danger small"></span>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="Severity" class="form-label fw-medium"></label>
+                    <select asp-for="Severity" class="form-select">
+                        @foreach (var kv in IncidentInsight.Web.Models.Incident.SeverityLevels)
+                        {
+                            <option value="@kv.Key">@kv.Value</option>
+                        }
+                    </select>
+                </div>
+                <div class="col-md-4">
+                    <label asp-for="ReporterName" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                    <input asp-for="ReporterName" class="form-control" placeholder="例：山田 花子" />
+                    <span asp-validation-for="ReporterName" class="text-danger small"></span>
+                </div>
+                <div class="col-12">
+                    <label asp-for="Description" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                    <textarea asp-for="Description" class="form-control" rows="4"
+                              placeholder="いつ・どこで・誰が・何を・どのようにしたかを具体的に記述"></textarea>
+                    <span asp-validation-for="Description" class="text-danger small"></span>
+                </div>
+                <div class="col-12">
+                    <label asp-for="ImmediateActions" class="form-label fw-medium"></label>
+                    <textarea asp-for="ImmediateActions" class="form-control" rows="3"
+                              placeholder="発生直後の応急処置・報告先・患者への対応内容（任意）"></textarea>
+                    <div class="form-text">任意項目です。</div>
+                </div>
+                <div class="col-12 d-flex justify-content-between">
+                    <form asp-action="Delete" asp-route-id="@Model.Id" method="post" class="d-inline">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="btn btn-outline-danger"
+                                onclick="return confirm('このインシデントを削除しますか？\n関連する原因分析と再発防止策も削除されます。')">
+                            <i class="bi bi-trash me-1"></i>削除
+                        </button>
+                    </form>
+                    <button type="submit" class="btn btn-primary">
+                        <i class="bi bi-check-circle me-1"></i>保存
+                    </button>
+                </div>
+            </div>
+        </form>
+    </div>
+</div>
+
+@section Scripts {
+<partial name="_ValidationScriptsPartial" />
+}

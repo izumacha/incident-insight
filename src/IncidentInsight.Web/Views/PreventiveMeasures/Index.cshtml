@@ -1,0 +1,162 @@
+@model IEnumerable<IncidentInsight.Web.Models.PreventiveMeasure>
+@{
+    ViewData["Title"] = "再発防止策管理";
+    var planned = ViewBag.Planned as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+    var inProgress = ViewBag.InProgress as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+    var completed = ViewBag.Completed as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-check2-square me-2 text-success"></i>再発防止策管理</h2>
+</div>
+
+<!-- Stats Bar -->
+<div class="row g-3 mb-4">
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm text-center py-2">
+            <div class="fs-3 fw-bold">@ViewBag.TotalCount</div>
+            <div class="text-muted small">全対策数</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm text-center py-2">
+            <div class="fs-3 fw-bold text-success">@ViewBag.CompletionRate%</div>
+            <div class="text-muted small">完了率</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm text-center py-2 @(ViewBag.OverdueCount > 0 ? "border-danger border" : "")">
+            <div class="fs-3 fw-bold @(ViewBag.OverdueCount > 0 ? "text-danger" : "")">@ViewBag.OverdueCount</div>
+            <div class="text-muted small">期限超過</div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card border-0 shadow-sm text-center py-2 @(ViewBag.FailedCount > 0 ? "border-danger border" : "")">
+            <div class="fs-3 fw-bold @(ViewBag.FailedCount > 0 ? "text-danger" : "")">@ViewBag.FailedCount</div>
+            <div class="text-muted small">再発確認件数</div>
+        </div>
+    </div>
+</div>
+
+<!-- Filter -->
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body py-2">
+        <form method="get" class="row g-2 align-items-end">
+            <div class="col-md-2">
+                <select name="status" class="form-select form-select-sm">
+                    <option value="">ステータス（全て）</option>
+                    <option value="Planned" selected="@(ViewBag.FilterStatus == "Planned")">計画中</option>
+                    <option value="InProgress" selected="@(ViewBag.FilterStatus == "InProgress")">進行中</option>
+                    <option value="Completed" selected="@(ViewBag.FilterStatus == "Completed")">完了</option>
+                </select>
+            </div>
+            <div class="col-md-2">
+                <select name="responsibleDepartment" class="form-select form-select-sm">
+                    <option value="">担当部署（全て）</option>
+                    @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                    {
+                        <option value="@d" selected="@(ViewBag.FilterResponsibleDepartment == d)">@d</option>
+                    }
+                </select>
+            </div>
+            <div class="col-md-2">
+                <input type="text" name="responsible" class="form-control form-control-sm"
+                       placeholder="担当者名で検索" value="@ViewBag.FilterResponsible" />
+            </div>
+            <div class="col-md-2">
+                <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
+                <a asp-action="Index" class="btn btn-outline-secondary btn-sm ms-1">クリア</a>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- Kanban Board -->
+@if (!planned.Any() && !inProgress.Any() && !completed.Any())
+{
+    <div class="card border-0 shadow-sm">
+        <div class="card-body text-center py-5">
+            <i class="bi bi-shield-check display-4 text-success d-block mb-3"></i>
+            <h5>再発防止策がまだ登録されていません</h5>
+            <p class="text-muted mb-3">インシデント詳細ページから再発防止策を追加できます。</p>
+            <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
+                <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧へ
+            </a>
+        </div>
+    </div>
+}
+else
+{
+<div class="row g-3">
+    <!-- 計画中 -->
+    <div class="col-xl-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-warning bg-opacity-10 border-warning border-start border-4">
+                <h6 class="mb-0"><i class="bi bi-hourglass me-2 text-warning"></i>計画中
+                    <span class="badge bg-warning text-dark ms-2">@planned.Count</span>
+                    @if (planned.Count(m => m.IsOverdue) > 0)
+                    {
+                        <span class="badge bg-danger ms-1">@planned.Count(m => m.IsOverdue) 件超過</span>
+                    }
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                @foreach (var m in planned)
+                {
+                    <partial name="_MeasureCard" model="m" />
+                }
+                @if (!planned.Any())
+                {
+                    <div class="text-center text-muted small py-3">なし</div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- 進行中 -->
+    <div class="col-xl-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-primary bg-opacity-10 border-primary border-start border-4">
+                <h6 class="mb-0"><i class="bi bi-arrow-repeat me-2 text-primary"></i>進行中
+                    <span class="badge bg-primary ms-2">@inProgress.Count</span>
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                @foreach (var m in inProgress)
+                {
+                    <partial name="_MeasureCard" model="m" />
+                }
+                @if (!inProgress.Any())
+                {
+                    <div class="text-center text-muted small py-3">なし</div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- 完了 -->
+    <div class="col-xl-4">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-success bg-opacity-10 border-success border-start border-4">
+                <h6 class="mb-0"><i class="bi bi-check-circle me-2 text-success"></i>完了
+                    <span class="badge bg-success ms-2">@completed.Count</span>
+                </h6>
+            </div>
+            <div class="card-body p-2">
+                @foreach (var m in completed.Take(10))
+                {
+                    <partial name="_MeasureCard" model="m" />
+                }
+                @if (!completed.Any())
+                {
+                    <div class="text-center text-muted small py-3">なし</div>
+                }
+                @if (completed.Count > 10)
+                {
+                    <div class="text-center small text-muted py-1">...他 @(completed.Count - 10) 件</div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+}

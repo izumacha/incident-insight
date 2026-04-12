@@ -1,0 +1,334 @@
+@model IncidentInsight.Web.Models.ViewModels.DashboardViewModel
+@using System.Text.Json
+@{
+    ViewData["Title"] = "ダッシュボード";
+    var monthlyLabels = JsonSerializer.Serialize(Model.MonthlyCounts.Select(m => m.Label));
+    var monthlyCounts = JsonSerializer.Serialize(Model.MonthlyCounts.Select(m => m.Count));
+}
+
+<div class="d-flex justify-content-between align-items-center mb-4">
+    <h2 class="mb-0"><i class="bi bi-speedometer2 me-2 text-primary"></i>ダッシュボード</h2>
+    <div class="d-flex align-items-center gap-2">
+        <div class="btn-group btn-group-sm" role="group" aria-label="期間選択">
+            <a class="btn @(Model.Period == "week" ? "btn-primary" : "btn-outline-secondary")" href="?period=week">週</a>
+            <a class="btn @(Model.Period == "month" ? "btn-primary" : "btn-outline-secondary")" href="?period=month">月</a>
+            <a class="btn @(Model.Period == "quarter" ? "btn-primary" : "btn-outline-secondary")" href="?period=quarter">四半期</a>
+            <a class="btn @(Model.Period == "year" ? "btn-primary" : "btn-outline-secondary")" href="?period=year">1年</a>
+        </div>
+        <a asp-controller="Incidents" asp-action="Create" class="btn btn-primary btn-sm">
+            <i class="bi bi-plus-circle me-1"></i>新規登録
+        </a>
+    </div>
+</div>
+
+<!-- KPI Cards -->
+<div class="row g-3 mb-4">
+    <div class="col-xl-3 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0 bg-secondary bg-opacity-10 rounded-3 p-3 me-3">
+                        <i class="bi bi-clipboard2-pulse fs-3 text-secondary"></i>
+                    </div>
+                    <div>
+                        <div class="text-muted small">@(Model.Period == "week" ? "週間" : Model.Period == "month" ? "月間" : Model.Period == "quarter" ? "四半期" : "年間")インシデント数</div>
+                        <div class="fs-2 fw-bold">@Model.TotalIncidents <span class="fs-6 text-muted">件</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0 bg-primary bg-opacity-10 rounded-3 p-3 me-3">
+                        <i class="bi bi-calendar3 fs-3 text-primary"></i>
+                    </div>
+                    <div>
+                        <div class="text-muted small">今月の発生件数</div>
+                        <div class="fs-2 fw-bold">@Model.ThisMonthIncidents <span class="fs-6 text-muted">件</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0 bg-warning bg-opacity-10 rounded-3 p-3 me-3">
+                        <i class="bi bi-hourglass-split fs-3 text-warning"></i>
+                    </div>
+                    <div>
+                        <div class="text-muted small">未完了対策</div>
+                        <div class="fs-2 fw-bold">@Model.OpenMeasures <span class="fs-6 text-muted">件</span></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-3 col-md-6">
+        <div class="card border-0 shadow-sm h-100 @(Model.OverdueMeasures > 0 ? "border-danger border" : "")">
+            <div class="card-body">
+                <div class="d-flex align-items-center">
+                    <div class="flex-shrink-0 bg-danger bg-opacity-10 rounded-3 p-3 me-3">
+                        <i class="bi bi-alarm fs-3 text-danger"></i>
+                    </div>
+                    <div>
+                        <div class="text-muted small">期限超過対策</div>
+                        <div class="fs-2 fw-bold @(Model.OverdueMeasures > 0 ? "text-danger" : "")">
+                            @Model.OverdueMeasures <span class="fs-6 text-muted">件</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Alert: Overdue Measures -->
+@if (Model.OverdueMeasures > 0)
+{
+    <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+        <h6 class="alert-heading"><i class="bi bi-exclamation-triangle-fill me-2"></i>期限超過の対策が @Model.OverdueMeasures 件あります</h6>
+        <ul class="mb-0 mt-2">
+            @foreach (var m in Model.OverdueMeasureList.Take(5))
+            {
+                var daysOverdue = (int)(DateTime.Today - m.DueDate).TotalDays;
+                <li>
+                    <strong>@m.Incident?.Department</strong> —
+                    @(m.Description.Length > 40 ? m.Description[..40] + "…" : m.Description)
+                    <span class="badge bg-danger ms-1">@daysOverdue 日超過</span>
+                    担当: @m.ResponsiblePerson
+                    <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id"
+                          method="post" class="d-inline ms-2">
+                        @Html.AntiForgeryToken()
+                        <button type="submit" class="btn btn-sm btn-outline-success py-0">完了報告</button>
+                    </form>
+                </li>
+            }
+        </ul>
+        <a asp-controller="PreventiveMeasures" asp-action="Index" asp-route-status="Planned" class="alert-link mt-2 d-block">
+            全件確認 <i class="bi bi-arrow-right"></i>
+        </a>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+<!-- Alert: Recurrence Warnings -->
+@if (Model.RecurrenceAlerts.Any())
+{
+    <div class="alert alert-warning alert-dismissible fade show shadow-sm" role="alert">
+        <h6 class="alert-heading"><i class="bi bi-arrow-repeat me-2"></i>再発パターンが検出されました</h6>
+        <p class="small mb-2">過去90日間に同じ部署・種別・原因で複数のインシデントが発生しています。根本原因対策の見直しが必要です。</p>
+        <ul class="mb-0">
+            @foreach (var alert in Model.RecurrenceAlerts)
+            {
+                <li>
+                    <strong>@alert.PatternDescription</strong> —
+                    @alert.SimilarIncidents.Count 件の類似インシデント
+                    <a asp-controller="Incidents" asp-action="Details" asp-route-id="@alert.CurrentIncident.Id"
+                       class="ms-2 small">詳細 <i class="bi bi-arrow-right"></i></a>
+                </li>
+            }
+        </ul>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+@if (Model.FailedMeasures > 0)
+{
+    <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
+        <i class="bi bi-x-circle-fill me-2"></i>
+        有効性評価で<strong>再発が確認された対策が @Model.FailedMeasures 件</strong>あります。
+        追加の根本原因分析と対策強化が必要です。
+        <a asp-controller="Analytics" asp-action="Index" class="alert-link ms-2">分析ページで確認</a>
+        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    </div>
+}
+
+<!-- Charts + Recent Incidents -->
+<div class="row g-3 mb-4">
+    <div class="col-xl-8">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0 pb-0">
+                <h6 class="mb-0"><i class="bi bi-graph-up me-2 text-primary"></i>月別インシデント発生推移（過去12ヶ月）</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="trendChart" height="100"></canvas>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-4">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white border-0 pb-0">
+                <h6 class="mb-0"><i class="bi bi-clock-history me-2 text-secondary"></i>最近のインシデント</h6>
+            </div>
+            <div class="card-body p-0">
+                @if (!Model.RecentIncidents.Any())
+                {
+                    <div class="text-center py-4 px-3">
+                        <i class="bi bi-clipboard2-plus display-5 text-primary d-block mb-2"></i>
+                        <p class="text-muted small mb-2">インシデントがまだ登録されていません</p>
+                        <a asp-controller="Incidents" asp-action="Create" class="btn btn-primary btn-sm">
+                            <i class="bi bi-plus-circle me-1"></i>最初のインシデントを登録
+                        </a>
+                    </div>
+                }
+                else
+                {
+                <ul class="list-group list-group-flush">
+                    @foreach (var incident in Model.RecentIncidents)
+                    {
+                        <li class="list-group-item px-3 py-2 @(incident.PreventiveMeasures.Any(m => m.IsOverdue) ? "list-group-item-danger" : "")">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <span class="badge bg-@incident.SeverityColor me-1">@incident.Severity</span>
+                                    <a asp-controller="Incidents" asp-action="Index"
+                                       asp-route-department="@incident.Department"
+                                       class="small fw-medium text-decoration-none">@incident.Department</a>
+                                    <div class="text-muted small">@incident.IncidentType · @incident.OccurredAt.ToString("M/d")</div>
+                                </div>
+                                <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
+                                   class="btn btn-sm btn-outline-secondary py-0">詳細</a>
+                            </div>
+                        </li>
+                    }
+                </ul>
+                }
+                <div class="p-3">
+                    <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary btn-sm w-100">
+                        全件表示 <i class="bi bi-arrow-right"></i>
+                    </a>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Completion Rate -->
+<div class="row g-3">
+    <div class="col-xl-6">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0 pb-0">
+                <h6 class="mb-0"><i class="bi bi-check2-all me-2 text-success"></i>再発防止策 完了率</h6>
+            </div>
+            <div class="card-body">
+                <div class="d-flex justify-content-between mb-1">
+                    <span>完了率</span>
+                    <strong>@Model.CompletionRate%</strong>
+                </div>
+                <div class="progress mb-3" style="height: 20px;">
+                    <div class="progress-bar bg-success" role="progressbar"
+                         style="width: @Model.CompletionRate%"
+                         aria-valuenow="@Model.CompletionRate" aria-valuemin="0" aria-valuemax="100">
+                        @Model.CompletionRate%
+                    </div>
+                </div>
+                <div class="row text-center">
+                    <div class="col-4">
+                        <div class="text-success fw-bold fs-5">@Model.CompletedMeasures</div>
+                        <div class="text-muted small">完了</div>
+                    </div>
+                    <div class="col-4">
+                        <div class="text-warning fw-bold fs-5">@Model.OpenMeasures</div>
+                        <div class="text-muted small">未完了</div>
+                    </div>
+                    <div class="col-4">
+                        <div class="text-danger fw-bold fs-5">@Model.OverdueMeasures</div>
+                        <div class="text-muted small">期限超過</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    <div class="col-xl-6">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white border-0 pb-0">
+                <h6 class="mb-0"><i class="bi bi-alarm me-2 text-danger"></i>期限超過の対策一覧</h6>
+            </div>
+            <div class="card-body p-0">
+                @if (!Model.OverdueMeasureList.Any())
+                {
+                    <div class="p-3 text-muted text-center">
+                        <i class="bi bi-check-circle text-success fs-4 d-block mb-1"></i>
+                        期限超過の対策はありません
+                    </div>
+                }
+                else
+                {
+                    <div class="table-responsive">
+                        <table class="table table-sm mb-0">
+                            <tbody>
+                                @foreach (var m in Model.OverdueMeasureList.Take(5))
+                                {
+                                    var days = (int)(DateTime.Today - m.DueDate).TotalDays;
+                                    <tr>
+                                        <td class="ps-3">
+                                            <div class="small fw-medium">@(m.Description.Length > 35 ? m.Description[..35] + "…" : m.Description)</div>
+                                            <div class="text-muted x-small">@m.ResponsiblePerson · @m.ResponsibleDepartment</div>
+                                        </td>
+                                        <td class="text-end pe-3 align-middle">
+                                            <span class="badge bg-danger">@days 日超過</span>
+                                        </td>
+                                    </tr>
+                                }
+                            </tbody>
+                        </table>
+                    </div>
+                    <div class="p-2 text-end">
+                        <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-sm btn-outline-danger">
+                            全件管理 <i class="bi bi-arrow-right"></i>
+                        </a>
+                    </div>
+                }
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+    <script>
+        const labels = @Html.Raw(monthlyLabels);
+        const counts = @Html.Raw(monthlyCounts);
+
+        // Build date ranges from labels for click-through navigation
+        const monthlyData = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(Model.MonthlyCounts.Select(m => new { m.Label, m.Count })));
+
+        new Chart(document.getElementById('trendChart'), {
+            type: 'line',
+            data: {
+                labels: labels,
+                datasets: [{
+                    label: 'インシデント件数',
+                    data: counts,
+                    borderColor: '#0d6efd',
+                    backgroundColor: 'rgba(13,110,253,0.08)',
+                    tension: 0.3,
+                    fill: true,
+                    pointRadius: 5,
+                    pointBackgroundColor: '#0d6efd'
+                }]
+            },
+            options: {
+                responsive: true,
+                plugins: { legend: { display: false } },
+                scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
+                onClick: (evt, elements) => {
+                    if (!elements.length) return;
+                    const idx = elements[0].index;
+                    const label = monthlyData[idx]?.Label ?? '';
+                    // Parse label: "yyyy年M月" or "M/d" (week mode)
+                    const mMatch = label.match(/(\d{4})年(\d{1,2})月/);
+                    if (mMatch) {
+                        const y = mMatch[1], m = mMatch[2].padStart(2, '0');
+                        const nextM = (parseInt(m) % 12 + 1).toString().padStart(2, '0');
+                        const nextY = parseInt(m) === 12 ? parseInt(y) + 1 : y;
+                        window.location.href = `/Incidents?dateFrom=${y}-${m}-01&dateTo=${nextY}-${nextM}-01`;
+                    }
+                }
+            }
+        });
+    </script>
+}

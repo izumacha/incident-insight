@@ -1,0 +1,319 @@
+@{
+    ViewData["Title"] = "分析・集計";
+}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-bar-chart-line me-2 text-primary"></i>分析・集計</h2>
+</div>
+
+<!-- Insight Panel -->
+<div id="insightPanel" class="alert alert-light border shadow-sm mb-4" style="display:none!important">
+</div>
+
+<!-- Charts Grid -->
+<div class="row g-3 mb-4">
+    <!-- Monthly Trend (full width) -->
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white d-flex justify-content-between align-items-center">
+                <h6 class="mb-0"><i class="bi bi-graph-up me-2 text-primary"></i>月別インシデント発生推移（過去12ヶ月）</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="trendChart" height="70"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Cause Category -->
+    <div class="col-xl-4 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-pie-chart me-2 text-info"></i>原因分類別</h6>
+            </div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <canvas id="causeChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- By Department -->
+    <div class="col-xl-4 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-building me-2 text-secondary"></i>部署別インシデント数</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="deptChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- By Severity -->
+    <div class="col-xl-4 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-exclamation-triangle me-2 text-warning"></i>重症度別分布</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="severityChart" height="200"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Measure Status -->
+    <div class="col-xl-6 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-check2-square me-2 text-success"></i>再発防止策 実施状況</h6>
+            </div>
+            <div class="card-body d-flex align-items-center justify-content-center">
+                <canvas id="measureStatusChart" height="180"></canvas>
+            </div>
+        </div>
+    </div>
+
+    <!-- Effectiveness Rating (most important for evaluation) -->
+    <div class="col-xl-6 col-md-6">
+        <div class="card border-0 shadow-sm h-100">
+            <div class="card-header bg-white">
+                <h6 class="mb-0">
+                    <i class="bi bi-star me-2 text-warning"></i>再発防止策 有効性評価分布
+                    <span class="badge bg-warning text-dark ms-2 small">重要指標</span>
+                </h6>
+            </div>
+            <div class="card-body">
+                <canvas id="effectivenessChart" height="180"></canvas>
+                <div id="recurrenceStats" class="mt-2 text-center small text-muted"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- By Incident Type -->
+    <div class="col-12">
+        <div class="card border-0 shadow-sm">
+            <div class="card-header bg-white">
+                <h6 class="mb-0"><i class="bi bi-tags me-2 text-secondary"></i>インシデント種別分布</h6>
+            </div>
+            <div class="card-body">
+                <canvas id="typeChart" height="60"></canvas>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Insights Summary -->
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-white">
+        <h6 class="mb-0"><i class="bi bi-clipboard-data me-2 text-primary"></i>分析サマリー</h6>
+    </div>
+    <div class="card-body">
+        <div id="summaryContent" class="row g-3">
+            <div class="col text-center text-muted">
+                <div class="spinner-border spinner-border-sm" role="status"></div>
+                <div>データ読み込み中...</div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@section Scripts {
+<script>
+const COLORS = ['#0d6efd','#6610f2','#fd7e14','#198754','#dc3545','#0dcaf0','#ffc107','#6c757d','#d63384'];
+
+async function loadChart(url, callback) {
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        callback(data);
+    } catch(e) { console.error('Chart load error:', url, e); }
+}
+
+// Monthly Trend
+loadChart('/Analytics/MonthlyTrend', (d) => {
+    new Chart(document.getElementById('trendChart'), {
+        type: 'line',
+        data: {
+            labels: d.labels,
+            datasets: [{
+                label: 'インシデント件数',
+                data: d.data,
+                borderColor: '#0d6efd',
+                backgroundColor: 'rgba(13,110,253,0.08)',
+                tension: 0.3, fill: true,
+                pointRadius: 5, pointBackgroundColor: '#0d6efd'
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+});
+
+// Cause Category Doughnut
+loadChart('/Analytics/ByCause', (d) => {
+    new Chart(document.getElementById('causeChart'), {
+        type: 'doughnut',
+        data: {
+            labels: d.labels,
+            datasets: [{ data: d.data, backgroundColor: COLORS }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } }
+        }
+    });
+});
+
+// By Department (horizontal bar)
+loadChart('/Analytics/ByDepartment', (d) => {
+    new Chart(document.getElementById('deptChart'), {
+        type: 'bar',
+        data: {
+            labels: d.labels,
+            datasets: [{
+                label: '件数',
+                data: d.data,
+                backgroundColor: '#0d6efd'
+            }]
+        },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+    // Store dept for later use in summary panel
+    window._topDept = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
+});
+
+// By Severity
+loadChart('/Analytics/BySeverity', (d) => {
+    const severityColors = ['#6c757d','#0dcaf0','#0d6efd','#ffc107','#fd7e14','#dc3545','#212529'];
+    new Chart(document.getElementById('severityChart'), {
+        type: 'bar',
+        data: {
+            labels: d.labels,
+            datasets: [{
+                label: '件数',
+                data: d.data,
+                backgroundColor: severityColors
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+});
+
+// Measure Status Doughnut
+loadChart('/Analytics/MeasureStatus', (d) => {
+    new Chart(document.getElementById('measureStatusChart'), {
+        type: 'doughnut',
+        data: {
+            labels: d.labels,
+            datasets: [{ data: d.data, backgroundColor: d.colors }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { position: 'bottom' } }
+        }
+    });
+
+    // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
+    const total = d.data.reduce((a, b) => a + b, 0);
+    const completed = d.data[3]; // index 3 = 完了
+    const rate = total > 0 ? Math.round(completed / total * 100) : 0;
+    window._completionRate = rate + '%';
+    window._overdueMeasures = d.data[2] + '件'; // index 2 = 期限超過
+    const crEl = document.getElementById('completionRate');
+    if (crEl) crEl.textContent = window._completionRate;
+    const omEl = document.getElementById('overdueMeasures');
+    if (omEl) omEl.textContent = window._overdueMeasures;
+});
+
+// Effectiveness Rating
+loadChart('/Analytics/EffectivenessRating', (d) => {
+    new Chart(document.getElementById('effectivenessChart'), {
+        type: 'bar',
+        data: {
+            labels: d.labels,
+            datasets: [{
+                label: '対策数',
+                data: d.data,
+                backgroundColor: ['#dc3545','#fd7e14','#ffc107','#198754','#0d6efd']
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+
+    // Recurrence stats
+    const el = document.getElementById('recurrenceStats');
+    el.innerHTML = `再発なし（対策有効）: <strong class="text-success">${d.recurrenceStats.prevented}件</strong> &nbsp;|&nbsp; 再発あり（要追加対策）: <strong class="text-danger">${d.recurrenceStats.recurred}件</strong>`;
+
+    // Store value; #failedMeasures is injected later by ByIncidentType
+    window._failedMeasures = d.recurrenceStats.recurred + '件';
+    const fmEl = document.getElementById('failedMeasures');
+    if (fmEl) fmEl.textContent = window._failedMeasures;
+});
+
+// By Incident Type
+loadChart('/Analytics/ByIncidentType', (d) => {
+    new Chart(document.getElementById('typeChart'), {
+        type: 'bar',
+        data: {
+            labels: d.labels,
+            datasets: [{
+                label: '件数',
+                data: d.data,
+                backgroundColor: COLORS
+            }]
+        },
+        options: {
+            responsive: true,
+            plugins: { legend: { display: false } },
+            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
+        }
+    });
+
+    const topType = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
+    const topDept = window._topDept || '-';
+
+    // Reveal summary panel (injected once all data is ready)
+    document.getElementById('summaryContent').innerHTML = `
+        <div class="col-md-2 text-center border-end">
+            <div class="text-muted small">最多発生部署</div>
+            <div class="fw-bold">${topDept}</div>
+        </div>
+        <div class="col-md-2 text-center border-end">
+            <div class="text-muted small">最多インシデント種別</div>
+            <div class="fw-bold">${topType}</div>
+        </div>
+        <div class="col-md-2 text-center border-end">
+            <div class="text-muted small">対策完了率</div>
+            <div class="fw-bold fs-5 text-success" id="completionRate">-</div>
+        </div>
+        <div class="col-md-2 text-center border-end">
+            <div class="text-muted small text-danger">再発確認対策数</div>
+            <div class="fw-bold fs-5 text-danger" id="failedMeasures">-</div>
+        </div>
+        <div class="col-md-2 text-center">
+            <div class="text-muted small">期限超過対策数</div>
+            <div class="fw-bold fs-5 text-warning" id="overdueMeasures">-</div>
+        </div>
+    `;
+    // Apply values already computed by other callbacks (async ordering is non-deterministic)
+    if (window._completionRate) document.getElementById('completionRate').textContent = window._completionRate;
+    if (window._failedMeasures) document.getElementById('failedMeasures').textContent = window._failedMeasures;
+    if (window._overdueMeasures) document.getElementById('overdueMeasures').textContent = window._overdueMeasures;
+});
+</script>
+}
