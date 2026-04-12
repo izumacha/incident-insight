@@ -2,6 +2,9 @@ namespace IncidentInsight.Web.Models.ViewModels;
 
 public class DashboardViewModel
 {
+    // Period filter ("week" | "month" | "quarter" | "year")
+    public string Period { get; set; } = "year";
+
     // KPI
     public int TotalIncidents { get; set; }
     public int ThisMonthIncidents { get; set; }

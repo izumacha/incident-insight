@@ -15,11 +15,21 @@ public class HomeController : Controller
         _db = db;
     }
 
-    public async Task<IActionResult> Index()
+    public async Task<IActionResult> Index(string? period)
     {
+        period ??= "year";
         var today = DateTime.Today;
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
         var ninetyDaysAgo = today.AddDays(-90);
+
+        // Period window for KPIs and trend chart
+        var periodStart = period switch
+        {
+            "week"    => today.AddDays(-7),
+            "month"   => today.AddMonths(-1),
+            "quarter" => today.AddMonths(-3),
+            _         => today.AddYears(-1)
+        };
 
         var allIncidents = await _db.Incidents
             .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory)
@@ -27,9 +37,11 @@ public class HomeController : Controller
             .OrderByDescending(i => i.OccurredAt)
             .ToListAsync();
 
+        var periodIncidents = allIncidents.Where(i => i.OccurredAt >= periodStart).ToList();
+
         var allMeasures = await _db.PreventiveMeasures.ToListAsync();
 
-        var totalIncidents = allIncidents.Count;
+        var totalIncidents = periodIncidents.Count;
         var thisMonthIncidents = allIncidents.Count(i => i.OccurredAt >= thisMonthStart);
         var openMeasures = allMeasures.Count(m => m.Status != "Completed");
         var overdueMeasures = allMeasures.Count(m => m.IsOverdue);
@@ -44,21 +56,31 @@ public class HomeController : Controller
             .OrderBy(m => m.DueDate)
             .ToListAsync();
 
-        // Monthly counts (last 12 months)
+        // Monthly / weekly counts for trend chart
         var monthlyCounts = new List<MonthlyCount>();
-        for (int i = 11; i >= 0; i--)
+        if (period == "week")
         {
-            var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
-            var monthEnd = monthStart.AddMonths(1);
-            var count = allIncidents.Count(inc => inc.OccurredAt >= monthStart && inc.OccurredAt < monthEnd);
-            monthlyCounts.Add(new MonthlyCount
+            // Daily for last 7 days
+            for (int i = 6; i >= 0; i--)
             {
-                Label = monthStart.ToString("yyyy年M月"),
-                Count = count
-            });
+                var day = today.AddDays(-i);
+                var count = allIncidents.Count(inc => inc.OccurredAt.Date == day);
+                monthlyCounts.Add(new MonthlyCount { Label = day.ToString("M/d"), Count = count });
+            }
+        }
+        else
+        {
+            int months = period switch { "month" => 4, "quarter" => 6, _ => 12 };
+            for (int i = months - 1; i >= 0; i--)
+            {
+                var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
+                var monthEnd = monthStart.AddMonths(1);
+                var count = allIncidents.Count(inc => inc.OccurredAt >= monthStart && inc.OccurredAt < monthEnd);
+                monthlyCounts.Add(new MonthlyCount { Label = monthStart.ToString("yyyy年M月"), Count = count });
+            }
         }
 
-        // Recurrence detection
+        // Recurrence detection (always based on 90-day window)
         var recentList = allIncidents.Where(i => i.OccurredAt >= ninetyDaysAgo).ToList();
         var recurrenceAlerts = new List<RecurrenceAlert>();
         var processed = new HashSet<int>();
@@ -89,6 +111,7 @@ public class HomeController : Controller
 
         var vm = new DashboardViewModel
         {
+            Period = period,
             TotalIncidents = totalIncidents,
             ThisMonthIncidents = thisMonthIncidents,
             OpenMeasures = openMeasures,

@@ -64,6 +64,12 @@
                         <option value="3">低</option>
                     </select>
                 </div>
+                <div class="col-12">
+                    <label asp-for="AnalysisNote" class="form-label fw-medium"></label>
+                    <textarea asp-for="AnalysisNote" class="form-control" rows="2"
+                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入（任意）"></textarea>
+                    <span asp-validation-for="AnalysisNote" class="text-danger small"></span>
+                </div>
                 <div class="col-12 d-flex justify-content-end gap-2">
                     <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-outline-secondary">キャンセル</a>
                     <button type="submit" class="btn btn-primary">

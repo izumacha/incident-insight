@@ -15,6 +15,15 @@
         <form asp-action="Create" method="post" id="createForm" onsubmit="reindexMeasures()">
             @Html.AntiForgeryToken()
 
+            @if (!ViewData.ModelState.IsValid)
+            {
+                <div class="alert alert-danger mb-4" id="errorSummary">
+                    <i class="bi bi-exclamation-triangle-fill me-2"></i>
+                    <strong>入力内容を確認してください</strong>
+                    <div asp-validation-summary="All" class="mt-1 mb-0 small"></div>
+                </div>
+            }
+
             <!-- Wizard Tabs -->
             <ul class="nav nav-tabs mb-4" id="wizardTabs" role="tablist">
                 <li class="nav-item">
@@ -39,12 +48,12 @@
                 <div class="tab-pane fade show active" id="tab1">
                     <div class="row g-3">
                         <div class="col-md-4">
-                            <label asp-for="OccurredAt" class="form-label fw-medium"></label>
+                            <label asp-for="OccurredAt" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <input asp-for="OccurredAt" type="datetime-local" class="form-control" />
                             <span asp-validation-for="OccurredAt" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
-                            <label asp-for="Department" class="form-label fw-medium"></label>
+                            <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <select asp-for="Department" class="form-select">
                                 <option value="">-- 選択してください --</option>
                                 @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
@@ -55,7 +64,7 @@
                             <span asp-validation-for="Department" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
-                            <label asp-for="IncidentType" class="form-label fw-medium"></label>
+                            <label asp-for="IncidentType" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <select asp-for="IncidentType" class="form-select">
                                 <option value="">-- 選択してください --</option>
                                 @foreach (var t in IncidentInsight.Web.Models.Incident.IncidentTypes)
@@ -75,20 +84,21 @@
                             </select>
                         </div>
                         <div class="col-md-4">
-                            <label asp-for="ReporterName" class="form-label fw-medium"></label>
-                            <input asp-for="ReporterName" class="form-control" placeholder="氏名" />
+                            <label asp-for="ReporterName" class="form-label fw-medium"></label> <span class="text-danger">*</span>
+                            <input asp-for="ReporterName" class="form-control" placeholder="氏名（例：山田 花子）" />
                             <span asp-validation-for="ReporterName" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
-                            <label asp-for="Description" class="form-label fw-medium"></label>
+                            <label asp-for="Description" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <textarea asp-for="Description" class="form-control" rows="4"
-                                      placeholder="いつ、どこで、誰が、何をしたか、どのような状況だったかを具体的に記述してください"></textarea>
+                                      placeholder="いつ・どこで・誰が・何を・どのようにしたかを具体的に記述（例：夜勤帯にAさんの薬をBさんに投与した）"></textarea>
                             <span asp-validation-for="Description" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label asp-for="ImmediateActions" class="form-label fw-medium"></label>
                             <textarea asp-for="ImmediateActions" class="form-control" rows="3"
-                                      placeholder="発生直後に行った応急処置・報告・対応内容"></textarea>
+                                      placeholder="発生直後の応急処置・報告先・患者への対応内容（任意）"></textarea>
+                            <div class="form-text">任意項目です。発生直後に取った対応があれば記入してください。</div>
                         </div>
                         <div class="col-12 d-flex justify-content-end">
                             <button type="button" class="btn btn-primary" onclick="goToTab('tab2')">
@@ -132,12 +142,12 @@
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
                             <label asp-for="CauseAnalysis.Why3" class="form-label fw-medium"></label>
-                            <textarea asp-for="CauseAnalysis.Why3" class="form-control" rows="2"></textarea>
+                            <textarea asp-for="CauseAnalysis.Why3" class="form-control" rows="2" placeholder="なぜ2が起きた原因"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
                             <label asp-for="CauseAnalysis.Why4" class="form-label fw-medium"></label>
-                            <textarea asp-for="CauseAnalysis.Why4" class="form-control" rows="2"></textarea>
+                            <textarea asp-for="CauseAnalysis.Why4" class="form-control" rows="2" placeholder="なぜ3が起きた原因"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
@@ -208,6 +218,11 @@
                                         <option value="3">低</option>
                                     </select>
                                 </div>
+                                <div class="col-12">
+                                    <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                                    <textarea name="Measures[0].AnalysisNote" class="form-control form-control-sm" rows="1"
+                                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
+                                </div>
                             </div>
                         </div>
                     </div>
@@ -237,6 +252,16 @@ function goToTab(tabId) {
     document.getElementById(tabId + '-tab').click();
     document.getElementById(tabId + '-tab').classList.add('active');
 }
+
+// On page load: if validation errors exist, jump to the tab containing the first error field
+document.addEventListener('DOMContentLoaded', function() {
+    const errorSummary = document.getElementById('errorSummary');
+    if (!errorSummary) return;
+    const firstInvalid = document.querySelector('.field-validation-error, [class*="input-validation-error"]');
+    if (!firstInvalid) return;
+    const tab = firstInvalid.closest('.tab-pane');
+    if (tab) goToTab(tab.id);
+});
 
 // Reindex measure rows before submit to close any gaps from deletions
 function reindexMeasures() {
@@ -295,6 +320,11 @@ function addMeasureRow() {
                     <option value="2" selected>中</option>
                     <option value="3">低</option>
                 </select>
+            </div>
+            <div class="col-12">
+                <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                <textarea name="Measures[${idx}].AnalysisNote" class="form-control form-control-sm" rows="1"
+                          placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
             </div>
         </div>`;
     container.appendChild(div);

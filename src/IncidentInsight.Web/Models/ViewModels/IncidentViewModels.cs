@@ -18,6 +18,10 @@ public class IncidentListViewModel
     public string? Severity { get; set; }
     public DateTime? DateFrom { get; set; }
     public DateTime? DateTo { get; set; }
+    public int? CauseCategoryId { get; set; }
+    public string? SortBy { get; set; }   // "latest" | "severity" | "overdue"
+
+    public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
 }
 
 public class IncidentDetailViewModel
@@ -151,6 +155,10 @@ public class MeasureFormViewModel
 
     [Display(Name = "優先度")]
     public int Priority { get; set; } = 2;
+
+    [MaxLength(500)]
+    [Display(Name = "立案根拠・背景メモ")]
+    public string? AnalysisNote { get; set; }
 }
 
 public class CompleteViewModel

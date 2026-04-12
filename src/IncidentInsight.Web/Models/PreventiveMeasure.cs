@@ -38,6 +38,10 @@ public class PreventiveMeasure
     [Display(Name = "実施期限")]
     public DateTime DueDate { get; set; } = DateTime.Now.AddDays(30);
 
+    [MaxLength(500)]
+    [Display(Name = "立案根拠・背景メモ")]
+    public string? AnalysisNote { get; set; }
+
     // Status lifecycle: Planned → InProgress → Completed
     [MaxLength(20)]
     [Display(Name = "ステータス")]

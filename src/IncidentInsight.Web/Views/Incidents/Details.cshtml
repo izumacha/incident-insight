@@ -90,7 +90,14 @@
     <div class="card-body">
         @if (!incident.CauseAnalyses.Any())
         {
-            <p class="text-muted">まだ原因分析が登録されていません。</p>
+            <div class="alert alert-warning d-flex align-items-center" role="alert">
+                <i class="bi bi-exclamation-triangle-fill me-3 fs-4"></i>
+                <div>
+                    <strong>なぜなぜ分析が未登録です。</strong><br />
+                    <span class="small">根本原因を特定しないと表面的な対策に留まり、再発リスクが高まります。
+                    下の「なぜなぜ分析を追加」ボタンから Why1〜Why5 を記入してください。</span>
+                </div>
+            </div>
         }
         else
         {
@@ -105,13 +112,19 @@
                                 <small class="text-muted">分析者: @analysis.AnalystName</small>
                             }
                         </div>
-                        <form asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
-                            @Html.AntiForgeryToken()
-                            <button type="submit" class="btn btn-outline-danger btn-sm py-0"
-                                    onclick="return confirm('この原因分析を削除しますか？')">
-                                <i class="bi bi-trash"></i>
-                            </button>
-                        </form>
+                        <div class="d-flex gap-1">
+                            <a asp-action="EditCauseAnalysis" asp-route-id="@analysis.Id"
+                               class="btn btn-outline-secondary btn-sm py-0">
+                                <i class="bi bi-pencil"></i> 編集
+                            </a>
+                            <form asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
+                                @Html.AntiForgeryToken()
+                                <button type="submit" class="btn btn-outline-danger btn-sm py-0"
+                                        onclick="return confirm('この原因分析を削除しますか？')">
+                                    <i class="bi bi-trash"></i>
+                                </button>
+                            </form>
+                        </div>
                     </div>
                     <!-- 5 Whys vertical chain -->
                     <div class="why-chain">

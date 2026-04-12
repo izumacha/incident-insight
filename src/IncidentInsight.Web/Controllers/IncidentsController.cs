@@ -19,10 +19,12 @@ public class IncidentsController : Controller
 
     // GET /Incidents
     public async Task<IActionResult> Index(string? search, string? department,
-        string? incidentType, string? severity, DateTime? dateFrom, DateTime? dateTo, int page = 1)
+        string? incidentType, string? severity, DateTime? dateFrom, DateTime? dateTo,
+        int? causeCategoryId, string? sortBy, int page = 1)
     {
         var query = _db.Incidents
             .Include(i => i.PreventiveMeasures)
+            .Include(i => i.CauseAnalyses)
             .AsQueryable();
 
         if (!string.IsNullOrWhiteSpace(search))
@@ -37,12 +39,30 @@ public class IncidentsController : Controller
             query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue)
             query = query.Where(i => i.OccurredAt < dateTo.Value.AddDays(1));
+        if (causeCategoryId.HasValue)
+            query = query.Where(i => i.CauseAnalyses.Any(ca =>
+                ca.CauseCategoryId == causeCategoryId.Value ||
+                ca.CauseCategory.ParentId == causeCategoryId.Value));
+
+        // Sort
+        query = sortBy switch
+        {
+            "severity" => query.OrderByDescending(i => i.Severity),
+            "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
+                              .Any(m => m.Status != "Completed" && m.DueDate < DateTime.Today)),
+            _          => query.OrderByDescending(i => i.OccurredAt)
+        };
 
         var total = await query.CountAsync();
         var incidents = await query
-            .OrderByDescending(i => i.OccurredAt)
             .Skip((page - 1) * PageSize)
             .Take(PageSize)
+            .ToListAsync();
+
+        // Build cause category options (parent categories only)
+        var parentCats = await _db.CauseCategories
+            .Where(c => c.ParentId == null)
+            .OrderBy(c => c.DisplayOrder)
             .ToListAsync();
 
         var vm = new IncidentListViewModel
@@ -56,7 +76,12 @@ public class IncidentsController : Controller
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,
-            DateTo = dateTo
+            DateTo = dateTo,
+            CauseCategoryId = causeCategoryId,
+            SortBy = sortBy,
+            CauseCategoryOptions = parentCats
+                .Select(c => new SelectListItem(c.Name, c.Id.ToString()))
+                .ToList()
         };
 
         return View(vm);
@@ -170,6 +195,7 @@ public class IncidentsController : Controller
                 ResponsibleDepartment = m.ResponsibleDepartment,
                 DueDate = m.DueDate,
                 Priority = m.Priority,
+                AnalysisNote = m.AnalysisNote,
                 Status = "Planned"
             });
         }
@@ -251,6 +277,60 @@ public class IncidentsController : Controller
         return RedirectToAction(nameof(Index));
     }
 
+    // GET /Incidents/EditCauseAnalysis/5
+    public async Task<IActionResult> EditCauseAnalysis(int id)
+    {
+        var analysis = await _db.CauseAnalyses
+            .Include(a => a.CauseCategory)
+            .FirstOrDefaultAsync(a => a.Id == id);
+        if (analysis == null) return NotFound();
+
+        var vm = new CauseAnalysisFormViewModel
+        {
+            Id = analysis.Id,
+            IncidentId = analysis.IncidentId,
+            CauseCategoryId = analysis.CauseCategoryId,
+            Why1 = analysis.Why1,
+            Why2 = analysis.Why2,
+            Why3 = analysis.Why3,
+            Why4 = analysis.Why4,
+            Why5 = analysis.Why5,
+            RootCauseSummary = analysis.RootCauseSummary,
+            AnalystName = analysis.AnalystName,
+            AdditionalNotes = analysis.AdditionalNotes,
+            CauseCategoryOptions = await BuildCauseCategoryOptions()
+        };
+        return View(vm);
+    }
+
+    // POST /Incidents/EditCauseAnalysis/5
+    [HttpPost]
+    [ValidateAntiForgeryToken]
+    public async Task<IActionResult> EditCauseAnalysis(int id, CauseAnalysisFormViewModel vm)
+    {
+        ModelState.Remove("CauseCategoryOptions");
+        if (!ModelState.IsValid)
+        {
+            vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
+            return View(vm);
+        }
+        var analysis = await _db.CauseAnalyses.FindAsync(id);
+        if (analysis == null) return NotFound();
+
+        analysis.CauseCategoryId = vm.CauseCategoryId;
+        analysis.Why1 = vm.Why1;
+        analysis.Why2 = vm.Why2;
+        analysis.Why3 = vm.Why3;
+        analysis.Why4 = vm.Why4;
+        analysis.Why5 = vm.Why5;
+        analysis.RootCauseSummary = vm.RootCauseSummary;
+        analysis.AnalystName = vm.AnalystName;
+        analysis.AdditionalNotes = vm.AdditionalNotes;
+        await _db.SaveChangesAsync();
+        TempData["Success"] = "原因分析を更新しました。";
+        return RedirectToAction(nameof(Details), new { id = analysis.IncidentId });
+    }
+
     // POST /Incidents/AddCauseAnalysis
     [HttpPost]
     [ValidateAntiForgeryToken]
@@ -312,6 +392,7 @@ public class IncidentsController : Controller
                 ResponsibleDepartment = vm.ResponsibleDepartment,
                 DueDate = vm.DueDate,
                 Priority = vm.Priority,
+                AnalysisNote = vm.AnalysisNote,
                 Status = "Planned"
             });
             await _db.SaveChangesAsync();

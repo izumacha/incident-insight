@@ -50,9 +50,18 @@
                     <option value="Completed" selected="@(ViewBag.FilterStatus == "Completed")">完了</option>
                 </select>
             </div>
-            <div class="col-md-3">
+            <div class="col-md-2">
+                <select name="responsibleDepartment" class="form-select form-select-sm">
+                    <option value="">担当部署（全て）</option>
+                    @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                    {
+                        <option value="@d" selected="@(ViewBag.FilterResponsibleDepartment == d)">@d</option>
+                    }
+                </select>
+            </div>
+            <div class="col-md-2">
                 <input type="text" name="responsible" class="form-control form-control-sm"
-                       placeholder="担当者・部署で検索" value="@ViewBag.FilterResponsible" />
+                       placeholder="担当者名で検索" value="@ViewBag.FilterResponsible" />
             </div>
             <div class="col-md-2">
                 <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
@@ -63,6 +72,21 @@
 </div>
 
 <!-- Kanban Board -->
+@if (!planned.Any() && !inProgress.Any() && !completed.Any())
+{
+    <div class="card border-0 shadow-sm">
+        <div class="card-body text-center py-5">
+            <i class="bi bi-shield-check display-4 text-success d-block mb-3"></i>
+            <h5>再発防止策がまだ登録されていません</h5>
+            <p class="text-muted mb-3">インシデント詳細ページから再発防止策を追加できます。</p>
+            <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
+                <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧へ
+            </a>
+        </div>
+    </div>
+}
+else
+{
 <div class="row g-3">
     <!-- 計画中 -->
     <div class="col-xl-4">
@@ -135,3 +159,4 @@
         </div>
     </div>
 </div>
+}

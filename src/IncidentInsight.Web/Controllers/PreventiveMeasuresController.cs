@@ -16,7 +16,8 @@ public class PreventiveMeasuresController : Controller
     }
 
     // GET /PreventiveMeasures
-    public async Task<IActionResult> Index(string? status, string? responsible, DateTime? dateFrom, DateTime? dateTo)
+    public async Task<IActionResult> Index(string? status, string? responsible,
+        string? responsibleDepartment, DateTime? dateFrom, DateTime? dateTo)
     {
         var query = _db.PreventiveMeasures
             .Include(m => m.Incident)
@@ -26,6 +27,8 @@ public class PreventiveMeasuresController : Controller
             query = query.Where(m => m.Status == status);
         if (!string.IsNullOrEmpty(responsible))
             query = query.Where(m => m.ResponsiblePerson.Contains(responsible) || m.ResponsibleDepartment.Contains(responsible));
+        if (!string.IsNullOrEmpty(responsibleDepartment))
+            query = query.Where(m => m.ResponsibleDepartment == responsibleDepartment);
         if (dateFrom.HasValue)
             query = query.Where(m => m.DueDate >= dateFrom.Value);
         if (dateTo.HasValue)
@@ -43,6 +46,7 @@ public class PreventiveMeasuresController : Controller
         ViewBag.Completed = completed;
         ViewBag.FilterStatus = status;
         ViewBag.FilterResponsible = responsible;
+        ViewBag.FilterResponsibleDepartment = responsibleDepartment;
         ViewBag.DateFrom = dateFrom;
         ViewBag.DateTo = dateTo;
 
