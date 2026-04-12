@@ -7,6 +7,10 @@ Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "src", "src", "{45AFFF3D-CE2
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IncidentInsight.Web", "src\IncidentInsight.Web\IncidentInsight.Web.csproj", "{5B02FA70-C1B9-4CD9-AF29-5DF622965EB7}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "tests", "tests", "{FDC776CC-E6AE-45CA-A706-E577995F7E9E}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "IncidentInsight.Tests", "tests\IncidentInsight.Tests\IncidentInsight.Tests.csproj", "{BB241929-145C-4E15-85C4-F208D5852B0D}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -20,8 +24,13 @@ Global
 		{5B02FA70-C1B9-4CD9-AF29-5DF622965EB7}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{5B02FA70-C1B9-4CD9-AF29-5DF622965EB7}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{5B02FA70-C1B9-4CD9-AF29-5DF622965EB7}.Release|Any CPU.Build.0 = Release|Any CPU
+		{BB241929-145C-4E15-85C4-F208D5852B0D}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{BB241929-145C-4E15-85C4-F208D5852B0D}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{BB241929-145C-4E15-85C4-F208D5852B0D}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{BB241929-145C-4E15-85C4-F208D5852B0D}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(NestedProjects) = preSolution
 		{5B02FA70-C1B9-4CD9-AF29-5DF622965EB7} = {45AFFF3D-CE24-4C19-9A1B-904F793CBA2C}
+		{BB241929-145C-4E15-85C4-F208D5852B0D} = {FDC776CC-E6AE-45CA-A706-E577995F7E9E}
 	EndGlobalSection
 EndGlobal

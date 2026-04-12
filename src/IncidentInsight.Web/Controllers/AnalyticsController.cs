@@ -1,9 +1,11 @@
 using IncidentInsight.Web.Data;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace IncidentInsight.Web.Controllers;
 
+[Authorize]
 public class AnalyticsController : Controller
 {
     private readonly ApplicationDbContext _db;

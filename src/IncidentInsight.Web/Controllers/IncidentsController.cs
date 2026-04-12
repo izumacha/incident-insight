@@ -1,12 +1,14 @@
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.ViewModels;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 
 namespace IncidentInsight.Web.Controllers;
 
+[Authorize]
 public class IncidentsController : Controller
 {
     private readonly ApplicationDbContext _db;
