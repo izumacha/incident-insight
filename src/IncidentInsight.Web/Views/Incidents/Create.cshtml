@@ -12,7 +12,7 @@
 
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
-        <form asp-action="Create" method="post" id="createForm">
+        <form asp-action="Create" method="post" id="createForm" onsubmit="reindexMeasures()">
             @Html.AntiForgeryToken()
 
             <!-- Wizard Tabs -->
@@ -236,6 +236,15 @@
 function goToTab(tabId) {
     document.getElementById(tabId + '-tab').click();
     document.getElementById(tabId + '-tab').classList.add('active');
+}
+
+// Reindex measure rows before submit to close any gaps from deletions
+function reindexMeasures() {
+    document.querySelectorAll('#measuresContainer .measure-row').forEach((row, i) => {
+        row.querySelectorAll('[name]').forEach(el => {
+            el.name = el.name.replace(/Measures\[\d+\]/, `Measures[${i}]`);
+        });
+    });
 }
 
 let measureCount = 1;

@@ -224,12 +224,16 @@ loadChart('/Analytics/MeasureStatus', (d) => {
         }
     });
 
-    // Compute completion rate for summary
+    // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
     const total = d.data.reduce((a, b) => a + b, 0);
     const completed = d.data[3]; // index 3 = 完了
     const rate = total > 0 ? Math.round(completed / total * 100) : 0;
-    document.getElementById('completionRate').textContent = rate + '%';
-    document.getElementById('overdueMeasures').textContent = d.data[2] + '件'; // index 2 = 期限超過
+    window._completionRate = rate + '%';
+    window._overdueMeasures = d.data[2] + '件'; // index 2 = 期限超過
+    const crEl = document.getElementById('completionRate');
+    if (crEl) crEl.textContent = window._completionRate;
+    const omEl = document.getElementById('overdueMeasures');
+    if (omEl) omEl.textContent = window._overdueMeasures;
 });
 
 // Effectiveness Rating
@@ -255,7 +259,10 @@ loadChart('/Analytics/EffectivenessRating', (d) => {
     const el = document.getElementById('recurrenceStats');
     el.innerHTML = `再発なし（対策有効）: <strong class="text-success">${d.recurrenceStats.prevented}件</strong> &nbsp;|&nbsp; 再発あり（要追加対策）: <strong class="text-danger">${d.recurrenceStats.recurred}件</strong>`;
 
-    document.getElementById('failedMeasures').textContent = d.recurrenceStats.recurred + '件';
+    // Store value; #failedMeasures is injected later by ByIncidentType
+    window._failedMeasures = d.recurrenceStats.recurred + '件';
+    const fmEl = document.getElementById('failedMeasures');
+    if (fmEl) fmEl.textContent = window._failedMeasures;
 });
 
 // By Incident Type
@@ -303,6 +310,10 @@ loadChart('/Analytics/ByIncidentType', (d) => {
             <div class="fw-bold fs-5 text-warning" id="overdueMeasures">-</div>
         </div>
     `;
+    // Apply values already computed by other callbacks (async ordering is non-deterministic)
+    if (window._completionRate) document.getElementById('completionRate').textContent = window._completionRate;
+    if (window._failedMeasures) document.getElementById('failedMeasures').textContent = window._failedMeasures;
+    if (window._overdueMeasures) document.getElementById('overdueMeasures').textContent = window._overdueMeasures;
 });
 </script>
 }

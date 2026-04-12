@@ -343,6 +343,9 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool recurrenceObserved)
     {
+        if (effectivenessRating < 1 || effectivenessRating > 5)
+            return BadRequest("有効性評価は1〜5の値を指定してください。");
+
         var measure = await _db.PreventiveMeasures.FindAsync(id);
         if (measure != null)
         {

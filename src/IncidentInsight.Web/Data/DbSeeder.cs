@@ -6,9 +6,9 @@ public static class DbSeeder
 {
     public static void Seed(ApplicationDbContext db)
     {
-        if (db.CauseCategories.Any()) return; // already seeded
-
         // ── 原因カテゴリ（親カテゴリ） ─────────────────────────────
+        if (!db.CauseCategories.Any())
+        {
         var humanError = new CauseCategory { Name = "ヒューマンエラー", Description = "人的要因によるミス・判断誤り", DisplayOrder = 1 };
         var device = new CauseCategory { Name = "医療機器", Description = "機器の不具合・操作ミス", DisplayOrder = 2 };
         var medication = new CauseCategory { Name = "薬剤", Description = "調剤・投与に関するミス", DisplayOrder = 3 };
@@ -55,13 +55,14 @@ public static class DbSeeder
             new() { Name = "患者・家族への説明不足", ParentId = communication.Id, DisplayOrder = 4 },
         };
 
-        db.CauseCategories.AddRange(subCategories);
-        db.SaveChanges();
+            db.CauseCategories.AddRange(subCategories);
+            db.SaveChanges();
+        }
 
-        // Resolve subcategory IDs for seeding
+        // ── サンプルインシデント + 分析 + 対策 ───────────────────────
+        if (db.Incidents.Any()) return;
+
         var cats = db.CauseCategories.ToDictionary(c => c.Name, c => c.Id);
-
-        // ── サンプルインシデント ───────────────────────────────────
         var now = DateTime.Now;
 
         var incidents = new List<Incident>
