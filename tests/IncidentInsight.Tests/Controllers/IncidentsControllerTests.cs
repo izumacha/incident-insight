@@ -103,6 +103,40 @@ public class IncidentsControllerTests : IDisposable
         Assert.Equal("Create", viewResult.ViewName ?? "Create");
     }
 
+    [Fact]
+    public async Task Create_Post_WithoutMeasures_ReturnsCreateView_AndDoesNotSaveIncident()
+    {
+        var vm = ValidViewModel();
+        vm.Measures = new List<MeasureFormViewModel>();
+
+        var result = await _controller.Create(vm);
+
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Measures)));
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_WithOnlyWhitespaceMeasures_ReturnsCreateView_AndDoesNotSaveIncident()
+    {
+        var vm = ValidViewModel();
+        vm.Measures = new List<MeasureFormViewModel>
+        {
+            new() { Description = "   " },
+            new() { Description = "\t" }
+        };
+
+        var result = await _controller.Create(vm);
+
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Measures)));
+        Assert.Empty(_db.Incidents);
+    }
+
     // --- Index GET / Filtering ---
 
     [Fact]

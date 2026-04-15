@@ -144,6 +144,9 @@ public class IncidentsController : Controller
         // Remove sub-form validation noise from ModelState
         ModelState.Remove("CauseAnalysis.CauseCategoryOptions");
 
+        if (!HasAtLeastOneValidMeasure(vm.Measures))
+            ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
+
         if (!ModelState.IsValid)
         {
             vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
@@ -207,6 +210,9 @@ public class IncidentsController : Controller
         TempData["Success"] = "インシデントを登録しました。";
         return RedirectToAction(nameof(Details), new { id = incident.Id });
     }
+
+    private static bool HasAtLeastOneValidMeasure(IEnumerable<MeasureFormViewModel>? measures)
+        => measures?.Any(m => !string.IsNullOrWhiteSpace(m.Description)) == true;
 
     // GET /Incidents/Edit/5
     public async Task<IActionResult> Edit(int id)
