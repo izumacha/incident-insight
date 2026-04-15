@@ -72,17 +72,15 @@ dotnet run --project src/IncidentInsight.Web/IncidentInsight.Web.csproj
 ```
 
 DB ファイルはアプリ起動ディレクトリ（`src/IncidentInsight.Web/`）に作成されます。  
-**マイグレーション不要**：`EnsureCreated()` により起動時にスキーマが自動構築されます。
+**起動時にマイグレーション適用**：`Database.Migrate()` により、存在する EF Core マイグレーションが自動適用されます。
 
 ### スキーマ変更時の対応
 
-モデルに変更を加えた場合、SQLite は `ALTER TABLE` による自動マイグレーションに対応していません。  
-開発環境では DB ファイルを削除して再起動してください：
+モデルに変更を加えた場合は、EF Core マイグレーションを追加してから再起動してください：
 
 ```bash
-rm src/IncidentInsight.Web/incident_insight.db
+dotnet ef migrations add <MigrationName> --project src/IncidentInsight.Web
 dotnet run --project src/IncidentInsight.Web/IncidentInsight.Web.csproj
-# 再起動時にシードデータも再投入されます
 ```
 
 ### SQL Server への切り替え
@@ -132,6 +130,20 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "接続文字列" 
 
 シードデータはべき等設計（カテゴリ存在時はスキップ）のため、再起動で重複投入されません。
 
+### デモアカウントのセットアップ（開発環境）
+
+デモアカウントはセキュリティのためパスワードをリポジトリに含めていません。  
+初回起動前に **User Secrets** でパスワードを設定してください：
+
+```bash
+dotnet user-secrets init --project src/IncidentInsight.Web
+dotnet user-secrets set "SeedAccounts:AdminPassword" "AdminPass1" --project src/IncidentInsight.Web
+dotnet user-secrets set "SeedAccounts:RiskManagerPassword" "RiskPass1" --project src/IncidentInsight.Web
+```
+
+パスワード未設定の場合、起動ログに警告が出力されデモアカウントの作成はスキップされます。  
+パスワードは開発用ポリシー（8文字以上・英大文字含む・数字含む）を満たす必要があります。
+
 ---
 
 ## プロジェクト構成
@@ -163,5 +175,5 @@ src/IncidentInsight.Web/
 ## 開発メモ
 
 - **ビルド**: `dotnet build` — 0 エラーで通過することを確認
-- **EF マイグレーション**: SQLite 環境では未使用（`EnsureCreated` を利用）
-- **本番移行時**: EF Core マイグレーションの導入を推奨
+- **EF マイグレーション**: 起動時に `Database.Migrate()` で自動適用
+- **本番運用**: リリース前にマイグレーションを作成し、適用手順をCI/CDに組み込むことを推奨

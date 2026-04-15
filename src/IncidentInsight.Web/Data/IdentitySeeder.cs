@@ -1,21 +1,26 @@
 using IncidentInsight.Web.Models;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
 
 namespace IncidentInsight.Web.Data;
 
 /// <summary>
 /// 起動時にロールとデモアカウントを作成する。
-/// デモアカウントは appsettings.Development.json の SeedAccounts セクションが存在する場合のみ作成。
-/// 本番環境では SeedAccounts を設定しないことで自動作成を防止する。
+/// デモアカウントは Development 環境かつ
+/// appsettings.Development.json の SeedAccounts セクションが存在する場合のみ作成。
 /// </summary>
 public static class IdentitySeeder
 {
     public static async Task SeedAsync(
         RoleManager<IdentityRole> roleManager,
         UserManager<ApplicationUser> userManager,
-        IConfiguration configuration)
+        IConfiguration configuration,
+        ILogger? logger = null)
     {
+        var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
+        var isDevelopment = string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase);
+
         // ロールを作成（全環境共通）
         foreach (var role in AppRoles.All)
         {
@@ -23,7 +28,9 @@ public static class IdentitySeeder
                 await roleManager.CreateAsync(new IdentityRole(role));
         }
 
-        // デモアカウントは SeedAccounts 設定がある場合のみ作成
+        // デモアカウントは Development かつ SeedAccounts 設定がある場合のみ作成
+        if (!isDevelopment) return;
+
         var seedSection = configuration.GetSection("SeedAccounts");
         if (!seedSection.Exists()) return;
 
@@ -32,7 +39,15 @@ public static class IdentitySeeder
         var rmEmail       = seedSection["RiskManagerEmail"];
         var rmPassword    = seedSection["RiskManagerPassword"];
 
-        if (string.IsNullOrEmpty(adminEmail) || string.IsNullOrEmpty(adminPassword)) return;
+        if (string.IsNullOrEmpty(adminEmail) || string.IsNullOrEmpty(adminPassword))
+        {
+            logger?.LogWarning(
+                "デモアカウントの作成をスキップしました。" +
+                "appsettings.Development.json の SeedAccounts:AdminPassword が未設定です。" +
+                "開発環境でログインするには、User Secrets またはローカルの appsettings.Development.json にパスワードを設定してください。" +
+                "例: dotnet user-secrets set \"SeedAccounts:AdminPassword\" \"YourPassword1\" --project src/IncidentInsight.Web");
+            return;
+        }
 
         if (await userManager.FindByEmailAsync(adminEmail) == null)
         {

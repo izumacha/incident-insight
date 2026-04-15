@@ -12,11 +12,14 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 // ASP.NET Core Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
     {
-        options.Password.RequireDigit = false;
-        options.Password.RequiredLength = 6;
-        options.Password.RequireNonAlphanumeric = false;
-        options.Password.RequireUppercase = false;
-        options.SignIn.RequireConfirmedAccount = false;
+        var isDevelopment = builder.Environment.IsDevelopment();
+
+        options.Password.RequireDigit = true;
+        options.Password.RequiredLength = isDevelopment ? 8 : 12;
+        options.Password.RequireNonAlphanumeric = !isDevelopment;
+        options.Password.RequireUppercase = true;
+        options.Password.RequireLowercase = true;
+        options.SignIn.RequireConfirmedAccount = !isDevelopment;
         options.Lockout.MaxFailedAccessAttempts = 5;
         options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
     })
@@ -59,7 +62,9 @@ using (var scope = app.Services.CreateScope())
 
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-    await IdentitySeeder.SeedAsync(roleManager, userManager, app.Configuration);
+    var seederLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("IdentitySeeder");
+    await IdentitySeeder.SeedAsync(roleManager, userManager, app.Configuration, seederLogger);
 }
 
 app.Run();
