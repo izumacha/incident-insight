@@ -130,6 +130,20 @@ dotnet user-secrets set "ConnectionStrings:DefaultConnection" "接続文字列" 
 
 シードデータはべき等設計（カテゴリ存在時はスキップ）のため、再起動で重複投入されません。
 
+### デモアカウントのセットアップ（開発環境）
+
+デモアカウントはセキュリティのためパスワードをリポジトリに含めていません。  
+初回起動前に **User Secrets** でパスワードを設定してください：
+
+```bash
+dotnet user-secrets init --project src/IncidentInsight.Web
+dotnet user-secrets set "SeedAccounts:AdminPassword" "AdminPass1" --project src/IncidentInsight.Web
+dotnet user-secrets set "SeedAccounts:RiskManagerPassword" "RiskPass1" --project src/IncidentInsight.Web
+```
+
+パスワード未設定の場合、起動ログに警告が出力されデモアカウントの作成はスキップされます。  
+パスワードは開発用ポリシー（8文字以上・英大文字含む・数字含む）を満たす必要があります。
+
 ---
 
 ## プロジェクト構成

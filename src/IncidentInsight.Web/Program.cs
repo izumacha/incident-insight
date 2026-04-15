@@ -62,7 +62,9 @@ using (var scope = app.Services.CreateScope())
 
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();
-    await IdentitySeeder.SeedAsync(roleManager, userManager, app.Configuration);
+    var seederLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
+        .CreateLogger("IdentitySeeder");
+    await IdentitySeeder.SeedAsync(roleManager, userManager, app.Configuration, seederLogger);
 }
 
 app.Run();
