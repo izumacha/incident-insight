@@ -1,4 +1,5 @@
 @model IncidentInsight.Web.Models.ViewModels.LoginViewModel
+@inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment HostEnvironment
 @{
     ViewData["Title"] = "ログイン";
     Layout = null;
@@ -53,14 +54,17 @@
                 </button>
             </form>
 
-            <hr class="my-4" />
-            <div class="text-center">
-                <p class="text-muted small mb-1">デモアカウント</p>
-                <table class="table table-sm table-borderless small text-muted mx-auto" style="width:auto">
-                    <tr><td>管理者</td><td><code>admin@hospital.local</code></td><td><code>Admin1234</code></td></tr>
-                    <tr><td>リスク管理</td><td><code>riskmanager@hospital.local</code></td><td><code>Risk1234</code></td></tr>
-                </table>
-            </div>
+            @if (HostEnvironment.IsDevelopment())
+            {
+                <hr class="my-4" />
+                <div class="text-center">
+                    <p class="text-muted small mb-1">デモアカウント (開発環境のみ表示)</p>
+                    <table class="table table-sm table-borderless small text-muted mx-auto" style="width:auto">
+                        <tr><td>管理者</td><td><code>admin@hospital.local</code></td><td><code>Admin1234</code></td></tr>
+                        <tr><td>リスク管理</td><td><code>riskmanager@hospital.local</code></td><td><code>Risk1234</code></td></tr>
+                    </table>
+                </div>
+            }
         </div>
     </div>
 </div>

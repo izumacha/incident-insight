@@ -33,57 +33,75 @@ public class HomeController : Controller
             _         => today.AddYears(-1)
         };
 
-        var allIncidents = await _db.Incidents
+        // KPI counts are aggregated server-side (no full-table materialization).
+        var totalIncidents = await _db.Incidents.AsNoTracking()
+            .CountAsync(i => i.OccurredAt >= periodStart);
+        var thisMonthIncidents = await _db.Incidents.AsNoTracking()
+            .CountAsync(i => i.OccurredAt >= thisMonthStart);
+        var openMeasures = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.Status != "Completed");
+        var overdueMeasures = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.Status != "Completed" && m.DueDate < today);
+        var completedMeasures = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.Status == "Completed");
+        var failedMeasures = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.RecurrenceObserved == true);
+
+        var recentIncidents = await _db.Incidents.AsNoTracking()
             .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory)
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
+            .Take(5)
             .ToListAsync();
 
-        var periodIncidents = allIncidents.Where(i => i.OccurredAt >= periodStart).ToList();
-
-        var allMeasures = await _db.PreventiveMeasures.ToListAsync();
-
-        var totalIncidents = periodIncidents.Count;
-        var thisMonthIncidents = allIncidents.Count(i => i.OccurredAt >= thisMonthStart);
-        var openMeasures = allMeasures.Count(m => m.Status != "Completed");
-        var overdueMeasures = allMeasures.Count(m => m.IsOverdue);
-        var completedMeasures = allMeasures.Count(m => m.Status == "Completed");
-        var failedMeasures = allMeasures.Count(m => m.RecurrenceObserved == true);
-
-        var recentIncidents = allIncidents.Take(5).ToList();
-
-        var overdueMeasureList = await _db.PreventiveMeasures
+        var overdueMeasureList = await _db.PreventiveMeasures.AsNoTracking()
             .Include(m => m.Incident)
             .Where(m => m.Status != "Completed" && m.DueDate < today)
             .OrderBy(m => m.DueDate)
             .ToListAsync();
 
-        // Monthly / weekly counts for trend chart
+        // Monthly / weekly counts for trend chart (fetch only the trend window)
         var monthlyCounts = new List<MonthlyCount>();
         if (period == "week")
         {
-            // Daily for last 7 days
+            var weekStart = today.AddDays(-6);
+            var weekEnd = today.AddDays(1);
+            var weekDates = await _db.Incidents.AsNoTracking()
+                .Where(i => i.OccurredAt >= weekStart && i.OccurredAt < weekEnd)
+                .Select(i => i.OccurredAt)
+                .ToListAsync();
             for (int i = 6; i >= 0; i--)
             {
                 var day = today.AddDays(-i);
-                var count = allIncidents.Count(inc => inc.OccurredAt.Date == day);
+                var count = weekDates.Count(o => o.Date == day);
                 monthlyCounts.Add(new MonthlyCount { Label = day.ToString("M/d"), Count = count });
             }
         }
         else
         {
             int months = period switch { "month" => 4, "quarter" => 6, _ => 12 };
+            var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-(months - 1));
+            var trendDates = await _db.Incidents.AsNoTracking()
+                .Where(i => i.OccurredAt >= firstMonthStart)
+                .Select(i => i.OccurredAt)
+                .ToListAsync();
             for (int i = months - 1; i >= 0; i--)
             {
                 var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
                 var monthEnd = monthStart.AddMonths(1);
-                var count = allIncidents.Count(inc => inc.OccurredAt >= monthStart && inc.OccurredAt < monthEnd);
+                var count = trendDates.Count(o => o >= monthStart && o < monthEnd);
                 monthlyCounts.Add(new MonthlyCount { Label = monthStart.ToString("yyyy年M月"), Count = count });
             }
         }
 
-        // Recurrence detection (always based on 90-day window)
-        var recentList = allIncidents.Where(i => i.OccurredAt >= ninetyDaysAgo).ToList();
+        // Recurrence detection: walk 90-day recent incidents and query similar historical
+        // ones per pattern. Avoids materializing the whole Incidents table.
+        var recentList = await _db.Incidents.AsNoTracking()
+            .Include(i => i.CauseAnalyses)
+            .Where(i => i.OccurredAt >= ninetyDaysAgo)
+            .OrderByDescending(i => i.OccurredAt)
+            .ToListAsync();
+
         var recurrenceAlerts = new List<RecurrenceAlert>();
         var processed = new HashSet<int>();
 
@@ -91,14 +109,17 @@ public class HomeController : Controller
         {
             if (processed.Contains(incident.Id)) continue;
             var catIds = incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
-            var similar = allIncidents
+            if (catIds.Count == 0) continue;
+
+            var similar = await _db.Incidents.AsNoTracking()
+                .Include(o => o.CauseAnalyses)
                 .Where(o => o.Id != incident.Id
                     && o.Department == incident.Department
                     && o.IncidentType == incident.IncidentType
                     && o.CauseAnalyses.Any(ca => catIds.Contains(ca.CauseCategoryId)))
-                .ToList();
+                .ToListAsync();
 
-            if (similar.Any())
+            if (similar.Count > 0)
             {
                 recurrenceAlerts.Add(new RecurrenceAlert
                 {
