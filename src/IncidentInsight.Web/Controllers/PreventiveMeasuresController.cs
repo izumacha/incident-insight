@@ -118,6 +118,7 @@ public class PreventiveMeasuresController : Controller
         {
             Id = measure.Id,
             IncidentId = measure.IncidentId,
+            ConcurrencyToken = measure.ConcurrencyToken,
             Description = measure.Description,
             MeasureType = measure.MeasureType,
             ResponsiblePerson = measure.ResponsiblePerson,
@@ -148,7 +149,18 @@ public class PreventiveMeasuresController : Controller
         measure.ResponsibleDepartment = vm.ResponsibleDepartment;
         measure.DueDate = vm.DueDate;
         measure.Priority = vm.Priority;
-        await _db.SaveChangesAsync();
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
+            return RedirectToAction(nameof(Edit), new { id });
+        }
 
         TempData["Success"] = "再発防止策を更新しました。";
         return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
@@ -157,7 +169,7 @@ public class PreventiveMeasuresController : Controller
     // POST /PreventiveMeasures/Complete/5
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> Complete(int id, string? completionNote)
+    public async Task<IActionResult> Complete(int id, string? completionNote, Guid concurrencyToken)
     {
         var measure = await _db.PreventiveMeasures.FindAsync(id);
         if (measure == null) return NotFound();
@@ -165,7 +177,18 @@ public class PreventiveMeasuresController : Controller
         measure.Status = "Completed";
         measure.CompletedAt = DateTime.Now;
         measure.CompletionNote = completionNote;
-        await _db.SaveChangesAsync();
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、完了登録は保存されませんでした。画面を更新してから再度操作してください。";
+            return RedirectToAction(nameof(Index));
+        }
 
         TempData["Success"] = "対策を完了しました。有効性評価も記録してください。";
         return RedirectToAction(nameof(Index));
@@ -183,6 +206,7 @@ public class PreventiveMeasuresController : Controller
         var vm = new ReviewViewModel
         {
             Id = id,
+            ConcurrencyToken = measure.ConcurrencyToken,
             EffectivenessRating = measure.EffectivenessRating ?? 3,
             EffectivenessNote = measure.EffectivenessNote,
             RecurrenceObserved = measure.RecurrenceObserved ?? false
@@ -208,7 +232,18 @@ public class PreventiveMeasuresController : Controller
         measure.EffectivenessNote = vm.EffectivenessNote;
         measure.RecurrenceObserved = vm.RecurrenceObserved;
         measure.EffectivenessReviewedAt = DateTime.Now;
-        await _db.SaveChangesAsync();
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、有効性評価は保存されませんでした。最新の状態を読み直してから再度登録してください。";
+            return RedirectToAction(nameof(Review), new { id });
+        }
 
         if (vm.RecurrenceObserved)
             TempData["Warning"] = "再発が確認されました。根本原因の再分析と追加対策を検討してください。";
@@ -221,7 +256,7 @@ public class PreventiveMeasuresController : Controller
     // POST /PreventiveMeasures/UpdateStatus/5
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> UpdateStatus(int id, string status)
+    public async Task<IActionResult> UpdateStatus(int id, string status, Guid concurrencyToken)
     {
         var measure = await _db.PreventiveMeasures.FindAsync(id);
         if (measure == null) return NotFound();
@@ -230,7 +265,17 @@ public class PreventiveMeasuresController : Controller
         {
             measure.Status = status;
             if (status == "Completed") measure.CompletedAt = DateTime.Now;
-            await _db.SaveChangesAsync();
+
+            _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
+
+            try
+            {
+                await _db.SaveChangesAsync();
+            }
+            catch (DbUpdateConcurrencyException)
+            {
+                TempData["Warning"] = "他のユーザが先に更新したため、ステータス変更は保存されませんでした。画面を更新してから再度操作してください。";
+            }
         }
 
         return RedirectToAction(nameof(Index));

@@ -74,6 +74,12 @@ public class PreventiveMeasure
     [Display(Name = "優先度")]
     public int Priority { get; set; } = 2; // 1=高, 2=中, 3=低
 
+    /// <summary>
+    /// 楽観的同時実行制御トークン(全プロバイダ共通の Guid ベース)。
+    /// </summary>
+    [ConcurrencyCheck]
+    public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
+
     // Computed helpers
     public bool IsOverdue => Status != "Completed" && DueDate < DateTime.Today;
 

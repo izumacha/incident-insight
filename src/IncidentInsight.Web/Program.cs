@@ -6,8 +6,31 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuditSaveChangesInterceptor>();
+
+builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
+{
+    var provider = (builder.Configuration.GetValue<string>("Database:Provider") ?? "sqlite")
+        .ToLowerInvariant();
+    var conn = builder.Configuration.GetConnectionString("DefaultConnection");
+
+    switch (provider)
+    {
+        case "sqlserver":
+            options.UseSqlServer(conn);
+            break;
+        case "postgres":
+        case "postgresql":
+            options.UseNpgsql(conn);
+            break;
+        default:
+            options.UseSqlite(conn);
+            break;
+    }
+
+    options.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+});
 
 // ASP.NET Core Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
@@ -57,7 +80,27 @@ app.MapControllerRoute(
 using (var scope = app.Services.CreateScope())
 {
     var db = scope.ServiceProvider.GetRequiredService<ApplicationDbContext>();
-    db.Database.Migrate();
+    try
+    {
+        db.Database.Migrate();
+    }
+    catch (Exception ex) when (!string.Equals(
+        db.Database.ProviderName,
+        "Microsoft.EntityFrameworkCore.Sqlite",
+        StringComparison.Ordinal))
+    {
+        // 同梱されているマイグレーションは SQLite 用のみ。
+        // SQL Server / PostgreSQL に切り替える場合は、対象プロバイダで
+        // マイグレーションを再生成する必要がある(CLAUDE.md 参照)。
+        throw new InvalidOperationException(
+            $"Database migration failed for provider '{db.Database.ProviderName}'. " +
+            "The committed migrations target SQLite only. When switching to SQL Server or PostgreSQL, " +
+            "regenerate migrations against that provider: delete src/IncidentInsight.Web/Migrations/, " +
+            "set Database__Provider and ConnectionStrings__DefaultConnection to the target, " +
+            "then run `dotnet ef migrations add InitialCreate --project src/IncidentInsight.Web`. " +
+            "See CLAUDE.md for details.",
+            ex);
+    }
     DbSeeder.Seed(db);
 
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();

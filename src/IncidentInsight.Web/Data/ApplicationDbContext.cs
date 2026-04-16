@@ -12,6 +12,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
     public DbSet<CauseCategory> CauseCategories => Set<CauseCategory>();
     public DbSet<CauseAnalysis> CauseAnalyses => Set<CauseAnalysis>();
     public DbSet<PreventiveMeasure> PreventiveMeasures => Set<PreventiveMeasure>();
+    public DbSet<AuditLog> AuditLogs => Set<AuditLog>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -55,5 +56,11 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             .HasIndex(i => new { i.Department, i.IncidentType });
         modelBuilder.Entity<PreventiveMeasure>()
             .HasIndex(pm => new { pm.Status, pm.DueDate });
+
+        // Audit log: 問い合わせを早くするためのインデックス(対象エンティティ + 変更時刻)
+        modelBuilder.Entity<AuditLog>()
+            .HasIndex(a => new { a.EntityName, a.EntityKey });
+        modelBuilder.Entity<AuditLog>()
+            .HasIndex(a => a.ChangedAt);
     }
 }

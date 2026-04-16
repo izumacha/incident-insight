@@ -55,6 +55,12 @@ public class CauseAnalysis
     [Display(Name = "補足メモ")]
     public string? AdditionalNotes { get; set; }
 
+    /// <summary>
+    /// 楽観的同時実行制御トークン(全プロバイダ共通の Guid ベース)。
+    /// </summary>
+    [ConcurrencyCheck]
+    public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
+
     // Computed
     public string DeepestWhy => Why5 ?? Why4 ?? Why3 ?? Why2 ?? Why1;
     public int WhyDepth => Why5 != null ? 5 : Why4 != null ? 4 : Why3 != null ? 3 : Why2 != null ? 2 : 1;

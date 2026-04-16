@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-IncidentInsight is a medical incident management system (ASP.NET Core 8 MVC + EF Core 8 + SQLite). It covers the full incident lifecycle: reporting → 5 Whys root-cause analysis → preventive measure planning → completion → effectiveness review → recurrence detection. UI strings and the domain vocabulary are Japanese (e.g. `重症度`, `なぜなぜ分析`, `再発防止策`).
+IncidentInsight is a medical incident management system (ASP.NET Core 8 MVC + EF Core 8). It covers the full incident lifecycle: reporting → 5 Whys root-cause analysis → preventive measure planning → completion → effectiveness review → recurrence detection. UI strings and the domain vocabulary are Japanese (e.g. `重症度`, `なぜなぜ分析`, `再発防止策`).
+
+The app is **database-provider-agnostic**: SQLite (default, single-file), SQL Server (on-prem Windows), and PostgreSQL (Linux / cloud / Supabase / any managed Postgres) are all first-class at runtime — selected via the `Database:Provider` setting. Model + query code contains zero provider-specific SQL or column types, so the same codebase ships everywhere.
 
 ## Common commands
 
@@ -25,6 +27,10 @@ dotnet test --filter "FullyQualifiedName~IncidentsControllerTests"
 dotnet test --filter "FullyQualifiedName=IncidentInsight.Tests.Controllers.IncidentsControllerTests.Create_RequiresAtLeastOneMeasure"
 
 # Add an EF Core migration after model changes (auto-applied on next startup via Database.Migrate())
+# NOTE: Committed migrations target the currently-configured provider (default: SQLite).
+# When switching to SQL Server or PostgreSQL for production, regenerate migrations against
+# that provider (delete the Migrations/ folder, set Database__Provider and a valid
+# ConnectionStrings__DefaultConnection, then run the command below).
 dotnet ef migrations add <MigrationName> --project src/IncidentInsight.Web
 
 # Seed demo accounts for local login (Development only; no passwords are committed)
@@ -38,9 +44,21 @@ Dev password policy: 8+ chars, uppercase, digit. Prod policy: 12+ chars and non-
 ## Architecture
 
 ### Request pipeline & bootstrapping (`Program.cs`)
-- Single `WebApplication` configured with `ApplicationDbContext` (SQLite by default — `UseSqlite`; swap to `UseSqlServer` + update `DefaultConnection` for SQL Server).
+- `ApplicationDbContext` is wired with a runtime provider switch keyed off `Database:Provider` (`sqlite` | `sqlserver` | `postgres`). SQLite is the default. The connection string comes from `ConnectionStrings:DefaultConnection`. Providers use the `UseSqlite` / `UseSqlServer` / `UseNpgsql` methods respectively. No code changes required to move between them — only config.
+- `AuditSaveChangesInterceptor` is registered on the `DbContext`. It is **provider-neutral** — works identically on SQLite / SQL Server / PostgreSQL — and writes a row to the `AuditLogs` table for every Add / Modify / Delete on `Incident`, `CauseAnalysis`, `PreventiveMeasure`. It also rotates the `ConcurrencyToken` Guid on Modified entries.
 - ASP.NET Core Identity is wired up with a custom `ApplicationUser` and three roles in `AppRoles` (`Admin`, `RiskManager`, `Staff`). Cookie auth redirects to `/Account/Login`; sliding expiration of 8h; lockout after 5 failed attempts.
 - On startup (inside a scope): `db.Database.Migrate()` → `DbSeeder.Seed(db)` (cause categories + sample incidents, idempotent) → `IdentitySeeder.SeedAsync(...)` (creates roles always; creates demo admin/RM only in Development when `SeedAccounts` passwords are present).
+
+### Database provider matrix
+
+| Target deployment | `Database:Provider` | Example connection string |
+|---|---|---|
+| Single clinic / dev (default) | `sqlite` | `Data Source=incident_insight.db` |
+| On-prem hospital (Windows / existing SQL Server) | `sqlserver` | `Server=...;Database=IncidentInsight;Trusted_Connection=True;TrustServerCertificate=True;` |
+| Linux / self-hosted Postgres | `postgres` | `Host=...;Database=incidentinsight;Username=...;Password=...` |
+| Managed (Supabase / Azure DB for PostgreSQL / Aurora) | `postgres` | provider's standard Postgres connection string |
+
+Set via `appsettings*.json` or environment variables (`Database__Provider`, `ConnectionStrings__DefaultConnection`).
 
 ### Domain model (EF Core, `src/IncidentInsight.Web/Models/`)
 The schema is centered on four aggregates with cascade rules configured in `ApplicationDbContext.OnModelCreating`:
@@ -49,8 +67,21 @@ The schema is centered on four aggregates with cascade rules configured in `Appl
 - **`CauseAnalysis`** — 5 Whys stored as independent `Why1`..`Why5` columns (so SQL can search at specific depths). Always tied to one `CauseCategory`. Helpers: `DeepestWhy`, `WhyDepth`.
 - **`CauseCategory`** — self-referential hierarchy (parent/child via `ParentId`). `BuildCauseCategoryOptions()` in `IncidentsController` emits leaf categories grouped by parent as `<optgroup>` — never add a category-picker that bypasses this helper.
 - **`PreventiveMeasure`** — the "most important" entity per the domain: tracks the full lifecycle `Planned → InProgress → Completed` plus post-completion fields `EffectivenessRating` (1–5), `EffectivenessNote`, `EffectivenessReviewedAt`, and `RecurrenceObserved` (true ⇒ surface warning and prompt re-analysis). `IsOverdue` is a computed property used all over the UI; keep the `DueDate < DateTime.Today && Status != "Completed"` semantics consistent.
+- **`AuditLog`** — regulatory audit trail written automatically by `AuditSaveChangesInterceptor`. Holds `ChangedAt`, `ChangedBy` (user name from the current `HttpContext`), `EntityName`, `EntityKey`, `Operation` (`Added` / `Modified` / `Deleted`), and a JSON `ChangesJson` with before/after values. Never write to this table directly — the interceptor is the single source of truth.
 
-Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`.
+`Incident` / `CauseAnalysis` / `PreventiveMeasure` each carry a `ConcurrencyToken` (Guid, `[ConcurrencyCheck]`) for optimistic concurrency. The interceptor rotates this on each modification so concurrent edits fail-safe with `DbUpdateConcurrencyException`.
+
+**Edit POST contract**: mutating actions reload the entity via `FindAsync` before applying form data. If we relied on the default `OriginalValue` (which would be the token EF just loaded from the DB — always current), the concurrency check would never trip. Every edit POST therefore pins the client's pre-edit token explicitly before saving:
+
+```csharp
+_db.Entry(entity).Property(nameof(Entity.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+try { await _db.SaveChangesAsync(); }
+catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; }
+```
+
+The client round-trips the token via a hidden form field (`<input type="hidden" asp-for="ConcurrencyToken" />`, or a `name="concurrencyToken"` value for modal/kanban forms that POST raw parameters). Applied across `IncidentsController.Edit` / `EditCauseAnalysis` / `CompleteMeasure` / `RateMeasure` and `PreventiveMeasuresController.Edit` / `Complete` / `Review` / `UpdateStatus`. When adding a new mutating POST action on any of these three entities, follow the same pattern.
+
+Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`, `AuditLog(ChangedAt)`, `AuditLog(EntityName, EntityKey)`.
 
 ### Controllers & cross-cutting patterns
 - All app controllers except `AccountController` use `[Authorize]`. `AccountController` is explicitly `[AllowAnonymous]` on `Login` / `AccessDenied`.
@@ -75,3 +106,6 @@ Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, Incid
 - **Severity / department / incident-type enums live on the `Incident` class**, not in the DB. Adding a value requires updating the static dictionary/array and any views that iterate it; no migration needed.
 - **`SeedAccounts` passwords must never be committed.** `appsettings.Development.json` ships with blank passwords on purpose; use User Secrets or environment variables (`SeedAccounts__AdminPassword`, etc.).
 - **Recurrence logic is duplicated** between `HomeController.Index` (dashboard alerts, 90-day window) and `IncidentsController.Details` (per-incident similar list, no time bound). Keep them semantically aligned if you change the matching rule.
+- **Committed migrations are for SQLite**. Switching production to `sqlserver` or `postgres` requires regenerating migrations against that provider (one-time operation). Don't keep multiple provider migration folders in parallel — EF Core's `ModelSnapshot` is single-provider by design; trying to mix them causes apply-time errors.
+- **Don't add provider-specific SQL or column types**. The value of the abstraction comes from staying portable. If a feature absolutely requires SQL Server-only (e.g. Temporal Tables) or Postgres-only (e.g. JSONB) behavior, gate it behind a runtime `Database:Provider` check and keep a portable fallback.
+- **Audit log correctness depends on going through `SaveChanges`**. Don't use `ExecuteUpdate` / `ExecuteDelete` for `Incident` / `CauseAnalysis` / `PreventiveMeasure` — those bypass the change tracker and silently skip auditing.

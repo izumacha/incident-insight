@@ -42,6 +42,10 @@ public class IncidentCreateEditViewModel
 {
     public int Id { get; set; }
 
+    // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
+    // hidden field でクライアントに渡して POST 時に戻ってきたものを OriginalValue に設定する。
+    public Guid ConcurrencyToken { get; set; }
+
     [Required(ErrorMessage = "発生日時は必須です")]
     [Display(Name = "発生日時")]
     public DateTime OccurredAt { get; set; } = DateTime.Now;
@@ -85,6 +89,9 @@ public class CauseAnalysisFormViewModel
 {
     public int Id { get; set; }
     public int IncidentId { get; set; }
+
+    // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
+    public Guid ConcurrencyToken { get; set; }
 
     [Required(ErrorMessage = "原因分類を選択してください")]
     [Display(Name = "原因分類")]
@@ -130,6 +137,9 @@ public class MeasureFormViewModel
     public int Id { get; set; }
     public int IncidentId { get; set; }
 
+    // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
+    public Guid ConcurrencyToken { get; set; }
+
     [Required(ErrorMessage = "対策内容を入力してください")]
     [MaxLength(500)]
     [Display(Name = "対策内容")]
@@ -171,6 +181,9 @@ public class CompleteViewModel
 public class ReviewViewModel
 {
     public int Id { get; set; }
+
+    // 楽観的同時実行制御トークン。
+    public Guid ConcurrencyToken { get; set; }
 
     [Required]
     [Range(1, 5, ErrorMessage = "1〜5で評価してください")]

@@ -223,6 +223,7 @@ public class IncidentsController : Controller
         var vm = new IncidentCreateEditViewModel
         {
             Id = incident.Id,
+            ConcurrencyToken = incident.ConcurrencyToken,
             OccurredAt = incident.OccurredAt,
             Department = incident.Department,
             IncidentType = incident.IncidentType,
@@ -265,7 +266,20 @@ public class IncidentsController : Controller
         incident.ImmediateActions = vm.ImmediateActions;
         incident.ReporterName = vm.ReporterName;
 
-        await _db.SaveChangesAsync();
+        // 楽観的同時実行制御: クライアントが編集開始時点で保持していたトークンを
+        // OriginalValue に適用する。DB の現在値と一致しない場合に
+        // DbUpdateConcurrencyException が投げられる。
+        _db.Entry(incident).Property(nameof(Incident.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
+            return RedirectToAction(nameof(Edit), new { id });
+        }
         TempData["Success"] = "インシデントを更新しました。";
         return RedirectToAction(nameof(Details), new { id });
     }
@@ -297,6 +311,7 @@ public class IncidentsController : Controller
         {
             Id = analysis.Id,
             IncidentId = analysis.IncidentId,
+            ConcurrencyToken = analysis.ConcurrencyToken,
             CauseCategoryId = analysis.CauseCategoryId,
             Why1 = analysis.Why1,
             Why2 = analysis.Why2,
@@ -334,7 +349,18 @@ public class IncidentsController : Controller
         analysis.RootCauseSummary = vm.RootCauseSummary;
         analysis.AnalystName = vm.AnalystName;
         analysis.AdditionalNotes = vm.AdditionalNotes;
-        await _db.SaveChangesAsync();
+
+        _db.Entry(analysis).Property(nameof(CauseAnalysis.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+
+        try
+        {
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
+            return RedirectToAction(nameof(EditCauseAnalysis), new { id });
+        }
         TempData["Success"] = "原因分析を更新しました。";
         return RedirectToAction(nameof(Details), new { id = analysis.IncidentId });
     }
@@ -412,46 +438,64 @@ public class IncidentsController : Controller
     // POST /Incidents/CompleteMeasure/5
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> CompleteMeasure(int id, string? completionNote)
+    public async Task<IActionResult> CompleteMeasure(int id, string? completionNote, Guid concurrencyToken)
     {
         var measure = await _db.PreventiveMeasures.FindAsync(id);
-        if (measure != null)
+        if (measure == null) return NotFound();
+
+        measure.Status = "Completed";
+        measure.CompletedAt = DateTime.Now;
+        measure.CompletionNote = completionNote;
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
+
+        try
         {
-            measure.Status = "Completed";
-            measure.CompletedAt = DateTime.Now;
-            measure.CompletionNote = completionNote;
             await _db.SaveChangesAsync();
-            TempData["Success"] = "対策を完了しました。有効性評価を忘れずに行ってください。";
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、完了登録は保存されませんでした。最新の状態を読み直してから再度操作してください。";
             return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
         }
-        return NotFound();
+        TempData["Success"] = "対策を完了しました。有効性評価を忘れずに行ってください。";
+        return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
     }
 
     // POST /Incidents/RateMeasure/5
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool recurrenceObserved)
+    public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool recurrenceObserved, Guid concurrencyToken)
     {
         if (effectivenessRating < 1 || effectivenessRating > 5)
             return BadRequest("有効性評価は1〜5の値を指定してください。");
 
         var measure = await _db.PreventiveMeasures.FindAsync(id);
-        if (measure != null)
+        if (measure == null) return NotFound();
+
+        measure.EffectivenessRating = effectivenessRating;
+        measure.EffectivenessNote = effectivenessNote;
+        measure.RecurrenceObserved = recurrenceObserved;
+        measure.EffectivenessReviewedAt = DateTime.Now;
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
+
+        try
         {
-            measure.EffectivenessRating = effectivenessRating;
-            measure.EffectivenessNote = effectivenessNote;
-            measure.RecurrenceObserved = recurrenceObserved;
-            measure.EffectivenessReviewedAt = DateTime.Now;
             await _db.SaveChangesAsync();
-
-            if (recurrenceObserved)
-                TempData["Warning"] = "再発が確認されました。根本原因の再分析と追加対策を検討してください。";
-            else
-                TempData["Success"] = "有効性評価を登録しました。";
-
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            TempData["Warning"] = "他のユーザが先に更新したため、有効性評価は保存されませんでした。最新の状態を読み直してから再度登録してください。";
             return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
         }
-        return NotFound();
+
+        if (recurrenceObserved)
+            TempData["Warning"] = "再発が確認されました。根本原因の再分析と追加対策を検討してください。";
+        else
+            TempData["Success"] = "有効性評価を登録しました。";
+
+        return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
     }
 
     private async Task<List<SelectListItem>> BuildCauseCategoryOptions()
