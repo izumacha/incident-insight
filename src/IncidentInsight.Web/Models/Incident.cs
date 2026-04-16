@@ -40,6 +40,13 @@ public class Incident
     [Display(Name = "報告日時")]
     public DateTime ReportedAt { get; set; } = DateTime.Now;
 
+    /// <summary>
+    /// 楽観的同時実行制御トークン(全プロバイダ共通の Guid ベース)。
+    /// AuditSaveChangesInterceptor が更新時に新しい Guid を割り当てる。
+    /// </summary>
+    [ConcurrencyCheck]
+    public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
+
     // Navigation
     public ICollection<CauseAnalysis> CauseAnalyses { get; set; } = new List<CauseAnalysis>();
     public ICollection<PreventiveMeasure> PreventiveMeasures { get; set; } = new List<PreventiveMeasure>();

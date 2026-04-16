@@ -6,8 +6,31 @@ using Microsoft.EntityFrameworkCore;
 var builder = WebApplication.CreateBuilder(args);
 
 // Add services
-builder.Services.AddDbContext<ApplicationDbContext>(options =>
-    options.UseSqlite(builder.Configuration.GetConnectionString("DefaultConnection")));
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddScoped<AuditSaveChangesInterceptor>();
+
+builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
+{
+    var provider = (builder.Configuration.GetValue<string>("Database:Provider") ?? "sqlite")
+        .ToLowerInvariant();
+    var conn = builder.Configuration.GetConnectionString("DefaultConnection");
+
+    switch (provider)
+    {
+        case "sqlserver":
+            options.UseSqlServer(conn);
+            break;
+        case "postgres":
+        case "postgresql":
+            options.UseNpgsql(conn);
+            break;
+        default:
+            options.UseSqlite(conn);
+            break;
+    }
+
+    options.AddInterceptors(sp.GetRequiredService<AuditSaveChangesInterceptor>());
+});
 
 // ASP.NET Core Identity
 builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
