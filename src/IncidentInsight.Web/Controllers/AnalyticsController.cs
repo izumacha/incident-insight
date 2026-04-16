@@ -20,7 +20,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/MonthlyTrend
     public async Task<IActionResult> MonthlyTrend(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var query = _db.Incidents.AsQueryable();
+        var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
 
         var incidents = await query.Select(i => new { i.OccurredAt }).ToListAsync();
@@ -43,7 +43,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/ByCause
     public async Task<IActionResult> ByCause(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var query = _db.CauseAnalyses
+        var query = _db.CauseAnalyses.AsNoTracking()
             .Include(ca => ca.CauseCategory).ThenInclude(c => c!.Parent)
             .Include(ca => ca.Incident)
             .AsQueryable();
@@ -73,7 +73,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/ByDepartment
     public async Task<IActionResult> ByDepartment(DateTime? dateFrom, DateTime? dateTo)
     {
-        var query = _db.Incidents.AsQueryable();
+        var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
 
@@ -93,7 +93,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/BySeverity
     public async Task<IActionResult> BySeverity(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var query = _db.Incidents.AsQueryable();
+        var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
@@ -123,7 +123,7 @@ public class AnalyticsController : Controller
     public async Task<IActionResult> MeasureStatus()
     {
         var today = DateTime.Today;
-        var measures = await _db.PreventiveMeasures.ToListAsync();
+        var measures = await _db.PreventiveMeasures.AsNoTracking().ToListAsync();
 
         var planned = measures.Count(m => m.Status == "Planned" && !m.IsOverdue);
         var inProgress = measures.Count(m => m.Status == "InProgress" && !m.IsOverdue);
@@ -141,7 +141,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/EffectivenessRating
     public async Task<IActionResult> EffectivenessRating()
     {
-        var measures = await _db.PreventiveMeasures
+        var measures = await _db.PreventiveMeasures.AsNoTracking()
             .Where(m => m.EffectivenessRating != null)
             .ToListAsync();
 
@@ -163,7 +163,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/GetSubcategories?parentId=1
     public async Task<IActionResult> GetSubcategories(int parentId)
     {
-        var children = await _db.CauseCategories
+        var children = await _db.CauseCategories.AsNoTracking()
             .Where(c => c.ParentId == parentId)
             .OrderBy(c => c.DisplayOrder)
             .Select(c => new { c.Id, c.Name })
@@ -175,7 +175,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/ByIncidentType
     public async Task<IActionResult> ByIncidentType(DateTime? dateFrom, DateTime? dateTo)
     {
-        var query = _db.Incidents.AsQueryable();
+        var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
 
