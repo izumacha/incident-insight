@@ -94,8 +94,9 @@ public class HomeController : Controller
             }
         }
 
-        // Recurrence detection: walk 90-day recent incidents and query similar historical
-        // ones per pattern. Avoids materializing the whole Incidents table.
+        // Recurrence detection: walk 90-day recent incidents, then batch-fetch any
+        // historical incident sharing a (Department, IncidentType, CauseCategory) tuple.
+        // One DB round-trip total instead of N per recent incident.
         var recentList = await _db.Incidents.AsNoTracking()
             .Include(i => i.CauseAnalyses)
             .Where(i => i.OccurredAt >= ninetyDaysAgo)
@@ -105,19 +106,35 @@ public class HomeController : Controller
         var recurrenceAlerts = new List<RecurrenceAlert>();
         var processed = new HashSet<int>();
 
+        var recentDepts = recentList.Select(i => i.Department).Distinct().ToList();
+        var recentTypes = recentList.Select(i => i.IncidentType).Distinct().ToList();
+        var recentCatIds = recentList
+            .SelectMany(i => i.CauseAnalyses.Select(ca => ca.CauseCategoryId))
+            .ToHashSet();
+
+        // Over-fetches slightly (superset of dept × type) but collapses the loop's
+        // per-iteration queries into one. Final matching is done in-memory below.
+        var candidates = recentCatIds.Count == 0 || recentList.Count == 0
+            ? new List<Incident>()
+            : await _db.Incidents.AsNoTracking()
+                .Include(i => i.CauseAnalyses)
+                .Where(i => recentDepts.Contains(i.Department)
+                    && recentTypes.Contains(i.IncidentType)
+                    && i.CauseAnalyses.Any(ca => recentCatIds.Contains(ca.CauseCategoryId)))
+                .ToListAsync();
+
+        var candidatesByKey = candidates.ToLookup(i => (i.Department, i.IncidentType));
+
         foreach (var incident in recentList)
         {
             if (processed.Contains(incident.Id)) continue;
             var catIds = incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
             if (catIds.Count == 0) continue;
 
-            var similar = await _db.Incidents.AsNoTracking()
-                .Include(o => o.CauseAnalyses)
+            var similar = candidatesByKey[(incident.Department, incident.IncidentType)]
                 .Where(o => o.Id != incident.Id
-                    && o.Department == incident.Department
-                    && o.IncidentType == incident.IncidentType
                     && o.CauseAnalyses.Any(ca => catIds.Contains(ca.CauseCategoryId)))
-                .ToListAsync();
+                .ToList();
 
             if (similar.Count > 0)
             {

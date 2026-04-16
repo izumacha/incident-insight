@@ -26,10 +26,17 @@ public class AnalyticsControllerTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
+    // Match ASP.NET Core MVC's default JSON output (camelCase property names) so
+    // that contract assertions here reflect what the frontend actually receives.
+    private static readonly JsonSerializerOptions MvcJsonOptions = new()
+    {
+        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
+    };
+
     private static JsonDocument ToJsonDocument(IActionResult result)
     {
         var json = Assert.IsType<JsonResult>(result);
-        var serialized = JsonSerializer.Serialize(json.Value);
+        var serialized = JsonSerializer.Serialize(json.Value, MvcJsonOptions);
         return JsonDocument.Parse(serialized);
     }
 
@@ -218,9 +225,6 @@ public class AnalyticsControllerTests : IDisposable
 
         var items = doc.RootElement.EnumerateArray().ToList();
         Assert.Equal(2, items.Count);
-        // The controller projects `new { c.Id, c.Name }` so serialization preserves
-        // the property names as-is (PascalCase). ASP.NET's Json() pipeline would
-        // lowercase them, but here we serialize the raw anonymous type.
-        Assert.Equal("注意不足", items[0].GetProperty("Name").GetString());
+        Assert.Equal("注意不足", items[0].GetProperty("name").GetString());
     }
 }
