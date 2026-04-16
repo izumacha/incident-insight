@@ -71,6 +71,16 @@ The schema is centered on four aggregates with cascade rules configured in `Appl
 
 `Incident` / `CauseAnalysis` / `PreventiveMeasure` each carry a `ConcurrencyToken` (Guid, `[ConcurrencyCheck]`) for optimistic concurrency. The interceptor rotates this on each modification so concurrent edits fail-safe with `DbUpdateConcurrencyException`.
 
+**Edit POST contract**: mutating actions reload the entity via `FindAsync` before applying form data. If we relied on the default `OriginalValue` (which would be the token EF just loaded from the DB — always current), the concurrency check would never trip. Every edit POST therefore pins the client's pre-edit token explicitly before saving:
+
+```csharp
+_db.Entry(entity).Property(nameof(Entity.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
+try { await _db.SaveChangesAsync(); }
+catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; }
+```
+
+The client round-trips the token via a hidden form field (`<input type="hidden" asp-for="ConcurrencyToken" />`, or a `name="concurrencyToken"` value for modal/kanban forms that POST raw parameters). Applied across `IncidentsController.Edit` / `EditCauseAnalysis` / `CompleteMeasure` / `RateMeasure` and `PreventiveMeasuresController.Edit` / `Complete` / `Review` / `UpdateStatus`. When adding a new mutating POST action on any of these three entities, follow the same pattern.
+
 Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`, `AuditLog(ChangedAt)`, `AuditLog(EntityName, EntityKey)`.
 
 ### Controllers & cross-cutting patterns

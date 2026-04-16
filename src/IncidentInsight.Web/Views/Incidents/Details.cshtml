@@ -327,14 +327,16 @@
                                         <button class="btn btn-success btn-sm py-0 me-1"
                                                 data-bs-toggle="modal"
                                                 data-bs-target="#completeModal"
-                                                data-measure-id="@m.Id">完了</button>
+                                                data-measure-id="@m.Id"
+                                                data-concurrency-token="@m.ConcurrencyToken">完了</button>
                                     }
                                     @if (m.Status == "Completed" && !m.EffectivenessRating.HasValue)
                                     {
                                         <button class="btn btn-warning btn-sm py-0 me-1"
                                                 data-bs-toggle="modal"
                                                 data-bs-target="#rateModal"
-                                                data-measure-id="@m.Id">評価</button>
+                                                data-measure-id="@m.Id"
+                                                data-concurrency-token="@m.ConcurrencyToken">評価</button>
                                     }
                                     <a asp-controller="PreventiveMeasures" asp-action="Edit" asp-route-id="@m.Id"
                                        class="btn btn-outline-secondary btn-sm py-0">編集</a>
@@ -450,6 +452,7 @@
             </div>
             <form id="completeForm" action="/Incidents/CompleteMeasure/0" method="post">
                 @Html.AntiForgeryToken()
+                <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
                     <label class="form-label">完了報告内容（任意）</label>
                     <textarea name="completionNote" class="form-control" rows="3"
@@ -477,6 +480,7 @@
             </div>
             <form id="rateForm" action="/Incidents/RateMeasure/0" method="post">
                 @Html.AntiForgeryToken()
+                <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
                     <div class="mb-3">
                         <label class="form-label fw-bold">有効性評価 <span class="text-danger">*</span></label>
@@ -522,14 +526,20 @@
 
 @section Scripts {
 <script>
-    // Set measure ID in modal forms
+    // Set measure ID + concurrency token in modal forms
     document.getElementById('completeModal').addEventListener('show.bs.modal', function(e) {
         const id = e.relatedTarget.dataset.measureId;
-        document.getElementById('completeForm').action = '/Incidents/CompleteMeasure/' + id;
+        const token = e.relatedTarget.dataset.concurrencyToken || '';
+        const form = document.getElementById('completeForm');
+        form.action = '/Incidents/CompleteMeasure/' + id;
+        form.querySelector('input[name="concurrencyToken"]').value = token;
     });
     document.getElementById('rateModal').addEventListener('show.bs.modal', function(e) {
         const id = e.relatedTarget.dataset.measureId;
-        document.getElementById('rateForm').action = '/Incidents/RateMeasure/' + id;
+        const token = e.relatedTarget.dataset.concurrencyToken || '';
+        const form = document.getElementById('rateForm');
+        form.action = '/Incidents/RateMeasure/' + id;
+        form.querySelector('input[name="concurrencyToken"]').value = token;
     });
 </script>
 }

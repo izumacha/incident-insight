@@ -36,6 +36,7 @@
 
         <form asp-action="Review" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
+            <input type="hidden" asp-for="ConcurrencyToken" />
             <div class="row g-4">
                 <div class="col-12">
                     <label class="form-label fw-bold fs-6">
