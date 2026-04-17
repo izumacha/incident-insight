@@ -22,7 +22,11 @@ RUN dotnet publish src/IncidentInsight.Web/IncidentInsight.Web.csproj \
 FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
 WORKDIR /app
 
-# 非 root ユーザで実行 (aspnet イメージに同梱の app ユーザを使用)。
+# SQLite 既定構成では起動時に /app 直下へ DB ファイル (incident_insight.db) を作成するため、
+# WORKDIR と publish 先を app ユーザに所有させたうえで非 root 実行に切り替える。
+COPY --from=build --chown=app:app /app/publish .
+RUN chown app:app /app
+
 USER app
 
 ENV ASPNETCORE_URLS=http://+:8080 \
@@ -31,8 +35,6 @@ ENV ASPNETCORE_URLS=http://+:8080 \
     DOTNET_GCServer=1
 
 EXPOSE 8080
-
-COPY --from=build /app/publish .
 
 # aspnet ベースイメージには curl/wget が含まれないため Dockerfile の HEALTHCHECK は同梱しない。
 # Kubernetes / ECS などのオーケストレータ側から GET /health を叩いて liveness/readiness を判定すること。
