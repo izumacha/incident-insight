@@ -11,10 +11,12 @@ namespace IncidentInsight.Web.Controllers;
 public class PreventiveMeasuresController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly ILogger<PreventiveMeasuresController> _logger;
 
-    public PreventiveMeasuresController(ApplicationDbContext db)
+    public PreventiveMeasuresController(ApplicationDbContext db, ILogger<PreventiveMeasuresController> logger)
     {
         _db = db;
+        _logger = logger;
     }
 
     // GET /PreventiveMeasures
@@ -39,9 +41,9 @@ public class PreventiveMeasuresController : Controller
         var measures = await query.OrderBy(m => m.DueDate).ToListAsync();
 
         var today = DateTime.Today;
-        var planned = measures.Where(m => m.Status == "Planned").OrderBy(m => m.DueDate).ToList();
-        var inProgress = measures.Where(m => m.Status == "InProgress").OrderBy(m => m.DueDate).ToList();
-        var completed = measures.Where(m => m.Status == "Completed").OrderByDescending(m => m.CompletedAt).ToList();
+        var planned = measures.Where(m => m.Status == PreventiveMeasure.Statuses.Planned).OrderBy(m => m.DueDate).ToList();
+        var inProgress = measures.Where(m => m.Status == PreventiveMeasure.Statuses.InProgress).OrderBy(m => m.DueDate).ToList();
+        var completed = measures.Where(m => m.Status == PreventiveMeasure.Statuses.Completed).OrderByDescending(m => m.CompletedAt).ToList();
 
         ViewBag.Planned = planned;
         ViewBag.InProgress = inProgress;
@@ -98,7 +100,7 @@ public class PreventiveMeasuresController : Controller
             ResponsibleDepartment = vm.ResponsibleDepartment,
             DueDate = vm.DueDate,
             Priority = vm.Priority,
-            Status = "Planned"
+            Status = PreventiveMeasure.Statuses.Planned
         });
         await _db.SaveChangesAsync();
         TempData["Success"] = "再発防止策を登録しました。";
@@ -156,8 +158,9 @@ public class PreventiveMeasuresController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict updating PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
             return RedirectToAction(nameof(Edit), new { id });
         }
@@ -174,7 +177,7 @@ public class PreventiveMeasuresController : Controller
         var measure = await _db.PreventiveMeasures.FindAsync(id);
         if (measure == null) return NotFound();
 
-        measure.Status = "Completed";
+        measure.Status = PreventiveMeasure.Statuses.Completed;
         measure.CompletedAt = DateTime.Now;
         measure.CompletionNote = completionNote;
 
@@ -184,8 +187,9 @@ public class PreventiveMeasuresController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict completing PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、完了登録は保存されませんでした。画面を更新してから再度操作してください。";
             return RedirectToAction(nameof(Index));
         }
@@ -239,8 +243,9 @@ public class PreventiveMeasuresController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict reviewing PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、有効性評価は保存されませんでした。最新の状態を読み直してから再度登録してください。";
             return RedirectToAction(nameof(Review), new { id });
         }
@@ -264,7 +269,7 @@ public class PreventiveMeasuresController : Controller
         if (PreventiveMeasure.StatusValues.Contains(status))
         {
             measure.Status = status;
-            if (status == "Completed") measure.CompletedAt = DateTime.Now;
+            if (status == PreventiveMeasure.Statuses.Completed) measure.CompletedAt = DateTime.Now;
 
             _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
@@ -272,8 +277,9 @@ public class PreventiveMeasuresController : Controller
             {
                 await _db.SaveChangesAsync();
             }
-            catch (DbUpdateConcurrencyException)
+            catch (DbUpdateConcurrencyException ex)
             {
+                _logger.LogWarning(ex, "Concurrency conflict changing status of PreventiveMeasure {MeasureId}", id);
                 TempData["Warning"] = "他のユーザが先に更新したため、ステータス変更は保存されませんでした。画面を更新してから再度操作してください。";
             }
         }

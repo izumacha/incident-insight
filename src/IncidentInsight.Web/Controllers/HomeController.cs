@@ -1,6 +1,8 @@
+using System.Diagnostics;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.ViewModels;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -39,11 +41,11 @@ public class HomeController : Controller
         var thisMonthIncidents = await _db.Incidents.AsNoTracking()
             .CountAsync(i => i.OccurredAt >= thisMonthStart);
         var openMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status != "Completed");
+            .CountAsync(m => m.Status != PreventiveMeasure.Statuses.Completed);
         var overdueMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status != "Completed" && m.DueDate < today);
+            .CountAsync(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < today);
         var completedMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status == "Completed");
+            .CountAsync(m => m.Status == PreventiveMeasure.Statuses.Completed);
         var failedMeasures = await _db.PreventiveMeasures.AsNoTracking()
             .CountAsync(m => m.RecurrenceObserved == true);
 
@@ -56,7 +58,7 @@ public class HomeController : Controller
 
         var overdueMeasureList = await _db.PreventiveMeasures.AsNoTracking()
             .Include(m => m.Incident)
-            .Where(m => m.Status != "Completed" && m.DueDate < today)
+            .Where(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < today)
             .OrderBy(m => m.DueDate)
             .ToListAsync();
 
@@ -128,13 +130,9 @@ public class HomeController : Controller
         foreach (var incident in recentList)
         {
             if (processed.Contains(incident.Id)) continue;
-            var catIds = incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
-            if (catIds.Count == 0) continue;
 
-            var similar = candidatesByKey[(incident.Department, incident.IncidentType)]
-                .Where(o => o.Id != incident.Id
-                    && o.CauseAnalyses.Any(ca => catIds.Contains(ca.CauseCategoryId)))
-                .ToList();
+            var bucket = candidatesByKey[(incident.Department, incident.IncidentType)];
+            var similar = RecurrenceDetector.FindSimilar(incident, bucket);
 
             if (similar.Count > 0)
             {
@@ -168,5 +166,13 @@ public class HomeController : Controller
     }
 
     [AllowAnonymous]
-    public IActionResult Error() => View();
+    [ResponseCache(NoStore = true, Location = ResponseCacheLocation.None)]
+    public IActionResult Error()
+    {
+        var vm = new ErrorViewModel
+        {
+            RequestId = Activity.Current?.Id ?? HttpContext.TraceIdentifier
+        };
+        return View(vm);
+    }
 }

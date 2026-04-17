@@ -1,4 +1,5 @@
 using IncidentInsight.Web.Data;
+using IncidentInsight.Web.Models;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -107,7 +108,7 @@ public class AnalyticsController : Controller
         var ordered = severityOrder
             .Select(s => new
             {
-                label = Models.Incident.SeverityLevels.TryGetValue(s, out var name) ? name : s,
+                label = Incident.SeverityLevels.TryGetValue(s, out var name) ? name : s,
                 count = grouped.FirstOrDefault(g => g.severity == s)?.count ?? 0
             })
             .ToList();
@@ -125,10 +126,10 @@ public class AnalyticsController : Controller
         var today = DateTime.Today;
         var measures = await _db.PreventiveMeasures.AsNoTracking().ToListAsync();
 
-        var planned = measures.Count(m => m.Status == "Planned" && !m.IsOverdue);
-        var inProgress = measures.Count(m => m.Status == "InProgress" && !m.IsOverdue);
+        var planned = measures.Count(m => m.Status == PreventiveMeasure.Statuses.Planned && !m.IsOverdue);
+        var inProgress = measures.Count(m => m.Status == PreventiveMeasure.Statuses.InProgress && !m.IsOverdue);
         var overdue = measures.Count(m => m.IsOverdue);
-        var completed = measures.Count(m => m.Status == "Completed");
+        var completed = measures.Count(m => m.Status == PreventiveMeasure.Statuses.Completed);
 
         return Json(new
         {

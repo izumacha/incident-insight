@@ -1,6 +1,7 @@
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.ViewModels;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Rendering;
@@ -12,11 +13,13 @@ namespace IncidentInsight.Web.Controllers;
 public class IncidentsController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly ILogger<IncidentsController> _logger;
     private const int PageSize = 20;
 
-    public IncidentsController(ApplicationDbContext db)
+    public IncidentsController(ApplicationDbContext db, ILogger<IncidentsController> logger)
     {
         _db = db;
+        _logger = logger;
     }
 
     // GET /Incidents
@@ -51,7 +54,7 @@ public class IncidentsController : Controller
         {
             "severity" => query.OrderByDescending(i => i.Severity),
             "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
-                              .Any(m => m.Status != "Completed" && m.DueDate < DateTime.Today)),
+                              .Any(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < DateTime.Today)),
             _          => query.OrderByDescending(i => i.OccurredAt)
         };
 
@@ -99,17 +102,15 @@ public class IncidentsController : Controller
 
         if (incident == null) return NotFound();
 
-        // Recurrence detection
-        var catIds = incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
-        var similar = await _db.Incidents
+        // 再発検出: 同部署・同インシデント種別の候補を DB から取得し、
+        // 原因分類の重なりは共有ヘルパーで in-memory 判定する。
+        var candidates = await _db.Incidents.AsNoTracking()
             .Include(o => o.CauseAnalyses)
             .Where(o => o.Id != id
                 && o.Department == incident.Department
                 && o.IncidentType == incident.IncidentType)
             .ToListAsync();
-        similar = similar
-            .Where(o => o.CauseAnalyses.Any(ca => catIds.Contains(ca.CauseCategoryId)))
-            .ToList();
+        var similar = RecurrenceDetector.FindSimilar(incident, candidates);
 
         var causeOptions = await BuildCauseCategoryOptions();
 
@@ -201,7 +202,7 @@ public class IncidentsController : Controller
                 DueDate = m.DueDate,
                 Priority = m.Priority,
                 AnalysisNote = m.AnalysisNote,
-                Status = "Planned"
+                Status = PreventiveMeasure.Statuses.Planned
             });
         }
 
@@ -275,8 +276,9 @@ public class IncidentsController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict updating Incident {IncidentId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
             return RedirectToAction(nameof(Edit), new { id });
         }
@@ -349,6 +351,8 @@ public class IncidentsController : Controller
         analysis.RootCauseSummary = vm.RootCauseSummary;
         analysis.AnalystName = vm.AnalystName;
         analysis.AdditionalNotes = vm.AdditionalNotes;
+        // 監査目的で編集時にも分析日時を更新する(初回登録と再分析の区別は監査ログで追跡)
+        analysis.AnalyzedAt = DateTime.Now;
 
         _db.Entry(analysis).Property(nameof(CauseAnalysis.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
 
@@ -356,8 +360,9 @@ public class IncidentsController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict updating CauseAnalysis {AnalysisId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
             return RedirectToAction(nameof(EditCauseAnalysis), new { id });
         }
@@ -427,7 +432,7 @@ public class IncidentsController : Controller
                 DueDate = vm.DueDate,
                 Priority = vm.Priority,
                 AnalysisNote = vm.AnalysisNote,
-                Status = "Planned"
+                Status = PreventiveMeasure.Statuses.Planned
             });
             await _db.SaveChangesAsync();
             TempData["Success"] = "再発防止策を追加しました。";
@@ -443,7 +448,7 @@ public class IncidentsController : Controller
         var measure = await _db.PreventiveMeasures.FindAsync(id);
         if (measure == null) return NotFound();
 
-        measure.Status = "Completed";
+        measure.Status = PreventiveMeasure.Statuses.Completed;
         measure.CompletedAt = DateTime.Now;
         measure.CompletionNote = completionNote;
 
@@ -453,8 +458,9 @@ public class IncidentsController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict completing PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、完了登録は保存されませんでした。最新の状態を読み直してから再度操作してください。";
             return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
         }
@@ -484,8 +490,9 @@ public class IncidentsController : Controller
         {
             await _db.SaveChangesAsync();
         }
-        catch (DbUpdateConcurrencyException)
+        catch (DbUpdateConcurrencyException ex)
         {
+            _logger.LogWarning(ex, "Concurrency conflict rating PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、有効性評価は保存されませんでした。最新の状態を読み直してから再度登録してください。";
             return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
         }
