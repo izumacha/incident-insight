@@ -80,6 +80,10 @@ builder.Services.AddHsts(options =>
 
 builder.Services.AddControllersWithViews();
 
+// /health は認証不要で DB 接続確認を行う。コンテナ/ロードバランサの liveness/readiness 用。
+builder.Services.AddHealthChecks()
+    .AddDbContextCheck<ApplicationDbContext>("database");
+
 var app = builder.Build();
 
 // Configure pipeline
@@ -98,6 +102,8 @@ app.UseAuthorization();
 app.MapControllerRoute(
     name: "default",
     pattern: "{controller=Home}/{action=Index}/{id?}");
+
+app.MapHealthChecks("/health");
 
 // Initialize DB, seed roles + admin, then seed data
 using (var scope = app.Services.CreateScope())

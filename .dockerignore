@@ -1,0 +1,24 @@
+**/bin/
+**/obj/
+**/out/
+**/.vs/
+**/.vscode/
+**/.idea/
+**/*.user
+**/*.suo
+
+# Local SQLite databases
+**/*.db
+**/*.db-shm
+**/*.db-wal
+
+# Secrets / env
+**/appsettings.Development.json
+**/secrets.json
+.env
+.env.*
+
+# Git and CI artifacts
+.git/
+.github/
+**/.DS_Store

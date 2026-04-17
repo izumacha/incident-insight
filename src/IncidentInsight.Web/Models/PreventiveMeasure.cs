@@ -22,7 +22,7 @@ public class PreventiveMeasure
     [Required(ErrorMessage = "対策種別を選択してください")]
     [MaxLength(20)]
     [Display(Name = "対策種別")]
-    public string MeasureType { get; set; } = "ShortTerm"; // ShortTerm | LongTerm
+    public string MeasureType { get; set; } = Types.ShortTerm; // ShortTerm | LongTerm
 
     [Required(ErrorMessage = "担当者を入力してください")]
     [MaxLength(100)]
@@ -45,7 +45,7 @@ public class PreventiveMeasure
     // Status lifecycle: Planned → InProgress → Completed
     [MaxLength(20)]
     [Display(Name = "ステータス")]
-    public string Status { get; set; } = "Planned";
+    public string Status { get; set; } = Statuses.Planned;
 
     [Display(Name = "完了日")]
     public DateTime? CompletedAt { get; set; }
@@ -81,26 +81,27 @@ public class PreventiveMeasure
     public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
 
     // Computed helpers
-    public bool IsOverdue => Status != "Completed" && DueDate < DateTime.Today;
+    // DueDate の .Date を使うことで、期限日当日は「期限超過」にならない。
+    public bool IsOverdue => Status != Statuses.Completed && DueDate.Date < DateTime.Today;
 
     public string StatusLabel => Status switch
     {
-        "Planned" => "計画中",
-        "InProgress" => "進行中",
-        "Completed" => "完了",
+        Statuses.Planned => "計画中",
+        Statuses.InProgress => "進行中",
+        Statuses.Completed => "完了",
         _ => Status
     };
 
     public string StatusColor => Status switch
     {
-        "Planned" => IsOverdue ? "danger" : "warning",
-        "InProgress" => IsOverdue ? "danger" : "primary",
-        "Completed" => "success",
+        Statuses.Planned => IsOverdue ? "danger" : "warning",
+        Statuses.InProgress => IsOverdue ? "danger" : "primary",
+        Statuses.Completed => "success",
         _ => "secondary"
     };
 
-    public string MeasureTypeLabel => MeasureType == "LongTerm" ? "長期対策" : "短期対策";
-    public string MeasureTypeColor => MeasureType == "LongTerm" ? "info" : "success";
+    public string MeasureTypeLabel => MeasureType == Types.LongTerm ? "長期対策" : "短期対策";
+    public string MeasureTypeColor => MeasureType == Types.LongTerm ? "info" : "success";
 
     public string PriorityLabel => Priority switch
     {
@@ -122,6 +123,21 @@ public class PreventiveMeasure
         ? new string('★', EffectivenessRating.Value) + new string('☆', 5 - EffectivenessRating.Value)
         : "未評価";
 
-    public static readonly string[] MeasureTypes = { "ShortTerm", "LongTerm" };
-    public static readonly string[] StatusValues = { "Planned", "InProgress", "Completed" };
+    /// <summary>ステータスの値定数 (永続化キー)。</summary>
+    public static class Statuses
+    {
+        public const string Planned = "Planned";
+        public const string InProgress = "InProgress";
+        public const string Completed = "Completed";
+    }
+
+    /// <summary>対策種別の値定数 (永続化キー)。</summary>
+    public static class Types
+    {
+        public const string ShortTerm = "ShortTerm";
+        public const string LongTerm = "LongTerm";
+    }
+
+    public static readonly string[] MeasureTypes = { Types.ShortTerm, Types.LongTerm };
+    public static readonly string[] StatusValues = { Statuses.Planned, Statuses.InProgress, Statuses.Completed };
 }

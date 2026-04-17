@@ -5,6 +5,7 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
 
@@ -19,7 +20,7 @@ public class IncidentsControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new IncidentsController(_db)
+        _controller = new IncidentsController(_db, NullLogger<IncidentsController>.Instance)
         {
             TempData = new TestTempData()
         };

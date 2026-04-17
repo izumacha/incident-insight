@@ -112,9 +112,9 @@ public class Incident
         get
         {
             if (!PreventiveMeasures.Any()) return "未登録";
-            if (PreventiveMeasures.All(m => m.Status == "Completed")) return "完了";
+            if (PreventiveMeasures.All(m => m.Status == PreventiveMeasure.Statuses.Completed)) return "完了";
             if (PreventiveMeasures.Any(m => m.IsOverdue)) return "期限超過";
-            if (PreventiveMeasures.Any(m => m.Status == "InProgress")) return "進行中";
+            if (PreventiveMeasures.Any(m => m.Status == PreventiveMeasure.Statuses.InProgress)) return "進行中";
             return "計画中";
         }
     }

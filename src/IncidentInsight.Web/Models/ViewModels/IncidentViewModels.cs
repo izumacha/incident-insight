@@ -147,7 +147,7 @@ public class MeasureFormViewModel
 
     [Required(ErrorMessage = "対策種別を選択してください")]
     [Display(Name = "対策種別")]
-    public string MeasureType { get; set; } = "ShortTerm";
+    public string MeasureType { get; set; } = PreventiveMeasure.Types.ShortTerm;
 
     [Required(ErrorMessage = "担当者を入力してください")]
     [MaxLength(100)]
