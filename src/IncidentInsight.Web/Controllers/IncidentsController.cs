@@ -303,13 +303,19 @@ public class IncidentsController : Controller
     [Authorize(Policy = Policies.CanDeleteIncident)]
     public async Task<IActionResult> Delete(int id)
     {
-        var incident = await _db.Incidents.FindAsync(id);
-        if (incident != null)
-        {
-            _db.Incidents.Remove(incident);
-            await _db.SaveChangesAsync();
-            TempData["Success"] = "インシデントを削除しました。";
-        }
+        // 子(CauseAnalysis / PreventiveMeasure)を Include して ChangeTracker に載せておく。
+        // OnDelete(Cascade) は DB 側でも子行を消すが、それだけだと AuditSaveChangesInterceptor が
+        // 子の Deleted エントリを拾えず、監査ログから抜け落ちる。
+        var incident = await _db.Incidents
+            .Include(i => i.CauseAnalyses)
+            .Include(i => i.PreventiveMeasures)
+            .FirstOrDefaultAsync(i => i.Id == id);
+        if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanDeleteIncident)) return Forbid();
+
+        _db.Incidents.Remove(incident);
+        await _db.SaveChangesAsync();
+        TempData["Success"] = "インシデントを削除しました。";
         return RedirectToAction(nameof(Index));
     }
 

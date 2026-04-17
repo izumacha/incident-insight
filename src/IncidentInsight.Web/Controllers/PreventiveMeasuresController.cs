@@ -316,14 +316,17 @@ public class PreventiveMeasuresController : Controller
     [Authorize(Policy = Policies.CanDeleteIncident)]
     public async Task<IActionResult> Delete(int id)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
-        if (measure != null)
-        {
-            var incidentId = measure.IncidentId;
-            _db.PreventiveMeasures.Remove(measure);
-            await _db.SaveChangesAsync();
-            TempData["Success"] = "再発防止策を削除しました。";
-        }
+        // Incident を Include して部署スコープの認可判定(SameDepartmentHandler)に
+        // 必要なナビゲーションを確実にロードする。
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
+        if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanDeleteIncident)) return Forbid();
+
+        _db.PreventiveMeasures.Remove(measure);
+        await _db.SaveChangesAsync();
+        TempData["Success"] = "再発防止策を削除しました。";
         return RedirectToAction(nameof(Index));
     }
 
