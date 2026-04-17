@@ -106,6 +106,46 @@ public class AuditSaveChangesInterceptorTests : IDisposable
     }
 
     [Fact]
+    public async Task Deleted_Incident_WithChildrenLoaded_AuditsAllChildren()
+    {
+        // Incident 削除時に子(CauseAnalysis / PreventiveMeasure)を Include してから
+        // Remove するコントローラのパターンを再現し、ChangeTracker 経由で子も
+        // 監査ログに記録されることを検証する。
+        var category = new CauseCategory { Name = "テスト分類", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        var incident = NewIncident();
+        incident.CauseAnalyses.Add(new CauseAnalysis { CauseCategory = category, Why1 = "なぜ1" });
+        incident.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            Description = "対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "担当者",
+            ResponsibleDepartment = "内科病棟",
+            DueDate = DateTime.Today.AddDays(30),
+            Priority = 2
+        });
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var toDelete = await _db.Incidents
+            .Include(i => i.CauseAnalyses)
+            .Include(i => i.PreventiveMeasures)
+            .FirstAsync(i => i.Id == incident.Id);
+        _db.Incidents.Remove(toDelete);
+        await _db.SaveChangesAsync();
+
+        var deletedLogs = await _db.AuditLogs
+            .Where(a => a.Operation == "Deleted")
+            .ToListAsync();
+
+        Assert.Contains(deletedLogs, l => l.EntityName == nameof(Incident));
+        Assert.Contains(deletedLogs, l => l.EntityName == nameof(CauseAnalysis));
+        Assert.Contains(deletedLogs, l => l.EntityName == nameof(PreventiveMeasure));
+    }
+
+    [Fact]
     public async Task NonAuditedEntity_DoesNotProduceAuditLog()
     {
         var category = new CauseCategory { Name = "カテゴリA", DisplayOrder = 1 };

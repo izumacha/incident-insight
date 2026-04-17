@@ -298,6 +298,58 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Delete_Staff_OtherDepartment_ReturnsForbid()
+    {
+        var incident = new Incident
+        {
+            Department = "外来",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "他部署",
+            ReporterName = "他部署担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Delete(incident.Id);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.True(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
+    }
+
+    [Fact]
+    public async Task Delete_NotFound_ReturnsNotFound()
+    {
+        var result = await _controller.Delete(99999);
+        Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Fact]
+    public async Task Delete_Admin_RemovesIncident()
+    {
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "削除対象",
+            ReporterName = "担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Delete(incident.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(IncidentsController.Index), redirect.ActionName);
+        Assert.False(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
+        Assert.NotNull(_controller.TempData["Success"]);
+    }
+
+    [Fact]
     public async Task Edit_Get_Staff_SameDepartment_ReturnsView()
     {
         var incident = new Incident
