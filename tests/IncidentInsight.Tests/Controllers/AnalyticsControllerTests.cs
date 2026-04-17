@@ -206,6 +206,85 @@ public class AnalyticsControllerTests : IDisposable
         Assert.Equal(2, data[0]);
     }
 
+    // Regression tests for #27: `dateTo` must include incidents that occurred
+    // later in the same calendar day, not just those at 00:00.
+    [Fact]
+    public async Task ByDepartment_DateTo_IncludesSameDayAfternoonIncident()
+    {
+        var dateTo = new DateTime(2026, 4, 17);
+        _db.Incidents.Add(MakeIncident(dept: "ICU",
+            occurredAt: dateTo.AddHours(14)));
+        _db.Incidents.Add(MakeIncident(dept: "ICU",
+            occurredAt: dateTo.AddDays(1)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.ByDepartment(null, dateTo);
+        using var doc = ToJsonDocument(result);
+
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        Assert.Single(data);
+        Assert.Equal(1, data[0]);
+    }
+
+    [Fact]
+    public async Task BySeverity_DateTo_IncludesSameDayAfternoonIncident()
+    {
+        var dateTo = new DateTime(2026, 4, 17);
+        _db.Incidents.Add(MakeIncident(occurredAt: dateTo.AddHours(23).AddMinutes(59)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.BySeverity(null, dateTo, null);
+        using var doc = ToJsonDocument(result);
+
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        Assert.Equal(1, data.Sum());
+    }
+
+    [Fact]
+    public async Task ByIncidentType_DateTo_IncludesSameDayAfternoonIncident()
+    {
+        var dateTo = new DateTime(2026, 4, 17);
+        _db.Incidents.Add(MakeIncident(occurredAt: dateTo.AddHours(10)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.ByIncidentType(null, dateTo);
+        using var doc = ToJsonDocument(result);
+
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        Assert.Single(data);
+        Assert.Equal(1, data[0]);
+    }
+
+    [Fact]
+    public async Task ByCause_DateTo_IncludesSameDayAfternoonIncident()
+    {
+        var dateTo = new DateTime(2026, 4, 17);
+        var category = new CauseCategory { Name = "ヒューマン", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        var sameDay = MakeIncident(occurredAt: dateTo.AddHours(15));
+        var nextDay = MakeIncident(occurredAt: dateTo.AddDays(1));
+        _db.Incidents.AddRange(sameDay, nextDay);
+        await _db.SaveChangesAsync();
+
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = sameDay.Id, CauseCategoryId = category.Id, Why1 = "x" },
+            new CauseAnalysis { IncidentId = nextDay.Id, CauseCategoryId = category.Id, Why1 = "y" });
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.ByCause(null, dateTo, null);
+        using var doc = ToJsonDocument(result);
+
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        Assert.Single(data);
+        Assert.Equal(1, data[0]);
+    }
+
     [Fact]
     public async Task GetSubcategories_ReturnsChildrenOfParent()
     {

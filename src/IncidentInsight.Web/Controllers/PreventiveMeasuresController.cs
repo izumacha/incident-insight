@@ -44,7 +44,7 @@ public class PreventiveMeasuresController : Controller
         if (dateFrom.HasValue)
             query = query.Where(m => m.DueDate >= dateFrom.Value);
         if (dateTo.HasValue)
-            query = query.Where(m => m.DueDate <= dateTo.Value);
+            query = query.Where(m => m.DueDate < dateTo.Value.Date.AddDays(1));
 
         var measures = await query.OrderBy(m => m.DueDate).ToListAsync();
 
