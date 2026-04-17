@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using IncidentInsight.Web.Models.Enums;
 using Microsoft.AspNetCore.Mvc.Rendering;
 
 namespace IncidentInsight.Web.Models.ViewModels;
@@ -14,8 +15,8 @@ public class IncidentListViewModel
     // Filter state
     public string? Search { get; set; }
     public string? Department { get; set; }
-    public string? IncidentType { get; set; }
-    public string? Severity { get; set; }
+    public IncidentTypeKind? IncidentType { get; set; }
+    public IncidentSeverity? Severity { get; set; }
     public DateTime? DateFrom { get; set; }
     public DateTime? DateTo { get; set; }
     public int? CauseCategoryId { get; set; }
@@ -56,14 +57,12 @@ public class IncidentCreateEditViewModel
     public string Department { get; set; } = "";
 
     [Required(ErrorMessage = "インシデント種別は必須です")]
-    [MaxLength(50)]
     [Display(Name = "インシデント種別")]
-    public string IncidentType { get; set; } = "";
+    public IncidentTypeKind IncidentType { get; set; } = IncidentTypeKind.Other;
 
     [Required(ErrorMessage = "重症度は必須です")]
-    [MaxLength(20)]
     [Display(Name = "重症度")]
-    public string Severity { get; set; } = "Level0";
+    public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
     [Required(ErrorMessage = "状況・経緯を入力してください")]
     [Display(Name = "状況・経緯")]
@@ -147,7 +146,7 @@ public class MeasureFormViewModel
 
     [Required(ErrorMessage = "対策種別を選択してください")]
     [Display(Name = "対策種別")]
-    public string MeasureType { get; set; } = PreventiveMeasure.Types.ShortTerm;
+    public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
 
     [Required(ErrorMessage = "担当者を入力してください")]
     [MaxLength(100)]

@@ -2,6 +2,7 @@ using System.Text.Json;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -26,8 +27,6 @@ public class AnalyticsControllerTests : IDisposable
 
     public void Dispose() => _db.Dispose();
 
-    // Match ASP.NET Core MVC's default JSON output (camelCase property names) so
-    // that contract assertions here reflect what the frontend actually receives.
     private static readonly JsonSerializerOptions MvcJsonOptions = new()
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
@@ -40,8 +39,10 @@ public class AnalyticsControllerTests : IDisposable
         return JsonDocument.Parse(serialized);
     }
 
-    private static Incident MakeIncident(string dept = "内科病棟", string type = "投薬ミス",
-        string severity = "Level2", DateTime? occurredAt = null) => new()
+    private static Incident MakeIncident(string dept = "内科病棟",
+        IncidentTypeKind type = IncidentTypeKind.Medication,
+        IncidentSeverity severity = IncidentSeverity.Level2,
+        DateTime? occurredAt = null) => new()
     {
         Department = dept,
         IncidentType = type,
@@ -77,7 +78,6 @@ public class AnalyticsControllerTests : IDisposable
         using var doc = ToJsonDocument(result);
 
         var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
-        // Last entry corresponds to the current month.
         Assert.Equal(2, data[^1].GetInt32());
     }
 
@@ -99,7 +99,6 @@ public class AnalyticsControllerTests : IDisposable
             .Select(e => e.GetInt32()).ToList();
 
         Assert.Equal(2, labels.Count);
-        // Ordered descending by count — "ICU" should be first.
         Assert.Equal("ICU", labels[0]);
         Assert.Equal(2, data[0]);
         Assert.Equal("外来", labels[1]);
@@ -109,8 +108,8 @@ public class AnalyticsControllerTests : IDisposable
     [Fact]
     public async Task BySeverity_AlwaysReturnsAllSevenLevelsInOrder()
     {
-        _db.Incidents.Add(MakeIncident(severity: "Level2"));
-        _db.Incidents.Add(MakeIncident(severity: "Level4"));
+        _db.Incidents.Add(MakeIncident(severity: IncidentSeverity.Level2));
+        _db.Incidents.Add(MakeIncident(severity: IncidentSeverity.Level4));
         await _db.SaveChangesAsync();
 
         var result = await _controller.BySeverity(null, null, null);
@@ -119,7 +118,6 @@ public class AnalyticsControllerTests : IDisposable
         var labels = doc.RootElement.GetProperty("labels").EnumerateArray().ToList();
         var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
 
-        // Severity chart should have 7 fixed slots regardless of data presence.
         Assert.Equal(7, labels.Count);
         Assert.Equal(7, data.Count);
         Assert.Equal(2, data.Sum(d => d.GetInt32()));
@@ -134,15 +132,15 @@ public class AnalyticsControllerTests : IDisposable
         _db.PreventiveMeasures.AddRange(
             new PreventiveMeasure
             {
-                IncidentId = incident.Id, Description = "A", MeasureType = "ShortTerm",
+                IncidentId = incident.Id, Description = "A", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = "Planned", DueDate = DateTime.Today.AddDays(10)
+                Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(10)
             },
             new PreventiveMeasure
             {
-                IncidentId = incident.Id, Description = "B", MeasureType = "ShortTerm",
+                IncidentId = incident.Id, Description = "B", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = "Completed", DueDate = DateTime.Today.AddDays(-5)
+                Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(-5)
             });
         await _db.SaveChangesAsync();
 
@@ -164,16 +162,16 @@ public class AnalyticsControllerTests : IDisposable
         _db.PreventiveMeasures.AddRange(
             new PreventiveMeasure
             {
-                IncidentId = incident.Id, Description = "A", MeasureType = "ShortTerm",
+                IncidentId = incident.Id, Description = "A", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = "Completed", DueDate = DateTime.Today,
+                Status = MeasureStatus.Completed, DueDate = DateTime.Today,
                 EffectivenessRating = 5, RecurrenceObserved = false
             },
             new PreventiveMeasure
             {
-                IncidentId = incident.Id, Description = "B", MeasureType = "ShortTerm",
+                IncidentId = incident.Id, Description = "B", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = "Completed", DueDate = DateTime.Today,
+                Status = MeasureStatus.Completed, DueDate = DateTime.Today,
                 EffectivenessRating = 2, RecurrenceObserved = true
             });
         await _db.SaveChangesAsync();
@@ -191,9 +189,9 @@ public class AnalyticsControllerTests : IDisposable
     public async Task ByIncidentType_ReturnsOrderedCounts()
     {
         _db.Incidents.AddRange(
-            MakeIncident(type: "投薬ミス"),
-            MakeIncident(type: "投薬ミス"),
-            MakeIncident(type: "転倒・転落"));
+            MakeIncident(type: IncidentTypeKind.Medication),
+            MakeIncident(type: IncidentTypeKind.Medication),
+            MakeIncident(type: IncidentTypeKind.Fall));
         await _db.SaveChangesAsync();
 
         var result = await _controller.ByIncidentType(null, null);

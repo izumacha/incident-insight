@@ -1,12 +1,14 @@
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
 namespace IncidentInsight.Web.Controllers;
 
-[Authorize]
+[Authorize(Policy = Policies.CanViewAnalytics)]
 public class AnalyticsController : Controller
 {
     private readonly ApplicationDbContext _db;
@@ -21,21 +23,27 @@ public class AnalyticsController : Controller
     // GET /Analytics/MonthlyTrend
     public async Task<IActionResult> MonthlyTrend(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var query = _db.Incidents.AsNoTracking().AsQueryable();
+        var today = DateTime.Today;
+        var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-11);
+
+        var query = _db.Incidents.AsNoTracking()
+            .Where(i => i.OccurredAt >= firstMonthStart);
         if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
 
-        var incidents = await query.Select(i => new { i.OccurredAt }).ToListAsync();
+        var groups = await query
+            .GroupBy(i => new { i.OccurredAt.Year, i.OccurredAt.Month })
+            .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
+            .ToListAsync();
+        var byMonth = groups.ToDictionary(g => (g.Year, g.Month), g => g.Count);
 
-        var today = DateTime.Today;
         var labels = new List<string>();
         var counts = new List<int>();
-
         for (int i = 11; i >= 0; i--)
         {
             var start = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
-            var end = start.AddMonths(1);
             labels.Add(start.ToString("M月"));
-            counts.Add(incidents.Count(x => x.OccurredAt >= start && x.OccurredAt < end));
+            byMonth.TryGetValue((start.Year, start.Month), out var count);
+            counts.Add(count);
         }
 
         return Json(new { labels, data = counts });
@@ -44,10 +52,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/ByCause
     public async Task<IActionResult> ByCause(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var query = _db.CauseAnalyses.AsNoTracking()
-            .Include(ca => ca.CauseCategory).ThenInclude(c => c!.Parent)
-            .Include(ca => ca.Incident)
-            .AsQueryable();
+        var query = _db.CauseAnalyses.AsNoTracking().AsQueryable();
 
         if (!string.IsNullOrEmpty(department))
             query = query.Where(ca => ca.Incident.Department == department);
@@ -56,13 +61,15 @@ public class AnalyticsController : Controller
         if (dateTo.HasValue)
             query = query.Where(ca => ca.Incident.OccurredAt <= dateTo.Value);
 
-        var analyses = await query.ToListAsync();
-
-        var grouped = analyses
-            .GroupBy(ca => ca.CauseCategory?.Parent?.Name ?? ca.CauseCategory?.Name ?? "不明")
-            .Select(g => new { label = g.Key, count = g.Count() })
+        // GroupBy runs on the server: we pick the parent name when present, otherwise
+        // the leaf name, without materializing each CauseAnalysis row.
+        var grouped = await query
+            .GroupBy(ca => ca.CauseCategory!.Parent != null
+                ? ca.CauseCategory.Parent.Name
+                : ca.CauseCategory.Name)
+            .Select(g => new { label = g.Key ?? "不明", count = g.Count() })
             .OrderByDescending(x => x.count)
-            .ToList();
+            .ToListAsync();
 
         return Json(new
         {
@@ -99,16 +106,15 @@ public class AnalyticsController : Controller
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
 
-        var severityOrder = new[] { "Level0", "Level1", "Level2", "Level3a", "Level3b", "Level4", "Level5" };
         var grouped = await query
             .GroupBy(i => i.Severity)
             .Select(g => new { severity = g.Key, count = g.Count() })
             .ToListAsync();
 
-        var ordered = severityOrder
+        var ordered = Enum.GetValues<IncidentSeverity>()
             .Select(s => new
             {
-                label = Incident.SeverityLevels.TryGetValue(s, out var name) ? name : s,
+                label = EnumLabels.Japanese(s),
                 count = grouped.FirstOrDefault(g => g.severity == s)?.count ?? 0
             })
             .ToList();
@@ -123,13 +129,24 @@ public class AnalyticsController : Controller
     // GET /Analytics/MeasureStatus
     public async Task<IActionResult> MeasureStatus()
     {
+        // IsOverdue is a CLR-only computed property, so we inline its predicate
+        // (Status != Completed && DueDate < today) so EF can translate it.
         var today = DateTime.Today;
-        var measures = await _db.PreventiveMeasures.AsNoTracking().ToListAsync();
+        var counts = await _db.PreventiveMeasures.AsNoTracking()
+            .GroupBy(_ => 1)
+            .Select(g => new
+            {
+                Planned    = g.Count(m => m.Status == Models.Enums.MeasureStatus.Planned    && m.DueDate >= today),
+                InProgress = g.Count(m => m.Status == Models.Enums.MeasureStatus.InProgress && m.DueDate >= today),
+                Overdue    = g.Count(m => m.Status != Models.Enums.MeasureStatus.Completed  && m.DueDate <  today),
+                Completed  = g.Count(m => m.Status == Models.Enums.MeasureStatus.Completed)
+            })
+            .FirstOrDefaultAsync();
 
-        var planned = measures.Count(m => m.Status == PreventiveMeasure.Statuses.Planned && !m.IsOverdue);
-        var inProgress = measures.Count(m => m.Status == PreventiveMeasure.Statuses.InProgress && !m.IsOverdue);
-        var overdue = measures.Count(m => m.IsOverdue);
-        var completed = measures.Count(m => m.Status == PreventiveMeasure.Statuses.Completed);
+        var planned = counts?.Planned ?? 0;
+        var inProgress = counts?.InProgress ?? 0;
+        var overdue = counts?.Overdue ?? 0;
+        var completed = counts?.Completed ?? 0;
 
         return Json(new
         {
@@ -142,21 +159,26 @@ public class AnalyticsController : Controller
     // GET /Analytics/EffectivenessRating
     public async Task<IActionResult> EffectivenessRating()
     {
-        var measures = await _db.PreventiveMeasures.AsNoTracking()
+        var ratings = await _db.PreventiveMeasures.AsNoTracking()
             .Where(m => m.EffectivenessRating != null)
+            .GroupBy(m => m.EffectivenessRating!.Value)
+            .Select(g => new { Rating = g.Key, Count = g.Count() })
             .ToListAsync();
 
+        var byRating = ratings.ToDictionary(x => x.Rating, x => x.Count);
         var counts = Enumerable.Range(1, 5)
-            .Select(r => new { rating = r, count = measures.Count(m => m.EffectivenessRating == r) })
+            .Select(r => byRating.TryGetValue(r, out var c) ? c : 0)
             .ToList();
 
-        var recurred = measures.Count(m => m.RecurrenceObserved == true);
-        var prevented = measures.Count(m => m.RecurrenceObserved == false);
+        var recurred = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.RecurrenceObserved == true);
+        var prevented = await _db.PreventiveMeasures.AsNoTracking()
+            .CountAsync(m => m.RecurrenceObserved == false);
 
         return Json(new
         {
             labels = new[] { "★1 (効果なし)", "★2", "★3 (普通)", "★4", "★5 (非常に効果あり)" },
-            data = counts.Select(x => x.count),
+            data = counts,
             recurrenceStats = new { recurred, prevented }
         });
     }
@@ -188,7 +210,7 @@ public class AnalyticsController : Controller
 
         return Json(new
         {
-            labels = grouped.Select(x => x.type),
+            labels = grouped.Select(x => IncidentTypeMapping.JapaneseLabel(x.type)),
             data = grouped.Select(x => x.count)
         });
     }

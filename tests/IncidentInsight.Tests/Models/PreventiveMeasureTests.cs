@@ -1,4 +1,5 @@
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 
 namespace IncidentInsight.Tests.Models;
 
@@ -9,31 +10,31 @@ public class PreventiveMeasureTests
     [Fact]
     public void IsOverdue_PlannedPastDue_ReturnsTrue()
     {
-        var m = new PreventiveMeasure { Status = "Planned", DueDate = DateTime.Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(-1) };
         Assert.True(m.IsOverdue);
     }
 
     [Fact]
     public void IsOverdue_Completed_ReturnsFalse_EvenIfPastDue()
     {
-        var m = new PreventiveMeasure { Status = "Completed", DueDate = DateTime.Today.AddDays(-30) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(-30) };
         Assert.False(m.IsOverdue);
     }
 
     [Fact]
     public void IsOverdue_DueTodayOrFuture_ReturnsFalse()
     {
-        var m = new PreventiveMeasure { Status = "Planned", DueDate = DateTime.Today };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = DateTime.Today };
         Assert.False(m.IsOverdue);
     }
 
     // --- StatusLabel / StatusColor ---
 
     [Theory]
-    [InlineData("Planned", "計画中")]
-    [InlineData("InProgress", "進行中")]
-    [InlineData("Completed", "完了")]
-    public void StatusLabel_IsCorrect(string status, string expected)
+    [InlineData(MeasureStatus.Planned, "計画中")]
+    [InlineData(MeasureStatus.InProgress, "進行中")]
+    [InlineData(MeasureStatus.Completed, "完了")]
+    public void StatusLabel_IsCorrect(MeasureStatus status, string expected)
     {
         var m = new PreventiveMeasure { Status = status, DueDate = DateTime.Today.AddDays(10) };
         Assert.Equal(expected, m.StatusLabel);
@@ -42,21 +43,21 @@ public class PreventiveMeasureTests
     [Fact]
     public void StatusColor_Planned_NotOverdue_IsWarning()
     {
-        var m = new PreventiveMeasure { Status = "Planned", DueDate = DateTime.Today.AddDays(5) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(5) };
         Assert.Equal("warning", m.StatusColor);
     }
 
     [Fact]
     public void StatusColor_Planned_Overdue_IsDanger()
     {
-        var m = new PreventiveMeasure { Status = "Planned", DueDate = DateTime.Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(-1) };
         Assert.Equal("danger", m.StatusColor);
     }
 
     [Fact]
     public void StatusColor_Completed_IsSuccess()
     {
-        var m = new PreventiveMeasure { Status = "Completed", DueDate = DateTime.Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(-1) };
         Assert.Equal("success", m.StatusColor);
     }
 
@@ -97,7 +98,7 @@ public class PreventiveMeasureTests
     [Fact]
     public void MeasureTypeLabel_ShortTerm_IsCorrect()
     {
-        var m = new PreventiveMeasure { MeasureType = "ShortTerm" };
+        var m = new PreventiveMeasure { MeasureType = MeasureTypeKind.ShortTerm };
         Assert.Equal("短期対策", m.MeasureTypeLabel);
         Assert.Equal("success", m.MeasureTypeColor);
     }
@@ -105,7 +106,7 @@ public class PreventiveMeasureTests
     [Fact]
     public void MeasureTypeLabel_LongTerm_IsCorrect()
     {
-        var m = new PreventiveMeasure { MeasureType = "LongTerm" };
+        var m = new PreventiveMeasure { MeasureType = MeasureTypeKind.LongTerm };
         Assert.Equal("長期対策", m.MeasureTypeLabel);
         Assert.Equal("info", m.MeasureTypeColor);
     }

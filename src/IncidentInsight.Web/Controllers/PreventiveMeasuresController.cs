@@ -1,5 +1,7 @@
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -11,24 +13,30 @@ namespace IncidentInsight.Web.Controllers;
 public class PreventiveMeasuresController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly IAuthorizationService _auth;
     private readonly ILogger<PreventiveMeasuresController> _logger;
 
-    public PreventiveMeasuresController(ApplicationDbContext db, ILogger<PreventiveMeasuresController> logger)
+    public PreventiveMeasuresController(
+        ApplicationDbContext db,
+        IAuthorizationService auth,
+        ILogger<PreventiveMeasuresController> logger)
     {
         _db = db;
+        _auth = auth;
         _logger = logger;
     }
 
     // GET /PreventiveMeasures
-    public async Task<IActionResult> Index(string? status, string? responsible,
+    public async Task<IActionResult> Index(MeasureStatus? status, string? responsible,
         string? responsibleDepartment, DateTime? dateFrom, DateTime? dateTo)
     {
         var query = _db.PreventiveMeasures
             .Include(m => m.Incident)
-            .AsQueryable();
+            .AsQueryable()
+            .ScopedByUser(User);
 
-        if (!string.IsNullOrEmpty(status))
-            query = query.Where(m => m.Status == status);
+        if (status.HasValue)
+            query = query.Where(m => m.Status == status.Value);
         if (!string.IsNullOrEmpty(responsible))
             query = query.Where(m => m.ResponsiblePerson.Contains(responsible) || m.ResponsibleDepartment.Contains(responsible));
         if (!string.IsNullOrEmpty(responsibleDepartment))
@@ -40,10 +48,9 @@ public class PreventiveMeasuresController : Controller
 
         var measures = await query.OrderBy(m => m.DueDate).ToListAsync();
 
-        var today = DateTime.Today;
-        var planned = measures.Where(m => m.Status == PreventiveMeasure.Statuses.Planned).OrderBy(m => m.DueDate).ToList();
-        var inProgress = measures.Where(m => m.Status == PreventiveMeasure.Statuses.InProgress).OrderBy(m => m.DueDate).ToList();
-        var completed = measures.Where(m => m.Status == PreventiveMeasure.Statuses.Completed).OrderByDescending(m => m.CompletedAt).ToList();
+        var planned = measures.Where(m => m.Status == MeasureStatus.Planned).OrderBy(m => m.DueDate).ToList();
+        var inProgress = measures.Where(m => m.Status == MeasureStatus.InProgress).OrderBy(m => m.DueDate).ToList();
+        var completed = measures.Where(m => m.Status == MeasureStatus.Completed).OrderByDescending(m => m.CompletedAt).ToList();
 
         ViewBag.Planned = planned;
         ViewBag.InProgress = inProgress;
@@ -70,6 +77,7 @@ public class PreventiveMeasuresController : Controller
         if (incidentId == null) return BadRequest();
         var incident = await _db.Incidents.FindAsync(incidentId);
         if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
 
         ViewBag.Incident = incident;
         var vm = new MeasureFormViewModel
@@ -85,9 +93,13 @@ public class PreventiveMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(MeasureFormViewModel vm)
     {
+        var incident = await _db.Incidents.FindAsync(vm.IncidentId);
+        if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
+
         if (!ModelState.IsValid)
         {
-            ViewBag.Incident = await _db.Incidents.FindAsync(vm.IncidentId);
+            ViewBag.Incident = incident;
             return View(vm);
         }
 
@@ -100,7 +112,7 @@ public class PreventiveMeasuresController : Controller
             ResponsibleDepartment = vm.ResponsibleDepartment,
             DueDate = vm.DueDate,
             Priority = vm.Priority,
-            Status = PreventiveMeasure.Statuses.Planned
+            Status = MeasureStatus.Planned
         });
         await _db.SaveChangesAsync();
         TempData["Success"] = "再発防止策を登録しました。";
@@ -114,6 +126,7 @@ public class PreventiveMeasuresController : Controller
             .Include(m => m.Incident)
             .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         ViewBag.Incident = measure.Incident;
         var vm = new MeasureFormViewModel
@@ -136,8 +149,11 @@ public class PreventiveMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Edit(int id, MeasureFormViewModel vm)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         if (!ModelState.IsValid)
         {
@@ -174,10 +190,13 @@ public class PreventiveMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Complete(int id, string? completionNote, Guid concurrencyToken)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
-        measure.Status = PreventiveMeasure.Statuses.Completed;
+        measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = DateTime.Now;
         measure.CompletionNote = completionNote;
 
@@ -205,6 +224,7 @@ public class PreventiveMeasuresController : Controller
             .Include(m => m.Incident)
             .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         ViewBag.Measure = measure;
         var vm = new ReviewViewModel
@@ -223,8 +243,11 @@ public class PreventiveMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Review(int id, ReviewViewModel vm)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         if (!ModelState.IsValid)
         {
@@ -261,27 +284,27 @@ public class PreventiveMeasuresController : Controller
     // POST /PreventiveMeasures/UpdateStatus/5
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> UpdateStatus(int id, string status, Guid concurrencyToken)
+    public async Task<IActionResult> UpdateStatus(int id, MeasureStatus status, Guid concurrencyToken)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
-        if (PreventiveMeasure.StatusValues.Contains(status))
+        measure.Status = status;
+        if (status == MeasureStatus.Completed) measure.CompletedAt = DateTime.Now;
+
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
+
+        try
         {
-            measure.Status = status;
-            if (status == PreventiveMeasure.Statuses.Completed) measure.CompletedAt = DateTime.Now;
-
-            _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
-
-            try
-            {
-                await _db.SaveChangesAsync();
-            }
-            catch (DbUpdateConcurrencyException ex)
-            {
-                _logger.LogWarning(ex, "Concurrency conflict changing status of PreventiveMeasure {MeasureId}", id);
-                TempData["Warning"] = "他のユーザが先に更新したため、ステータス変更は保存されませんでした。画面を更新してから再度操作してください。";
-            }
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            _logger.LogWarning(ex, "Concurrency conflict changing status of PreventiveMeasure {MeasureId}", id);
+            TempData["Warning"] = "他のユーザが先に更新したため、ステータス変更は保存されませんでした。画面を更新してから再度操作してください。";
         }
 
         return RedirectToAction(nameof(Index));
@@ -290,6 +313,7 @@ public class PreventiveMeasuresController : Controller
     // POST /PreventiveMeasures/Delete/5
     [HttpPost]
     [ValidateAntiForgeryToken]
+    [Authorize(Policy = Policies.CanDeleteIncident)]
     public async Task<IActionResult> Delete(int id)
     {
         var measure = await _db.PreventiveMeasures.FindAsync(id);
@@ -301,5 +325,13 @@ public class PreventiveMeasuresController : Controller
             TempData["Success"] = "再発防止策を削除しました。";
         }
         return RedirectToAction(nameof(Index));
+    }
+
+    // リソース（Incident）に対する Policy 評価。Admin/RiskManager は通過、Staff は部署一致で通過。
+    private async Task<bool> IsAuthorizedFor(Incident? incident, string policy)
+    {
+        if (incident == null) return false;
+        var result = await _auth.AuthorizeAsync(User, incident, policy);
+        return result.Succeeded;
     }
 }

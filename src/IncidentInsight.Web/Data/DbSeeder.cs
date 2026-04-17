@@ -1,4 +1,5 @@
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 
 namespace IncidentInsight.Web.Data;
 
@@ -71,8 +72,8 @@ public static class DbSeeder
             {
                 OccurredAt = now.AddDays(-90),
                 Department = "内科病棟",
-                IncidentType = "投薬ミス",
-                Severity = "Level3a",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level3a,
                 Description = "夜勤帯に担当患者Aさんと患者Bさんの名前が似ており、Aさん処方の降圧薬をBさんに投与した。Bさんは軽度の血圧低下を示し、臥床安静にて回復。",
                 ImmediateActions = "直ちに主治医に報告。バイタルサイン監視強化。1時間後に正常値を確認。",
                 ReporterName = "山田 花子",
@@ -82,8 +83,8 @@ public static class DbSeeder
             {
                 OccurredAt = now.AddDays(-60),
                 Department = "外科病棟",
-                IncidentType = "転倒・転落",
-                Severity = "Level2",
+                IncidentType = IncidentTypeKind.Fall,
+                Severity = IncidentSeverity.Level2,
                 Description = "術後2日目の患者Cさんが夜間にトイレへ一人で歩行しようとして転倒。床頭台に手をついて転倒を防いだが、軽度の打撲が生じた。",
                 ImmediateActions = "傷の確認・処置。レントゲン撮影（骨折なし確認）。転倒リスク再評価。",
                 ReporterName = "佐藤 次郎",
@@ -93,8 +94,8 @@ public static class DbSeeder
             {
                 OccurredAt = now.AddDays(-45),
                 Department = "ICU",
-                IncidentType = "チューブ・ライン関連",
-                Severity = "Level3a",
+                IncidentType = IncidentTypeKind.TubeOrLine,
+                Severity = IncidentSeverity.Level3a,
                 Description = "体動時に中心静脈カテーテルが自己抜去。再挿入が必要となり患者の苦痛が増した。抑制帯の使用可否の確認が不十分だった。",
                 ImmediateActions = "バイタル確認・主治医報告。代替の末梢静脈ルート確保。翌日再挿入。",
                 ReporterName = "鈴木 三郎",
@@ -104,8 +105,8 @@ public static class DbSeeder
             {
                 OccurredAt = now.AddDays(-20),
                 Department = "内科病棟",
-                IncidentType = "投薬ミス",
-                Severity = "Level2",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level2,
                 Description = "電子カルテの画面切替操作中に処方確認を怠り、インスリン単位数の入力値を誤って確認しないまま投与した（10単位→4単位）。患者は低血糖症状なし。",
                 ImmediateActions = "血糖測定実施（正常範囲）。主治医報告。経過観察。",
                 ReporterName = "山田 花子",
@@ -115,8 +116,8 @@ public static class DbSeeder
             {
                 OccurredAt = now.AddDays(-7),
                 Department = "外来",
-                IncidentType = "患者確認ミス",
-                Severity = "Level1",
+                IncidentType = IncidentTypeKind.PatientIdentification,
+                Severity = IncidentSeverity.Level1,
                 Description = "外来採血室にて患者確認をフルネームではなく苗字のみで行い、同姓の別患者に採血指示を実施しそうになった。採血直前に本人から申し出があり未遂に終わった。",
                 ImmediateActions = "即座に謝罪。正しい患者の採血を実施。インシデント報告。",
                 ReporterName = "田中 美咲",
@@ -213,11 +214,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[0].Id,
                 Description = "夜勤配薬時のダブルチェック手順書を作成し、全スタッフへ周知・訓練を実施する",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "看護師長",
                 ResponsibleDepartment = "内科病棟",
                 DueDate = now.AddDays(-60),
-                Status = PreventiveMeasure.Statuses.Completed,
+                Status = MeasureStatus.Completed,
                 CompletedAt = now.AddDays(-65),
                 CompletionNote = "手順書を作成し、朝礼にて全スタッフへ説明。配薬ダブルチェックシート導入。",
                 EffectivenessRating = 4,
@@ -230,11 +231,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[0].Id,
                 Description = "夜勤時の患者担当数の上限を設定し、必要時の補助体制を整備する",
-                MeasureType = PreventiveMeasure.Types.LongTerm,
+                MeasureType = MeasureTypeKind.LongTerm,
                 ResponsiblePerson = "看護部長",
                 ResponsibleDepartment = "看護部",
                 DueDate = now.AddDays(30),
-                Status = PreventiveMeasure.Statuses.InProgress,
+                Status = MeasureStatus.InProgress,
                 Priority = 1
             },
 
@@ -243,11 +244,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[1].Id,
                 Description = "術後患者向けクリニカルパスに「転倒リスク・動作制限説明」チェック項目を追加する",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "病棟師長",
                 ResponsibleDepartment = "外科病棟",
                 DueDate = now.AddDays(-30),
-                Status = PreventiveMeasure.Statuses.Completed,
+                Status = MeasureStatus.Completed,
                 CompletedAt = now.AddDays(-35),
                 CompletionNote = "クリニカルパス改訂完了。術後説明チェックリストに転倒リスク欄を追加。",
                 EffectivenessRating = 3,
@@ -260,11 +261,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[1].Id,
                 Description = "転倒リスク評価スコアに基づく離床センサー使用基準を策定する",
-                MeasureType = PreventiveMeasure.Types.LongTerm,
+                MeasureType = MeasureTypeKind.LongTerm,
                 ResponsiblePerson = "安全管理委員長",
                 ResponsibleDepartment = "医療安全室",
                 DueDate = now.AddDays(-5),
-                Status = PreventiveMeasure.Statuses.Planned,
+                Status = MeasureStatus.Planned,
                 Priority = 2
             },
 
@@ -273,11 +274,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[2].Id,
                 Description = "ICU申し送りチェックリストに「抑制帯使用可否」「ライン固定状態」を追加し、申し送り時の必須確認項目とする",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "ICU師長",
                 ResponsibleDepartment = "ICU",
                 DueDate = now.AddDays(-20),
-                Status = PreventiveMeasure.Statuses.Completed,
+                Status = MeasureStatus.Completed,
                 CompletedAt = now.AddDays(-25),
                 CompletionNote = "チェックリスト改訂・運用開始。スタッフ全員へ説明済み。",
                 EffectivenessRating = 5,
@@ -290,11 +291,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[2].Id,
                 Description = "ICUプロトコルの定期見直し会議を年2回開催する体制を構築し、責任者を明確化する",
-                MeasureType = PreventiveMeasure.Types.LongTerm,
+                MeasureType = MeasureTypeKind.LongTerm,
                 ResponsiblePerson = "ICU部長",
                 ResponsibleDepartment = "ICU",
                 DueDate = now.AddDays(60),
-                Status = PreventiveMeasure.Statuses.InProgress,
+                Status = MeasureStatus.InProgress,
                 Priority = 2
             },
 
@@ -303,22 +304,22 @@ public static class DbSeeder
             {
                 IncidentId = incidents[3].Id,
                 Description = "ハイリスク薬（インスリン・抗がん剤・麻薬等）の投与前ダブルチェックを院内規定として明文化し、全病棟へ周知する",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "医療安全管理者",
                 ResponsibleDepartment = "医療安全室",
                 DueDate = now.AddDays(14),
-                Status = PreventiveMeasure.Statuses.InProgress,
+                Status = MeasureStatus.InProgress,
                 Priority = 1
             },
             new()
             {
                 IncidentId = incidents[3].Id,
                 Description = "電子カルテへのハイリスク薬投与時アラート機能を実装し、確認ボタンなしでは進めない設計とする（システム担当に依頼）",
-                MeasureType = PreventiveMeasure.Types.LongTerm,
+                MeasureType = MeasureTypeKind.LongTerm,
                 ResponsiblePerson = "情報システム担当",
                 ResponsibleDepartment = "情報管理部",
                 DueDate = now.AddDays(90),
-                Status = PreventiveMeasure.Statuses.Planned,
+                Status = MeasureStatus.Planned,
                 Priority = 1
             },
 
@@ -327,11 +328,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[4].Id,
                 Description = "患者確認手順（フルネーム+生年月日）の遵守を月次で監査し、結果をスタッフにフィードバックする体制を構築する",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "外来師長",
                 ResponsibleDepartment = "外来",
                 DueDate = now.AddDays(21),
-                Status = PreventiveMeasure.Statuses.Planned,
+                Status = MeasureStatus.Planned,
                 Priority = 1
             },
 
@@ -340,11 +341,11 @@ public static class DbSeeder
             {
                 IncidentId = incidents[1].Id,
                 Description = "転倒予防ポスターをトイレ入口・病室ベッド周辺に設置し、患者への視覚的注意喚起を実施する",
-                MeasureType = PreventiveMeasure.Types.ShortTerm,
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当看護師",
                 ResponsibleDepartment = "外科病棟",
                 DueDate = now.AddDays(-10), // 期限超過
-                Status = PreventiveMeasure.Statuses.Planned,
+                Status = MeasureStatus.Planned,
                 Priority = 3
             }
         };

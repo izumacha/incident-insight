@@ -1,5 +1,7 @@
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 
@@ -47,7 +49,22 @@ builder.Services.AddIdentity<ApplicationUser, IdentityRole>(options =>
         options.Lockout.DefaultLockoutTimeSpan = TimeSpan.FromMinutes(15);
     })
     .AddEntityFrameworkStores<ApplicationDbContext>()
-    .AddDefaultTokenProviders();
+    .AddDefaultTokenProviders()
+    .AddClaimsPrincipalFactory<ApplicationUserClaimsPrincipalFactory>();
+
+// 認可ポリシー: 部署スコープ + ロールベース
+builder.Services.AddAuthorization(options =>
+{
+    options.AddPolicy(Policies.CanViewAnalytics,
+        p => p.RequireRole(AppRoles.Admin, AppRoles.RiskManager));
+    options.AddPolicy(Policies.CanDeleteIncident,
+        p => p.RequireRole(AppRoles.Admin, AppRoles.RiskManager));
+    options.AddPolicy(Policies.CanEditIncident,
+        p => p.AddRequirements(new SameDepartmentRequirement()));
+    options.AddPolicy(Policies.CanViewIncident,
+        p => p.AddRequirements(new SameDepartmentRequirement()));
+});
+builder.Services.AddScoped<IAuthorizationHandler, SameDepartmentHandler>();
 
 builder.Services.ConfigureApplicationCookie(options =>
 {

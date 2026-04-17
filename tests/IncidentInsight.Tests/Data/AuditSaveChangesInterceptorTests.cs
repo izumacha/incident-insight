@@ -1,5 +1,6 @@
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using Microsoft.EntityFrameworkCore;
 
 namespace IncidentInsight.Tests.Data;
@@ -23,8 +24,8 @@ public class AuditSaveChangesInterceptorTests : IDisposable
     {
         OccurredAt = DateTime.Now,
         Department = "内科病棟",
-        IncidentType = "投薬ミス",
-        Severity = "Level2",
+        IncidentType = IncidentTypeKind.Medication,
+        Severity = IncidentSeverity.Level2,
         Description = "テスト状況",
         ReporterName = "テスト太郎"
     };
@@ -51,7 +52,7 @@ public class AuditSaveChangesInterceptorTests : IDisposable
         var measure = new PreventiveMeasure
         {
             Description = "テスト対策",
-            MeasureType = "ShortTerm",
+            MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当者",
             ResponsibleDepartment = "内科病棟",
             DueDate = DateTime.Today.AddDays(30),
@@ -64,7 +65,7 @@ public class AuditSaveChangesInterceptorTests : IDisposable
         var originalToken = measure.ConcurrencyToken;
 
         // Modify status
-        measure.Status = "Completed";
+        measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = DateTime.Now;
         await _db.SaveChangesAsync();
 

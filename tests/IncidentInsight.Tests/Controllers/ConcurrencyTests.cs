@@ -2,6 +2,7 @@ using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -49,8 +50,8 @@ public class ConcurrencyTests : IDisposable
         var incident = new Incident
         {
             Department = "内科病棟",
-            IncidentType = "投薬ミス",
-            Severity = "Level2",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
             Description = "テスト",
             ReporterName = "テスト太郎",
             OccurredAt = DateTime.Now,
@@ -67,10 +68,10 @@ public class ConcurrencyTests : IDisposable
         {
             IncidentId = incidentId,
             Description = "テスト対策",
-            MeasureType = PreventiveMeasure.Types.ShortTerm,
+            MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当A",
             ResponsibleDepartment = "内科",
-            Status = PreventiveMeasure.Statuses.Planned,
+            Status = MeasureStatus.Planned,
             DueDate = DateTime.Today.AddDays(30),
             Priority = 2
         };
@@ -83,7 +84,8 @@ public class ConcurrencyTests : IDisposable
     public async Task IncidentsEdit_OnConcurrencyConflict_RedirectsToEditWithWarning()
     {
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, NullLogger<IncidentsController>.Instance) { TempData = new TestTempData() };
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), NullLogger<IncidentsController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel
         {
@@ -112,7 +114,8 @@ public class ConcurrencyTests : IDisposable
     {
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new IncidentsController(_db, NullLogger<IncidentsController>.Instance) { TempData = new TestTempData() };
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), NullLogger<IncidentsController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
         var result = await controller.CompleteMeasure(measure.Id, "完了メモ", Guid.NewGuid());
@@ -127,7 +130,8 @@ public class ConcurrencyTests : IDisposable
     {
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new PreventiveMeasuresController(_db, NullLogger<PreventiveMeasuresController>.Instance) { TempData = new TestTempData() };
+        var controller = new PreventiveMeasuresController(_db, UserContextHelper.BuildAuthService(), NullLogger<PreventiveMeasuresController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new MeasureFormViewModel
         {
@@ -135,7 +139,7 @@ public class ConcurrencyTests : IDisposable
             IncidentId = measure.IncidentId,
             ConcurrencyToken = Guid.NewGuid(), // stale
             Description = "更新後",
-            MeasureType = PreventiveMeasure.Types.ShortTerm,
+            MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当A",
             ResponsibleDepartment = "内科",
             DueDate = DateTime.Today.AddDays(60),
@@ -155,7 +159,8 @@ public class ConcurrencyTests : IDisposable
     {
         // Baseline happy-path check: without forcing a conflict, Edit should succeed.
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, NullLogger<IncidentsController>.Instance) { TempData = new TestTempData() };
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), NullLogger<IncidentsController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel
         {

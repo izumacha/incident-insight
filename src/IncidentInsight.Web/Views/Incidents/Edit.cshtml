@@ -37,9 +37,9 @@
                     <label asp-for="IncidentType" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                     <select asp-for="IncidentType" class="form-select">
                         <option value="">-- 選択してください --</option>
-                        @foreach (var t in IncidentInsight.Web.Models.Incident.IncidentTypes)
+                        @foreach (var t in IncidentInsight.Web.Models.Enums.IncidentTypeMapping.AllInDisplayOrder)
                         {
-                            <option value="@t">@t</option>
+                            <option value="@t">@IncidentInsight.Web.Models.Enums.IncidentTypeMapping.JapaneseLabel(t)</option>
                         }
                     </select>
                     <span asp-validation-for="IncidentType" class="text-danger small"></span>
@@ -47,9 +47,9 @@
                 <div class="col-md-4">
                     <label asp-for="Severity" class="form-label fw-medium"></label>
                     <select asp-for="Severity" class="form-select">
-                        @foreach (var kv in IncidentInsight.Web.Models.Incident.SeverityLevels)
+                        @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities)
                         {
-                            <option value="@kv.Key">@kv.Value</option>
+                            <option value="@s">@IncidentInsight.Web.Models.Enums.EnumLabels.Japanese(s)</option>
                         }
                     </select>
                 </div>

@@ -1,4 +1,5 @@
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using System.ComponentModel.DataAnnotations;
 
 namespace IncidentInsight.Tests.Models;
@@ -8,23 +9,15 @@ public class IncidentTests
     // --- SeverityLabel / SeverityColor ---
 
     [Theory]
-    [InlineData("Level0", "レベル0 (ヒヤリハット)", "secondary")]
-    [InlineData("Level1", "レベル1 (患者への影響なし)", "info")]
-    [InlineData("Level3a", "レベル3a (軽微な処置)", "warning")]
-    [InlineData("Level5", "レベル5 (死亡)", "dark")]
-    public void SeverityLabel_And_Color_AreCorrect(string severity, string expectedLabel, string expectedColor)
+    [InlineData(IncidentSeverity.Level0, "レベル0 (ヒヤリハット)", "secondary")]
+    [InlineData(IncidentSeverity.Level1, "レベル1 (患者への影響なし)", "info")]
+    [InlineData(IncidentSeverity.Level3a, "レベル3a (軽微な処置)", "warning")]
+    [InlineData(IncidentSeverity.Level5, "レベル5 (死亡)", "dark")]
+    public void SeverityLabel_And_Color_AreCorrect(IncidentSeverity severity, string expectedLabel, string expectedColor)
     {
         var incident = new Incident { Severity = severity };
         Assert.Equal(expectedLabel, incident.SeverityLabel);
         Assert.Equal(expectedColor, incident.SeverityColor);
-    }
-
-    [Fact]
-    public void SeverityLabel_UnknownValue_ReturnsSeverityAsIs()
-    {
-        var incident = new Incident { Severity = "Unknown" };
-        Assert.Equal("Unknown", incident.SeverityLabel);
-        Assert.Equal("secondary", incident.SeverityColor);
     }
 
     // --- MeasureStatusSummary ---
@@ -43,8 +36,8 @@ public class IncidentTests
         {
             PreventiveMeasures = new List<PreventiveMeasure>
             {
-                new() { Status = "Completed", DueDate = DateTime.Today.AddDays(10) },
-                new() { Status = "Completed", DueDate = DateTime.Today.AddDays(5) }
+                new() { Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(10) },
+                new() { Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(5) }
             }
         };
         Assert.Equal("完了", incident.MeasureStatusSummary);
@@ -57,7 +50,7 @@ public class IncidentTests
         {
             PreventiveMeasures = new List<PreventiveMeasure>
             {
-                new() { Status = "Planned", DueDate = DateTime.Today.AddDays(-1) }
+                new() { Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(-1) }
             }
         };
         Assert.Equal("期限超過", incident.MeasureStatusSummary);
@@ -70,7 +63,7 @@ public class IncidentTests
         {
             PreventiveMeasures = new List<PreventiveMeasure>
             {
-                new() { Status = "InProgress", DueDate = DateTime.Today.AddDays(5) }
+                new() { Status = MeasureStatus.InProgress, DueDate = DateTime.Today.AddDays(5) }
             }
         };
         Assert.Equal("進行中", incident.MeasureStatusSummary);
@@ -83,7 +76,7 @@ public class IncidentTests
         {
             PreventiveMeasures = new List<PreventiveMeasure>
             {
-                new() { Status = "Planned", DueDate = DateTime.Today.AddDays(10) }
+                new() { Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(10) }
             }
         };
         Assert.Equal("計画中", incident.MeasureStatusSummary);
@@ -94,14 +87,13 @@ public class IncidentTests
     [Fact]
     public void Incident_MissingRequired_FailsValidation()
     {
-        var incident = new Incident { Department = "", IncidentType = "", ReporterName = "" };
+        var incident = new Incident { Department = "", ReporterName = "" };
         var results = new List<ValidationResult>();
         var ctx = new ValidationContext(incident);
         Validator.TryValidateObject(incident, ctx, results, true);
 
         var failedFields = results.SelectMany(r => r.MemberNames).ToList();
         Assert.Contains("Department", failedFields);
-        Assert.Contains("IncidentType", failedFields);
         Assert.Contains("ReporterName", failedFields);
         Assert.Contains("Description", failedFields);
     }
@@ -113,8 +105,8 @@ public class IncidentTests
         {
             OccurredAt = DateTime.Now,
             Department = "内科病棟",
-            IncidentType = "投薬ミス",
-            Severity = "Level2",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
             Description = "患者AにBさんの薬を投与した",
             ReporterName = "山田 花子"
         };

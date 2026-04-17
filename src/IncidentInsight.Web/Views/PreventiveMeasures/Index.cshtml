@@ -43,11 +43,15 @@
     <div class="card-body py-2">
         <form method="get" class="row g-2 align-items-end">
             <div class="col-md-2">
+                @{
+                    var filterStatus = ViewBag.FilterStatus as IncidentInsight.Web.Models.Enums.MeasureStatus?;
+                }
                 <select name="status" class="form-select form-select-sm">
                     <option value="">ステータス（全て）</option>
-                    <option value="Planned" selected="@(ViewBag.FilterStatus == "Planned")">計画中</option>
-                    <option value="InProgress" selected="@(ViewBag.FilterStatus == "InProgress")">進行中</option>
-                    <option value="Completed" selected="@(ViewBag.FilterStatus == "Completed")">完了</option>
+                    @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllStatuses)
+                    {
+                        <option value="@s" selected="@(filterStatus == s)">@IncidentInsight.Web.Models.Enums.EnumLabels.Japanese(s)</option>
+                    }
                 </select>
             </div>
             <div class="col-md-2">

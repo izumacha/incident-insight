@@ -13,7 +13,7 @@
 <!-- Filter Panel -->
 @{
     var anyFilter = !string.IsNullOrEmpty(Model.Search) || !string.IsNullOrEmpty(Model.Department)
-                 || !string.IsNullOrEmpty(Model.IncidentType) || !string.IsNullOrEmpty(Model.Severity)
+                 || Model.IncidentType.HasValue || Model.Severity.HasValue
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue || Model.CauseCategoryId.HasValue;
 }
 <div class="card border-0 shadow-sm mb-3">
@@ -44,18 +44,18 @@
                     <div class="col-md-2">
                         <select name="incidentType" class="form-select form-select-sm">
                             <option value="">種別（全て）</option>
-                            @foreach (var t in IncidentInsight.Web.Models.Incident.IncidentTypes)
+                            @foreach (var t in IncidentInsight.Web.Models.Enums.IncidentTypeMapping.AllInDisplayOrder)
                             {
-                                <option value="@t" selected="@(Model.IncidentType == t)">@t</option>
+                                <option value="@t" selected="@(Model.IncidentType == t)">@IncidentInsight.Web.Models.Enums.IncidentTypeMapping.JapaneseLabel(t)</option>
                             }
                         </select>
                     </div>
                     <div class="col-md-2">
                         <select name="severity" class="form-select form-select-sm">
                             <option value="">重症度（全て）</option>
-                            @foreach (var kv in IncidentInsight.Web.Models.Incident.SeverityLevels)
+                            @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities)
                             {
-                                <option value="@kv.Key" selected="@(Model.Severity == kv.Key)">@kv.Value</option>
+                                <option value="@s" selected="@(Model.Severity == s)">@IncidentInsight.Web.Models.Enums.EnumLabels.Japanese(s)</option>
                             }
                         </select>
                     </div>
@@ -108,7 +108,7 @@
     @if (!Model.Incidents.Any())
     {
         var hasFilter = !string.IsNullOrEmpty(Model.Search) || !string.IsNullOrEmpty(Model.Department)
-                     || !string.IsNullOrEmpty(Model.IncidentType) || !string.IsNullOrEmpty(Model.Severity)
+                     || Model.IncidentType.HasValue || Model.Severity.HasValue
                      || Model.DateFrom.HasValue || Model.DateTo.HasValue;
         if (hasFilter)
         {
@@ -158,10 +158,10 @@
                             </td>
                             <td>@incident.Department</td>
                             <td>
-                                <span class="badge bg-secondary">@incident.IncidentType</span>
+                                <span class="badge bg-secondary">@incident.IncidentTypeLabel</span>
                             </td>
                             <td>
-                                <span class="badge bg-@incident.SeverityColor">@incident.Severity</span>
+                                <span class="badge bg-@incident.SeverityColor">@incident.SeverityLabel</span>
                             </td>
                             <td>@incident.ReporterName</td>
                             <td>

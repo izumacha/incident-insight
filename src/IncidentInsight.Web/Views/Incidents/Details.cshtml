@@ -25,7 +25,7 @@
     <div class="alert alert-warning border-warning shadow-sm mb-4">
         <h6 class="alert-heading"><i class="bi bi-arrow-repeat me-2"></i>再発警告：類似インシデントが過去に発生しています</h6>
         <p class="mb-1">
-            <strong>@incident.Department / @incident.IncidentType</strong> の組み合わせで
+            <strong>@incident.Department / @incident.IncidentTypeLabel</strong> の組み合わせで
             過去に @Model.SimilarIncidents.Count 件の類似インシデントが報告されています。
             現在の対策が根本原因に対処しているか確認してください。
         </p>
@@ -33,7 +33,7 @@
             @foreach (var sim in Model.SimilarIncidents.Take(3))
             {
                 <li>
-                    @sim.OccurredAt.ToString("yyyy/MM/dd") — @sim.Severity —
+                    @sim.OccurredAt.ToString("yyyy/MM/dd") — @sim.SeverityLabel —
                     @(sim.Description.Length > 50 ? sim.Description[..50] + "…" : sim.Description)
                     <a asp-action="Details" asp-route-id="@sim.Id" class="ms-1">詳細</a>
                 </li>
@@ -56,7 +56,7 @@
             <dd class="col-sm-9">@incident.Department</dd>
 
             <dt class="col-sm-3">インシデント種別</dt>
-            <dd class="col-sm-9"><span class="badge bg-secondary">@incident.IncidentType</span></dd>
+            <dd class="col-sm-9"><span class="badge bg-secondary">@incident.IncidentTypeLabel</span></dd>
 
             <dt class="col-sm-3">重症度</dt>
             <dd class="col-sm-9"><span class="badge bg-@incident.SeverityColor">@incident.SeverityLabel</span></dd>
@@ -322,7 +322,7 @@
                                     }
                                 </td>
                                 <td>
-                                    @if (m.Status != "Completed")
+                                    @if (m.Status != IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
                                     {
                                         <button class="btn btn-success btn-sm py-0 me-1"
                                                 data-bs-toggle="modal"
@@ -330,7 +330,7 @@
                                                 data-measure-id="@m.Id"
                                                 data-concurrency-token="@m.ConcurrencyToken">完了</button>
                                     }
-                                    @if (m.Status == "Completed" && !m.EffectivenessRating.HasValue)
+                                    @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !m.EffectivenessRating.HasValue)
                                     {
                                         <button class="btn btn-warning btn-sm py-0 me-1"
                                                 data-bs-toggle="modal"
