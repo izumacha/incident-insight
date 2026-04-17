@@ -184,11 +184,11 @@
                         <li class="list-group-item px-3 py-2 @(incident.PreventiveMeasures.Any(m => m.IsOverdue) ? "list-group-item-danger" : "")">
                             <div class="d-flex justify-content-between align-items-start">
                                 <div class="flex-grow-1">
-                                    <span class="badge bg-@incident.SeverityColor me-1">@incident.Severity</span>
+                                    <span class="badge bg-@incident.SeverityColor me-1">@incident.SeverityLabel</span>
                                     <a asp-controller="Incidents" asp-action="Index"
                                        asp-route-department="@incident.Department"
                                        class="small fw-medium text-decoration-none">@incident.Department</a>
-                                    <div class="text-muted small">@incident.IncidentType · @incident.OccurredAt.ToString("M/d")</div>
+                                    <div class="text-muted small">@incident.IncidentTypeLabel · @incident.OccurredAt.ToString("M/d")</div>
                                 </div>
                                 <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
                                    class="btn btn-sm btn-outline-secondary py-0">詳細</a>

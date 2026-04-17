@@ -1,6 +1,8 @@
 using System.Diagnostics;
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -35,47 +37,54 @@ public class HomeController : Controller
             _         => today.AddYears(-1)
         };
 
+        // Staff は自部署のデータのみ。Admin / RiskManager はフィルタなし。
+        var incidents = _db.Incidents.AsNoTracking().ScopedByUser(User);
+        var measures = _db.PreventiveMeasures.AsNoTracking().ScopedByUser(User);
+
         // KPI counts are aggregated server-side (no full-table materialization).
-        var totalIncidents = await _db.Incidents.AsNoTracking()
+        var totalIncidents = await incidents
             .CountAsync(i => i.OccurredAt >= periodStart);
-        var thisMonthIncidents = await _db.Incidents.AsNoTracking()
+        var thisMonthIncidents = await incidents
             .CountAsync(i => i.OccurredAt >= thisMonthStart);
-        var openMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status != PreventiveMeasure.Statuses.Completed);
-        var overdueMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < today);
-        var completedMeasures = await _db.PreventiveMeasures.AsNoTracking()
-            .CountAsync(m => m.Status == PreventiveMeasure.Statuses.Completed);
-        var failedMeasures = await _db.PreventiveMeasures.AsNoTracking()
+        var openMeasures = await measures
+            .CountAsync(m => m.Status != MeasureStatus.Completed);
+        var overdueMeasures = await measures
+            .CountAsync(m => m.Status != MeasureStatus.Completed && m.DueDate < today);
+        var completedMeasures = await measures
+            .CountAsync(m => m.Status == MeasureStatus.Completed);
+        var failedMeasures = await measures
             .CountAsync(m => m.RecurrenceObserved == true);
 
-        var recentIncidents = await _db.Incidents.AsNoTracking()
+        var recentIncidents = await incidents
             .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory)
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
             .Take(5)
             .ToListAsync();
 
-        var overdueMeasureList = await _db.PreventiveMeasures.AsNoTracking()
+        var overdueMeasureList = await measures
             .Include(m => m.Incident)
-            .Where(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < today)
+            .Where(m => m.Status != MeasureStatus.Completed && m.DueDate < today)
             .OrderBy(m => m.DueDate)
             .ToListAsync();
 
-        // Monthly / weekly counts for trend chart (fetch only the trend window)
+        // Trend chart is aggregated SQL-side (GroupBy → Year/Month or Date) so the
+        // controller never materializes full-table incident rows just to count them.
         var monthlyCounts = new List<MonthlyCount>();
         if (period == "week")
         {
             var weekStart = today.AddDays(-6);
             var weekEnd = today.AddDays(1);
-            var weekDates = await _db.Incidents.AsNoTracking()
+            var dailyGroups = await incidents
                 .Where(i => i.OccurredAt >= weekStart && i.OccurredAt < weekEnd)
-                .Select(i => i.OccurredAt)
+                .GroupBy(i => i.OccurredAt.Date)
+                .Select(g => new { Day = g.Key, Count = g.Count() })
                 .ToListAsync();
+            var byDay = dailyGroups.ToDictionary(g => g.Day, g => g.Count);
             for (int i = 6; i >= 0; i--)
             {
                 var day = today.AddDays(-i);
-                var count = weekDates.Count(o => o.Date == day);
+                byDay.TryGetValue(day, out var count);
                 monthlyCounts.Add(new MonthlyCount { Label = day.ToString("M/d"), Count = count });
             }
         }
@@ -83,15 +92,16 @@ public class HomeController : Controller
         {
             int months = period switch { "month" => 4, "quarter" => 6, _ => 12 };
             var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-(months - 1));
-            var trendDates = await _db.Incidents.AsNoTracking()
+            var monthlyGroups = await incidents
                 .Where(i => i.OccurredAt >= firstMonthStart)
-                .Select(i => i.OccurredAt)
+                .GroupBy(i => new { i.OccurredAt.Year, i.OccurredAt.Month })
+                .Select(g => new { g.Key.Year, g.Key.Month, Count = g.Count() })
                 .ToListAsync();
+            var byMonth = monthlyGroups.ToDictionary(g => (g.Year, g.Month), g => g.Count);
             for (int i = months - 1; i >= 0; i--)
             {
                 var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
-                var monthEnd = monthStart.AddMonths(1);
-                var count = trendDates.Count(o => o >= monthStart && o < monthEnd);
+                byMonth.TryGetValue((monthStart.Year, monthStart.Month), out var count);
                 monthlyCounts.Add(new MonthlyCount { Label = monthStart.ToString("yyyy年M月"), Count = count });
             }
         }
@@ -99,7 +109,7 @@ public class HomeController : Controller
         // Recurrence detection: walk 90-day recent incidents, then batch-fetch any
         // historical incident sharing a (Department, IncidentType, CauseCategory) tuple.
         // One DB round-trip total instead of N per recent incident.
-        var recentList = await _db.Incidents.AsNoTracking()
+        var recentList = await incidents
             .Include(i => i.CauseAnalyses)
             .Where(i => i.OccurredAt >= ninetyDaysAgo)
             .OrderByDescending(i => i.OccurredAt)
@@ -118,7 +128,7 @@ public class HomeController : Controller
         // per-iteration queries into one. Final matching is done in-memory below.
         var candidates = recentCatIds.Count == 0 || recentList.Count == 0
             ? new List<Incident>()
-            : await _db.Incidents.AsNoTracking()
+            : await incidents
                 .Include(i => i.CauseAnalyses)
                 .Where(i => recentDepts.Contains(i.Department)
                     && recentTypes.Contains(i.IncidentType)

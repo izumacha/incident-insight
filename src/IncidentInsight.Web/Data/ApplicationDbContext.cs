@@ -1,4 +1,5 @@
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore;
 
@@ -48,6 +49,31 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             .WithMany(i => i.PreventiveMeasures)
             .HasForeignKey(pm => pm.IncidentId)
             .OnDelete(DeleteBehavior.Cascade);
+
+        // Enum <-> string 永続化 (プロバイダ非依存の TEXT 列で保存)
+        // 既存 DB 値と一致する enum 名は HasConversion<string>() で双方向。
+        // IncidentType のみ DB 文字列が日本語のため、専用マッピングで変換する。
+        modelBuilder.Entity<Incident>()
+            .Property(i => i.Severity)
+            .HasConversion<string>()
+            .HasMaxLength(20);
+
+        modelBuilder.Entity<Incident>()
+            .Property(i => i.IncidentType)
+            .HasConversion(
+                v => IncidentTypeMapping.ToDbString(v),
+                v => IncidentTypeMapping.FromDbString(v))
+            .HasMaxLength(50);
+
+        modelBuilder.Entity<PreventiveMeasure>()
+            .Property(pm => pm.Status)
+            .HasConversion<string>()
+            .HasMaxLength(20);
+
+        modelBuilder.Entity<PreventiveMeasure>()
+            .Property(pm => pm.MeasureType)
+            .HasConversion<string>()
+            .HasMaxLength(20);
 
         // Indexes for analytics queries
         modelBuilder.Entity<Incident>()

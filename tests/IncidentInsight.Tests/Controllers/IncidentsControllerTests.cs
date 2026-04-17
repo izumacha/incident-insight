@@ -2,6 +2,7 @@ using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -20,10 +21,11 @@ public class IncidentsControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new IncidentsController(_db, NullLogger<IncidentsController>.Instance)
-        {
-            TempData = new TestTempData()
-        };
+        _controller = new IncidentsController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            NullLogger<IncidentsController>.Instance);
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
 
     public void Dispose()
@@ -35,8 +37,8 @@ public class IncidentsControllerTests : IDisposable
     {
         OccurredAt = DateTime.Now,
         Department = dept,
-        IncidentType = "投薬ミス",
-        Severity = "Level2",
+        IncidentType = IncidentTypeKind.Medication,
+        Severity = IncidentSeverity.Level2,
         Description = "テスト状況",
         ReporterName = "テスト太郎",
         Measures = new List<MeasureFormViewModel>
@@ -44,7 +46,7 @@ public class IncidentsControllerTests : IDisposable
             new()
             {
                 Description = "テスト対策",
-                MeasureType = "ShortTerm",
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当者",
                 ResponsibleDepartment = dept,
                 DueDate = DateTime.Today.AddDays(30),
@@ -76,7 +78,7 @@ public class IncidentsControllerTests : IDisposable
         var saved = await _db.Incidents.FirstOrDefaultAsync();
         Assert.NotNull(saved);
         Assert.Equal("外科病棟", saved.Department);
-        Assert.Equal("投薬ミス", saved.IncidentType);
+        Assert.Equal(IncidentTypeKind.Medication, saved.IncidentType);
     }
 
     [Fact]
@@ -89,7 +91,7 @@ public class IncidentsControllerTests : IDisposable
         var measure = await _db.PreventiveMeasures.FirstOrDefaultAsync();
         Assert.NotNull(measure);
         Assert.Equal("テスト対策", measure.Description);
-        Assert.Equal("Planned", measure.Status);
+        Assert.Equal(MeasureStatus.Planned, measure.Status);
     }
 
     [Fact]
@@ -144,8 +146,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_NoFilter_ReturnsAllIncidents()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = "転倒・転落", Severity = "Level2", Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = "投薬ミス", Severity = "Level1", Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
         );
         await _db.SaveChangesAsync();
 
@@ -159,8 +161,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_DepartmentFilter_ReturnsMatchingOnly()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = "転倒・転落", Severity = "Level2", Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = "投薬ミス", Severity = "Level1", Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
         );
         await _db.SaveChangesAsync();
 
@@ -175,24 +177,24 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_SeverityFilter_ReturnsMatchingOnly()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = "転倒・転落", Severity = "Level4", Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = "投薬ミス", Severity = "Level0", Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level4, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level0, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
         );
         await _db.SaveChangesAsync();
 
-        var result = await _controller.Index(null, null, null, "Level4", null, null, null, null, 1) as ViewResult;
+        var result = await _controller.Index(null, null, null, IncidentSeverity.Level4, null, null, null, null, 1) as ViewResult;
         var vm = result?.Model as IncidentListViewModel;
 
         Assert.Equal(1, vm!.TotalCount);
-        Assert.Equal("Level4", vm.Incidents[0].Severity);
+        Assert.Equal(IncidentSeverity.Level4, vm.Incidents[0].Severity);
     }
 
     [Fact]
     public async Task Index_SearchFilter_MatchesDescription()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = "投薬ミス", Severity = "Level2", Description = "点滴ラインが抜けた", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = "投薬ミス", Severity = "Level1", Description = "薬を誤投与", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "点滴ラインが抜けた", ReporterName = "A", OccurredAt = DateTime.Now },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "薬を誤投与", ReporterName = "B", OccurredAt = DateTime.Now }
         );
         await _db.SaveChangesAsync();
 
@@ -211,8 +213,8 @@ public class IncidentsControllerTests : IDisposable
         var incident = new Incident
         {
             Department = "内科病棟",
-            IncidentType = "転倒・転落",
-            Severity = "Level2",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
             Description = "廊下で転倒",
             ReporterName = "山田",
             OccurredAt = DateTime.Now
@@ -232,5 +234,87 @@ public class IncidentsControllerTests : IDisposable
     {
         var result = await _controller.Details(9999);
         Assert.IsType<NotFoundResult>(result);
+    }
+
+    // --- Authorization: Staff scope ---
+
+    [Fact]
+    public async Task Index_Staff_OnlySeesOwnDepartment()
+    {
+        _db.Incidents.AddRange(
+            new Incident { Department = "内科病棟", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
+            new Incident { Department = "外来",     IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+        );
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Index(null, null, null, null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        Assert.Equal(1, vm!.TotalCount);
+        Assert.All(vm.Incidents, i => Assert.Equal("内科病棟", i.Department));
+    }
+
+    [Fact]
+    public async Task Details_Staff_OtherDepartment_ReturnsForbid()
+    {
+        var incident = new Incident
+        {
+            Department = "外来",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "他部署",
+            ReporterName = "他部署担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Details(incident.Id);
+
+        Assert.IsType<ForbidResult>(result);
+    }
+
+    [Fact]
+    public async Task Edit_Get_Staff_OtherDepartment_ReturnsForbid()
+    {
+        var incident = new Incident
+        {
+            Department = "外来",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "他部署",
+            ReporterName = "他部署担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Edit(incident.Id);
+
+        Assert.IsType<ForbidResult>(result);
+    }
+
+    [Fact]
+    public async Task Edit_Get_Staff_SameDepartment_ReturnsView()
+    {
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "同部署",
+            ReporterName = "担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Edit(incident.Id);
+
+        Assert.IsType<ViewResult>(result);
     }
 }

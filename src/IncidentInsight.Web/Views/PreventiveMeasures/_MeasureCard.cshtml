@@ -54,7 +54,7 @@
 
         <!-- Quick actions -->
         <div class="d-flex gap-1 mt-2">
-            @if (m.Status != "Completed")
+            @if (m.Status != IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id" method="post" class="d-inline">
                     @Html.AntiForgeryToken()
@@ -64,14 +64,14 @@
                     </button>
                 </form>
             }
-            @if (m.Status == "Completed" && !m.EffectivenessRating.HasValue)
+            @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !m.EffectivenessRating.HasValue)
             {
                 <a asp-controller="PreventiveMeasures" asp-action="Review" asp-route-id="@m.Id"
                    class="btn btn-warning btn-sm py-0">
                     <i class="bi bi-star me-1"></i>有効性評価
                 </a>
             }
-            @if (m.Status == "Planned")
+            @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Planned)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="UpdateStatus" asp-route-id="@m.Id" method="post" class="d-inline">
                     @Html.AntiForgeryToken()

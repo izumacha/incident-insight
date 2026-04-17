@@ -1,5 +1,7 @@
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -13,33 +15,39 @@ namespace IncidentInsight.Web.Controllers;
 public class IncidentsController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly IAuthorizationService _auth;
     private readonly ILogger<IncidentsController> _logger;
     private const int PageSize = 20;
 
-    public IncidentsController(ApplicationDbContext db, ILogger<IncidentsController> logger)
+    public IncidentsController(
+        ApplicationDbContext db,
+        IAuthorizationService auth,
+        ILogger<IncidentsController> logger)
     {
         _db = db;
+        _auth = auth;
         _logger = logger;
     }
 
     // GET /Incidents
     public async Task<IActionResult> Index(string? search, string? department,
-        string? incidentType, string? severity, DateTime? dateFrom, DateTime? dateTo,
+        IncidentTypeKind? incidentType, IncidentSeverity? severity, DateTime? dateFrom, DateTime? dateTo,
         int? causeCategoryId, string? sortBy, int page = 1)
     {
         var query = _db.Incidents
             .Include(i => i.PreventiveMeasures)
             .Include(i => i.CauseAnalyses)
-            .AsQueryable();
+            .AsQueryable()
+            .ScopedByUser(User);
 
         if (!string.IsNullOrWhiteSpace(search))
             query = query.Where(i => i.Description.Contains(search) || i.ReporterName.Contains(search));
         if (!string.IsNullOrWhiteSpace(department))
             query = query.Where(i => i.Department == department);
-        if (!string.IsNullOrWhiteSpace(incidentType))
-            query = query.Where(i => i.IncidentType == incidentType);
-        if (!string.IsNullOrWhiteSpace(severity))
-            query = query.Where(i => i.Severity == severity);
+        if (incidentType.HasValue)
+            query = query.Where(i => i.IncidentType == incidentType.Value);
+        if (severity.HasValue)
+            query = query.Where(i => i.Severity == severity.Value);
         if (dateFrom.HasValue)
             query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue)
@@ -54,7 +62,7 @@ public class IncidentsController : Controller
         {
             "severity" => query.OrderByDescending(i => i.Severity),
             "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
-                              .Any(m => m.Status != PreventiveMeasure.Statuses.Completed && m.DueDate < DateTime.Today)),
+                              .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < DateTime.Today)),
             _          => query.OrderByDescending(i => i.OccurredAt)
         };
 
@@ -101,6 +109,7 @@ public class IncidentsController : Controller
             .FirstOrDefaultAsync(i => i.Id == id);
 
         if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanViewIncident)) return Forbid();
 
         // 再発検出: 同部署・同インシデント種別の候補を DB から取得し、
         // 原因分類の重なりは共有ヘルパーで in-memory 判定する。
@@ -202,7 +211,7 @@ public class IncidentsController : Controller
                 DueDate = m.DueDate,
                 Priority = m.Priority,
                 AnalysisNote = m.AnalysisNote,
-                Status = PreventiveMeasure.Statuses.Planned
+                Status = MeasureStatus.Planned
             });
         }
 
@@ -220,6 +229,7 @@ public class IncidentsController : Controller
     {
         var incident = await _db.Incidents.FindAsync(id);
         if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
 
         var vm = new IncidentCreateEditViewModel
         {
@@ -244,6 +254,7 @@ public class IncidentsController : Controller
     {
         var incident = await _db.Incidents.FindAsync(id);
         if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
 
         // Remove sub-form keys from ModelState
         foreach (var key in ModelState.Keys
@@ -289,6 +300,7 @@ public class IncidentsController : Controller
     // POST /Incidents/Delete/5
     [HttpPost]
     [ValidateAntiForgeryToken]
+    [Authorize(Policy = Policies.CanDeleteIncident)]
     public async Task<IActionResult> Delete(int id)
     {
         var incident = await _db.Incidents.FindAsync(id);
@@ -306,8 +318,10 @@ public class IncidentsController : Controller
     {
         var analysis = await _db.CauseAnalyses
             .Include(a => a.CauseCategory)
+            .Include(a => a.Incident)
             .FirstOrDefaultAsync(a => a.Id == id);
         if (analysis == null) return NotFound();
+        if (!await IsAuthorizedFor(analysis.Incident, Policies.CanEditIncident)) return Forbid();
 
         var vm = new CauseAnalysisFormViewModel
         {
@@ -339,8 +353,11 @@ public class IncidentsController : Controller
             vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
             return View(vm);
         }
-        var analysis = await _db.CauseAnalyses.FindAsync(id);
+        var analysis = await _db.CauseAnalyses
+            .Include(a => a.Incident)
+            .FirstOrDefaultAsync(a => a.Id == id);
         if (analysis == null) return NotFound();
+        if (!await IsAuthorizedFor(analysis.Incident, Policies.CanEditIncident)) return Forbid();
 
         analysis.CauseCategoryId = vm.CauseCategoryId;
         analysis.Why1 = vm.Why1;
@@ -375,6 +392,10 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> AddCauseAnalysis(CauseAnalysisFormViewModel vm)
     {
+        var incident = await _db.Incidents.FindAsync(vm.IncidentId);
+        if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
+
         ModelState.Remove("CauseCategoryOptions");
         if (ModelState.IsValid)
         {
@@ -403,16 +424,17 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> DeleteCauseAnalysis(int id)
     {
-        var analysis = await _db.CauseAnalyses.FindAsync(id);
-        if (analysis != null)
-        {
-            var incidentId = analysis.IncidentId;
-            _db.CauseAnalyses.Remove(analysis);
-            await _db.SaveChangesAsync();
-            TempData["Success"] = "原因分析を削除しました。";
-            return RedirectToAction(nameof(Details), new { id = incidentId });
-        }
-        return NotFound();
+        var analysis = await _db.CauseAnalyses
+            .Include(a => a.Incident)
+            .FirstOrDefaultAsync(a => a.Id == id);
+        if (analysis == null) return NotFound();
+        if (!await IsAuthorizedFor(analysis.Incident, Policies.CanEditIncident)) return Forbid();
+
+        var incidentId = analysis.IncidentId;
+        _db.CauseAnalyses.Remove(analysis);
+        await _db.SaveChangesAsync();
+        TempData["Success"] = "原因分析を削除しました。";
+        return RedirectToAction(nameof(Details), new { id = incidentId });
     }
 
     // POST /Incidents/AddMeasure
@@ -420,6 +442,10 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> AddMeasure(MeasureFormViewModel vm)
     {
+        var incident = await _db.Incidents.FindAsync(vm.IncidentId);
+        if (incident == null) return NotFound();
+        if (!await IsAuthorizedFor(incident, Policies.CanEditIncident)) return Forbid();
+
         if (ModelState.IsValid)
         {
             _db.PreventiveMeasures.Add(new PreventiveMeasure
@@ -432,7 +458,7 @@ public class IncidentsController : Controller
                 DueDate = vm.DueDate,
                 Priority = vm.Priority,
                 AnalysisNote = vm.AnalysisNote,
-                Status = PreventiveMeasure.Statuses.Planned
+                Status = MeasureStatus.Planned
             });
             await _db.SaveChangesAsync();
             TempData["Success"] = "再発防止策を追加しました。";
@@ -445,10 +471,13 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> CompleteMeasure(int id, string? completionNote, Guid concurrencyToken)
     {
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
-        measure.Status = PreventiveMeasure.Statuses.Completed;
+        measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = DateTime.Now;
         measure.CompletionNote = completionNote;
 
@@ -476,8 +505,11 @@ public class IncidentsController : Controller
         if (effectivenessRating < 1 || effectivenessRating > 5)
             return BadRequest("有効性評価は1〜5の値を指定してください。");
 
-        var measure = await _db.PreventiveMeasures.FindAsync(id);
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
+        if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         measure.EffectivenessRating = effectivenessRating;
         measure.EffectivenessNote = effectivenessNote;
@@ -503,6 +535,14 @@ public class IncidentsController : Controller
             TempData["Success"] = "有効性評価を登録しました。";
 
         return RedirectToAction(nameof(Details), new { id = measure.IncidentId });
+    }
+
+    // リソース（Incident）に対する Policy 評価。Admin/RiskManager は通過、Staff は部署一致で通過。
+    private async Task<bool> IsAuthorizedFor(Incident? incident, string policy)
+    {
+        if (incident == null) return false;
+        var result = await _auth.AuthorizeAsync(User, incident, policy);
+        return result.Succeeded;
     }
 
     private async Task<List<SelectListItem>> BuildCauseCategoryOptions()

@@ -1,6 +1,8 @@
+using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -19,6 +21,8 @@ public class HomeControllerTests : IDisposable
             .Options;
         _db = new ApplicationDbContext(options);
         _controller = new HomeController(_db);
+        // Existing tests assume a privileged viewer; Staff-scope tests build their own.
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
 
     public void Dispose()
@@ -26,8 +30,10 @@ public class HomeControllerTests : IDisposable
         _db.Dispose();
     }
 
-    private Incident MakeIncident(string dept = "内科病棟", string type = "投薬ミス",
-        string severity = "Level2", DateTime? occurredAt = null) => new()
+    private Incident MakeIncident(string dept = "内科病棟",
+        IncidentTypeKind type = IncidentTypeKind.Medication,
+        IncidentSeverity severity = IncidentSeverity.Level2,
+        DateTime? occurredAt = null) => new()
     {
         Department = dept,
         IncidentType = type,
@@ -94,20 +100,20 @@ public class HomeControllerTests : IDisposable
             {
                 IncidentId = incident.Id,
                 Description = "対策A",
-                MeasureType = "ShortTerm",
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当A",
                 ResponsibleDepartment = "内科",
-                Status = "Planned",
+                Status = MeasureStatus.Planned,
                 DueDate = DateTime.Today.AddDays(-5)  // overdue
             },
             new PreventiveMeasure
             {
                 IncidentId = incident.Id,
                 Description = "対策B",
-                MeasureType = "ShortTerm",
+                MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当B",
                 ResponsibleDepartment = "内科",
-                Status = "Completed",
+                Status = MeasureStatus.Completed,
                 DueDate = DateTime.Today.AddDays(-10)  // completed は除外
             }
         );
@@ -128,8 +134,8 @@ public class HomeControllerTests : IDisposable
         _db.CauseCategories.Add(category);
         await _db.SaveChangesAsync();
 
-        var inc1 = MakeIncident(dept: "外科病棟", type: "投薬ミス", occurredAt: DateTime.Today.AddDays(-10));
-        var inc2 = MakeIncident(dept: "外科病棟", type: "投薬ミス", occurredAt: DateTime.Today.AddDays(-20));
+        var inc1 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: DateTime.Today.AddDays(-10));
+        var inc2 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: DateTime.Today.AddDays(-20));
         _db.Incidents.AddRange(inc1, inc2);
         await _db.SaveChangesAsync();
 

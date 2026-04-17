@@ -1,4 +1,5 @@
 using System.Reflection;
+using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Controllers;
 using Microsoft.AspNetCore.Authorization;
 
@@ -75,5 +76,31 @@ public class AuthorizationAttributeTests
         Assert.NotEmpty(postMethods);
         Assert.All(postMethods, m =>
             Assert.NotNull(m.GetCustomAttribute<Microsoft.AspNetCore.Mvc.ValidateAntiForgeryTokenAttribute>()));
+    }
+
+    // Policy guard-rails: make sure the restrictive policies stay pinned to the
+    // controllers/actions they were designed for, so a refactor can't drop
+    // department scoping or role gating silently.
+    [Fact]
+    public void AnalyticsController_RequiresCanViewAnalyticsPolicy()
+    {
+        var attr = typeof(AnalyticsController).GetCustomAttribute<AuthorizeAttribute>(inherit: true);
+        Assert.NotNull(attr);
+        Assert.Equal(Policies.CanViewAnalytics, attr!.Policy);
+    }
+
+    [Theory]
+    [InlineData(typeof(IncidentsController), nameof(IncidentsController.Delete))]
+    [InlineData(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Delete))]
+    public void DeleteAction_RequiresCanDeleteIncidentPolicy(Type controllerType, string actionName)
+    {
+        var method = controllerType
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .First(m => m.Name == actionName
+                && m.GetCustomAttribute<Microsoft.AspNetCore.Mvc.HttpPostAttribute>() != null);
+
+        var attr = method.GetCustomAttribute<AuthorizeAttribute>(inherit: true);
+        Assert.NotNull(attr);
+        Assert.Equal(Policies.CanDeleteIncident, attr!.Policy);
     }
 }

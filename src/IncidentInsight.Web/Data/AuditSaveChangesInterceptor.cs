@@ -1,4 +1,5 @@
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using IncidentInsight.Web.Models;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
@@ -177,6 +178,13 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         return string.Join(",", values);
     }
 
+    // enum を数値でなく名前で JSON シリアライズする。監査ログの可読性と、
+    // 文字列値でコミット済みの過去ログとの整合性を保つため必須。
+    private static readonly JsonSerializerOptions _jsonOptions = new()
+    {
+        Converters = { new JsonStringEnumConverter() }
+    };
+
     private static string? SerializeChanges(EntityEntry entry)
     {
         var dict = new Dictionary<string, object?>();
@@ -202,7 +210,7 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
             }
         }
 
-        return dict.Count == 0 ? null : JsonSerializer.Serialize(dict);
+        return dict.Count == 0 ? null : JsonSerializer.Serialize(dict, _jsonOptions);
     }
 
     private record PendingAudit(
