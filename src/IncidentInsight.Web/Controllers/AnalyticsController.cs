@@ -59,7 +59,7 @@ public class AnalyticsController : Controller
         if (dateFrom.HasValue)
             query = query.Where(ca => ca.Incident.OccurredAt >= dateFrom.Value);
         if (dateTo.HasValue)
-            query = query.Where(ca => ca.Incident.OccurredAt <= dateTo.Value);
+            query = query.Where(ca => ca.Incident.OccurredAt < dateTo.Value.Date.AddDays(1));
 
         // GroupBy runs on the server: we pick the parent name when present, otherwise
         // the leaf name, without materializing each CauseAnalysis row.
@@ -83,7 +83,7 @@ public class AnalyticsController : Controller
     {
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
+        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
 
         var grouped = await query
             .GroupBy(i => i.Department)
@@ -104,7 +104,7 @@ public class AnalyticsController : Controller
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
+        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
 
         var grouped = await query
             .GroupBy(i => i.Severity)
@@ -200,7 +200,7 @@ public class AnalyticsController : Controller
     {
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt <= dateTo.Value);
+        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
 
         var grouped = await query
             .GroupBy(i => i.IncidentType)
