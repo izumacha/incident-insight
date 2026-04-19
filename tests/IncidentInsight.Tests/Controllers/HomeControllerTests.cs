@@ -4,6 +4,7 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -20,7 +21,7 @@ public class HomeControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new HomeController(_db);
+        _controller = new HomeController(_db, new RecurrenceService());
         // Existing tests assume a privileged viewer; Staff-scope tests build their own.
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }

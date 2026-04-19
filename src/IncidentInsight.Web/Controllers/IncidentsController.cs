@@ -16,16 +16,19 @@ public class IncidentsController : Controller
 {
     private readonly ApplicationDbContext _db;
     private readonly IAuthorizationService _auth;
+    private readonly IRecurrenceService _recurrence;
     private readonly ILogger<IncidentsController> _logger;
     private const int PageSize = 20;
 
     public IncidentsController(
         ApplicationDbContext db,
         IAuthorizationService auth,
+        IRecurrenceService recurrence,
         ILogger<IncidentsController> logger)
     {
         _db = db;
         _auth = auth;
+        _recurrence = recurrence;
         _logger = logger;
     }
 
@@ -111,15 +114,8 @@ public class IncidentsController : Controller
         if (incident == null) return NotFound();
         if (!await IsAuthorizedFor(incident, Policies.CanViewIncident)) return Forbid();
 
-        // 再発検出: 同部署・同インシデント種別の候補を DB から取得し、
-        // 原因分類の重なりは共有ヘルパーで in-memory 判定する。
-        var candidates = await _db.Incidents.AsNoTracking()
-            .Include(o => o.CauseAnalyses)
-            .Where(o => o.Id != id
-                && o.Department == incident.Department
-                && o.IncidentType == incident.IncidentType)
-            .ToListAsync();
-        var similar = RecurrenceDetector.FindSimilar(incident, candidates);
+        // 再発検出はサービスに集約(HomeController と同じマッチングルールを共有)。
+        var similar = await _recurrence.FindRecurrencesForIncidentAsync(incident, _db.Incidents);
 
         var causeOptions = await BuildCauseCategoryOptions();
 
