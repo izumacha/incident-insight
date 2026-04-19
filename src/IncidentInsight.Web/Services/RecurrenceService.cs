@@ -9,9 +9,6 @@ public class RecurrenceService : IRecurrenceService
 {
     private readonly IClock _clock;
 
-    // デフォルトコンストラクタは既存のテストとの互換性のため維持する。
-    // DI 経由で呼ばれる通常実行時は IClock が注入される。
-    public RecurrenceService() : this(new SystemClock()) { }
     public RecurrenceService(IClock clock) { _clock = clock; }
 
     /// <inheritdoc />

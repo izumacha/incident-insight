@@ -34,10 +34,10 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // DbContext インスタンスごとの保留監査エントリ。Scoped に一致するため競合しない。
     private readonly Dictionary<DbContext, List<PendingAudit>> _pending = new();
 
-    public AuditSaveChangesInterceptor(IHttpContextAccessor? httpContextAccessor = null, IClock? clock = null)
+    public AuditSaveChangesInterceptor(IClock clock, IHttpContextAccessor? httpContextAccessor = null)
     {
         _httpContextAccessor = httpContextAccessor;
-        _clock = clock ?? new SystemClock();
+        _clock = clock;
     }
 
     public override InterceptionResult<int> SavingChanges(

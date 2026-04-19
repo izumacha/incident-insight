@@ -25,7 +25,7 @@ public class IncidentsControllerTests : IDisposable
         _controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new RecurrenceService(),
+            new RecurrenceService(new SystemClock()),
             new SystemClock(),
             NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());

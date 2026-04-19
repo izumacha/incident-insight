@@ -1,6 +1,7 @@
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Services;
 using Microsoft.EntityFrameworkCore;
 
 namespace IncidentInsight.Tests.Data;
@@ -13,7 +14,7 @@ public class AuditSaveChangesInterceptorTests : IDisposable
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .AddInterceptors(new AuditSaveChangesInterceptor())
+            .AddInterceptors(new AuditSaveChangesInterceptor(new SystemClock()))
             .Options;
         _db = new ApplicationDbContext(options);
     }

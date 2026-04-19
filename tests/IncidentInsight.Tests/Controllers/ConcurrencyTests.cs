@@ -85,7 +85,7 @@ public class ConcurrencyTests : IDisposable
     public async Task IncidentsEdit_OnConcurrencyConflict_RedirectsToEditWithWarning()
     {
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel
@@ -115,7 +115,7 @@ public class ConcurrencyTests : IDisposable
     {
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
@@ -160,7 +160,7 @@ public class ConcurrencyTests : IDisposable
     {
         // Baseline happy-path check: without forcing a conflict, Edit should succeed.
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel

@@ -6,9 +6,8 @@ namespace IncidentInsight.Web.Data;
 
 public static class DbSeeder
 {
-    public static void Seed(ApplicationDbContext db, IClock? clock = null)
+    public static void Seed(ApplicationDbContext db, IClock clock)
     {
-        clock ??= new SystemClock();
         // ── 原因カテゴリ（親カテゴリ） ─────────────────────────────
         if (!db.CauseCategories.Any())
         {
