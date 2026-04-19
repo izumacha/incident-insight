@@ -7,6 +7,13 @@ namespace IncidentInsight.Web.Services;
 /// <inheritdoc />
 public class RecurrenceService : IRecurrenceService
 {
+    private readonly IClock _clock;
+
+    // デフォルトコンストラクタは既存のテストとの互換性のため維持する。
+    // DI 経由で呼ばれる通常実行時は IClock が注入される。
+    public RecurrenceService() : this(new SystemClock()) { }
+    public RecurrenceService(IClock clock) { _clock = clock; }
+
     /// <inheritdoc />
     public async Task<List<Incident>> FindRecurrencesForIncidentAsync(
         Incident incident,
@@ -26,7 +33,7 @@ public class RecurrenceService : IRecurrenceService
 
         if (within is { } w)
         {
-            var since = DateTime.Today - w;
+            var since = _clock.Today - w;
             query = query.Where(o => o.OccurredAt >= since);
         }
 
@@ -40,7 +47,7 @@ public class RecurrenceService : IRecurrenceService
         TimeSpan recentWindow,
         CancellationToken ct = default)
     {
-        var since = DateTime.Today - recentWindow;
+        var since = _clock.Today - recentWindow;
 
         var recentList = await scope
             .AsNoTracking()

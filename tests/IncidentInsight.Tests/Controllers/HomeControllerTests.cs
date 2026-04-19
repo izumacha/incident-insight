@@ -21,7 +21,7 @@ public class HomeControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new HomeController(_db, new RecurrenceService());
+        _controller = new HomeController(_db, new RecurrenceService(), new SystemClock());
         // Existing tests assume a privileged viewer; Staff-scope tests build their own.
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }

@@ -3,6 +3,7 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -23,17 +24,20 @@ public class PreventiveMeasuresControllerTests : IDisposable
         _controller = new PreventiveMeasuresController(
             _db,
             UserContextHelper.BuildAuthService(),
+            new SystemClock(),
             NullLogger<PreventiveMeasuresController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
 
     public void Dispose() => _db.Dispose();
 
-    private async Task<PreventiveMeasure> SeedMeasureAsync(string department)
+    private async Task<PreventiveMeasure> SeedMeasureAsync(
+        string incidentDepartment,
+        string? responsibleDepartment = null)
     {
         var incident = new Incident
         {
-            Department = department,
+            Department = incidentDepartment,
             IncidentType = IncidentTypeKind.Fall,
             Severity = IncidentSeverity.Level2,
             Description = "テスト",
@@ -46,7 +50,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Description = "対策",
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当A",
-            ResponsibleDepartment = department,
+            ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
             DueDate = DateTime.Today.AddDays(30),
             Priority = 2
         };
@@ -86,5 +90,35 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
         Assert.False(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
         Assert.NotNull(_controller.TempData["Success"]);
+    }
+
+    [Fact]
+    public async Task Delete_RiskManager_RemovesMeasure_RegardlessOfDepartment()
+    {
+        // RiskManager は全部署横断で削除可能 (Policies.CanDeleteIncident)。
+        var measure = await SeedMeasureAsync("外来");
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.RiskManager());
+        var result = await _controller.Delete(measure.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
+        Assert.False(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+    }
+
+    [Fact]
+    public async Task Delete_Staff_IncidentDepartmentMismatch_ResponsibleDepartmentMatches_ReturnsForbid()
+    {
+        // Issue #29 回帰防止: 認可の判定は Incident の発生部署に基づくべきで、
+        // PreventiveMeasure.ResponsibleDepartment が Staff の部署に一致しても通してはならない。
+        var measure = await SeedMeasureAsync(
+            incidentDepartment: "外来",
+            responsibleDepartment: "内科病棟");
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        var result = await _controller.Delete(measure.Id);
+
+        Assert.IsType<ForbidResult>(result);
+        Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
     }
 }

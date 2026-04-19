@@ -3,6 +3,7 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -14,15 +15,18 @@ public class PreventiveMeasuresController : Controller
 {
     private readonly ApplicationDbContext _db;
     private readonly IAuthorizationService _auth;
+    private readonly IClock _clock;
     private readonly ILogger<PreventiveMeasuresController> _logger;
 
     public PreventiveMeasuresController(
         ApplicationDbContext db,
         IAuthorizationService auth,
+        IClock clock,
         ILogger<PreventiveMeasuresController> logger)
     {
         _db = db;
         _auth = auth;
+        _clock = clock;
         _logger = logger;
     }
 
@@ -83,7 +87,7 @@ public class PreventiveMeasuresController : Controller
         var vm = new MeasureFormViewModel
         {
             IncidentId = incidentId.Value,
-            DueDate = DateTime.Today.AddDays(30)
+            DueDate = _clock.Today.AddDays(30)
         };
         return View(vm);
     }
@@ -197,7 +201,7 @@ public class PreventiveMeasuresController : Controller
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         measure.Status = MeasureStatus.Completed;
-        measure.CompletedAt = DateTime.Now;
+        measure.CompletedAt = _clock.Now;
         measure.CompletionNote = completionNote;
 
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
@@ -258,7 +262,7 @@ public class PreventiveMeasuresController : Controller
         measure.EffectivenessRating = vm.EffectivenessRating;
         measure.EffectivenessNote = vm.EffectivenessNote;
         measure.RecurrenceObserved = vm.RecurrenceObserved;
-        measure.EffectivenessReviewedAt = DateTime.Now;
+        measure.EffectivenessReviewedAt = _clock.Now;
 
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
 
@@ -293,7 +297,7 @@ public class PreventiveMeasuresController : Controller
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         measure.Status = status;
-        if (status == MeasureStatus.Completed) measure.CompletedAt = DateTime.Now;
+        if (status == MeasureStatus.Completed) measure.CompletedAt = _clock.Now;
 
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 

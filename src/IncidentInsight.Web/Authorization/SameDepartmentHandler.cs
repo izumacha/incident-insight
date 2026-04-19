@@ -8,6 +8,15 @@ namespace IncidentInsight.Web.Authorization;
 /// Admin / RiskManager は常に許可。Staff は <see cref="ApplicationUser.Department"/>
 /// クレームとリソースの Department が一致した場合のみ許可。
 /// </summary>
+/// <remarks>
+/// 認可の判定基準は **インシデントの発生部署** (<c>Incident.Department</c>)。
+/// <see cref="PreventiveMeasure"/> / <see cref="CauseAnalysis"/> をリソースに渡す場合は、
+/// 呼び出し側で <c>.Include(x =&gt; x.Incident)</c> を付けてナビゲーションを eager-load すること。
+/// <see cref="PreventiveMeasure.ResponsibleDepartment"/> は「対策を担当する部署」であって
+/// 発生部署とは別概念のため、認可基準に混入してはならない
+/// (フォールバックすると silent な認可バグになる — Issue #29)。
+/// Incident が未ロードの場合は fail-closed で拒否する。
+/// </remarks>
 public sealed class SameDepartmentHandler : AuthorizationHandler<SameDepartmentRequirement>
 {
     protected override Task HandleRequirementAsync(
@@ -28,10 +37,12 @@ public sealed class SameDepartmentHandler : AuthorizationHandler<SameDepartmentR
             return Task.CompletedTask;
         }
 
+        // Incident が未ロードのケースは null のままとし、下流で fail-closed で弾く。
+        // ResponsibleDepartment へのフォールバックは意図的に行わない (Issue #29)。
         var resourceDept = context.Resource switch
         {
             Incident inc              => inc.Department,
-            PreventiveMeasure measure => measure.Incident?.Department ?? measure.ResponsibleDepartment,
+            PreventiveMeasure measure => measure.Incident?.Department,
             CauseAnalysis analysis    => analysis.Incident?.Department,
             string deptString         => deptString,
             _                         => null

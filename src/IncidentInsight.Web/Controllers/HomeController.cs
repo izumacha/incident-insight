@@ -16,17 +16,19 @@ public class HomeController : Controller
 {
     private readonly ApplicationDbContext _db;
     private readonly IRecurrenceService _recurrence;
+    private readonly IClock _clock;
 
-    public HomeController(ApplicationDbContext db, IRecurrenceService recurrence)
+    public HomeController(ApplicationDbContext db, IRecurrenceService recurrence, IClock clock)
     {
         _db = db;
         _recurrence = recurrence;
+        _clock = clock;
     }
 
     public async Task<IActionResult> Index(string? period)
     {
         period ??= "year";
-        var today = DateTime.Today;
+        var today = _clock.Today;
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
 
         // Period window for KPIs and trend chart

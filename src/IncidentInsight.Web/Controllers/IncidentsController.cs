@@ -17,6 +17,7 @@ public class IncidentsController : Controller
     private readonly ApplicationDbContext _db;
     private readonly IAuthorizationService _auth;
     private readonly IRecurrenceService _recurrence;
+    private readonly IClock _clock;
     private readonly ILogger<IncidentsController> _logger;
     private const int PageSize = 20;
 
@@ -24,11 +25,13 @@ public class IncidentsController : Controller
         ApplicationDbContext db,
         IAuthorizationService auth,
         IRecurrenceService recurrence,
+        IClock clock,
         ILogger<IncidentsController> logger)
     {
         _db = db;
         _auth = auth;
         _recurrence = recurrence;
+        _clock = clock;
         _logger = logger;
     }
 
@@ -65,7 +68,7 @@ public class IncidentsController : Controller
         {
             "severity" => query.OrderByDescending(i => i.Severity),
             "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
-                              .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < DateTime.Today)),
+                              .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < _clock.Today)),
             _          => query.OrderByDescending(i => i.OccurredAt)
         };
 
@@ -136,7 +139,7 @@ public class IncidentsController : Controller
     {
         var vm = new IncidentCreateEditViewModel
         {
-            OccurredAt = DateTime.Now,
+            OccurredAt = _clock.Now,
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
         return View(vm);
@@ -168,7 +171,7 @@ public class IncidentsController : Controller
             Description = vm.Description,
             ImmediateActions = vm.ImmediateActions,
             ReporterName = vm.ReporterName,
-            ReportedAt = DateTime.Now
+            ReportedAt = _clock.Now
         };
 
         _db.Incidents.Add(incident);
@@ -188,7 +191,7 @@ public class IncidentsController : Controller
                 Why5 = vm.CauseAnalysis.Why5,
                 RootCauseSummary = vm.CauseAnalysis.RootCauseSummary,
                 AnalystName = vm.CauseAnalysis.AnalystName,
-                AnalyzedAt = DateTime.Now,
+                AnalyzedAt = _clock.Now,
                 AdditionalNotes = vm.CauseAnalysis.AdditionalNotes
             };
             _db.CauseAnalyses.Add(analysis);
@@ -371,7 +374,7 @@ public class IncidentsController : Controller
         analysis.AnalystName = vm.AnalystName;
         analysis.AdditionalNotes = vm.AdditionalNotes;
         // 監査目的で編集時にも分析日時を更新する(初回登録と再分析の区別は監査ログで追跡)
-        analysis.AnalyzedAt = DateTime.Now;
+        analysis.AnalyzedAt = _clock.Now;
 
         _db.Entry(analysis).Property(nameof(CauseAnalysis.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
 
@@ -412,7 +415,7 @@ public class IncidentsController : Controller
                 Why5 = vm.Why5,
                 RootCauseSummary = vm.RootCauseSummary,
                 AnalystName = vm.AnalystName,
-                AnalyzedAt = DateTime.Now,
+                AnalyzedAt = _clock.Now,
                 AdditionalNotes = vm.AdditionalNotes
             });
             await _db.SaveChangesAsync();
@@ -480,7 +483,7 @@ public class IncidentsController : Controller
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         measure.Status = MeasureStatus.Completed;
-        measure.CompletedAt = DateTime.Now;
+        measure.CompletedAt = _clock.Now;
         measure.CompletionNote = completionNote;
 
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
@@ -516,7 +519,7 @@ public class IncidentsController : Controller
         measure.EffectivenessRating = effectivenessRating;
         measure.EffectivenessNote = effectivenessNote;
         measure.RecurrenceObserved = recurrenceObserved;
-        measure.EffectivenessReviewedAt = DateTime.Now;
+        measure.EffectivenessReviewedAt = _clock.Now;
 
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 

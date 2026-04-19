@@ -3,6 +3,7 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 
@@ -22,7 +23,7 @@ public class AnalyticsControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new AnalyticsController(_db);
+        _controller = new AnalyticsController(_db, new SystemClock());
     }
 
     public void Dispose() => _db.Dispose();

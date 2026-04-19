@@ -91,4 +91,44 @@ public class SameDepartmentHandlerTests
 
         Assert.False(await RunAsync(handler, user, measure));
     }
+
+    [Fact]
+    public async Task Staff_PreventiveMeasure_IncidentMatches_Succeeds()
+    {
+        var handler = new SameDepartmentHandler();
+        var user = UserContextHelper.Staff("内科病棟");
+
+        var measure = new PreventiveMeasure
+        {
+            Description = "対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "担当A",
+            ResponsibleDepartment = "他部署", // ResponsibleDepartment は判定に関与しない
+            DueDate = DateTime.Today,
+            Incident = IncidentIn("内科病棟") // Incident の部署で判定される
+        };
+
+        Assert.True(await RunAsync(handler, user, measure));
+    }
+
+    [Fact]
+    public async Task Staff_PreventiveMeasure_IncidentNotLoaded_FailsClosed()
+    {
+        // Issue #29: Incident が未ロードの場合、以前は ResponsibleDepartment に
+        // サイレントフォールバックしていたが、現在は fail-closed で拒否する。
+        var handler = new SameDepartmentHandler();
+        var user = UserContextHelper.Staff("内科病棟");
+
+        var measure = new PreventiveMeasure
+        {
+            Description = "対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "担当A",
+            ResponsibleDepartment = "内科病棟", // ユーザの部署と一致していてもフォールバックしない
+            DueDate = DateTime.Today,
+            Incident = null! // Include 漏れを想定
+        };
+
+        Assert.False(await RunAsync(handler, user, measure));
+    }
 }

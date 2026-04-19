@@ -2,6 +2,7 @@ using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -12,10 +13,12 @@ namespace IncidentInsight.Web.Controllers;
 public class AnalyticsController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly IClock _clock;
 
-    public AnalyticsController(ApplicationDbContext db)
+    public AnalyticsController(ApplicationDbContext db, IClock clock)
     {
         _db = db;
+        _clock = clock;
     }
 
     public IActionResult Index() => View();
@@ -23,7 +26,7 @@ public class AnalyticsController : Controller
     // GET /Analytics/MonthlyTrend
     public async Task<IActionResult> MonthlyTrend(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
-        var today = DateTime.Today;
+        var today = _clock.Today;
         var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-11);
 
         var query = _db.Incidents.AsNoTracking()
@@ -131,7 +134,7 @@ public class AnalyticsController : Controller
     {
         // IsOverdue is a CLR-only computed property, so we inline its predicate
         // (Status != Completed && DueDate < today) so EF can translate it.
-        var today = DateTime.Today;
+        var today = _clock.Today;
         var counts = await _db.PreventiveMeasures.AsNoTracking()
             .GroupBy(_ => 1)
             .Select(g => new
