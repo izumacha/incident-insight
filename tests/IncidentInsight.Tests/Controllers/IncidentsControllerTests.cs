@@ -4,6 +4,7 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Logging.Abstractions;
@@ -24,6 +25,7 @@ public class IncidentsControllerTests : IDisposable
         _controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
+            new RecurrenceService(),
             NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }

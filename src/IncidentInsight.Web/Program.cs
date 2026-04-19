@@ -1,6 +1,7 @@
 using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
@@ -65,6 +66,7 @@ builder.Services.AddAuthorization(options =>
         p => p.AddRequirements(new SameDepartmentRequirement()));
 });
 builder.Services.AddScoped<IAuthorizationHandler, SameDepartmentHandler>();
+builder.Services.AddScoped<IRecurrenceService, RecurrenceService>();
 
 builder.Services.ConfigureApplicationCookie(options =>
 {

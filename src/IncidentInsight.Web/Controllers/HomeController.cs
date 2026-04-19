@@ -15,10 +15,12 @@ namespace IncidentInsight.Web.Controllers;
 public class HomeController : Controller
 {
     private readonly ApplicationDbContext _db;
+    private readonly IRecurrenceService _recurrence;
 
-    public HomeController(ApplicationDbContext db)
+    public HomeController(ApplicationDbContext db, IRecurrenceService recurrence)
     {
         _db = db;
+        _recurrence = recurrence;
     }
 
     public async Task<IActionResult> Index(string? period)
@@ -26,7 +28,6 @@ public class HomeController : Controller
         period ??= "year";
         var today = DateTime.Today;
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
-        var ninetyDaysAgo = today.AddDays(-90);
 
         // Period window for KPIs and trend chart
         var periodStart = period switch
@@ -106,56 +107,9 @@ public class HomeController : Controller
             }
         }
 
-        // Recurrence detection: walk 90-day recent incidents, then batch-fetch any
-        // historical incident sharing a (Department, IncidentType, CauseCategory) tuple.
-        // One DB round-trip total instead of N per recent incident.
-        var recentList = await incidents
-            .Include(i => i.CauseAnalyses)
-            .Where(i => i.OccurredAt >= ninetyDaysAgo)
-            .OrderByDescending(i => i.OccurredAt)
-            .ToListAsync();
-
-        var recurrenceAlerts = new List<RecurrenceAlert>();
-        var processed = new HashSet<int>();
-
-        var recentDepts = recentList.Select(i => i.Department).Distinct().ToList();
-        var recentTypes = recentList.Select(i => i.IncidentType).Distinct().ToList();
-        var recentCatIds = recentList
-            .SelectMany(i => i.CauseAnalyses.Select(ca => ca.CauseCategoryId))
-            .ToHashSet();
-
-        // Over-fetches slightly (superset of dept × type) but collapses the loop's
-        // per-iteration queries into one. Final matching is done in-memory below.
-        var candidates = recentCatIds.Count == 0 || recentList.Count == 0
-            ? new List<Incident>()
-            : await incidents
-                .Include(i => i.CauseAnalyses)
-                .Where(i => recentDepts.Contains(i.Department)
-                    && recentTypes.Contains(i.IncidentType)
-                    && i.CauseAnalyses.Any(ca => recentCatIds.Contains(ca.CauseCategoryId)))
-                .ToListAsync();
-
-        var candidatesByKey = candidates.ToLookup(i => (i.Department, i.IncidentType));
-
-        foreach (var incident in recentList)
-        {
-            if (processed.Contains(incident.Id)) continue;
-
-            var bucket = candidatesByKey[(incident.Department, incident.IncidentType)];
-            var similar = RecurrenceDetector.FindSimilar(incident, bucket);
-
-            if (similar.Count > 0)
-            {
-                recurrenceAlerts.Add(new RecurrenceAlert
-                {
-                    CurrentIncident = incident,
-                    SimilarIncidents = similar,
-                    PatternDescription = $"{incident.Department} / {incident.IncidentType}"
-                });
-                processed.Add(incident.Id);
-                foreach (var s in similar) processed.Add(s.Id);
-            }
-        }
+        // 再発検出はサービスに集約。90 日ウィンドウは IncidentsController.Details (無制限) と
+        // 業務ルールを揃えたまま、ダッシュボードでのみ時間窓を適用する。
+        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, TimeSpan.FromDays(90));
 
         var vm = new DashboardViewModel
         {
