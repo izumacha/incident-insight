@@ -7,6 +7,10 @@ namespace IncidentInsight.Web.Services;
 /// <inheritdoc />
 public class RecurrenceService : IRecurrenceService
 {
+    private readonly IClock _clock;
+
+    public RecurrenceService(IClock clock) { _clock = clock; }
+
     /// <inheritdoc />
     public async Task<List<Incident>> FindRecurrencesForIncidentAsync(
         Incident incident,
@@ -26,7 +30,7 @@ public class RecurrenceService : IRecurrenceService
 
         if (within is { } w)
         {
-            var since = DateTime.Today - w;
+            var since = _clock.Today - w;
             query = query.Where(o => o.OccurredAt >= since);
         }
 
@@ -40,7 +44,7 @@ public class RecurrenceService : IRecurrenceService
         TimeSpan recentWindow,
         CancellationToken ct = default)
     {
-        var since = DateTime.Today - recentWindow;
+        var since = _clock.Today - recentWindow;
 
         var recentList = await scope
             .AsNoTracking()

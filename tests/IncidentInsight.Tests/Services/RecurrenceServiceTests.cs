@@ -17,7 +17,7 @@ public class RecurrenceServiceTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _svc = new RecurrenceService();
+        _svc = new RecurrenceService(new SystemClock());
     }
 
     public void Dispose() => _db.Dispose();

@@ -1,6 +1,7 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Http;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
@@ -28,13 +29,15 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     };
 
     private readonly IHttpContextAccessor? _httpContextAccessor;
+    private readonly IClock _clock;
 
     // DbContext インスタンスごとの保留監査エントリ。Scoped に一致するため競合しない。
     private readonly Dictionary<DbContext, List<PendingAudit>> _pending = new();
 
-    public AuditSaveChangesInterceptor(IHttpContextAccessor? httpContextAccessor = null)
+    public AuditSaveChangesInterceptor(IClock clock, IHttpContextAccessor? httpContextAccessor = null)
     {
         _httpContextAccessor = httpContextAccessor;
+        _clock = clock;
     }
 
     public override InterceptionResult<int> SavingChanges(
@@ -86,7 +89,10 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     private void CaptureAndBumpTokens(DbContext context)
     {
         var user = _httpContextAccessor?.HttpContext?.User?.Identity?.Name ?? "system";
-        var now = DateTime.UtcNow;
+        // ビジネスタイムスタンプと揃えるため、監査ログも運用タイムゾーン(JST)で記録する
+        // (Issue #31)。時刻源は IClock に集約され、将来 UTC に寄せる場合はここではなく
+        // IClock 実装を差し替える。
+        var now = _clock.Now;
 
         var captured = new List<PendingAudit>();
 

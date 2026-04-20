@@ -10,6 +10,7 @@ var builder = WebApplication.CreateBuilder(args);
 
 // Add services
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<IClock, SystemClock>();
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 
 builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
@@ -149,7 +150,7 @@ using (var scope = app.Services.CreateScope())
             "See CLAUDE.md for details.",
             ex);
     }
-    DbSeeder.Seed(db);
+    DbSeeder.Seed(db, scope.ServiceProvider.GetRequiredService<IClock>());
 
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
     var userManager = scope.ServiceProvider.GetRequiredService<UserManager<ApplicationUser>>();

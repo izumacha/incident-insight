@@ -25,7 +25,8 @@ public class IncidentsControllerTests : IDisposable
         _controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new RecurrenceService(),
+            new RecurrenceService(new SystemClock()),
+            new SystemClock(),
             NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -349,6 +350,30 @@ public class IncidentsControllerTests : IDisposable
         Assert.Equal(nameof(IncidentsController.Index), redirect.ActionName);
         Assert.False(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
         Assert.NotNull(_controller.TempData["Success"]);
+    }
+
+    [Fact]
+    public async Task Delete_RiskManager_RemovesIncident_RegardlessOfDepartment()
+    {
+        // RiskManager は全部署横断で削除できる (Policies.CanDeleteIncident)。
+        var incident = new Incident
+        {
+            Department = "外来",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "他部署の削除対象",
+            ReporterName = "担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        UserContextHelper.AttachUser(_controller, UserContextHelper.RiskManager());
+        var result = await _controller.Delete(incident.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(IncidentsController.Index), redirect.ActionName);
+        Assert.False(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
     }
 
     [Fact]

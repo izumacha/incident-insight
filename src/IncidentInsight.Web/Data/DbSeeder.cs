@@ -1,11 +1,12 @@
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Services;
 
 namespace IncidentInsight.Web.Data;
 
 public static class DbSeeder
 {
-    public static void Seed(ApplicationDbContext db)
+    public static void Seed(ApplicationDbContext db, IClock clock)
     {
         // ── 原因カテゴリ（親カテゴリ） ─────────────────────────────
         if (!db.CauseCategories.Any())
@@ -64,7 +65,7 @@ public static class DbSeeder
         if (db.Incidents.Any()) return;
 
         var cats = db.CauseCategories.ToDictionary(c => c.Name, c => c.Id);
-        var now = DateTime.Now;
+        var now = clock.Now;
 
         var incidents = new List<Incident>
         {
