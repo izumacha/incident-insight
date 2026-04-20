@@ -1,5 +1,7 @@
+// モデル(Incidentなど)を使えるようにする
 using IncidentInsight.Web.Models;
 
+// このサービスの名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Services;
 
 /// <summary>
@@ -17,9 +19,12 @@ public static class RecurrenceDetector
     /// </summary>
     public static List<Incident> FindSimilar(Incident target, IEnumerable<Incident> candidates)
     {
+        // 対象インシデントが持つ原因分類IDの集合を作る(Hashで照合を高速化)
         var catIds = target.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
+        // 原因分類が1件もないなら再発判定はできないので空リストを返す
         if (catIds.Count == 0) return new List<Incident>();
 
+        // 候補の中から「自分自身を除く/同部署/同種別/原因分類が1つでも重なる」ものを抽出
         return candidates
             .Where(o => o.Id != target.Id
                 && o.Department == target.Department

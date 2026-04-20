@@ -1,6 +1,9 @@
+// モデル(Incidentなど)を使えるようにする
 using IncidentInsight.Web.Models;
+// ViewModel(RecurrenceAlertなど)を使えるようにする
 using IncidentInsight.Web.Models.ViewModels;
 
+// このサービスの名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Services;
 
 /// <summary>
@@ -21,6 +24,7 @@ public interface IRecurrenceService
     /// 部署スコープを済ませた <see cref="IQueryable{Incident}"/> を渡す。
     /// </param>
     /// <param name="within">時間窓。null の場合は無制限。</param>
+    // 指定インシデントと類似する過去案件を検索するメソッド(非同期)
     Task<List<Incident>> FindRecurrencesForIncidentAsync(
         Incident incident,
         IQueryable<Incident> scope,
@@ -31,6 +35,7 @@ public interface IRecurrenceService
     /// ダッシュボード用のバッチ検出。<paramref name="recentWindow"/> 以内に発生した
     /// インシデント群から再発アラートを組み立てる。候補抽出は 1 クエリに集約される。
     /// </summary>
+    // ダッシュボード用に、最近発生したインシデント群から再発アラートを一括生成する
     Task<List<RecurrenceAlert>> FindRecurrenceAlertsAsync(
         IQueryable<Incident> scope,
         TimeSpan recentWindow,
