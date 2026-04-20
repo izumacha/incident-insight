@@ -1,60 +1,78 @@
+@* 全ページで共通利用するレイアウトテンプレート(ヘッダ・ナビ・フッタ) *@
 <!DOCTYPE html>
 <html lang="ja">
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    @* 各ページで設定される Title を連結してブラウザタブに表示 *@
     <title>@ViewData["Title"] — 医療インシデント管理システム</title>
+    @* Bootstrap 5 の CSS(ローカル配信) *@
     <link rel="stylesheet" href="~/lib/bootstrap/dist/css/bootstrap.min.css" />
+    @* Bootstrap Icons の CSS(CDN) *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    @* アプリ固有のスタイル(キャッシュバスト用に asp-append-version="true") *@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 </head>
 <body>
+    @* 上部ナビゲーションバー *@
     <nav class="navbar navbar-expand-lg navbar-dark bg-primary shadow-sm">
         <div class="container-fluid">
+            @* ブランドロゴ(クリックでダッシュボードへ) *@
             <a class="navbar-brand fw-bold" asp-controller="Home" asp-action="Index">
                 <i class="bi bi-shield-plus me-2"></i>インシデント管理
             </a>
+            @* モバイル用ハンバーガーメニュー *@
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain">
                 <span class="navbar-toggler-icon"></span>
             </button>
             <div class="collapse navbar-collapse" id="navbarMain">
+                @* 左側メニュー(機能へのリンク) *@
                 <ul class="navbar-nav me-auto">
                     <li class="nav-item">
+                        @* ダッシュボードへのリンク *@
                         <a class="nav-link" asp-controller="Home" asp-action="Index">
                             <i class="bi bi-speedometer2 me-1"></i>ダッシュボード
                         </a>
                     </li>
                     <li class="nav-item">
+                        @* インシデント一覧へのリンク *@
                         <a class="nav-link" asp-controller="Incidents" asp-action="Index">
                             <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧
                         </a>
                     </li>
                     <li class="nav-item">
+                        @* インシデント新規登録へのリンク *@
                         <a class="nav-link" asp-controller="Incidents" asp-action="Create">
                             <i class="bi bi-plus-circle me-1"></i>新規登録
                         </a>
                     </li>
                     <li class="nav-item">
+                        @* 再発防止策カンバンへのリンク *@
                         <a class="nav-link" asp-controller="PreventiveMeasures" asp-action="Index">
                             <i class="bi bi-check2-square me-1"></i>再発防止策
                         </a>
                     </li>
                     <li class="nav-item">
+                        @* 分析画面へのリンク(Admin/RiskManager のみアクセス可) *@
                         <a class="nav-link" asp-controller="Analytics" asp-action="Index">
                             <i class="bi bi-bar-chart-line me-1"></i>分析・集計
                         </a>
                     </li>
                 </ul>
+                @* ログイン済みユーザーのみ右側メニューを表示 *@
                 @if (User.Identity?.IsAuthenticated == true)
                 {
                     <ul class="navbar-nav ms-auto align-items-center">
                         <li class="nav-item me-2">
+                            @* ログインユーザー名とロールバッジ *@
                             <span class="navbar-text small">
                                 <i class="bi bi-person-circle me-1"></i>@User.Identity.Name
+                                @* 管理者バッジ *@
                                 @if (User.IsInRole("Admin"))
                                 {
                                     <span class="badge bg-warning text-dark ms-1">Admin</span>
                                 }
+                                @* リスクマネージャーバッジ *@
                                 else if (User.IsInRole("RiskManager"))
                                 {
                                     <span class="badge bg-info text-dark ms-1">Risk Mgr</span>
@@ -62,7 +80,9 @@
                             </span>
                         </li>
                         <li class="nav-item">
+                            @* ログアウトボタン(POST 送信) *@
                             <form asp-controller="Account" asp-action="Logout" method="post" class="d-inline">
+                                @* CSRF 対策トークン *@
                                 @Html.AntiForgeryToken()
                                 <button type="submit" class="btn btn-outline-light btn-sm">
                                     <i class="bi bi-box-arrow-right me-1"></i>ログアウト
@@ -75,7 +95,9 @@
         </div>
     </nav>
 
+    @* メイン領域 *@
     <div class="container-fluid mt-3 px-4">
+        @* 成功トースト(TempData["Success"] が設定されていれば表示) *@
         @if (TempData["Success"] != null)
         {
             <div class="alert alert-success alert-dismissible fade show" role="alert">
@@ -83,6 +105,7 @@
                 <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
             </div>
         }
+        @* 警告トースト(TempData["Warning"] が設定されていれば表示) *@
         @if (TempData["Warning"] != null)
         {
             <div class="alert alert-warning alert-dismissible fade show" role="alert">
@@ -91,20 +114,27 @@
             </div>
         }
         <main role="main" class="pb-4">
+            @* 各ビューの内容をここに埋め込む *@
             @RenderBody()
         </main>
     </div>
 
+    @* フッター *@
     <footer class="bg-light border-top py-3 mt-4">
         <div class="container-fluid px-4 text-muted small">
             <i class="bi bi-shield-plus me-1"></i>医療インシデント管理システム — 安全な医療の実現のために
         </div>
     </footer>
 
+    @* jQuery(ローカル配信) *@
     <script src="~/lib/jquery/dist/jquery.min.js"></script>
+    @* Bootstrap の JS(ローカル配信) *@
     <script src="~/lib/bootstrap/dist/js/bootstrap.bundle.min.js"></script>
+    @* Chart.js(グラフ描画用、CDN 配信) *@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    @* アプリ固有 JavaScript *@
     <script src="~/js/site.js" asp-append-version="true"></script>
+    @* 各ページ固有のスクリプト section があれば挿入 *@
     @await RenderSectionAsync("Scripts", required: false)
 </body>
 </html>

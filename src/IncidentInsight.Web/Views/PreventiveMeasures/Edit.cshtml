@@ -1,11 +1,16 @@
+@* 再発防止策の編集用 ViewModel（新規登録と共用の型） *@
 @model IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "再発防止策 編集";
+    @* 親インシデントの情報（ViewBag から取り出し） *@
     var incident = ViewBag.Incident as IncidentInsight.Web.Models.Incident;
 }
 
+@* ページヘッダ *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-pencil me-2 text-secondary"></i>再発防止策 編集</h2>
+    @* 親インシデントに戻るリンク *@
     @if (incident != null)
     {
         <a asp-controller="Incidents" asp-action="Details" asp-route-id="@incident.Id"
@@ -15,6 +20,7 @@
     }
 </div>
 
+@* 対象インシデントの情報サマリ *@
 @if (incident != null)
 {
     <div class="alert alert-light border mb-3">
@@ -26,17 +32,22 @@
 
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
+        @* 編集対象の ID を URL に付けて POST *@
         <form asp-action="Edit" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
+            @* 同時編集検出用の楽観ロックトークン *@
             <input type="hidden" asp-for="ConcurrencyToken" />
+            @* 親インシデント ID を引き継ぎ *@
             <input type="hidden" asp-for="IncidentId" />
             <div class="row g-3">
                 <div class="col-12">
+                    @* 対策内容 *@
                     <label asp-for="Description" class="form-label fw-medium"></label>
                     <textarea asp-for="Description" class="form-control" rows="3"></textarea>
                     <span asp-validation-for="Description" class="text-danger small"></span>
                 </div>
                 <div class="col-md-3">
+                    @* 対策種別 *@
                     <label asp-for="MeasureType" class="form-label fw-medium"></label>
                     <select asp-for="MeasureType" class="form-select">
                         <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
@@ -44,21 +55,25 @@
                     </select>
                 </div>
                 <div class="col-md-3">
+                    @* 担当者 *@
                     <label asp-for="ResponsiblePerson" class="form-label fw-medium"></label>
                     <input asp-for="ResponsiblePerson" class="form-control" />
                     <span asp-validation-for="ResponsiblePerson" class="text-danger small"></span>
                 </div>
                 <div class="col-md-3">
+                    @* 担当部署 *@
                     <label asp-for="ResponsibleDepartment" class="form-label fw-medium"></label>
                     <input asp-for="ResponsibleDepartment" class="form-control" />
                     <span asp-validation-for="ResponsibleDepartment" class="text-danger small"></span>
                 </div>
                 <div class="col-md-2">
+                    @* 実施期限 *@
                     <label asp-for="DueDate" class="form-label fw-medium"></label>
                     <input asp-for="DueDate" type="date" class="form-control" />
                     <span asp-validation-for="DueDate" class="text-danger small"></span>
                 </div>
                 <div class="col-md-1">
+                    @* 優先度 *@
                     <label asp-for="Priority" class="form-label fw-medium"></label>
                     <select asp-for="Priority" class="form-select">
                         <option value="1">高</option>
@@ -67,13 +82,16 @@
                     </select>
                 </div>
                 <div class="col-12">
+                    @* 立案根拠メモ（任意） *@
                     <label asp-for="AnalysisNote" class="form-label fw-medium"></label>
                     <textarea asp-for="AnalysisNote" class="form-control" rows="2"
                               placeholder="なぜこの対策を選んだか、根本原因との対応を記入（任意）"></textarea>
                     <span asp-validation-for="AnalysisNote" class="text-danger small"></span>
                 </div>
                 <div class="col-12 d-flex justify-content-end gap-2">
+                    @* カンバン一覧に戻ってキャンセル *@
                     <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-outline-secondary">キャンセル</a>
+                    @* 保存ボタン *@
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-circle me-1"></i>保存
                     </button>
@@ -84,5 +102,6 @@
 </div>
 
 @section Scripts {
+@* クライアント側バリデーション *@
 <partial name="_ValidationScriptsPartial" />
 }

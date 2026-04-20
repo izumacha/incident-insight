@@ -1,17 +1,24 @@
+@* 使用する ViewModel の型を宣言 *@
 @model ErrorViewModel
+@* 開発/本番判定用に IWebHostEnvironment を注入 *@
 @inject IWebHostEnvironment HostEnvironment
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "エラー";
+    @* 共通レイアウトを適用 *@
     Layout = "_Layout";
 }
 
+@* エラー画面のメインブロック(中央寄せ) *@
 <div class="container py-5">
+    @* アイコン + 見出し + 説明文 *@
     <div class="text-center mb-4">
         <i class="bi bi-exclamation-triangle-fill text-danger" style="font-size: 4rem;"></i>
         <h1 class="text-danger mt-3">エラーが発生しました</h1>
         <p class="lead text-muted">リクエストの処理中に問題が発生しました。時間を置いて再度お試しください。</p>
     </div>
 
+    @* リクエスト ID がある場合のみカードで表示(問い合わせ用) *@
     @if (Model.ShowRequestId)
     {
         <div class="card mx-auto" style="max-width: 560px;">
@@ -23,12 +30,14 @@
         </div>
     }
 
+    @* ダッシュボードへ戻るボタン *@
     <div class="text-center mt-4">
         <a class="btn btn-primary" asp-controller="Home" asp-action="Index">
             <i class="bi bi-house"></i> ダッシュボードへ戻る
         </a>
     </div>
 
+    @* 開発環境のみ追加情報を表示 *@
     @if (HostEnvironment.IsDevelopment())
     {
         <div class="alert alert-warning mt-5" role="alert">

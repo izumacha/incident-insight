@@ -1,38 +1,48 @@
+@* 詳細画面用の ViewModel を宣言（インシデント本体＋類似事例＋フォーム用の新規分析/対策入れ子） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentDetailViewModel
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "インシデント詳細";
+    @* 毎回 Model.Incident と書くのが煩雑なのでローカル変数に束ねる *@
     var incident = Model.Incident;
 }
 
+@* ページヘッダ：見出し＋重症度バッジ＋アクションボタン *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0">
         <i class="bi bi-clipboard2-pulse me-2 text-primary"></i>インシデント詳細
+        @* 重症度の色クラス（SeverityColor）で Bootstrap バッジを着色 *@
         <span class="badge bg-@incident.SeverityColor ms-2">@incident.SeverityLabel</span>
     </h2>
     <div>
+        @* 編集画面への遷移 *@
         <a asp-action="Edit" asp-route-id="@incident.Id" class="btn btn-outline-secondary me-2">
             <i class="bi bi-pencil me-1"></i>編集
         </a>
+        @* 一覧画面への遷移 *@
         <a asp-action="Index" class="btn btn-outline-primary">
             <i class="bi bi-list me-1"></i>一覧へ
         </a>
     </div>
 </div>
 
-<!-- Recurrence Warning Banner -->
+@* 再発警告バナー：同部署×同種別の類似事例があれば目立つ黄色で表示 *@
 @if (Model.HasRecurrenceWarning)
 {
     <div class="alert alert-warning border-warning shadow-sm mb-4">
         <h6 class="alert-heading"><i class="bi bi-arrow-repeat me-2"></i>再発警告：類似インシデントが過去に発生しています</h6>
         <p class="mb-1">
+            @* 類似の合計件数を表示して注意喚起 *@
             <strong>@incident.Department / @incident.IncidentTypeLabel</strong> の組み合わせで
             過去に @Model.SimilarIncidents.Count 件の類似インシデントが報告されています。
             現在の対策が根本原因に対処しているか確認してください。
         </p>
         <ul class="mb-0 small">
+            @* 先頭3件だけ詳細へのリンク付きで列挙 *@
             @foreach (var sim in Model.SimilarIncidents.Take(3))
             {
                 <li>
+                    @* 発生日・重症度・概要の冒頭を要約表示 *@
                     @sim.OccurredAt.ToString("yyyy/MM/dd") — @sim.SeverityLabel —
                     @(sim.Description.Length > 50 ? sim.Description[..50] + "…" : sim.Description)
                     <a asp-action="Details" asp-route-id="@sim.Id" class="ms-1">詳細</a>
@@ -42,12 +52,13 @@
     </div>
 }
 
-<!-- Section 1: Incident Summary -->
+@* セクション1：インシデント概要 *@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white">
         <h5 class="mb-0"><i class="bi bi-info-circle me-2"></i>インシデント概要</h5>
     </div>
     <div class="card-body">
+        @* 定義リスト（dt=項目名／dd=値）で整列表示 *@
         <dl class="row mb-0">
             <dt class="col-sm-3">発生日時</dt>
             <dd class="col-sm-9">@incident.OccurredAt.ToString("yyyy年MM月dd日 HH:mm")</dd>
@@ -64,6 +75,7 @@
             <dt class="col-sm-3">状況・経緯</dt>
             <dd class="col-sm-9">@incident.Description</dd>
 
+            @* 応急処置は任意項目なので値があるときだけ表示 *@
             @if (!string.IsNullOrEmpty(incident.ImmediateActions))
             {
                 <dt class="col-sm-3">発生直後の対応</dt>
@@ -79,15 +91,17 @@
     </div>
 </div>
 
-<!-- Section 2: Cause Analysis (5 Whys) -->
+@* セクション2：なぜなぜ分析一覧＋追加フォーム *@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-search me-2"></i>原因分析（なぜなぜ分析）</h5>
+        @* 折りたたみ追加フォームのトグル *@
         <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addCauseForm">
             <i class="bi bi-plus-circle me-1"></i>原因分析を追加
         </button>
     </div>
     <div class="card-body">
+        @* 分析が1件も無いときは黄色の注意メッセージ *@
         @if (!incident.CauseAnalyses.Any())
         {
             <div class="alert alert-warning d-flex align-items-center" role="alert">
@@ -101,22 +115,27 @@
         }
         else
         {
+            @* 登録済みの分析を1件ずつカード表示 *@
             @foreach (var analysis in incident.CauseAnalyses)
             {
                 <div class="border rounded-3 p-3 mb-3 bg-light">
                     <div class="d-flex justify-content-between align-items-start mb-2">
                         <div>
+                            @* 原因カテゴリのフルパス（親>子） *@
                             <span class="badge bg-primary me-2">@analysis.CauseCategory?.FullName</span>
+                            @* 分析者名は任意なので値があるときだけ表示 *@
                             @if (!string.IsNullOrEmpty(analysis.AnalystName))
                             {
                                 <small class="text-muted">分析者: @analysis.AnalystName</small>
                             }
                         </div>
                         <div class="d-flex gap-1">
+                            @* 編集画面への遷移 *@
                             <a asp-action="EditCauseAnalysis" asp-route-id="@analysis.Id"
                                class="btn btn-outline-secondary btn-sm py-0">
                                 <i class="bi bi-pencil"></i> 編集
                             </a>
+                            @* 削除はフォーム送信（CSRF トークン必須） *@
                             <form asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
                                 @Html.AntiForgeryToken()
                                 <button type="submit" class="btn btn-outline-danger btn-sm py-0"
@@ -126,12 +145,14 @@
                             </form>
                         </div>
                     </div>
-                    <!-- 5 Whys vertical chain -->
+                    @* 5つのなぜを縦に連結表示 *@
                     <div class="why-chain">
+                        @* なぜ1（Why2 が無ければここを根本原因として強調） *@
                         <div class="why-item @(string.IsNullOrEmpty(analysis.Why2) ? "why-root" : "")">
                             <span class="why-label">なぜ1</span>
                             <span>@analysis.Why1</span>
                         </div>
+                        @* なぜ2：値があるときだけ矢印＋項目を表示 *@
                         @if (!string.IsNullOrEmpty(analysis.Why2))
                         {
                             <div class="why-arrow">↓</div>
@@ -140,6 +161,7 @@
                                 <span>@analysis.Why2</span>
                             </div>
                         }
+                        @* なぜ3 *@
                         @if (!string.IsNullOrEmpty(analysis.Why3))
                         {
                             <div class="why-arrow">↓</div>
@@ -148,6 +170,7 @@
                                 <span>@analysis.Why3</span>
                             </div>
                         }
+                        @* なぜ4 *@
                         @if (!string.IsNullOrEmpty(analysis.Why4))
                         {
                             <div class="why-arrow">↓</div>
@@ -156,6 +179,7 @@
                                 <span>@analysis.Why4</span>
                             </div>
                         }
+                        @* なぜ5（必ず根本原因として強調表示） *@
                         @if (!string.IsNullOrEmpty(analysis.Why5))
                         {
                             <div class="why-arrow">↓</div>
@@ -165,6 +189,7 @@
                             </div>
                         }
                     </div>
+                    @* 根本原因サマリ（任意） *@
                     @if (!string.IsNullOrEmpty(analysis.RootCauseSummary))
                     {
                         <div class="mt-2 p-2 bg-warning bg-opacity-10 rounded border-start border-warning border-3">
@@ -172,6 +197,7 @@
                             @analysis.RootCauseSummary
                         </div>
                     }
+                    @* 補足メモ（任意） *@
                     @if (!string.IsNullOrEmpty(analysis.AdditionalNotes))
                     {
                         <div class="mt-2 text-muted small"><i class="bi bi-chat-text me-1"></i>@analysis.AdditionalNotes</div>
@@ -180,16 +206,18 @@
             }
         }
 
-        <!-- Add Cause Analysis form (collapsible) -->
+        @* 原因分析の追加フォーム（折りたたみ、ボタン押下で展開） *@
         <div class="collapse" id="addCauseForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">原因分析を追加</h6>
                 <form asp-action="AddCauseAnalysis" method="post">
                     @Html.AntiForgeryToken()
+                    @* 紐付け対象のインシデント ID を隠しフィールドで送信 *@
                     <input type="hidden" asp-for="NewCauseAnalysis.IncidentId" />
                     <div class="row g-2">
                         <div class="col-md-6">
                             <label class="form-label small">原因分類 <span class="text-danger">*</span></label>
+                            @* optgroup 付き（親カテゴリ>子カテゴリ）の選択肢 *@
                             <select asp-for="NewCauseAnalysis.CauseCategoryId"
                                     asp-items="Model.CauseCategoryOptions"
                                     class="form-select form-select-sm">
@@ -201,6 +229,7 @@
                             <input asp-for="NewCauseAnalysis.AnalystName" class="form-control form-control-sm" placeholder="氏名" />
                         </div>
                         <div class="col-12">
+                            @* なぜ1：直接原因（必須） *@
                             <label class="form-label small">なぜ1（直接原因） <span class="text-danger">*</span></label>
                             <textarea asp-for="NewCauseAnalysis.Why1" class="form-control form-control-sm" rows="2"
                                       placeholder="何が起きたか、なぜそれが起きたか（直接原因）"></textarea>
@@ -229,6 +258,7 @@
                         </div>
                         <div class="col-12">
                             <button type="submit" class="btn btn-primary btn-sm">追加</button>
+                            @* 折りたたみ用のキャンセルボタン *@
                             <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="collapse" data-bs-target="#addCauseForm">キャンセル</button>
                         </div>
                     </div>
@@ -238,12 +268,13 @@
     </div>
 </div>
 
-<!-- Section 3: Preventive Measures (most prominent) -->
+@* セクション3：再発防止策（本アプリで最も重要な情報源） *@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">
         <h5 class="mb-0">
             <i class="bi bi-shield-check me-2 text-success"></i>再発防止策
             @{
+                @* 期限超過件数を集計し、0件より多ければ赤バッジで強調 *@
                 var overduePmCount = incident.PreventiveMeasures.Count(m => m.IsOverdue);
                 if (overduePmCount > 0)
                 {
@@ -251,11 +282,13 @@
                 }
             }
         </h5>
+        @* 追加フォームの折りたたみトグル *@
         <button class="btn btn-outline-success btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMeasureForm">
             <i class="bi bi-plus-circle me-1"></i>対策を追加
         </button>
     </div>
     <div class="card-body">
+        @* 対策が1件も無い場合のプレースホルダ *@
         @if (!incident.PreventiveMeasures.Any())
         {
             <p class="text-muted">まだ再発防止策が登録されていません。</p>
@@ -277,40 +310,52 @@
                         </tr>
                     </thead>
                     <tbody>
+                        @* 優先度→期限の順で並べて表示 *@
                         @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.Priority).ThenBy(m => m.DueDate))
                         {
+                            @* 期限超過の行は赤背景で強調 *@
                             <tr class="@(m.IsOverdue ? "table-danger" : "")">
                                 <td style="max-width:200px">
+                                    @* 対策内容は長すぎれば先頭 45 文字に省略 *@
                                     <div>@(m.Description.Length > 45 ? m.Description[..45] + "…" : m.Description)</div>
+                                    @* 完了メモがあれば小さく表示 *@
                                     @if (!string.IsNullOrEmpty(m.CompletionNote))
                                     {
                                         <div class="text-muted x-small"><i class="bi bi-check2 me-1"></i>@(m.CompletionNote.Length > 30 ? m.CompletionNote[..30] + "…" : m.CompletionNote)</div>
                                     }
                                 </td>
+                                @* 短期／長期の種別バッジ *@
                                 <td><span class="badge bg-@m.MeasureTypeColor">@m.MeasureTypeLabel</span></td>
                                 <td>
+                                    @* 担当者と担当部署 *@
                                     <div class="small">@m.ResponsiblePerson</div>
                                     <div class="text-muted x-small">@m.ResponsibleDepartment</div>
                                 </td>
                                 <td>
                                     <div class="small @(m.IsOverdue ? "text-danger fw-bold" : "")">
                                         @m.DueDate.ToString("MM/dd")
+                                        @* 超過バッジ *@
                                         @if (m.IsOverdue)
                                         {
                                             <span class="badge bg-danger ms-1">超過</span>
                                         }
                                     </div>
                                 </td>
+                                @* 優先度バッジ *@
                                 <td><span class="badge bg-@m.PriorityColor">@m.PriorityLabel</span></td>
+                                @* ステータスバッジ（計画中／実行中／完了） *@
                                 <td><span class="badge bg-@m.StatusColor">@m.StatusLabel</span></td>
                                 <td>
+                                    @* 有効性評価が入力済みなら星と再発有無を表示 *@
                                     @if (m.EffectivenessRating.HasValue)
                                     {
                                         <span class="text-warning">@m.EffectivenessStars</span>
+                                        @* 再発ありの場合は赤バッジ *@
                                         @if (m.RecurrenceObserved == true)
                                         {
                                             <span class="badge bg-danger ms-1 small">再発あり</span>
                                         }
+                                        @* 再発なしの場合は緑バッジ *@
                                         else if (m.RecurrenceObserved == false)
                                         {
                                             <span class="badge bg-success ms-1 small">再発なし</span>
@@ -322,6 +367,7 @@
                                     }
                                 </td>
                                 <td>
+                                    @* 未完了なら「完了」ボタンを表示 *@
                                     @if (m.Status != IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
                                     {
                                         <button class="btn btn-success btn-sm py-0 me-1"
@@ -330,6 +376,7 @@
                                                 data-measure-id="@m.Id"
                                                 data-concurrency-token="@m.ConcurrencyToken">完了</button>
                                     }
+                                    @* 完了済みで未評価なら「評価」ボタンを表示 *@
                                     @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !m.EffectivenessRating.HasValue)
                                     {
                                         <button class="btn btn-warning btn-sm py-0 me-1"
@@ -338,6 +385,7 @@
                                                 data-measure-id="@m.Id"
                                                 data-concurrency-token="@m.ConcurrencyToken">評価</button>
                                     }
+                                    @* 編集画面リンク *@
                                     <a asp-controller="PreventiveMeasures" asp-action="Edit" asp-route-id="@m.Id"
                                        class="btn btn-outline-secondary btn-sm py-0">編集</a>
                                 </td>
@@ -348,12 +396,13 @@
             </div>
         }
 
-        <!-- Add Measure inline form (collapsible) -->
+        @* 対策追加のインラインフォーム（折りたたみ） *@
         <div class="collapse" id="addMeasureForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">再発防止策を追加</h6>
                 <form asp-action="AddMeasure" method="post">
                     @Html.AntiForgeryToken()
+                    @* インシデント ID を隠しフィールドで送信 *@
                     <input type="hidden" asp-for="NewMeasure.IncidentId" />
                     <div class="row g-2">
                         <div class="col-12">
@@ -399,19 +448,21 @@
     </div>
 </div>
 
-<!-- Timeline -->
+@* セクション4：対応タイムライン（発生→報告→対策完了の時系列） *@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white">
         <h5 class="mb-0"><i class="bi bi-clock me-2"></i>対応タイムライン</h5>
     </div>
     <div class="card-body">
         <div class="timeline">
+            @* 発生時刻 *@
             <div class="timeline-item">
                 <span class="timeline-badge bg-danger"></span>
                 <div class="timeline-content">
                     <strong>@incident.OccurredAt.ToString("yyyy/MM/dd HH:mm")</strong> インシデント発生
                 </div>
             </div>
+            @* 報告時刻（発生からの経過時間付き） *@
             <div class="timeline-item">
                 <span class="timeline-badge bg-primary"></span>
                 <div class="timeline-content">
@@ -419,6 +470,7 @@
                     （発生から @((int)(incident.ReportedAt - incident.OccurredAt).TotalHours) 時間後）
                 </div>
             </div>
+            @* 各対策を期限順に並べてタイムラインに載せる *@
             @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.DueDate))
             {
                 <div class="timeline-item">
@@ -428,6 +480,7 @@
                         <span class="badge bg-@m.StatusColor ms-1">@m.StatusLabel</span>
                     </div>
                 </div>
+                @* 完了日が記録されていれば追加の完了イベントを描画 *@
                 @if (m.CompletedAt.HasValue)
                 {
                     <div class="timeline-item">
@@ -442,7 +495,7 @@
     </div>
 </div>
 
-<!-- Complete Measure Modal -->
+@* 対策完了モーダル：一覧の「完了」ボタンから開く *@
 <div class="modal fade" id="completeModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -450,8 +503,10 @@
                 <h5 class="modal-title"><i class="bi bi-check-circle me-2 text-success"></i>対策完了報告</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
+            @* 送信先 URL と concurrencyToken は JS で動的に差し替える *@
             <form id="completeForm" action="/Incidents/CompleteMeasure/0" method="post">
                 @Html.AntiForgeryToken()
+                @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
                     <label class="form-label">完了報告内容（任意）</label>
@@ -470,7 +525,7 @@
     </div>
 </div>
 
-<!-- Rate Measure Modal -->
+@* 有効性評価モーダル：完了済みかつ未評価のみ表示 *@
 <div class="modal fade" id="rateModal" tabindex="-1">
     <div class="modal-dialog">
         <div class="modal-content">
@@ -480,11 +535,13 @@
             </div>
             <form id="rateForm" action="/Incidents/RateMeasure/0" method="post">
                 @Html.AntiForgeryToken()
+                @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
                     <div class="mb-3">
                         <label class="form-label fw-bold">有効性評価 <span class="text-danger">*</span></label>
                         <div class="d-flex gap-2">
+                            @* 1〜5の5段階ラジオボタン（デフォルトは中央の3） *@
                             @for (int i = 1; i <= 5; i++)
                             {
                                 <div class="form-check">
@@ -497,6 +554,7 @@
                         <div class="text-muted small mt-1">1=効果なし / 3=普通 / 5=非常に効果あり</div>
                     </div>
                     <div class="mb-3">
+                        @* 再発の有無（重要：true なら再分析を促すメッセージを出す） *@
                         <label class="form-label fw-bold text-danger">対策実施後に再発を確認しましたか？ <span class="text-danger">*</span></label>
                         <div>
                             <div class="form-check form-check-inline">
@@ -526,14 +584,19 @@
 
 @section Scripts {
 <script>
-    // Set measure ID + concurrency token in modal forms
+    // モーダル表示時：クリックされたボタンの data-* から対策 ID とトークンを取り出しフォームにセット
     document.getElementById('completeModal').addEventListener('show.bs.modal', function(e) {
+        // どの行のボタンからモーダルを開いたか
         const id = e.relatedTarget.dataset.measureId;
+        // 同時編集検出トークン（古ければサーバー側で検出される）
         const token = e.relatedTarget.dataset.concurrencyToken || '';
+        // 送信先 URL を組み立てて上書き
         const form = document.getElementById('completeForm');
         form.action = '/Incidents/CompleteMeasure/' + id;
+        // 隠しフィールドへトークンを注入
         form.querySelector('input[name="concurrencyToken"]').value = token;
     });
+    // 評価モーダルも同様に action と token を差し替える
     document.getElementById('rateModal').addEventListener('show.bs.modal', function(e) {
         const id = e.relatedTarget.dataset.measureId;
         const token = e.relatedTarget.dataset.concurrencyToken || '';

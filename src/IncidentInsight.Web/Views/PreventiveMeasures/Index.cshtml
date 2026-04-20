@@ -1,36 +1,46 @@
+@* カンバン画面に渡される生のモデル型（IEnumerable）を宣言。ViewBag で3バケットに分けて渡される *@
 @model IEnumerable<IncidentInsight.Web.Models.PreventiveMeasure>
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "再発防止策管理";
+    @* 計画中バケット（未設定なら空リストにフォールバック） *@
     var planned = ViewBag.Planned as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+    @* 進行中バケット *@
     var inProgress = ViewBag.InProgress as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+    @* 完了バケット *@
     var completed = ViewBag.Completed as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
 }
 
+@* ページヘッダ *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-check2-square me-2 text-success"></i>再発防止策管理</h2>
 </div>
 
-<!-- Stats Bar -->
+@* 統計バー：全件・完了率・期限超過・再発確認の4枚 *@
 <div class="row g-3 mb-4">
     <div class="col-md-3">
+        @* 全対策数 *@
         <div class="card border-0 shadow-sm text-center py-2">
             <div class="fs-3 fw-bold">@ViewBag.TotalCount</div>
             <div class="text-muted small">全対策数</div>
         </div>
     </div>
     <div class="col-md-3">
+        @* 完了率（%表示） *@
         <div class="card border-0 shadow-sm text-center py-2">
             <div class="fs-3 fw-bold text-success">@ViewBag.CompletionRate%</div>
             <div class="text-muted small">完了率</div>
         </div>
     </div>
     <div class="col-md-3">
+        @* 期限超過件数（1件以上なら赤枠で強調） *@
         <div class="card border-0 shadow-sm text-center py-2 @(ViewBag.OverdueCount > 0 ? "border-danger border" : "")">
             <div class="fs-3 fw-bold @(ViewBag.OverdueCount > 0 ? "text-danger" : "")">@ViewBag.OverdueCount</div>
             <div class="text-muted small">期限超過</div>
         </div>
     </div>
     <div class="col-md-3">
+        @* 再発確認件数（1件以上なら赤枠で強調） *@
         <div class="card border-0 shadow-sm text-center py-2 @(ViewBag.FailedCount > 0 ? "border-danger border" : "")">
             <div class="fs-3 fw-bold @(ViewBag.FailedCount > 0 ? "text-danger" : "")">@ViewBag.FailedCount</div>
             <div class="text-muted small">再発確認件数</div>
@@ -38,14 +48,16 @@
     </div>
 </div>
 
-<!-- Filter -->
+@* 絞り込みフォーム（ステータス・担当部署・担当者名の3条件） *@
 <div class="card border-0 shadow-sm mb-3">
     <div class="card-body py-2">
         <form method="get" class="row g-2 align-items-end">
             <div class="col-md-2">
                 @{
+                    @* 現在のステータス絞り込み値を取り出す *@
                     var filterStatus = ViewBag.FilterStatus as IncidentInsight.Web.Models.Enums.MeasureStatus?;
                 }
+                @* ステータス選択 *@
                 <select name="status" class="form-select form-select-sm">
                     <option value="">ステータス（全て）</option>
                     @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllStatuses)
@@ -55,6 +67,7 @@
                 </select>
             </div>
             <div class="col-md-2">
+                @* 担当部署選択 *@
                 <select name="responsibleDepartment" class="form-select form-select-sm">
                     <option value="">担当部署（全て）</option>
                     @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
@@ -64,18 +77,21 @@
                 </select>
             </div>
             <div class="col-md-2">
+                @* 担当者名の部分一致検索 *@
                 <input type="text" name="responsible" class="form-control form-control-sm"
                        placeholder="担当者名で検索" value="@ViewBag.FilterResponsible" />
             </div>
             <div class="col-md-2">
+                @* 絞り込み実行ボタン *@
                 <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
+                @* 絞り込みをクリア（無条件の一覧へ戻る） *@
                 <a asp-action="Index" class="btn btn-outline-secondary btn-sm ms-1">クリア</a>
             </div>
         </form>
     </div>
 </div>
 
-<!-- Kanban Board -->
+@* カンバンボード本体（3バケットが全部空なら案内を表示） *@
 @if (!planned.Any() && !inProgress.Any() && !completed.Any())
 {
     <div class="card border-0 shadow-sm">
@@ -83,6 +99,7 @@
             <i class="bi bi-shield-check display-4 text-success d-block mb-3"></i>
             <h5>再発防止策がまだ登録されていません</h5>
             <p class="text-muted mb-3">インシデント詳細ページから再発防止策を追加できます。</p>
+            @* インシデント一覧へのリンク（そこから対策を追加する導線） *@
             <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
                 <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧へ
             </a>
@@ -92,12 +109,14 @@
 else
 {
 <div class="row g-3">
-    <!-- 計画中 -->
+    @* 計画中レーン *@
     <div class="col-xl-4">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-warning bg-opacity-10 border-warning border-start border-4">
                 <h6 class="mb-0"><i class="bi bi-hourglass me-2 text-warning"></i>計画中
+                    @* レーン内の総数 *@
                     <span class="badge bg-warning text-dark ms-2">@planned.Count</span>
+                    @* レーン内の超過件数（0件超なら赤バッジ） *@
                     @if (planned.Count(m => m.IsOverdue) > 0)
                     {
                         <span class="badge bg-danger ms-1">@planned.Count(m => m.IsOverdue) 件超過</span>
@@ -105,10 +124,12 @@ else
                 </h6>
             </div>
             <div class="card-body p-2">
+                @* 各対策を _MeasureCard パーシャルで描画 *@
                 @foreach (var m in planned)
                 {
                     <partial name="_MeasureCard" model="m" />
                 }
+                @* 0件のときの空表示 *@
                 @if (!planned.Any())
                 {
                     <div class="text-center text-muted small py-3">なし</div>
@@ -117,7 +138,7 @@ else
         </div>
     </div>
 
-    <!-- 進行中 -->
+    @* 進行中レーン *@
     <div class="col-xl-4">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-primary bg-opacity-10 border-primary border-start border-4">
@@ -138,7 +159,7 @@ else
         </div>
     </div>
 
-    <!-- 完了 -->
+    @* 完了レーン（直近10件のみ表示し残りは件数で丸める） *@
     <div class="col-xl-4">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-success bg-opacity-10 border-success border-start border-4">
@@ -147,6 +168,7 @@ else
                 </h6>
             </div>
             <div class="card-body p-2">
+                @* 先頭10件だけ詳細カードを表示（大量表示による重さを回避） *@
                 @foreach (var m in completed.Take(10))
                 {
                     <partial name="_MeasureCard" model="m" />
@@ -155,6 +177,7 @@ else
                 {
                     <div class="text-center text-muted small py-3">なし</div>
                 }
+                @* 残件の件数だけ末尾に表示 *@
                 @if (completed.Count > 10)
                 {
                     <div class="text-center small text-muted py-1">...他 @(completed.Count - 10) 件</div>

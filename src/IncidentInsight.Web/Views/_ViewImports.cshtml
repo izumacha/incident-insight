@@ -1,4 +1,9 @@
-﻿@using IncidentInsight.Web
+@* 全ての Razor ビューで共通して using 扱いする名前空間とタグヘルパーを宣言するファイル *@
+@* プロジェクトのルート名前空間を読み込む(ApplicationUser など) *@
+@using IncidentInsight.Web
+@* モデル(Incident / PreventiveMeasure など)を名前空間なしで使えるようにする *@
 @using IncidentInsight.Web.Models
+@* ViewModel 群(DashboardViewModel など)を名前空間なしで使えるようにする *@
 @using IncidentInsight.Web.Models.ViewModels
+@* <input asp-for="..."> などの ASP.NET Core タグヘルパーを有効化する *@
 @addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers

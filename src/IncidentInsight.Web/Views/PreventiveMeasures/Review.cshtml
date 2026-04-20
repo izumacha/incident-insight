@@ -1,25 +1,35 @@
+@* 有効性評価画面の ViewModel（評価値・再発有無・コメント・楽観ロックトークン） *@
 @model IncidentInsight.Web.Models.ViewModels.ReviewViewModel
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "有効性評価";
+    @* 評価対象の対策情報（ViewBag から取り出し） *@
     var measure = ViewBag.Measure as IncidentInsight.Web.Models.PreventiveMeasure;
 }
 
+@* ページヘッダ *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-star me-2 text-warning"></i>有効性評価</h2>
+    @* カンバン一覧に戻る *@
     <a asp-action="Index" class="btn btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>一覧へ
     </a>
 </div>
 
+@* 評価対象の対策情報サマリ *@
 @if (measure != null)
 {
     <div class="card border-0 shadow-sm mb-4">
         <div class="card-body">
             <h6 class="text-muted small mb-1">評価する対策</h6>
+            @* 対策内容 *@
             <p class="fw-medium mb-1">@measure.Description</p>
             <div class="d-flex gap-3 text-muted small">
+                @* 担当者 *@
                 <span><i class="bi bi-person me-1"></i>@measure.ResponsiblePerson</span>
+                @* 担当部署 *@
                 <span><i class="bi bi-building me-1"></i>@measure.ResponsibleDepartment</span>
+                @* 完了日 *@
                 <span><i class="bi bi-calendar-check me-1"></i>完了: @measure.CompletedAt?.ToString("yyyy/MM/dd")</span>
             </div>
         </div>
@@ -28,34 +38,42 @@
 
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
+        @* 評価の重要性を伝える案内 *@
         <div class="alert alert-info small mb-4">
             <i class="bi bi-info-circle me-2"></i>
             対策実施後の効果を評価してください。
             <strong>再発の有無を正確に記録することが、組織全体の医療安全改善に直結します。</strong>
         </div>
 
+        @* 評価フォーム（対策 ID を URL 経由で送信） *@
         <form asp-action="Review" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
+            @* 同時編集検出用の楽観ロックトークン *@
             <input type="hidden" asp-for="ConcurrencyToken" />
             <div class="row g-4">
                 <div class="col-12">
+                    @* 有効性評価ラベル（必須） *@
                     <label class="form-label fw-bold fs-6">
                         @Html.DisplayNameFor(m => m.EffectivenessRating)
                         <span class="text-danger">*</span>
                     </label>
                     <div class="d-flex gap-3 mt-2">
+                        @* 1〜5の5段階ラジオを星マーク付きで表示 *@
                         @for (int i = 1; i <= 5; i++)
                         {
                             <div class="text-center">
                                 <div class="form-check">
+                                    @* 現在値と一致する値だけ checked *@
                                     <input class="form-check-input" type="radio"
                                            asp-for="EffectivenessRating"
                                            id="rating@i" value="@i"
                                            checked="@(Model.EffectivenessRating == i)" />
                                 </div>
                                 <label for="rating@i" class="d-block text-center cursor-pointer">
+                                    @* 星（塗りつぶし＋白抜き）で視覚的に段階を表現 *@
                                     <span class="fs-3">@(new string('★', i) + new string('☆', 5 - i))</span>
                                     <div class="small text-muted">
+                                        @* 端点の補助ラベル *@
                                         @(i == 1 ? "効果なし" : i == 3 ? "普通" : i == 5 ? "非常に効果あり" : "")
                                     </div>
                                 </label>
@@ -66,6 +84,7 @@
                 </div>
 
                 <div class="col-12">
+                    @* 再発観測の有無（必須・赤見出しで強調） *@
                     <label class="form-label fw-bold fs-6 text-danger">
                         <i class="bi bi-arrow-repeat me-2"></i>
                         @Html.DisplayNameFor(m => m.RecurrenceObserved)
@@ -73,6 +92,7 @@
                     </label>
                     <div class="row g-3 mt-1">
                         <div class="col-md-5">
+                            @* 再発なしカード（選択中は緑枠） *@
                             <div class="form-check p-3 border rounded-3 cursor-pointer @(Model.RecurrenceObserved == false ? "border-success bg-success bg-opacity-10" : "")">
                                 <input class="form-check-input" type="radio"
                                        asp-for="RecurrenceObserved"
@@ -86,6 +106,7 @@
                             </div>
                         </div>
                         <div class="col-md-5">
+                            @* 再発ありカード（選択中は赤枠） *@
                             <div class="form-check p-3 border rounded-3 cursor-pointer @(Model.RecurrenceObserved == true ? "border-danger bg-danger bg-opacity-10" : "")">
                                 <input class="form-check-input" type="radio"
                                        asp-for="RecurrenceObserved"
@@ -103,13 +124,16 @@
                 </div>
 
                 <div class="col-12">
+                    @* 評価コメント（任意） *@
                     <label asp-for="EffectivenessNote" class="form-label fw-medium"></label>
                     <textarea asp-for="EffectivenessNote" class="form-control" rows="3"
                               placeholder="対策の効果、残課題、次のアクションなどを記入"></textarea>
                 </div>
 
                 <div class="col-12 d-flex justify-content-end gap-2">
+                    @* キャンセル（一覧に戻る） *@
                     <a asp-action="Index" class="btn btn-outline-secondary">キャンセル</a>
+                    @* 登録ボタン *@
                     <button type="submit" class="btn btn-warning btn-lg">
                         <i class="bi bi-check-circle me-2"></i>評価を登録
                     </button>
@@ -120,5 +144,6 @@
 </div>
 
 @section Scripts {
+@* クライアント側バリデーション *@
 <partial name="_ValidationScriptsPartial" />
 }
