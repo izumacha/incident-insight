@@ -1,26 +1,41 @@
+// 自プロジェクトのモデル(Incident など)を使う
 using IncidentInsight.Web.Models;
+// enum(重症度・種別)を使う
 using IncidentInsight.Web.Models.Enums;
+// 時刻源サービスを使う
 using IncidentInsight.Web.Services;
 
+// この型の名前空間(置き場所)
 namespace IncidentInsight.Web.Data;
 
+// 起動時に初期データ(原因分類マスタ + デモインシデント群)を投入するシーダー
 public static class DbSeeder
 {
+    // 呼び出されるたびに実行される本体メソッド(データがあれば何もしない冪等処理)
     public static void Seed(ApplicationDbContext db, IClock clock)
     {
         // ── 原因カテゴリ（親カテゴリ） ─────────────────────────────
+        // 原因分類が1件もないときだけマスタを登録する(冪等化)
         if (!db.CauseCategories.Any())
         {
+        // 親カテゴリ「ヒューマンエラー」を生成
         var humanError = new CauseCategory { Name = "ヒューマンエラー", Description = "人的要因によるミス・判断誤り", DisplayOrder = 1 };
+        // 親カテゴリ「医療機器」を生成
         var device = new CauseCategory { Name = "医療機器", Description = "機器の不具合・操作ミス", DisplayOrder = 2 };
+        // 親カテゴリ「薬剤」を生成
         var medication = new CauseCategory { Name = "薬剤", Description = "調剤・投与に関するミス", DisplayOrder = 3 };
+        // 親カテゴリ「環境・体制」を生成
         var environment = new CauseCategory { Name = "環境・体制", Description = "施設環境・人員体制に関する問題", DisplayOrder = 4 };
+        // 親カテゴリ「コミュニケーション」を生成
         var communication = new CauseCategory { Name = "コミュニケーション", Description = "情報伝達・連携の問題", DisplayOrder = 5 };
 
+        // 親カテゴリをまとめて ChangeTracker に追加
         db.CauseCategories.AddRange(humanError, device, medication, environment, communication);
+        // 先に保存して親 ID を確定させる(子で参照するため)
         db.SaveChanges();
 
         // ── 子カテゴリ ────────────────────────────────────────────
+        // 各親にぶら下がる子カテゴリ一覧(親 Id を FK に指定)
         var subCategories = new List<CauseCategory>
         {
             // ヒューマンエラー
@@ -57,16 +72,21 @@ public static class DbSeeder
             new() { Name = "患者・家族への説明不足", ParentId = communication.Id, DisplayOrder = 4 },
         };
 
+            // 子カテゴリを一括追加して保存
             db.CauseCategories.AddRange(subCategories);
             db.SaveChanges();
         }
 
         // ── サンプルインシデント + 分析 + 対策 ───────────────────────
+        // インシデントが既にあれば以降のサンプル投入はスキップ
         if (db.Incidents.Any()) return;
 
+        // 子カテゴリ名 → Id の辞書を作り、以降の分析レコード作成で使う
         var cats = db.CauseCategories.ToDictionary(c => c.Name, c => c.Id);
+        // 現在時刻(JST)をデモデータの基準時刻として取得
         var now = clock.Now;
 
+        // デモ用のサンプルインシデントリスト(発生日は 90 日前〜7 日前までばらつかせる)
         var incidents = new List<Incident>
         {
             new()
@@ -126,10 +146,13 @@ public static class DbSeeder
             }
         };
 
+        // インシデントをまとめて追加
         db.Incidents.AddRange(incidents);
+        // 保存して各 Incident の ID を採番させる
         db.SaveChanges();
 
         // ── CauseAnalysis (なぜなぜ分析) ─────────────────────────
+        // 各インシデントに対する5段階「なぜなぜ」分析のデモデータ
         var analyses = new List<CauseAnalysis>
         {
             // 投薬ミス（降圧薬混同）
@@ -204,10 +227,12 @@ public static class DbSeeder
             }
         };
 
+        // 分析レコードをまとめて追加して保存
         db.CauseAnalyses.AddRange(analyses);
         db.SaveChanges();
 
         // ── PreventiveMeasures (再発防止策) ──────────────────────
+        // 各インシデントに対する再発防止策のデモデータ(完了済み / 進行中 / 期限超過の混在)
         var measures = new List<PreventiveMeasure>
         {
             // 投薬ミス対策
@@ -351,6 +376,7 @@ public static class DbSeeder
             }
         };
 
+        // 対策をまとめて追加して保存
         db.PreventiveMeasures.AddRange(measures);
         db.SaveChanges();
     }

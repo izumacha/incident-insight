@@ -1,3 +1,4 @@
+// このサービス群の名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Services;
 
 /// <summary>
@@ -20,12 +21,15 @@ namespace IncidentInsight.Web.Services;
 public interface IClock
 {
     /// <summary>運用タイムゾーン(JST)の現在時刻。</summary>
+    // 運用タイムゾーン(JST)の「今この瞬間」を返すプロパティ
     DateTime Now { get; }
 
     /// <summary>運用タイムゾーン(JST)の今日の日付(0:00:00)。</summary>
+    // 運用タイムゾーン(JST)の「今日の 0 時 0 分」を返すプロパティ
     DateTime Today { get; }
 
     /// <summary>UTC 現在時刻(外部連携・一部メタ情報用)。</summary>
+    // 世界協定時刻(UTC)の現在時刻。外部連携用などで使う
     DateTime UtcNow { get; }
 }
 
@@ -33,9 +37,13 @@ public interface IClock
 /// 既定の実装。サーバの OS ロケールが JST に設定されている前提で
 /// <see cref="DateTime.Now"/> / <see cref="DateTime.Today"/> を返す。
 /// </summary>
+// 実運用向けの既定実装。OS の時刻をそのまま使う
 public sealed class SystemClock : IClock
 {
+    // OS のローカル時刻(運用では JST 設定)を返す
     public DateTime Now => DateTime.Now;
+    // OS のローカル日付(0:00:00)を返す
     public DateTime Today => DateTime.Today;
+    // OS の UTC 時刻を返す
     public DateTime UtcNow => DateTime.UtcNow;
 }
