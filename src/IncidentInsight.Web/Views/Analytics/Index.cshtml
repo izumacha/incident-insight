@@ -1,30 +1,37 @@
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "分析・集計";
 }
 
+@* 画面タイトル *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-bar-chart-line me-2 text-primary"></i>分析・集計</h2>
 </div>
 
 <!-- Insight Panel -->
+@* 追加の洞察情報を動的に表示する領域(初期は非表示) *@
 <div id="insightPanel" class="alert alert-light border shadow-sm mb-4" style="display:none!important">
 </div>
 
 <!-- Charts Grid -->
+@* チャートを並べたグリッド *@
 <div class="row g-3 mb-4">
     <!-- Monthly Trend (full width) -->
+    @* 月別トレンド(横幅いっぱい) *@
     <div class="col-12">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-white d-flex justify-content-between align-items-center">
                 <h6 class="mb-0"><i class="bi bi-graph-up me-2 text-primary"></i>月別インシデント発生推移（過去12ヶ月）</h6>
             </div>
             <div class="card-body">
+                @* Chart.js の描画先 *@
                 <canvas id="trendChart" height="70"></canvas>
             </div>
         </div>
     </div>
 
     <!-- Cause Category -->
+    @* 原因分類別のドーナツチャート *@
     <div class="col-xl-4 col-md-6">
         <div class="card border-0 shadow-sm h-100">
             <div class="card-header bg-white">
@@ -37,6 +44,7 @@
     </div>
 
     <!-- By Department -->
+    @* 部署別の横棒グラフ *@
     <div class="col-xl-4 col-md-6">
         <div class="card border-0 shadow-sm h-100">
             <div class="card-header bg-white">
@@ -49,6 +57,7 @@
     </div>
 
     <!-- By Severity -->
+    @* 重症度別の棒グラフ *@
     <div class="col-xl-4 col-md-6">
         <div class="card border-0 shadow-sm h-100">
             <div class="card-header bg-white">
@@ -61,6 +70,7 @@
     </div>
 
     <!-- Measure Status -->
+    @* 対策の状況(計画/進行/超過/完了)ドーナツチャート *@
     <div class="col-xl-6 col-md-6">
         <div class="card border-0 shadow-sm h-100">
             <div class="card-header bg-white">
@@ -73,6 +83,7 @@
     </div>
 
     <!-- Effectiveness Rating (most important for evaluation) -->
+    @* 有効性評価(1〜5)+ 再発有無の重要指標 *@
     <div class="col-xl-6 col-md-6">
         <div class="card border-0 shadow-sm h-100">
             <div class="card-header bg-white">
@@ -83,12 +94,14 @@
             </div>
             <div class="card-body">
                 <canvas id="effectivenessChart" height="180"></canvas>
+                @* 再発あり/なしの件数を表示する領域 *@
                 <div id="recurrenceStats" class="mt-2 text-center small text-muted"></div>
             </div>
         </div>
     </div>
 
     <!-- By Incident Type -->
+    @* インシデント種別別の棒グラフ(横幅いっぱい) *@
     <div class="col-12">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-white">
@@ -102,11 +115,13 @@
 </div>
 
 <!-- Insights Summary -->
+@* 主要指標を一覧表示するサマリーエリア *@
 <div class="card border-0 shadow-sm">
     <div class="card-header bg-white">
         <h6 class="mb-0"><i class="bi bi-clipboard-data me-2 text-primary"></i>分析サマリー</h6>
     </div>
     <div class="card-body">
+        @* データ読み込み完了後に JS で上書きされる領域 *@
         <div id="summaryContent" class="row g-3">
             <div class="col text-center text-muted">
                 <div class="spinner-border spinner-border-sm" role="status"></div>
@@ -116,10 +131,13 @@
     </div>
 </div>
 
+@* ページ固有のスクリプト: 各 JSON API を叩いて Chart.js を初期化 *@
 @section Scripts {
 <script>
+// チャート用の共通カラーパレット
 const COLORS = ['#0d6efd','#6610f2','#fd7e14','#198754','#dc3545','#0dcaf0','#ffc107','#6c757d','#d63384'];
 
+// 指定 URL から JSON を取得し、成功したらコールバックに渡す小さなヘルパー
 async function loadChart(url, callback) {
     try {
         const res = await fetch(url);
@@ -129,6 +147,7 @@ async function loadChart(url, callback) {
 }
 
 // Monthly Trend
+// 月別トレンド: 折れ線チャートを描画
 loadChart('/Analytics/MonthlyTrend', (d) => {
     new Chart(document.getElementById('trendChart'), {
         type: 'line',
@@ -152,6 +171,7 @@ loadChart('/Analytics/MonthlyTrend', (d) => {
 });
 
 // Cause Category Doughnut
+// 原因分類別ドーナツ
 loadChart('/Analytics/ByCause', (d) => {
     new Chart(document.getElementById('causeChart'), {
         type: 'doughnut',
@@ -167,6 +187,7 @@ loadChart('/Analytics/ByCause', (d) => {
 });
 
 // By Department (horizontal bar)
+// 部署別の横棒グラフ
 loadChart('/Analytics/ByDepartment', (d) => {
     new Chart(document.getElementById('deptChart'), {
         type: 'bar',
@@ -186,11 +207,14 @@ loadChart('/Analytics/ByDepartment', (d) => {
         }
     });
     // Store dept for later use in summary panel
+    // 最多発生部署(1 位)をサマリー用に退避
     window._topDept = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
 });
 
 // By Severity
+// 重症度別の棒グラフ
 loadChart('/Analytics/BySeverity', (d) => {
+    // 重症度に対応した色配列
     const severityColors = ['#6c757d','#0dcaf0','#0d6efd','#ffc107','#fd7e14','#dc3545','#212529'];
     new Chart(document.getElementById('severityChart'), {
         type: 'bar',
@@ -211,6 +235,7 @@ loadChart('/Analytics/BySeverity', (d) => {
 });
 
 // Measure Status Doughnut
+// 対策ステータス別ドーナツ(計画/進行/超過/完了)
 loadChart('/Analytics/MeasureStatus', (d) => {
     new Chart(document.getElementById('measureStatusChart'), {
         type: 'doughnut',
@@ -225,11 +250,13 @@ loadChart('/Analytics/MeasureStatus', (d) => {
     });
 
     // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
+    // サマリー用に完了率・期限超過件数を計算して退避
     const total = d.data.reduce((a, b) => a + b, 0);
     const completed = d.data[3]; // index 3 = 完了
     const rate = total > 0 ? Math.round(completed / total * 100) : 0;
     window._completionRate = rate + '%';
     window._overdueMeasures = d.data[2] + '件'; // index 2 = 期限超過
+    // サマリー領域が既に描画されていれば即反映
     const crEl = document.getElementById('completionRate');
     if (crEl) crEl.textContent = window._completionRate;
     const omEl = document.getElementById('overdueMeasures');
@@ -237,6 +264,7 @@ loadChart('/Analytics/MeasureStatus', (d) => {
 });
 
 // Effectiveness Rating
+// 有効性評価チャート + 再発統計
 loadChart('/Analytics/EffectivenessRating', (d) => {
     new Chart(document.getElementById('effectivenessChart'), {
         type: 'bar',
@@ -256,16 +284,19 @@ loadChart('/Analytics/EffectivenessRating', (d) => {
     });
 
     // Recurrence stats
+    // 再発有無のテキスト表示
     const el = document.getElementById('recurrenceStats');
     el.innerHTML = `再発なし（対策有効）: <strong class="text-success">${d.recurrenceStats.prevented}件</strong> &nbsp;|&nbsp; 再発あり（要追加対策）: <strong class="text-danger">${d.recurrenceStats.recurred}件</strong>`;
 
     // Store value; #failedMeasures is injected later by ByIncidentType
+    // サマリー用に再発確認件数を退避
     window._failedMeasures = d.recurrenceStats.recurred + '件';
     const fmEl = document.getElementById('failedMeasures');
     if (fmEl) fmEl.textContent = window._failedMeasures;
 });
 
 // By Incident Type
+// インシデント種別別棒グラフ + サマリーパネル生成
 loadChart('/Analytics/ByIncidentType', (d) => {
     new Chart(document.getElementById('typeChart'), {
         type: 'bar',
@@ -284,10 +315,12 @@ loadChart('/Analytics/ByIncidentType', (d) => {
         }
     });
 
+    // 最多種別と最多部署をサマリーに出すため計算
     const topType = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
     const topDept = window._topDept || '-';
 
     // Reveal summary panel (injected once all data is ready)
+    // サマリーパネルの HTML を書き換えて表示
     document.getElementById('summaryContent').innerHTML = `
         <div class="col-md-2 text-center border-end">
             <div class="text-muted small">最多発生部署</div>
@@ -311,6 +344,7 @@ loadChart('/Analytics/ByIncidentType', (d) => {
         </div>
     `;
     // Apply values already computed by other callbacks (async ordering is non-deterministic)
+    // 他のコールバックが先に完了していれば既に退避した値を反映する
     if (window._completionRate) document.getElementById('completionRate').textContent = window._completionRate;
     if (window._failedMeasures) document.getElementById('failedMeasures').textContent = window._failedMeasures;
     if (window._overdueMeasures) document.getElementById('overdueMeasures').textContent = window._overdueMeasures;

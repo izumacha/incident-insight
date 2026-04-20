@@ -1,35 +1,48 @@
+@* カンバンの1枚のカードを描画するパーシャルビュー *@
 @model IncidentInsight.Web.Models.PreventiveMeasure
 
 @{
+    @* 毎回 Model と書くのが煩雑なので別名に束ねる *@
     var m = Model;
 }
 
+@* カード全体（期限超過は赤枠で強調） *@
 <div class="card border-0 mb-2 shadow-sm @(m.IsOverdue ? "border-danger border" : "")">
     <div class="card-body p-2">
+        @* 上段：バッジ類と編集ボタン *@
         <div class="d-flex justify-content-between align-items-start mb-1">
             <div class="d-flex gap-1 flex-wrap">
+                @* 優先度バッジ *@
                 <span class="badge bg-@m.PriorityColor">@m.PriorityLabel</span>
+                @* 対策種別バッジ *@
                 <span class="badge bg-@m.MeasureTypeColor">@m.MeasureTypeLabel</span>
+                @* 期限超過の日数を赤バッジで表示 *@
                 @if (m.IsOverdue)
                 {
                     <span class="badge bg-danger">期限超過 @((int)(DateTime.Today - m.DueDate).TotalDays)日</span>
                 }
             </div>
+            @* 編集画面への遷移 *@
             <a asp-controller="PreventiveMeasures" asp-action="Edit" asp-route-id="@m.Id"
                class="btn btn-outline-secondary btn-sm py-0 ms-1">編集</a>
         </div>
 
+        @* 対策内容の要約（長すぎれば先頭70文字で省略） *@
         <p class="small mb-1 fw-medium">@(m.Description.Length > 70 ? m.Description[..70] + "…" : m.Description)</p>
 
+        @* 下段：担当と期限 *@
         <div class="d-flex justify-content-between align-items-center">
             <div class="text-muted x-small">
+                @* 担当者（部署） *@
                 <i class="bi bi-person me-1"></i>@m.ResponsiblePerson (@m.ResponsibleDepartment)
             </div>
             <div class="text-muted x-small">
+                @* 実施期限（超過なら赤＆太字） *@
                 期限: <span class="@(m.IsOverdue ? "text-danger fw-bold" : "")">@m.DueDate.ToString("MM/dd")</span>
             </div>
         </div>
 
+        @* 完了メモ（任意・長すぎれば50文字省略） *@
         @if (!string.IsNullOrEmpty(m.CompletionNote))
         {
             <div class="text-muted x-small mt-1">
@@ -37,14 +50,17 @@
             </div>
         }
 
+        @* 有効性評価（登録済みのときだけ星と再発有無を表示） *@
         @if (m.EffectivenessRating.HasValue)
         {
             <div class="mt-1 small">
                 <span class="text-warning">@m.EffectivenessStars</span>
+                @* 再発あり＝赤バッジ *@
                 @if (m.RecurrenceObserved == true)
                 {
                     <span class="badge bg-danger ms-1">再発あり</span>
                 }
+                @* 再発なし＝緑バッジ *@
                 else if (m.RecurrenceObserved == false)
                 {
                     <span class="badge bg-success ms-1">再発なし</span>
@@ -52,18 +68,21 @@
             </div>
         }
 
-        <!-- Quick actions -->
+        @* クイック操作行（状態によって出し分け） *@
         <div class="d-flex gap-1 mt-2">
+            @* 未完了なら「完了」ボタン（フォーム POST） *@
             @if (m.Status != IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id" method="post" class="d-inline">
                     @Html.AntiForgeryToken()
+                    @* 楽観ロックトークンを隠しフィールドで送信 *@
                     <input type="hidden" name="concurrencyToken" value="@m.ConcurrencyToken" />
                     <button type="submit" class="btn btn-success btn-sm py-0">
                         <i class="bi bi-check2 me-1"></i>完了
                     </button>
                 </form>
             }
+            @* 完了済みかつ未評価なら「有効性評価」ボタン *@
             @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !m.EffectivenessRating.HasValue)
             {
                 <a asp-controller="PreventiveMeasures" asp-action="Review" asp-route-id="@m.Id"
@@ -71,17 +90,21 @@
                     <i class="bi bi-star me-1"></i>有効性評価
                 </a>
             }
+            @* 計画中のみ「着手」ボタンで進行中に遷移 *@
             @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Planned)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="UpdateStatus" asp-route-id="@m.Id" method="post" class="d-inline">
                     @Html.AntiForgeryToken()
+                    @* 遷移先ステータスを固定値で送信 *@
                     <input type="hidden" name="status" value="InProgress" />
+                    @* 楽観ロックトークン *@
                     <input type="hidden" name="concurrencyToken" value="@m.ConcurrencyToken" />
                     <button type="submit" class="btn btn-primary btn-sm py-0">
                         <i class="bi bi-play me-1"></i>着手
                     </button>
                 </form>
             }
+            @* 親インシデントへ移動するアイコンリンク（右寄せ） *@
             <a asp-controller="Incidents" asp-action="Details" asp-route-id="@m.IncidentId"
                class="btn btn-outline-secondary btn-sm py-0 ms-auto">
                 <i class="bi bi-link-45deg"></i>

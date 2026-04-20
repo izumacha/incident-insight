@@ -1,42 +1,54 @@
+@* 使用する ViewModel の型を宣言（基本情報+原因分析+対策一覧をまとめた登録フォーム用の入れ物） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel
 @{
+    @* ブラウザタブに表示するタイトル *@
     ViewData["Title"] = "インシデント新規登録";
 }
 
+@* ページヘッダ：見出しと一覧画面に戻るボタンを横並びに配置 *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-plus-circle me-2 text-primary"></i>インシデント新規登録</h2>
+    @* 一覧へ戻るリンク（入力内容は破棄される） *@
     <a asp-action="Index" class="btn btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>一覧へ
     </a>
 </div>
 
+@* フォーム全体を囲むカード *@
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
+        @* 送信先は Create アクション。送信直前に JS で対策行の添字を詰め直す *@
         <form asp-action="Create" method="post" id="createForm" onsubmit="reindexMeasures()">
+            @* CSRF 対策のトークン *@
             @Html.AntiForgeryToken()
 
+            @* サーバー側バリデーションエラーがあれば一覧表示 *@
             @if (!ViewData.ModelState.IsValid)
             {
                 <div class="alert alert-danger mb-4" id="errorSummary">
                     <i class="bi bi-exclamation-triangle-fill me-2"></i>
                     <strong>入力内容を確認してください</strong>
+                    @* ModelState のエラー全件を小さめ文字で表示 *@
                     <div asp-validation-summary="All" class="mt-1 mb-0 small"></div>
                 </div>
             }
 
-            <!-- Wizard Tabs -->
+            @* ウィザード風に3ステップに分けるタブ *@
             <ul class="nav nav-tabs mb-4" id="wizardTabs" role="tablist">
                 <li class="nav-item">
+                    @* ステップ1：基本情報（初期表示） *@
                     <button class="nav-link active" id="tab1-tab" data-bs-toggle="tab" data-bs-target="#tab1" type="button">
                         <span class="badge bg-primary me-1">1</span> 基本情報
                     </button>
                 </li>
                 <li class="nav-item">
+                    @* ステップ2：なぜなぜ分析 *@
                     <button class="nav-link" id="tab2-tab" data-bs-toggle="tab" data-bs-target="#tab2" type="button">
                         <span class="badge bg-secondary me-1">2</span> 原因分析
                     </button>
                 </li>
                 <li class="nav-item">
+                    @* ステップ3：再発防止策 *@
                     <button class="nav-link" id="tab3-tab" data-bs-toggle="tab" data-bs-target="#tab3" type="button">
                         <span class="badge bg-secondary me-1">3</span> 再発防止策
                     </button>
@@ -44,18 +56,21 @@
             </ul>
 
             <div class="tab-content" id="wizardContent">
-                <!-- Tab 1: Basic Info -->
+                @* タブ1：基本情報（発生日時・部署・種別など） *@
                 <div class="tab-pane fade show active" id="tab1">
                     <div class="row g-3">
                         <div class="col-md-4">
+                            @* 発生日時（必須） *@
                             <label asp-for="OccurredAt" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <input asp-for="OccurredAt" type="datetime-local" class="form-control" />
                             <span asp-validation-for="OccurredAt" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
+                            @* 発生部署（Incident の静的リストから選択） *@
                             <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <select asp-for="Department" class="form-select">
                                 <option value="">-- 選択してください --</option>
+                                @* Incident.Departments の全部署を順にオプション化 *@
                                 @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
                                 {
                                     <option value="@d">@d</option>
@@ -64,9 +79,11 @@
                             <span asp-validation-for="Department" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
+                            @* インシデント種別（enum を表示順で列挙） *@
                             <label asp-for="IncidentType" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <select asp-for="IncidentType" class="form-select">
                                 <option value="">-- 選択してください --</option>
+                                @* 種別 enum を表示順で列挙し日本語ラベルで表示 *@
                                 @foreach (var t in IncidentInsight.Web.Models.Enums.IncidentTypeMapping.AllInDisplayOrder)
                                 {
                                     <option value="@t">@IncidentInsight.Web.Models.Enums.IncidentTypeMapping.JapaneseLabel(t)</option>
@@ -75,8 +92,10 @@
                             <span asp-validation-for="IncidentType" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
+                            @* 重症度（Level0〜Level5） *@
                             <label asp-for="Severity" class="form-label fw-medium"></label>
                             <select asp-for="Severity" class="form-select">
+                                @* 全重症度を日本語ラベル付きで選択肢化 *@
                                 @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities)
                                 {
                                     <option value="@s">@IncidentInsight.Web.Models.Enums.EnumLabels.Japanese(s)</option>
@@ -84,23 +103,27 @@
                             </select>
                         </div>
                         <div class="col-md-4">
+                            @* 報告者氏名（必須） *@
                             <label asp-for="ReporterName" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <input asp-for="ReporterName" class="form-control" placeholder="氏名（例：山田 花子）" />
                             <span asp-validation-for="ReporterName" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
+                            @* 発生内容の詳細記述（必須） *@
                             <label asp-for="Description" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <textarea asp-for="Description" class="form-control" rows="4"
                                       placeholder="いつ・どこで・誰が・何を・どのようにしたかを具体的に記述（例：夜勤帯にAさんの薬をBさんに投与した）"></textarea>
                             <span asp-validation-for="Description" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
+                            @* 発生直後の応急処置（任意） *@
                             <label asp-for="ImmediateActions" class="form-label fw-medium"></label>
                             <textarea asp-for="ImmediateActions" class="form-control" rows="3"
                                       placeholder="発生直後の応急処置・報告先・患者への対応内容（任意）"></textarea>
                             <div class="form-text">任意項目です。発生直後に取った対応があれば記入してください。</div>
                         </div>
                         <div class="col-12 d-flex justify-content-end">
+                            @* タブ2へ進むボタン *@
                             <button type="button" class="btn btn-primary" onclick="goToTab('tab2')">
                                 次へ：原因分析 <i class="bi bi-arrow-right ms-1"></i>
                             </button>
@@ -108,7 +131,7 @@
                     </div>
                 </div>
 
-                <!-- Tab 2: Cause Analysis -->
+                @* タブ2：なぜなぜ分析（5回「なぜ？」を繰り返して根本原因を掘り下げる） *@
                 <div class="tab-pane fade" id="tab2">
                     <div class="alert alert-info small mb-3">
                         <i class="bi bi-lightbulb me-2"></i>
@@ -118,6 +141,7 @@
                     </div>
                     <div class="row g-3">
                         <div class="col-md-6">
+                            @* 原因分類（親カテゴリ配下の末端カテゴリを optgroup で表示） *@
                             <label asp-for="CauseAnalysis.CauseCategoryId" class="form-label fw-medium"></label>
                             <select asp-for="CauseAnalysis.CauseCategoryId"
                                     asp-items="Model.CauseCategoryOptions"
@@ -126,44 +150,53 @@
                             </select>
                         </div>
                         <div class="col-md-6">
+                            @* 分析者氏名 *@
                             <label asp-for="CauseAnalysis.AnalystName" class="form-label fw-medium"></label>
                             <input asp-for="CauseAnalysis.AnalystName" class="form-control" placeholder="分析者氏名" />
                         </div>
                         <div class="col-12">
+                            @* なぜ1：直接の原因 *@
                             <label asp-for="CauseAnalysis.Why1" class="form-label fw-medium text-primary"></label>
                             <textarea asp-for="CauseAnalysis.Why1" class="form-control" rows="2"
                                       placeholder="何が起きたか・直接の原因は何か"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
+                            @* なぜ2：なぜ1が起きた原因 *@
                             <label asp-for="CauseAnalysis.Why2" class="form-label fw-medium"></label>
                             <textarea asp-for="CauseAnalysis.Why2" class="form-control" rows="2" placeholder="なぜ1が起きた原因"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
+                            @* なぜ3：なぜ2が起きた原因 *@
                             <label asp-for="CauseAnalysis.Why3" class="form-label fw-medium"></label>
                             <textarea asp-for="CauseAnalysis.Why3" class="form-control" rows="2" placeholder="なぜ2が起きた原因"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
+                            @* なぜ4：なぜ3が起きた原因 *@
                             <label asp-for="CauseAnalysis.Why4" class="form-label fw-medium"></label>
                             <textarea asp-for="CauseAnalysis.Why4" class="form-control" rows="2" placeholder="なぜ3が起きた原因"></textarea>
                         </div>
                         <div class="col-12 text-center text-muted">↓ なぜ？</div>
                         <div class="col-12">
+                            @* なぜ5：最深層の根本原因（赤枠で強調） *@
                             <label asp-for="CauseAnalysis.Why5" class="form-label fw-medium text-danger"></label>
                             <textarea asp-for="CauseAnalysis.Why5" class="form-control border-danger" rows="2"
                                       placeholder="これ以上掘り下げられない根本的な原因（対策はここに向けて立案する）"></textarea>
                         </div>
                         <div class="col-12">
+                            @* 根本原因の一文要約 *@
                             <label asp-for="CauseAnalysis.RootCauseSummary" class="form-label fw-medium"></label>
                             <input asp-for="CauseAnalysis.RootCauseSummary" class="form-control"
                                    placeholder="根本原因を一文で要約してください" />
                         </div>
                         <div class="col-12 d-flex justify-content-between">
+                            @* タブ1へ戻るボタン *@
                             <button type="button" class="btn btn-outline-secondary" onclick="goToTab('tab1')">
                                 <i class="bi bi-arrow-left me-1"></i>前へ
                             </button>
+                            @* タブ3へ進むボタン *@
                             <button type="button" class="btn btn-primary" onclick="goToTab('tab3')">
                                 次へ：再発防止策 <i class="bi bi-arrow-right ms-1"></i>
                             </button>
@@ -171,7 +204,7 @@
                     </div>
                 </div>
 
-                <!-- Tab 3: Preventive Measures -->
+                @* タブ3：再発防止策（1件以上の登録が必須） *@
                 <div class="tab-pane fade" id="tab3">
                     <div class="alert alert-success small mb-3">
                         <i class="bi bi-shield-check me-2"></i>
@@ -179,18 +212,22 @@
                         根本原因に対応した対策を立案してください。
                         「誰が」「何を」「いつまでに」を明確にし、短期対策と長期対策の両方を検討しましょう。
                     </div>
+                    @* 対策行の入れ物（JS で動的に追加／削除される） *@
                     <div id="measuresContainer">
+                        @* 初期状態では対策行を1件用意（最低1件必須） *@
                         <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="0">
                             <div class="d-flex justify-content-between align-items-center mb-2">
                                 <h6 class="mb-0">対策 1</h6>
                             </div>
                             <div class="row g-2">
                                 <div class="col-12">
+                                    @* 対策内容（必須） *@
                                     <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
                                     <textarea name="Measures[0].Description" class="form-control form-control-sm" rows="2"
                                               placeholder="具体的な再発防止策（5W1Hで記載）"></textarea>
                                 </div>
                                 <div class="col-md-3">
+                                    @* 対策種別（短期 or 長期） *@
                                     <label class="form-label small">対策種別</label>
                                     <select name="Measures[0].MeasureType" class="form-select form-select-sm">
                                         <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
@@ -198,19 +235,23 @@
                                     </select>
                                 </div>
                                 <div class="col-md-3">
+                                    @* 担当者（必須） *@
                                     <label class="form-label small">担当者 <span class="text-danger">*</span></label>
                                     <input name="Measures[0].ResponsiblePerson" class="form-control form-control-sm" />
                                 </div>
                                 <div class="col-md-3">
+                                    @* 担当部署（必須） *@
                                     <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
                                     <input name="Measures[0].ResponsibleDepartment" class="form-control form-control-sm" />
                                 </div>
                                 <div class="col-md-2">
+                                    @* 実施期限（初期値は30日後） *@
                                     <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
                                     <input type="date" name="Measures[0].DueDate" class="form-control form-control-sm"
                                            value="@DateTime.Today.AddDays(30).ToString("yyyy-MM-dd")" />
                                 </div>
                                 <div class="col-md-1">
+                                    @* 優先度（高=1／中=2／低=3、初期は中） *@
                                     <label class="form-label small">優先度</label>
                                     <select name="Measures[0].Priority" class="form-select form-select-sm">
                                         <option value="1">高</option>
@@ -219,6 +260,7 @@
                                     </select>
                                 </div>
                                 <div class="col-12">
+                                    @* 立案根拠メモ（任意） *@
                                     <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
                                     <textarea name="Measures[0].AnalysisNote" class="form-control form-control-sm" rows="1"
                                               placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
@@ -227,14 +269,17 @@
                         </div>
                     </div>
 
+                    @* 対策行を追加するボタン（JS の addMeasureRow を呼ぶ） *@
                     <button type="button" class="btn btn-outline-success btn-sm mb-4" onclick="addMeasureRow()">
                         <i class="bi bi-plus-circle me-1"></i>対策を追加
                     </button>
 
                     <div class="d-flex justify-content-between">
+                        @* タブ2へ戻るボタン *@
                         <button type="button" class="btn btn-outline-secondary" onclick="goToTab('tab2')">
                             <i class="bi bi-arrow-left me-1"></i>前へ
                         </button>
+                        @* 登録実行ボタン（フォーム全体を送信） *@
                         <button type="submit" class="btn btn-success btn-lg">
                             <i class="bi bi-check-circle me-2"></i>インシデントを登録する
                         </button>
@@ -246,42 +291,60 @@
 </div>
 
 @section Scripts {
+@* クライアント側のバリデーションスクリプトを読み込み *@
 <partial name="_ValidationScriptsPartial" />
 <script>
+// 指定したタブIDにフォーカスを移すヘルパー
 function goToTab(tabId) {
+    // Bootstrap タブの切替をクリックで発火
     document.getElementById(tabId + '-tab').click();
+    // active クラスを確実に付与（稀に発火しないケースの保険）
     document.getElementById(tabId + '-tab').classList.add('active');
 }
 
-// On page load: if validation errors exist, jump to the tab containing the first error field
+// ページ読込時：バリデーションエラーがあれば最初のエラー項目を含むタブへ自動遷移
 document.addEventListener('DOMContentLoaded', function() {
+    // エラーサマリ要素が無ければ何もしない
     const errorSummary = document.getElementById('errorSummary');
     if (!errorSummary) return;
+    // 最初のエラー表示項目を探す
     const firstInvalid = document.querySelector('.field-validation-error, [class*="input-validation-error"]');
     if (!firstInvalid) return;
+    // その項目を含むタブ要素を取得
     const tab = firstInvalid.closest('.tab-pane');
+    // 見つかればそのタブに切り替え
     if (tab) goToTab(tab.id);
 });
 
-// Reindex measure rows before submit to close any gaps from deletions
+// 送信直前：削除で生じた添字の抜けを 0,1,2... に詰め直す
 function reindexMeasures() {
+    // 対策行を順に走査
     document.querySelectorAll('#measuresContainer .measure-row').forEach((row, i) => {
+        // 各要素の name 属性の添字部分を i に置換
         row.querySelectorAll('[name]').forEach(el => {
             el.name = el.name.replace(/Measures\[\d+\]/, `Measures[${i}]`);
         });
     });
 }
 
+// 追加された対策のインデックス（最初の行が index=0 なので 1 から開始）
 let measureCount = 1;
+// 「対策を追加」ボタンから呼ばれる関数：対策行を複製して末尾に追加
 function addMeasureRow() {
+    // 追加先コンテナ
     const container = document.getElementById('measuresContainer');
+    // 今回の新規インデックス
     const idx = measureCount++;
+    // 期限の初期値：本日 +30 日
     const tomorrow = new Date();
     tomorrow.setDate(tomorrow.getDate() + 30);
+    // yyyy-MM-dd 形式に整形
     const dateStr = tomorrow.toISOString().split('T')[0];
 
+    // 新しい対策行の DOM を構築
     const div = document.createElement('div');
     div.className = 'measure-row border rounded-3 p-3 mb-3 bg-light';
+    // innerHTML で一気に差し込み（削除ボタン付き）
     div.innerHTML = `
         <div class="d-flex justify-content-between align-items-center mb-2">
             <h6 class="mb-0">対策 ${idx + 1}</h6>
@@ -327,6 +390,7 @@ function addMeasureRow() {
                           placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
             </div>
         </div>`;
+    // コンテナに追加
     container.appendChild(div);
 }
 </script>

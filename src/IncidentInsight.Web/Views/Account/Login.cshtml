@@ -1,7 +1,11 @@
+@* このビューで扱う ViewModel の型を宣言 *@
 @model IncidentInsight.Web.Models.ViewModels.LoginViewModel
+@* 開発/本番の判定に使う IWebHostEnvironment を DI で受け取る *@
 @inject Microsoft.AspNetCore.Hosting.IWebHostEnvironment HostEnvironment
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "ログイン";
+    @* このページではレイアウトを使わず独立 HTML を出力する *@
     Layout = null;
 }
 <!DOCTYPE html>
@@ -10,19 +14,24 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>IncidentInsight — ログイン</title>
+    @* Bootstrap 5 の CSS を CDN から読み込む *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" />
+    @* Bootstrap Icons の CSS を CDN から読み込む *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
 </head>
 <body class="bg-light">
+@* ログインカードを画面中央に配置 *@
 <div class="min-vh-100 d-flex align-items-center justify-content-center">
     <div class="card border-0 shadow" style="width: 400px;">
         <div class="card-body p-5">
+            @* アプリケーション名とサブタイトル *@
             <div class="text-center mb-4">
                 <i class="bi bi-shield-plus fs-1 text-primary"></i>
                 <h4 class="mt-2 fw-bold">IncidentInsight</h4>
                 <p class="text-muted small">医療インシデント管理システム</p>
             </div>
 
+            @* バリデーションエラーがある場合のみサマリを表示 *@
             @if (!ViewData.ModelState.IsValid)
             {
                 <div class="alert alert-danger small">
@@ -30,30 +39,38 @@
                 </div>
             }
 
+            @* ログインフォーム(POST /Account/Login) *@
             <form asp-action="Login" method="post">
+                @* CSRF 対策トークン *@
                 @Html.AntiForgeryToken()
+                @* 認証成功後の戻り先 URL を隠しフィールドで保持 *@
                 <input type="hidden" name="returnUrl" value="@ViewData["ReturnUrl"]" />
 
+                @* メールアドレス入力欄 *@
                 <div class="mb-3">
                     <label asp-for="Email" class="form-label fw-medium"></label>
                     <input asp-for="Email" type="email" class="form-control"
                            placeholder="admin@hospital.local" autocomplete="email" />
                     <span asp-validation-for="Email" class="text-danger small"></span>
                 </div>
+                @* パスワード入力欄 *@
                 <div class="mb-4">
                     <label asp-for="Password" class="form-label fw-medium"></label>
                     <input asp-for="Password" type="password" class="form-control" autocomplete="current-password" />
                     <span asp-validation-for="Password" class="text-danger small"></span>
                 </div>
+                @* 「ログイン状態を保持」チェックボックス *@
                 <div class="mb-4 form-check">
                     <input asp-for="RememberMe" class="form-check-input" />
                     <label asp-for="RememberMe" class="form-check-label small"></label>
                 </div>
+                @* ログイン送信ボタン *@
                 <button type="submit" class="btn btn-primary w-100">
                     <i class="bi bi-box-arrow-in-right me-1"></i>ログイン
                 </button>
             </form>
 
+            @* 開発環境でのみデモアカウント一覧を表示(本番では非表示) *@
             @if (HostEnvironment.IsDevelopment())
             {
                 <hr class="my-4" />
@@ -68,7 +85,9 @@
         </div>
     </div>
 </div>
+@* Bootstrap の JS をフッタで読み込む *@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+@* クライアントサイドバリデーション用スクリプト *@
 <partial name="_ValidationScriptsPartial" />
 </body>
 </html>

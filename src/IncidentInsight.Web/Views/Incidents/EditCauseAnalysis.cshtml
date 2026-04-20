@@ -1,10 +1,14 @@
+@* なぜなぜ分析の編集専用 ViewModel *@
 @model IncidentInsight.Web.Models.ViewModels.CauseAnalysisFormViewModel
 @{
+    @* ブラウザタブのタイトル *@
     ViewData["Title"] = "なぜなぜ分析の編集";
 }
 
+@* ページヘッダ：見出しと詳細へ戻るボタン *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-pencil-square me-2 text-secondary"></i>なぜなぜ分析の編集</h2>
+    @* 親インシデントの詳細画面に戻る *@
     <a asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>詳細へ
     </a>
@@ -12,6 +16,7 @@
 
 <div class="card border-0 shadow-sm">
     <div class="card-body p-4">
+        @* なぜなぜ分析のコツを青い案内枠で常時表示 *@
         <div class="alert alert-info small mb-4">
             <i class="bi bi-lightbulb me-2"></i>
             <strong>なぜなぜ分析のポイント：</strong>
@@ -19,16 +24,22 @@
             なぜ5まで掘り下げることで、再発防止に本当に効果ある対策が立案できます。
         </div>
 
+        @* 編集対象の ID を URL に付けて POST *@
         <form asp-action="EditCauseAnalysis" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
+            @* バリデーションエラー一覧 *@
             <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
 
+            @* 分析 ID（主キー） *@
             <input type="hidden" asp-for="Id" />
+            @* 親インシデントの ID（リダイレクト先などに使う） *@
             <input type="hidden" asp-for="IncidentId" />
+            @* 楽観ロック用の同時編集検出トークン *@
             <input type="hidden" asp-for="ConcurrencyToken" />
 
             <div class="row g-3">
                 <div class="col-md-6">
+                    @* 原因分類（必須） *@
                     <label asp-for="CauseCategoryId" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                     <select asp-for="CauseCategoryId"
                             asp-items="Model.CauseCategoryOptions"
@@ -38,12 +49,14 @@
                     <span asp-validation-for="CauseCategoryId" class="text-danger small"></span>
                 </div>
                 <div class="col-md-6">
+                    @* 分析者氏名（任意） *@
                     <label asp-for="AnalystName" class="form-label fw-medium"></label>
                     <input asp-for="AnalystName" class="form-control" placeholder="分析者氏名（任意）" />
                 </div>
 
-                <!-- 5 Whys -->
+                @* なぜなぜの5段階入力 *@
                 <div class="col-12">
+                    @* なぜ1：直接原因（必須） *@
                     <label asp-for="Why1" class="form-label fw-medium text-primary"></label> <span class="text-danger">*</span>
                     <textarea asp-for="Why1" class="form-control" rows="2"
                               placeholder="何が起きたか・直接の原因は何か"></textarea>
@@ -51,42 +64,50 @@
                 </div>
                 <div class="col-12 text-center text-muted">↓ なぜ？</div>
                 <div class="col-12">
+                    @* なぜ2（任意） *@
                     <label asp-for="Why2" class="form-label fw-medium"></label>
                     <textarea asp-for="Why2" class="form-control" rows="2" placeholder="なぜ1が起きた原因（任意）"></textarea>
                 </div>
                 <div class="col-12 text-center text-muted">↓ なぜ？</div>
                 <div class="col-12">
+                    @* なぜ3（任意） *@
                     <label asp-for="Why3" class="form-label fw-medium"></label>
                     <textarea asp-for="Why3" class="form-control" rows="2" placeholder="なぜ2が起きた原因（任意）"></textarea>
                 </div>
                 <div class="col-12 text-center text-muted">↓ なぜ？</div>
                 <div class="col-12">
+                    @* なぜ4（任意） *@
                     <label asp-for="Why4" class="form-label fw-medium"></label>
                     <textarea asp-for="Why4" class="form-control" rows="2" placeholder="なぜ3が起きた原因（任意）"></textarea>
                 </div>
                 <div class="col-12 text-center text-muted">↓ なぜ？</div>
                 <div class="col-12">
+                    @* なぜ5：根本原因（赤枠で強調、任意） *@
                     <label asp-for="Why5" class="form-label fw-medium text-danger"></label>
                     <textarea asp-for="Why5" class="form-control border-danger" rows="2"
                               placeholder="これ以上掘り下げられない根本的な原因（対策はここに向けて立案する）（任意）"></textarea>
                 </div>
 
                 <div class="col-12">
+                    @* 根本原因の一文要約（任意） *@
                     <label asp-for="RootCauseSummary" class="form-label fw-medium"></label>
                     <input asp-for="RootCauseSummary" class="form-control"
                            placeholder="根本原因を一文で要約してください（任意）" />
                 </div>
 
                 <div class="col-12">
+                    @* 補足メモ（任意） *@
                     <label asp-for="AdditionalNotes" class="form-label fw-medium"></label>
                     <textarea asp-for="AdditionalNotes" class="form-control" rows="2"
                               placeholder="補足・特記事項（任意）"></textarea>
                 </div>
 
                 <div class="col-12 d-flex justify-content-between">
+                    @* キャンセル（詳細画面に戻る） *@
                     <a asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
                         <i class="bi bi-x-circle me-1"></i>キャンセル
                     </a>
+                    @* 更新ボタン *@
                     <button type="submit" class="btn btn-primary">
                         <i class="bi bi-check-circle me-1"></i>更新する
                     </button>
@@ -97,5 +118,6 @@
 </div>
 
 @section Scripts {
+@* クライアント側バリデーションスクリプト *@
 <partial name="_ValidationScriptsPartial" />
 }
