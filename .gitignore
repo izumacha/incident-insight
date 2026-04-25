@@ -13,6 +13,9 @@ obj/
 *.suo
 .idea/
 
+## Bootstrap (CDN に移行済み、ローカル不要)
+src/IncidentInsight.Web/wwwroot/lib/bootstrap/
+
 ## OS files
 .DS_Store
 Thumbs.db
