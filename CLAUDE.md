@@ -115,3 +115,40 @@ Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, Incid
 ## Coding conventions
 
 - **1行ごとに初心者でも意味がわかるコメントアウトをつける**。新規または変更したコード行には、プログラミング初心者でも理解できる平易な日本語のコメントを各行に付与する。コメントは「何をしているか」を具体的に説明し、専門用語や省略語を避ける(例: `var x = users.Where(u => u.IsActive); // アクティブなユーザーだけを抜き出す`)。C# は `//`、Razor (`.cshtml`) は `@* *@`、JavaScript は `//`、設定ファイル (JSON など) はコメントをサポートしないため対象外。このルールは本プロジェクト固有の方針であり、汎用的な「コメントは最小限に」というガイダンスよりも優先される。
+
+## Enum ラベル管理
+
+- すべての Enum の日本語ラベルと Bootstrap カラーは `Models/Enums/EnumLabels.cs` に集約する。View で直接文字列を書かない。
+- 新しい Enum 値を追加したら `EnumLabels.Japanese()` と `EnumLabels.Color()` の両方を更新すること。
+- `IncidentTypeMapping.cs` は日本語 ↔ DB 文字列の双方向変換を担う。新しいインシデント種別はここにも追加する。
+
+## Controller 新規アクション追加時のチェックリスト
+
+新しい POST アクションを追加する際は以下を確認:
+
+1. `[Authorize]` 属性（または適切なポリシー）を付与したか
+2. `ConcurrencyToken` を hidden field で round-trip し、`OriginalValue` にピンしているか
+3. `SameDepartmentHandler` が必要なら `.Include(x => x.Incident)` しているか
+4. `SaveChangesAsync` を使い、`ExecuteUpdate` / `ExecuteDelete` を使っていないか（監査ログのため）
+5. 成功時に `TempData["Success"]`、失敗時に `TempData["Warning"]` をセットしているか
+6. 対応するテストを `tests/` に追加したか
+
+## View 規約
+
+- Badge のカラーは Model の `*Color` プロパティを使う。View に直接 `bg-danger` 等を書かない。
+- フォームには必ず `@Html.AntiForgeryToken()` を含める。
+- 新規 View では `@inject IClock Clock` を使い、`DateTime.Today` の直接参照を避ける。
+- Chart.js エンドポイント（`AnalyticsController`）の `{ labels, data }` レスポンス形状を変更しない。
+
+## テスト追加ガイド
+
+- 新しい Controller ロジックには `InMemory` DbContext を使ったテストを追加する。Mock よりも `InMemory` を優先。
+- `UserContextHelper.AttachUser()` でテスト用ユーザーコンテキストを設定する。
+- `TempData` を使う Controller は `TestTempData` を注入する。
+- テストクラス名: `<対象クラス名>Tests`（例: `PreventiveMeasuresControllerTests`）
+
+## セキュリティ
+
+- `SeedAccounts` のパスワードは絶対にコミットしない（User Secrets または環境変数を使用）。
+- Production では HTTPS リダイレクト + HSTS が有効。ローカル開発でも `https://` で動作確認を推奨。
+- 認証 Cookie は `HttpOnly=true`, `SameSite=Strict`。JavaScript から Cookie を操作しない。
