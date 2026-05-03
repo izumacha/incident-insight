@@ -24,8 +24,8 @@
             なぜ5まで掘り下げることで、再発防止に本当に効果ある対策が立案できます。
         </div>
 
-        @* 編集対象の ID を URL に付けて POST *@
-        <form asp-action="EditCauseAnalysis" asp-route-id="@Model.Id" method="post">
+        @* 編集対象の ID を URL に付けて POST（CauseAnalysesController が担当） *@
+        <form asp-controller="CauseAnalyses" asp-action="EditCauseAnalysis" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
             @* バリデーションエラー一覧 *@
             <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
