@@ -130,13 +130,13 @@
                             }
                         </div>
                         <div class="d-flex gap-1">
-                            @* 編集画面への遷移 *@
-                            <a asp-action="EditCauseAnalysis" asp-route-id="@analysis.Id"
+                            @* 編集画面への遷移（CauseAnalysesController が担当、URL は /Incidents/EditCauseAnalysis のまま） *@
+                            <a asp-controller="CauseAnalyses" asp-action="EditCauseAnalysis" asp-route-id="@analysis.Id"
                                class="btn btn-outline-secondary btn-sm py-0">
                                 <i class="bi bi-pencil"></i> 編集
                             </a>
                             @* 削除はフォーム送信（CSRF トークン必須） *@
-                            <form asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
+                            <form asp-controller="CauseAnalyses" asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
                                 @Html.AntiForgeryToken()
                                 <button type="submit" class="btn btn-outline-danger btn-sm py-0"
                                         onclick="return confirm('この原因分析を削除しますか？')">
@@ -210,7 +210,8 @@
         <div class="collapse" id="addCauseForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">原因分析を追加</h6>
-                <form asp-action="AddCauseAnalysis" method="post">
+                @* CauseAnalysesController が担当（URL は /Incidents/AddCauseAnalysis のまま） *@
+                <form asp-controller="CauseAnalyses" asp-action="AddCauseAnalysis" method="post">
                     @Html.AntiForgeryToken()
                     @* 紐付け対象のインシデント ID を隠しフィールドで送信 *@
                     <input type="hidden" asp-for="NewCauseAnalysis.IncidentId" />
@@ -400,7 +401,8 @@
         <div class="collapse" id="addMeasureForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">再発防止策を追加</h6>
-                <form asp-action="AddMeasure" method="post">
+                @* IncidentMeasuresController が担当（URL は /Incidents/AddMeasure のまま） *@
+                <form asp-controller="IncidentMeasures" asp-action="AddMeasure" method="post">
                     @Html.AntiForgeryToken()
                     @* インシデント ID を隠しフィールドで送信 *@
                     <input type="hidden" asp-for="NewMeasure.IncidentId" />

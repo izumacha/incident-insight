@@ -65,7 +65,7 @@ The schema is centered on four aggregates with cascade rules configured in `Appl
 
 - **`Incident`** — the root. Holds occurrence metadata (`OccurredAt`, `Department`, `IncidentType`, `Severity`, `Description`, `ReporterName`). Severity codes (`Level0`…`Level5`), department list, and incident-type list are hard-coded `static readonly` dictionaries/arrays on the class and are the single source of truth for dropdowns and labels. Computed helpers like `SeverityLabel`, `SeverityColor`, `MeasureStatusSummary`, `MeasureStatusColor` are consumed directly in Razor views for Bootstrap badge classes.
 - **`CauseAnalysis`** — 5 Whys stored as independent `Why1`..`Why5` columns (so SQL can search at specific depths). Always tied to one `CauseCategory`. Helpers: `DeepestWhy`, `WhyDepth`.
-- **`CauseCategory`** — self-referential hierarchy (parent/child via `ParentId`). `BuildCauseCategoryOptions()` in `IncidentsController` emits leaf categories grouped by parent as `<optgroup>` — never add a category-picker that bypasses this helper.
+- **`CauseCategory`** — self-referential hierarchy (parent/child via `ParentId`). `BuildCauseCategoryOptionsAsync()` in `Controllers/Internal/IncidentControllerHelpers.cs` emits leaf categories grouped by parent as `<optgroup>` — never add a category-picker that bypasses this helper.
 - **`PreventiveMeasure`** — the "most important" entity per the domain: tracks the full lifecycle `Planned → InProgress → Completed` plus post-completion fields `EffectivenessRating` (1–5), `EffectivenessNote`, `EffectivenessReviewedAt`, and `RecurrenceObserved` (true ⇒ surface warning and prompt re-analysis). `IsOverdue` is a computed property used all over the UI; keep the `DueDate < DateTime.Today && Status != "Completed"` semantics consistent.
 - **`AuditLog`** — regulatory audit trail written automatically by `AuditSaveChangesInterceptor`. Holds `ChangedAt`, `ChangedBy` (user name from the current `HttpContext`), `EntityName`, `EntityKey`, `Operation` (`Added` / `Modified` / `Deleted`), and a JSON `ChangesJson` with before/after values. Never write to this table directly — the interceptor is the single source of truth.
 
@@ -79,13 +79,18 @@ try { await _db.SaveChangesAsync(); }
 catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; }
 ```
 
-The client round-trips the token via a hidden form field (`<input type="hidden" asp-for="ConcurrencyToken" />`, or a `name="concurrencyToken"` value for modal/kanban forms that POST raw parameters). Applied across `IncidentsController.Edit` / `EditCauseAnalysis` / `CompleteMeasure` / `RateMeasure` and `PreventiveMeasuresController.Edit` / `Complete` / `Review` / `UpdateStatus`. When adding a new mutating POST action on any of these three entities, follow the same pattern.
+The client round-trips the token via a hidden form field (`<input type="hidden" asp-for="ConcurrencyToken" />`, or a `name="concurrencyToken"` value for modal/kanban forms that POST raw parameters). Applied across `IncidentsController.Edit`, `CauseAnalysesController.EditCauseAnalysis`, `IncidentMeasuresController.CompleteMeasure` / `RateMeasure`, and `PreventiveMeasuresController.Edit` / `Complete` / `Review` / `UpdateStatus`. When adding a new mutating POST action on any of these three entities, follow the same pattern.
 
 Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`, `AuditLog(ChangedAt)`, `AuditLog(EntityName, EntityKey)`.
 
 ### Controllers & cross-cutting patterns
 - All app controllers except `AccountController` use `[Authorize]`. `AccountController` is explicitly `[AllowAnonymous]` on `Login` / `AccessDenied`.
-- `IncidentsController` hosts the registration wizard (POST `/Incidents/Create`) **and** the nested lifecycle actions for cause analyses and measures (`AddCauseAnalysis`, `EditCauseAnalysis`, `AddMeasure`, `CompleteMeasure`, `RateMeasure`, …). Create enforces "at least one preventive measure" via `HasAtLeastOneValidMeasure` — this validation is business-critical, not cosmetic. The controller also strips sub-form keys from `ModelState` before validating the parent form (see the `ModelState.Remove` loop in `Edit`).
+- The incident lifecycle is split across **three** controllers, all routed under `/Incidents/...`:
+  - `IncidentsController` — Index / Details / Create / Edit / Delete on the Incident root. Create enforces "at least one preventive measure" via `HasAtLeastOneValidMeasure` (business-critical). Strips sub-form keys from `ModelState` before validating the parent form (see the `ModelState.Remove` loop in `Edit`).
+  - `CauseAnalysesController` — `AddCauseAnalysis` / `EditCauseAnalysis` (GET+POST) / `DeleteCauseAnalysis`. Uses `[Route("Incidents/[action]/{id?}")]` to keep URLs unchanged after the split. Re-uses `Views/Incidents/EditCauseAnalysis.cshtml` via explicit `View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm)`.
+  - `IncidentMeasuresController` — `AddMeasure` / `CompleteMeasure` / `RateMeasure` (the inline operations launched from the Incident detail page). Same `[Route]` trick. The kanban-side `Create` / `Edit` / `Complete` / `Review` / `UpdateStatus` / `Delete` continue to live on `PreventiveMeasuresController`.
+- Shared helpers (cause-category dropdown builder, resource-policy evaluation) live in `Controllers/Internal/IncidentControllerHelpers.cs`. **Do not** add business rules there — keep it to pure reusable functions; rules like `HasAtLeastOneValidMeasure` stay on the controller that owns them.
+- View tag helpers must specify `asp-controller="CauseAnalyses"` / `asp-controller="IncidentMeasures"` for the actions that moved out of `IncidentsController` (the URL is still `/Incidents/...`, but the route table needs the new controller name to resolve URL generation).
 - `PreventiveMeasuresController` powers the kanban board (`Index` buckets measures into `Planned` / `InProgress` / `Completed` via `ViewBag`) and provides a separate `Review` action for the effectiveness evaluation form.
 - `AnalyticsController` exposes JSON endpoints for Chart.js (`MonthlyTrend`, `ByCause`, `ByDepartment`, `BySeverity`, `MeasureStatus`, `EffectivenessRating`, `ByIncidentType`, `GetSubcategories`). These return `{ labels, data }` shapes that the Analytics views consume verbatim — keep the shape stable.
 - `HomeController.Index` is the dashboard. It accepts a `period` (`week` | `month` | `quarter` | `year`, default `year`) and computes KPIs, trend buckets (daily for `week`, monthly otherwise), and **recurrence alerts** (same department + same incident type + overlapping cause category within the last 90 days — the 90-day window is independent of `period`). Duplicate this algorithm carefully if you touch it.
@@ -109,6 +114,7 @@ Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, Incid
 - **Committed migrations are for SQLite**. Switching production to `sqlserver` or `postgres` requires regenerating migrations against that provider (one-time operation). Don't keep multiple provider migration folders in parallel — EF Core's `ModelSnapshot` is single-provider by design; trying to mix them causes apply-time errors.
 - **Don't add provider-specific SQL or column types**. The value of the abstraction comes from staying portable. If a feature absolutely requires SQL Server-only (e.g. Temporal Tables) or Postgres-only (e.g. JSONB) behavior, gate it behind a runtime `Database:Provider` check and keep a portable fallback.
 - **Audit log correctness depends on going through `SaveChanges`**. Don't use `ExecuteUpdate` / `ExecuteDelete` for `Incident` / `CauseAnalysis` / `PreventiveMeasure` — those bypass the change tracker and silently skip auditing.
+- **PHI must not land in `AuditLog.ChangesJson` in plaintext.** Free-text properties on `Incident` / `CauseAnalysis` / `PreventiveMeasure` (descriptions, notes, why-chains, names) carry `[Sensitive(Mask.Redact)]` or `[Sensitive(Mask.Hash)]` (`Models/Auditing/SensitiveAttribute.cs`). The `AuditSaveChangesInterceptor` reads the attribute via reflection and replaces values with `[REDACTED]` / a salted SHA-256 prefix before writing the change set. **When you add a new free-text or person-name column, you must also annotate it.** The salt comes from `Audit:HashSalt` (User Secrets / environment variable `Audit__HashSalt`); rotating the salt invalidates correlation against past hashes — document it in any rotation runbook.
 - **Time source is always `IClock`** (`src/IncidentInsight.Web/Services/IClock.cs`). Never call `DateTime.Now` / `DateTime.Today` / `DateTime.UtcNow` from controllers, services, the audit interceptor, or the seeder — use the injected `IClock` instead. This is both a testability lever (tests can substitute a fake clock) and an explicit-policy point: **all persisted business timestamps and audit log `ChangedAt` are stored in operational-local time (JST)**. Previously only audit logs used UTC, which produced a confusing 9h offset vs. business data (Issue #31). If you need to migrate to UTC later, change `SystemClock` in one place and update display formatting — don't start sprinkling `DateTime.UtcNow` again. Razor views currently use `DateTime.Today` directly for display-only date arithmetic (e.g. "days overdue"); this is intentional since views don't persist data, but prefer `@inject IClock Clock` + `Clock.Today` in new views. **Upgrading across the PR #37 boundary requires a one-time `UPDATE AuditLogs SET ChangedAt = ChangedAt + 9h` on existing data (run before deploying the new binary); see PR #37 description for per-provider SQL and rollback.**
 - **`SameDepartmentHandler` requires `Incident` to be eager-loaded** (`src/IncidentInsight.Web/Authorization/SameDepartmentHandler.cs`). When calling `AuthorizeAsync(User, resource, …)` with `PreventiveMeasure` or `CauseAnalysis`, the controller must `.Include(x => x.Incident)` first. The handler is **fail-closed**: if `Incident` is null on the navigation, authorization is denied (no silent fallback to `ResponsibleDepartment` — Issue #29). Authorization judges "where did the incident happen?", not "who is working on the fix?".
 
@@ -127,11 +133,13 @@ Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, Incid
 新しい POST アクションを追加する際は以下を確認:
 
 1. `[Authorize]` 属性（または適切なポリシー）を付与したか
-2. `ConcurrencyToken` を hidden field で round-trip し、`OriginalValue` にピンしているか
-3. `SameDepartmentHandler` が必要なら `.Include(x => x.Incident)` しているか
-4. `SaveChangesAsync` を使い、`ExecuteUpdate` / `ExecuteDelete` を使っていないか（監査ログのため）
-5. 成功時に `TempData["Success"]`、失敗時に `TempData["Warning"]` をセットしているか
-6. 対応するテストを `tests/` に追加したか
+2. `[ValidateAntiForgeryToken]` を付与したか
+3. `ConcurrencyToken` を hidden field で round-trip し、`OriginalValue` にピンしているか
+4. `SameDepartmentHandler` が必要なら `.Include(x => x.Incident)` しているか（`IncidentControllerHelpers.IsAuthorizedForAsync` 経由でも同様）
+5. `SaveChangesAsync` を使い、`ExecuteUpdate` / `ExecuteDelete` を使っていないか（監査ログのため）
+6. 成功時に `TempData["Success"]`、失敗時に `TempData["Warning"]` をセットしているか
+7. 新しい自由記述 / 個人名カラムを追加した場合は `[Sensitive(Mask.Redact)]` か `[Sensitive(Mask.Hash)]` を付けたか（PHI 監査ログ漏洩防止）
+8. 対応するテストを `tests/` に追加したか
 
 ## View 規約
 

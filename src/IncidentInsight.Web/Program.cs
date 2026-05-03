@@ -4,6 +4,8 @@ using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 // ApplicationUser / AppRoles を使う
 using IncidentInsight.Web.Models;
+// AuditOptions(監査ログ用設定)を使う
+using IncidentInsight.Web.Models.Auditing;
 // 時刻源 / 再発サービスを使う
 using IncidentInsight.Web.Services;
 // IAuthorizationHandler インタフェース
@@ -21,6 +23,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddHttpContextAccessor();
 // 時刻源を Singleton として登録(アプリ全体で 1 インスタンス)
 builder.Services.AddSingleton<IClock, SystemClock>();
+// 監査ログ設定(Audit セクション)を Options パターンで束縛。
+// HashSalt は User Secrets / 環境変数で渡す(コミット禁止)
+builder.Services.Configure<AuditOptions>(
+    builder.Configuration.GetSection(AuditOptions.SectionName));
 // 監査インターセプタを Scoped で登録(DbContext と同じスコープ)
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
 

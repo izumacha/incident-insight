@@ -113,16 +113,19 @@ public class ConcurrencyTests : IDisposable
     [Fact]
     public async Task IncidentsCompleteMeasure_OnConcurrencyConflict_SetsWarningAndRedirectsToDetails()
     {
+        // CompleteMeasure は IncidentMeasuresController に分離済み。リダイレクト先は
+        // 引き続きインシデント詳細画面("Details" on "Incidents" controller)。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
         var result = await controller.CompleteMeasure(measure.Id, "完了メモ", Guid.NewGuid());
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
-        Assert.Equal(nameof(IncidentsController.Details), redirect.ActionName);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
         Assert.NotNull(controller.TempData["Warning"]);
     }
 

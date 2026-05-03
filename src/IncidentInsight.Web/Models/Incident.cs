@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
+using IncidentInsight.Web.Models.Auditing;
 // 自プロジェクトの enum 群(重症度などの定義)を使えるようにする
 using IncidentInsight.Web.Models.Enums;
 
@@ -34,18 +36,24 @@ public class Incident
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
     // 発生状況や経緯の説明。必須
+    // 患者情報が混入する可能性があるため監査ログでは必ず伏せる
     [Required(ErrorMessage = "インシデントの内容を入力してください")]
     [Display(Name = "状況・経緯")]
+    [Sensitive(Mask.Redact)]
     public string Description { get; set; } = "";
 
     // 発生直後に行った応急対応(省略可)
+    // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
     [Display(Name = "発生直後の対応")]
+    [Sensitive(Mask.Redact)]
     public string? ImmediateActions { get; set; }
 
     // 報告者の名前。必須で最大100文字まで
+    // 個人名なので監査ログではハッシュ化(同一人物による報告かどうかの監査だけ可能)
     [Required(ErrorMessage = "報告者名は必須です")]
     [MaxLength(100)]
     [Display(Name = "報告者")]
+    [Sensitive(Mask.Hash)]
     public string ReporterName { get; set; } = "";
 
     // 報告を登録した日時。初期値は現在時刻
