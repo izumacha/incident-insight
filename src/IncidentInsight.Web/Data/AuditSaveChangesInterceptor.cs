@@ -1,9 +1,17 @@
+// リフレクション(プロパティ属性の取得)を使う
+using System.Reflection;
+// SHA-256 ハッシュを計算するため
+using System.Security.Cryptography;
+// 文字列を UTF-8 バイト列にするため
+using System.Text;
 // JSON シリアライズを使う
 using System.Text.Json;
 // enum を文字列で JSON 化するコンバータ
 using System.Text.Json.Serialization;
 // 自プロジェクトのモデル(AuditLog / Incident など)を使う
 using IncidentInsight.Web.Models;
+// PHI マスキング属性 / 設定(Sensitive / Mask / AuditOptions)を使う
+using IncidentInsight.Web.Models.Auditing;
 // 時刻源サービスを使う
 using IncidentInsight.Web.Services;
 // HttpContext アクセサ(現在のユーザー取得用)
@@ -14,6 +22,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 // インターセプタ関連の型
 using Microsoft.EntityFrameworkCore.Diagnostics;
+// IOptions(設定オブジェクトの DI)を使う
+using Microsoft.Extensions.Options;
 
 // この型の名前空間(置き場所)
 namespace IncidentInsight.Web.Data;
@@ -42,15 +52,29 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     private readonly IHttpContextAccessor? _httpContextAccessor;
     // 時刻源(テスト差し替え可能)
     private readonly IClock _clock;
+    // 監査ログ用設定(Hash の salt など)。null の場合は既定値で動かす
+    private readonly AuditOptions _auditOptions;
 
     // DbContext インスタンスごとの保留監査エントリ。Scoped に一致するため競合しない。
     private readonly Dictionary<DbContext, List<PendingAudit>> _pending = new();
 
-    // コンストラクタ: DI で IClock と HttpContextAccessor を受け取る
-    public AuditSaveChangesInterceptor(IClock clock, IHttpContextAccessor? httpContextAccessor = null)
+    // [Sensitive] 属性の検索結果をキャッシュ(プロパティ毎にリフレクションを毎回走らせないため)
+    // キーは (CLR Type, プロパティ名)。null は属性なしを表す。
+    private static readonly Dictionary<(Type, string), Mask?> _sensitiveCache = new();
+    // キャッシュアクセスのロック(複数 SaveChanges が並行してもよいように)
+    private static readonly object _cacheLock = new();
+
+    // コンストラクタ: DI で IClock / HttpContextAccessor / AuditOptions を受け取る。
+    // AuditOptions は省略可能(テストでは渡さなくても動く)
+    public AuditSaveChangesInterceptor(
+        IClock clock,
+        IHttpContextAccessor? httpContextAccessor = null,
+        IOptions<AuditOptions>? auditOptions = null)
     {
         _httpContextAccessor = httpContextAccessor;
         _clock = clock;
+        // null の場合は規定値の AuditOptions を使う(salt が空のテスト用)
+        _auditOptions = auditOptions?.Value ?? new AuditOptions();
     }
 
     // 同期版 SaveChanges の直前フック: スナップショットとトークン更新を行う
@@ -250,8 +274,12 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         Converters = { new JsonStringEnumConverter() }
     };
 
-    // 1 エントリの変更内容を {列名: {old, new}} の JSON 文字列に変換する
-    private static string? SerializeChanges(EntityEntry entry)
+    // マスキング適用後の置換文字列(Redact の固定値)
+    private const string RedactedPlaceholder = "[REDACTED]";
+
+    // 1 エントリの変更内容を {列名: {old, new}} の JSON 文字列に変換する。
+    // [Sensitive] 属性の付いたプロパティは Mask 種別に応じて値を変換する。
+    private string? SerializeChanges(EntityEntry entry)
     {
         // 変更内容を格納する辞書
         var dict = new Dictionary<string, object?>();
@@ -262,22 +290,29 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
             // 主キー列は監査ログ本体で別枠に持つので除外
             if (prop.Metadata.IsPrimaryKey()) continue;
 
+            // このプロパティに [Sensitive] が付いていれば Mask 種別を取得(無ければ null)
+            var mask = LookupSensitiveMask(entry.Entity.GetType(), prop.Metadata.Name);
+
             // 状態ごとに「new のみ」「old のみ」「old/new 両方」を切り替え
             switch (entry.State)
             {
                 // 新規追加: 新しい値だけ残す
                 case EntityState.Added:
-                    dict[prop.Metadata.Name] = new { @new = prop.CurrentValue };
+                    dict[prop.Metadata.Name] = new { @new = MaskValue(prop.CurrentValue, mask) };
                     break;
                 // 削除: 元の値だけ残す(あとから何が消えたか追えるように)
                 case EntityState.Deleted:
-                    dict[prop.Metadata.Name] = new { old = prop.OriginalValue };
+                    dict[prop.Metadata.Name] = new { old = MaskValue(prop.OriginalValue, mask) };
                     break;
                 // 更新: 実際に値が変わった列だけ old/new を記録
                 case EntityState.Modified:
                     if (prop.IsModified && !Equals(prop.OriginalValue, prop.CurrentValue))
                     {
-                        dict[prop.Metadata.Name] = new { old = prop.OriginalValue, @new = prop.CurrentValue };
+                        dict[prop.Metadata.Name] = new
+                        {
+                            old = MaskValue(prop.OriginalValue, mask),
+                            @new = MaskValue(prop.CurrentValue, mask)
+                        };
                     }
                     break;
             }
@@ -285,6 +320,77 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
 
         // 記録すべき項目が無ければ null、あれば JSON 文字列を返す
         return dict.Count == 0 ? null : JsonSerializer.Serialize(dict, _jsonOptions);
+    }
+
+    // 値を Mask 種別に応じて変換する。null と Mask なし(=null)はそのまま返す。
+    private object? MaskValue(object? value, Mask? mask)
+    {
+        // [Sensitive] が付いていなければ何もせず返す
+        if (mask is null) return value;
+        // null 値をマスクしても意味が無いのでそのまま
+        if (value is null) return null;
+
+        // Mask 種別ごとに変換
+        switch (mask.Value)
+        {
+            // 完全に伏せる
+            case Mask.Redact:
+                return RedactedPlaceholder;
+            // 文字数だけ残す
+            case Mask.LengthOnly:
+                // 値を文字列化してから長さを取る(数値などにも対応)
+                return $"[len={value.ToString()?.Length ?? 0}]";
+            // Salt 付き SHA-256 の先頭 8 桁
+            case Mask.Hash:
+                return ComputeShortHash(value.ToString() ?? "");
+            // 想定外の Mask 値が来たら安全側に倒して REDACTED に
+            default:
+                return RedactedPlaceholder;
+        }
+    }
+
+    // 入力文字列を Salt 付き SHA-256 でハッシュ化し、先頭 8 桁の hex を返す
+    private string ComputeShortHash(string input)
+    {
+        // Salt + 入力 を UTF-8 バイト列に変換
+        var bytes = Encoding.UTF8.GetBytes(_auditOptions.HashSalt + input);
+        // SHA-256 で固定長(32 byte)のハッシュを計算
+        var hash = SHA256.HashData(bytes);
+        // hex 化して先頭 8 桁(4 byte 分)だけ採用(同値性確認には十分、衝突は許容)
+        return $"#{Convert.ToHexString(hash)[..8].ToLowerInvariant()}";
+    }
+
+    // 指定 (型, プロパティ名) に対する [Sensitive] の Mask 種別をキャッシュ付きで取得
+    private static Mask? LookupSensitiveMask(Type entityType, string propertyName)
+    {
+        // キャッシュキー
+        var key = (entityType, propertyName);
+        // ロックして辞書を確認(まれな初回時の競合のみガード)
+        lock (_cacheLock)
+        {
+            // キャッシュ命中ならそのまま返す
+            if (_sensitiveCache.TryGetValue(key, out var cached))
+            {
+                return cached;
+            }
+        }
+
+        // CLR 上の PropertyInfo を取得(Shadow Property は対象外: PropertyInfo が無いので null)
+        var propInfo = entityType.GetProperty(
+            propertyName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+        // [Sensitive] 属性を取得(継承元クラスの属性も含めて検索)
+        var attr = propInfo?.GetCustomAttribute<SensitiveAttribute>(inherit: true);
+        // 属性が無ければ null、あれば Mask を取り出す
+        var mask = attr?.Mask;
+
+        // キャッシュへ書き戻す(同じキーが別スレッドで先に書かれていれば上書き)
+        lock (_cacheLock)
+        {
+            _sensitiveCache[key] = mask;
+        }
+
+        return mask;
     }
 
     // 保留中の監査エントリを表す内部データ構造

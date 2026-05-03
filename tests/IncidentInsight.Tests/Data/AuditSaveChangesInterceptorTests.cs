@@ -1,20 +1,27 @@
+using System.Text.Json;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
+using IncidentInsight.Web.Models.Auditing;
 using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Services;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Options;
 
 namespace IncidentInsight.Tests.Data;
 
 public class AuditSaveChangesInterceptorTests : IDisposable
 {
     private readonly ApplicationDbContext _db;
+    // テスト用の固定 salt(Hash マスクの決定的な検証に使う)
+    private const string TestSalt = "unit-test-salt";
 
     public AuditSaveChangesInterceptorTests()
     {
+        // 固定 salt を持つ AuditOptions を IOptions でラップ
+        var auditOptions = Options.Create(new AuditOptions { HashSalt = TestSalt });
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .AddInterceptors(new AuditSaveChangesInterceptor(new SystemClock()))
+            .AddInterceptors(new AuditSaveChangesInterceptor(new SystemClock(), null, auditOptions))
             .Options;
         _db = new ApplicationDbContext(options);
     }
@@ -155,5 +162,136 @@ public class AuditSaveChangesInterceptorTests : IDisposable
 
         var logCount = await _db.AuditLogs.CountAsync();
         Assert.Equal(0, logCount);
+    }
+
+    // --- PHI マスキング ---
+
+    [Fact]
+    public async Task Sensitive_Redact_HidesDescriptionInChangesJson()
+    {
+        // Description は [Sensitive(Mask.Redact)] のため監査ログに平文で残ってはいけない
+        var incident = NewIncident();
+        incident.Description = "患者A様 田中太郎 が転倒した";
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var log = await _db.AuditLogs.SingleAsync(a => a.EntityName == nameof(Incident));
+        // 平文の患者情報が含まれていないこと
+        Assert.DoesNotContain("田中太郎", log.ChangesJson);
+        Assert.DoesNotContain("患者A", log.ChangesJson);
+        // REDACTED プレースホルダで置換されていること
+        Assert.Contains("[REDACTED]", log.ChangesJson);
+    }
+
+    [Fact]
+    public async Task Sensitive_Hash_ReporterName_ProducesShortHashPrefix()
+    {
+        // ReporterName は [Sensitive(Mask.Hash)] のためハッシュ表記(#xxxxxxxx)で記録される
+        var incident = NewIncident();
+        incident.ReporterName = "山田花子";
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var log = await _db.AuditLogs.SingleAsync(a => a.EntityName == nameof(Incident));
+        // 平文の氏名は出ない
+        Assert.DoesNotContain("山田花子", log.ChangesJson);
+        // # で始まる 8 桁 hex のプレフィックスがある
+        Assert.Matches("#[0-9a-f]{8}", log.ChangesJson!);
+    }
+
+    [Fact]
+    public async Task Sensitive_Hash_SameInputAndSalt_ProducesSameHash()
+    {
+        // 同じ salt + 同じ入力なら毎回同じ短縮ハッシュを返すこと(担当者の同一性追跡が成立する根拠)
+        var first = NewIncident();
+        first.ReporterName = "鈴木一郎";
+        _db.Incidents.Add(first);
+        await _db.SaveChangesAsync();
+
+        var second = NewIncident();
+        second.ReporterName = "鈴木一郎";
+        _db.Incidents.Add(second);
+        await _db.SaveChangesAsync();
+
+        var logs = await _db.AuditLogs
+            .Where(a => a.EntityName == nameof(Incident) && a.Operation == "Added")
+            .OrderBy(a => a.Id)
+            .ToListAsync();
+        Assert.Equal(2, logs.Count);
+
+        // 各ログから ReporterName のハッシュを取り出して一致を確認
+        var hash1 = ExtractFieldNew(logs[0].ChangesJson!, nameof(Incident.ReporterName));
+        var hash2 = ExtractFieldNew(logs[1].ChangesJson!, nameof(Incident.ReporterName));
+        Assert.Equal(hash1, hash2);
+        Assert.StartsWith("#", hash1);
+    }
+
+    [Fact]
+    public async Task NonSensitive_Field_StoredPlain()
+    {
+        // Department は [Sensitive] が付いていないので平文のまま記録される
+        var incident = NewIncident();
+        incident.Department = "ICU";
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var log = await _db.AuditLogs.SingleAsync(a => a.EntityName == nameof(Incident));
+        Assert.Contains("ICU", log.ChangesJson);
+    }
+
+    [Fact]
+    public async Task Sensitive_Modified_BothOldAndNewMasked()
+    {
+        // Modified の old/new 双方が [Sensitive] に従ってマスクされること
+        var incident = NewIncident();
+        incident.Description = "旧記述: 田中様";
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // ChangeTracker から切り離して再取得し、Description だけ更新
+        incident.Description = "新記述: 山田様";
+        await _db.SaveChangesAsync();
+
+        var modifiedLog = await _db.AuditLogs.SingleAsync(
+            a => a.EntityName == nameof(Incident) && a.Operation == "Modified");
+        // 旧値・新値ともに平文が漏れていない
+        Assert.DoesNotContain("田中", modifiedLog.ChangesJson);
+        Assert.DoesNotContain("山田", modifiedLog.ChangesJson);
+        // REDACTED が old / new 両方に出ている(2 回以上出現)
+        var occurrences = System.Text.RegularExpressions.Regex.Matches(
+            modifiedLog.ChangesJson!, "\\[REDACTED\\]").Count;
+        Assert.True(occurrences >= 2);
+    }
+
+    [Fact]
+    public async Task Sensitive_Deleted_OldValueMasked()
+    {
+        // 削除時の old 値もマスクされること(削除前の患者情報が残らないこと)
+        var incident = NewIncident();
+        incident.ReporterName = "佐藤健";
+        incident.Description = "状況: 患者B様";
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // 削除時は子ナビゲーションの Include は不要(Incident 単体の検証)
+        _db.Incidents.Remove(incident);
+        await _db.SaveChangesAsync();
+
+        var deletedLog = await _db.AuditLogs.SingleAsync(
+            a => a.EntityName == nameof(Incident) && a.Operation == "Deleted");
+        // 平文の氏名 / 患者情報が残っていないこと
+        Assert.DoesNotContain("佐藤健", deletedLog.ChangesJson);
+        Assert.DoesNotContain("患者B", deletedLog.ChangesJson);
+    }
+
+    // ChangesJson から特定列の "new" 値を抽出する小さなユーティリティ
+    private static string ExtractFieldNew(string changesJson, string fieldName)
+    {
+        // JSON を JsonDocument で読み込む
+        using var doc = JsonDocument.Parse(changesJson);
+        // ルート直下に列名のオブジェクトがある
+        var field = doc.RootElement.GetProperty(fieldName);
+        // "new" プロパティを文字列で取得
+        return field.GetProperty("new").GetString() ?? "";
     }
 }

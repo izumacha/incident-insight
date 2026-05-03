@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
+using IncidentInsight.Web.Models.Auditing;
 // 自プロジェクトの enum 群(対策種別・状態など)を使えるようにする
 using IncidentInsight.Web.Models.Enums;
 
@@ -22,9 +24,12 @@ public class PreventiveMeasure
     public Incident Incident { get; set; } = null!;
 
     // 対策の内容(具体的に何をするか)。必須で最大500文字まで
+    // 業務記述のためマスキング対象外でも問題は少ないが、表現に患者情報が
+    // 含まれる可能性があるため監査ログでは伏せる
     [Required(ErrorMessage = "対策内容を入力してください")]
     [MaxLength(500)]
     [Display(Name = "対策内容")]
+    [Sensitive(Mask.Redact)]
     public string Description { get; set; } = "";
 
     // 短期 or 長期の区分。必須で、初期値は「短期対策」
@@ -33,9 +38,11 @@ public class PreventiveMeasure
     public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
 
     // 対策を担当する人の名前。必須で最大100文字まで
+    // 個人名のため監査ログではハッシュ化(担当者単位の追跡だけ可能)
     [Required(ErrorMessage = "担当者を入力してください")]
     [MaxLength(100)]
     [Display(Name = "担当者")]
+    [Sensitive(Mask.Hash)]
     public string ResponsiblePerson { get; set; } = "";
 
     // 対策を担当する部署。必須で最大100文字まで
@@ -50,8 +57,10 @@ public class PreventiveMeasure
     public DateTime DueDate { get; set; } = DateTime.Now.AddDays(30);
 
     // 対策立案の根拠や背景メモ(省略可、最大500文字)
+    // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
     [MaxLength(500)]
     [Display(Name = "立案根拠・背景メモ")]
+    [Sensitive(Mask.Redact)]
     public string? AnalysisNote { get; set; }
 
     // Status lifecycle: Planned → InProgress → Completed
@@ -64,7 +73,9 @@ public class PreventiveMeasure
     public DateTime? CompletedAt { get; set; }
 
     // 完了報告の内容(省略可)
+    // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
     [Display(Name = "完了報告内容")]
+    [Sensitive(Mask.Redact)]
     public string? CompletionNote { get; set; }
 
     // Effectiveness review (post-implementation)
@@ -74,7 +85,9 @@ public class PreventiveMeasure
     public int? EffectivenessRating { get; set; }
 
     // 有効性評価のコメント(省略可)
+    // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
     [Display(Name = "有効性評価コメント")]
+    [Sensitive(Mask.Redact)]
     public string? EffectivenessNote { get; set; }
 
     // 有効性評価を行った日時(省略可)
