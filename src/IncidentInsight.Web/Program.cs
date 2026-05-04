@@ -98,6 +98,9 @@ builder.Services.AddAuthorization(options =>
     // 分析画面は管理者/リスクマネージャーのみ
     options.AddPolicy(Policies.CanViewAnalytics,
         p => p.RequireRole(AppRoles.Admin, AppRoles.RiskManager));
+    // 監査ログ閲覧は管理者のみ(規制対応 + 最小権限の原則)
+    options.AddPolicy(Policies.CanViewAuditLog,
+        p => p.RequireRole(AppRoles.Admin));
     // 削除権限は管理者/リスクマネージャーのみ
     options.AddPolicy(Policies.CanDeleteIncident,
         p => p.RequireRole(AppRoles.Admin, AppRoles.RiskManager));

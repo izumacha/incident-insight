@@ -1,0 +1,162 @@
+@* 監査ログ詳細画面の ViewModel *@
+@model IncidentInsight.Web.Models.ViewModels.AuditLogDetailViewModel
+@{
+    @* ブラウザタブのタイトル *@
+    ViewData["Title"] = $"監査ログ #{Model.Log.Id}";
+
+    @* 操作種別バッジ色 *@
+    var opColor = Model.Log.Operation switch
+    {
+        "Added" => "success",
+        "Modified" => "primary",
+        "Deleted" => "danger",
+        _ => "secondary"
+    };
+    @* 操作種別の日本語ラベル *@
+    var opLabel = Model.Log.Operation switch
+    {
+        "Added" => "追加",
+        "Modified" => "更新",
+        "Deleted" => "削除",
+        _ => Model.Log.Operation
+    };
+    @* エンティティ名の日本語ラベル *@
+    var entityLabel = Model.Log.EntityName switch
+    {
+        "Incident" => "インシデント",
+        "CauseAnalysis" => "原因分析",
+        "PreventiveMeasure" => "再発防止策",
+        _ => Model.Log.EntityName
+    };
+}
+
+@* ページヘッダ *@
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0">
+        <i class="bi bi-shield-check me-2 text-primary"></i>監査ログ詳細
+        <span class="text-muted small ms-2">#@Model.Log.Id</span>
+    </h2>
+    @* 一覧へ戻るボタン *@
+    <a asp-action="Index" class="btn btn-outline-secondary btn-sm">
+        <i class="bi bi-arrow-left me-1"></i>一覧へ戻る
+    </a>
+</div>
+
+@* メタ情報カード *@
+<div class="card border-0 shadow-sm mb-3">
+    <div class="card-body">
+        <div class="row g-3">
+            <div class="col-md-3">
+                @* 変更日時 *@
+                <div class="text-muted small">変更日時</div>
+                <div class="fw-bold">@Model.Log.ChangedAt.ToString("yyyy/MM/dd HH:mm:ss")</div>
+            </div>
+            <div class="col-md-3">
+                @* 対象エンティティ種別 *@
+                <div class="text-muted small">対象</div>
+                <div><span class="badge bg-secondary">@entityLabel</span></div>
+            </div>
+            <div class="col-md-2">
+                @* 対象キー(エンティティの主キー) *@
+                <div class="text-muted small">対象ID</div>
+                <div class="text-monospace">@Model.Log.EntityKey</div>
+            </div>
+            <div class="col-md-2">
+                @* 操作種別 *@
+                <div class="text-muted small">操作</div>
+                <div><span class="badge bg-@opColor">@opLabel</span></div>
+            </div>
+            <div class="col-md-2">
+                @* 変更者 *@
+                <div class="text-muted small">変更者</div>
+                <div>
+                    @if (string.IsNullOrEmpty(Model.Log.ChangedBy))
+                    {
+                        <span class="text-muted small">(システム)</span>
+                    }
+                    else
+                    {
+                        @Model.Log.ChangedBy
+                    }
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+@* 変更内容カード *@
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-white">
+        <h6 class="mb-0"><i class="bi bi-file-diff me-2 text-primary"></i>変更内容</h6>
+    </div>
+    @if (string.IsNullOrWhiteSpace(Model.Log.ChangesJson))
+    {
+        @* ChangesJson が無い場合(削除など) *@
+        <div class="card-body text-muted small">
+            <i class="bi bi-info-circle me-1"></i>このログには変更内容の詳細がありません。
+        </div>
+    }
+    else if (Model.Changes is { Count: > 0 })
+    {
+        @* PHI 注意書き *@
+        <div class="card-body pb-0">
+            <div class="alert alert-warning py-2 small mb-3">
+                <i class="bi bi-shield-lock me-1"></i>
+                個人情報を含むフィールドは <code>[REDACTED]</code> またはハッシュ値（<code>sha256:...</code>）に変換されています。
+            </div>
+        </div>
+        @* プロパティ単位で前後比較を表示 *@
+        <div class="table-responsive">
+            <table class="table table-sm align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-3" style="width: 25%">プロパティ</th>
+                        <th style="width: 37%">変更前</th>
+                        <th style="width: 38%">変更後</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @foreach (var row in Model.Changes)
+                    {
+                        <tr>
+                            @* プロパティ名(モノスペースで識別しやすく) *@
+                            <td class="ps-3 text-monospace small">@row.PropertyName</td>
+                            <td>
+                                @* 変更前の値(null は (なし) として表示) *@
+                                @if (row.OldValue == null)
+                                {
+                                    <span class="text-muted fst-italic small">(なし)</span>
+                                }
+                                else
+                                {
+                                    <span class="text-break">@row.OldValue</span>
+                                }
+                            </td>
+                            <td>
+                                @* 変更後の値(null は (なし) として表示) *@
+                                @if (row.NewValue == null)
+                                {
+                                    <span class="text-muted fst-italic small">(なし)</span>
+                                }
+                                else
+                                {
+                                    <span class="text-break">@row.NewValue</span>
+                                }
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+    else
+    {
+        @* パース失敗時のフォールバック: 生 JSON を整形して表示 *@
+        <div class="card-body">
+            <div class="alert alert-secondary py-2 small mb-2">
+                <i class="bi bi-info-circle me-1"></i>変更内容を解釈できませんでした。生の JSON を表示します。
+            </div>
+            <pre class="bg-light p-3 rounded small mb-0"><code>@Model.Log.ChangesJson</code></pre>
+        </div>
+    }
+</div>

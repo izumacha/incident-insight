@@ -22,6 +22,10 @@ public static class Policies
     /// <summary>分析ダッシュボード（Admin / RiskManager 限定）</summary>
     // 分析画面閲覧用のポリシー名
     public const string CanViewAnalytics = nameof(CanViewAnalytics);
+
+    /// <summary>監査ログ閲覧（Admin 限定 — 規制対応のため最小権限で運用）</summary>
+    // 監査ログ閲覧用のポリシー名(管理者のみ)
+    public const string CanViewAuditLog = nameof(CanViewAuditLog);
 }
 
 /// <summary>

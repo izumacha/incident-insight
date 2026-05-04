@@ -60,6 +60,16 @@
                             <i class="bi bi-bar-chart-line me-1"></i>分析・集計
                         </a>
                     </li>
+                    @* 監査ログへのリンクは管理者のみ表示 *@
+                    @if (User.IsInRole("Admin"))
+                    {
+                        <li class="nav-item">
+                            @* 監査ログ画面へのリンク *@
+                            <a class="nav-link" asp-controller="AuditLogs" asp-action="Index">
+                                <i class="bi bi-shield-check me-1"></i>監査ログ
+                            </a>
+                        </li>
+                    }
                 </ul>
                 @* ログイン済みユーザーのみ右側メニューを表示 *@
                 @if (User.Identity?.IsAuthenticated == true)
