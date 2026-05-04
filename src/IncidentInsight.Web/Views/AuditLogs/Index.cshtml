@@ -1,0 +1,272 @@
+@* 監査ログ一覧画面の ViewModel(絞り込み条件 + ページ情報 + 検索結果をまとめた入れ物) *@
+@model IncidentInsight.Web.Models.ViewModels.AuditLogListViewModel
+@{
+    @* ブラウザタブのタイトル *@
+    ViewData["Title"] = "監査ログ";
+}
+
+@* ページヘッダ *@
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <h2 class="mb-0"><i class="bi bi-shield-check me-2 text-primary"></i>監査ログ</h2>
+    @* 件数の表示 *@
+    <span class="text-muted small">合計 @Model.TotalCount 件</span>
+</div>
+
+@* 注意書き(監査ログは規制対応の証跡なので、誤操作で書き換えられないことを明示) *@
+<div class="alert alert-info py-2 small mb-3">
+    <i class="bi bi-info-circle me-1"></i>
+    監査ログはシステムが自動的に記録します。手動での編集・削除はできません。PHI(個人情報)はマスキング処理済みです。
+</div>
+
+@* 絞り込みパネル *@
+@{
+    @* 何らかの絞り込み条件が指定されているかの判定 *@
+    var anyFilter = !string.IsNullOrEmpty(Model.EntityName) || !string.IsNullOrEmpty(Model.Operation)
+                 || !string.IsNullOrEmpty(Model.ChangedBy) || !string.IsNullOrEmpty(Model.EntityKey)
+                 || Model.DateFrom.HasValue || Model.DateTo.HasValue;
+}
+<div class="card border-0 shadow-sm mb-3">
+    @* クリックで折りたたみ開閉するヘッダ *@
+    <div class="card-header bg-white" role="button" data-bs-toggle="collapse" data-bs-target="#auditFilterPanel">
+        <i class="bi bi-funnel me-2"></i>絞り込み
+        @* フィルター適用中バッジ *@
+        @if (anyFilter)
+        {
+            <span class="badge bg-primary ms-2">フィルター適用中</span>
+        }
+    </div>
+    @* フィルター適用中は初期表示で開いておく *@
+    <div class="collapse @(anyFilter ? "show" : "")" id="auditFilterPanel">
+        <div class="card-body">
+            @* GET で送信して URL に絞り込み条件を残す(共有・ブックマーク可能) *@
+            <form method="get" asp-action="Index">
+                <div class="row g-2">
+                    <div class="col-md-3">
+                        @* 対象エンティティ種別 *@
+                        <label class="form-label small mb-0">対象</label>
+                        <select name="entityName" class="form-select form-select-sm">
+                            <option value="">対象（全て）</option>
+                            @foreach (var opt in Model.EntityNameOptions)
+                            {
+                                <option value="@opt.Value" selected="@(Model.EntityName == opt.Value)">@opt.Text</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-md-2">
+                        @* 操作種別 *@
+                        <label class="form-label small mb-0">操作</label>
+                        <select name="operation" class="form-select form-select-sm">
+                            <option value="">操作（全て）</option>
+                            @foreach (var opt in Model.OperationOptions)
+                            {
+                                <option value="@opt.Value" selected="@(Model.Operation == opt.Value)">@opt.Text</option>
+                            }
+                        </select>
+                    </div>
+                    <div class="col-md-3">
+                        @* 変更者(ユーザー名)で部分一致検索 *@
+                        <label class="form-label small mb-0">変更者</label>
+                        <input type="text" name="changedBy" class="form-control form-control-sm"
+                               placeholder="ユーザー名（部分一致）" value="@Model.ChangedBy" />
+                    </div>
+                    <div class="col-md-2">
+                        @* 対象キー(ID)で完全一致検索 *@
+                        <label class="form-label small mb-0">対象ID</label>
+                        <input type="text" name="entityKey" class="form-control form-control-sm"
+                               placeholder="例: 42" value="@Model.EntityKey" />
+                    </div>
+                    <div class="col-md-2 d-flex align-items-end">
+                        @* 検索実行ボタン *@
+                        <button type="submit" class="btn btn-primary btn-sm w-100">検索</button>
+                    </div>
+                </div>
+                <div class="row g-2 mt-1 align-items-end">
+                    <div class="col-md-2">
+                        @* 期間 開始 *@
+                        <label class="form-label small mb-0">期間（開始）</label>
+                        <input type="date" name="dateFrom" class="form-control form-control-sm"
+                               value="@Model.DateFrom?.ToString("yyyy-MM-dd")" />
+                    </div>
+                    <div class="col-md-2">
+                        @* 期間 終了 *@
+                        <label class="form-label small mb-0">期間（終了）</label>
+                        <input type="date" name="dateTo" class="form-control form-control-sm"
+                               value="@Model.DateTo?.ToString("yyyy-MM-dd")" />
+                    </div>
+                    <div class="col-md-auto">
+                        @* フィルタークリア(条件無しで再アクセス) *@
+                        <a asp-action="Index" class="btn btn-outline-secondary btn-sm">クリア</a>
+                    </div>
+                </div>
+            </form>
+        </div>
+    </div>
+</div>
+
+@* 検索結果エリア *@
+<div class="card border-0 shadow-sm">
+    <div class="card-header bg-white d-flex justify-content-between">
+        @* ページ範囲の案内 *@
+        <span class="text-muted small">
+            @Model.TotalCount 件中
+            @((Model.Page - 1) * Model.PageSize + (Model.TotalCount > 0 ? 1 : 0))〜@(Math.Min(Model.Page * Model.PageSize, Model.TotalCount)) 件表示
+        </span>
+    </div>
+    @* 0件のときの空表示 *@
+    @if (!Model.Logs.Any())
+    {
+        <div class="card-body text-center py-5">
+            <i class="bi bi-shield-slash display-4 text-muted d-block mb-3"></i>
+            <h5 class="text-muted">該当する監査ログがありません</h5>
+            @if (anyFilter)
+            {
+                <p class="text-muted small mb-3">検索条件を変更するか、フィルターをクリアしてください</p>
+                <a asp-action="Index" class="btn btn-outline-secondary">
+                    <i class="bi bi-x-circle me-1"></i>フィルターをクリア
+                </a>
+            }
+        </div>
+    }
+    else
+    {
+        @* 検索結果テーブル *@
+        <div class="table-responsive">
+            <table class="table table-hover align-middle mb-0">
+                <thead class="table-light">
+                    <tr>
+                        <th class="ps-3">変更日時</th>
+                        <th>対象</th>
+                        <th>対象ID</th>
+                        <th>操作</th>
+                        <th>変更者</th>
+                        <th class="text-end pe-3">操作</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    @* 検索結果を1件ずつ行で描画 *@
+                    @foreach (var log in Model.Logs)
+                    {
+                        @* 操作種別ごとに行頭の色を変える *@
+                        var rowClass = log.Operation switch
+                        {
+                            "Added" => "border-start border-3 border-success",
+                            "Modified" => "border-start border-3 border-primary",
+                            "Deleted" => "border-start border-3 border-danger",
+                            _ => ""
+                        };
+                        @* 操作種別バッジの色 *@
+                        var opColor = log.Operation switch
+                        {
+                            "Added" => "success",
+                            "Modified" => "primary",
+                            "Deleted" => "danger",
+                            _ => "secondary"
+                        };
+                        @* 操作種別の日本語ラベル *@
+                        var opLabel = log.Operation switch
+                        {
+                            "Added" => "追加",
+                            "Modified" => "更新",
+                            "Deleted" => "削除",
+                            _ => log.Operation
+                        };
+                        @* エンティティ名の日本語ラベル *@
+                        var entityLabel = log.EntityName switch
+                        {
+                            "Incident" => "インシデント",
+                            "CauseAnalysis" => "原因分析",
+                            "PreventiveMeasure" => "再発防止策",
+                            _ => log.EntityName
+                        };
+                        <tr class="@rowClass">
+                            <td class="ps-3">
+                                @* 日付 *@
+                                <div>@log.ChangedAt.ToString("yyyy/MM/dd")</div>
+                                @* 時刻(秒まで) *@
+                                <div class="text-muted small">@log.ChangedAt.ToString("HH:mm:ss")</div>
+                            </td>
+                            <td>
+                                @* エンティティ種別バッジ *@
+                                <span class="badge bg-secondary">@entityLabel</span>
+                            </td>
+                            <td class="text-monospace small">@log.EntityKey</td>
+                            <td>
+                                @* 操作種別バッジ *@
+                                <span class="badge bg-@opColor">@opLabel</span>
+                            </td>
+                            <td>
+                                @* 変更者(空欄ならシステム扱い) *@
+                                @if (string.IsNullOrEmpty(log.ChangedBy))
+                                {
+                                    <span class="text-muted small">(システム)</span>
+                                }
+                                else
+                                {
+                                    @log.ChangedBy
+                                }
+                            </td>
+                            <td class="text-end pe-3">
+                                @* 詳細画面へのリンク *@
+                                <a asp-action="Details" asp-route-id="@log.Id" class="btn btn-sm btn-outline-primary">詳細</a>
+                            </td>
+                        </tr>
+                    }
+                </tbody>
+            </table>
+        </div>
+    }
+</div>
+
+@* ページネーション(総ページが2以上のときのみ表示) *@
+@if (Model.TotalPages > 1)
+{
+    <nav class="mt-3">
+        <ul class="pagination pagination-sm justify-content-center">
+            @{
+                @* 表示するページ番号の範囲を現在ページの前後 5 ページに制限(ログ件数が多くなるため) *@
+                var first = Math.Max(1, Model.Page - 5);
+                var last = Math.Min(Model.TotalPages, Model.Page + 5);
+            }
+            @* 先頭ページへのジャンプ *@
+            @if (first > 1)
+            {
+                <li class="page-item">
+                    <a class="page-link" asp-action="Index" asp-route-page="1"
+                       asp-route-entityName="@Model.EntityName"
+                       asp-route-operation="@Model.Operation"
+                       asp-route-changedBy="@Model.ChangedBy"
+                       asp-route-entityKey="@Model.EntityKey"
+                       asp-route-dateFrom="@Model.DateFrom?.ToString("yyyy-MM-dd")"
+                       asp-route-dateTo="@Model.DateTo?.ToString("yyyy-MM-dd")">«</a>
+                </li>
+            }
+            @for (int i = first; i <= last; i++)
+            {
+                <li class="page-item @(i == Model.Page ? "active" : "")">
+                    @* ページ番号に絞り込み条件を引き継ぐ *@
+                    <a class="page-link" asp-action="Index"
+                       asp-route-page="@i"
+                       asp-route-entityName="@Model.EntityName"
+                       asp-route-operation="@Model.Operation"
+                       asp-route-changedBy="@Model.ChangedBy"
+                       asp-route-entityKey="@Model.EntityKey"
+                       asp-route-dateFrom="@Model.DateFrom?.ToString("yyyy-MM-dd")"
+                       asp-route-dateTo="@Model.DateTo?.ToString("yyyy-MM-dd")">@i</a>
+                </li>
+            }
+            @* 末尾ページへのジャンプ *@
+            @if (last < Model.TotalPages)
+            {
+                <li class="page-item">
+                    <a class="page-link" asp-action="Index" asp-route-page="@Model.TotalPages"
+                       asp-route-entityName="@Model.EntityName"
+                       asp-route-operation="@Model.Operation"
+                       asp-route-changedBy="@Model.ChangedBy"
+                       asp-route-entityKey="@Model.EntityKey"
+                       asp-route-dateFrom="@Model.DateFrom?.ToString("yyyy-MM-dd")"
+                       asp-route-dateTo="@Model.DateTo?.ToString("yyyy-MM-dd")">»</a>
+                </li>
+            }
+        </ul>
+    </nav>
+}
