@@ -6,8 +6,8 @@
     var m = Model;
 }
 
-@* カード全体（期限超過は赤枠で強調） *@
-<div class="card border-0 mb-2 shadow-sm @(m.IsOverdue ? "border-danger border" : "")">
+@* カード全体（期限超過は左ボーダーを赤くして強調） *@
+<div class="measure-card @(m.IsOverdue ? "is-overdue" : "")">
     <div class="card-body p-2">
         @* 上段：バッジ類と編集ボタン *@
         <div class="d-flex justify-content-between align-items-start mb-1">
