@@ -1,60 +1,348 @@
+/* ────────────────────────────────────
+   Design tokens (色・余白・影・角丸を一元管理する変数)
+──────────────────────────────────── */
+:root {
+  /* ブランドカラー：清潔感のあるメディカルブルー */
+  --ii-primary: #1a6dbf;
+  --ii-primary-dark: #155a9e;
+  --ii-primary-light: #e7f1fb;
+  /* アクセントカラー：医療現場で重要度を伝える色 */
+  --ii-success: #1f8a5b;
+  --ii-success-light: #e6f4ec;
+  --ii-warning: #d97706;
+  --ii-warning-light: #fff4e5;
+  --ii-danger: #d63146;
+  --ii-danger-light: #fdecee;
+  --ii-info: #0ea5b7;
+  --ii-info-light: #e6f7f9;
+  /* 背景とテキスト：明るめのグレースケールで可読性確保 */
+  --ii-bg: #f3f5f8;
+  --ii-surface: #ffffff;
+  --ii-border: #e3e7ee;
+  --ii-border-strong: #c8cfd9;
+  --ii-text: #1f2a37;
+  --ii-text-muted: #5a6573;
+  /* 角丸と影：ふわっとした柔らかい質感 */
+  --ii-radius-sm: 6px;
+  --ii-radius: 10px;
+  --ii-radius-lg: 14px;
+  --ii-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --ii-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --ii-shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.05);
+}
+
+/* ────────────────────────────────────
+   ベース：タイポグラフィと背景
+──────────────────────────────────── */
 html {
   font-size: 14px;
-}
-
-@media (min-width: 768px) {
-  html {
-    font-size: 16px;
-  }
-}
-
-.btn:focus, .btn:active:focus, .btn-link.nav-link:focus, .form-control:focus, .form-check-input:focus {
-  box-shadow: 0 0 0 0.1rem white, 0 0 0 0.25rem #258cfb;
-}
-
-html {
   position: relative;
   min-height: 100%;
 }
 
+@media (min-width: 768px) {
+  html { font-size: 15.5px; }
+}
+
 body {
   margin-bottom: 60px;
-  background-color: #f8f9fa;
+  background: var(--ii-bg);
+  color: var(--ii-text);
+  font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-feature-settings: "palt" 1;
+  letter-spacing: 0.01em;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+h1, h2, h3, h4, h5, h6 {
+  color: var(--ii-text);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+}
+
+a { color: var(--ii-primary); }
+a:hover { color: var(--ii-primary-dark); }
+
+/* フォーカスリング：キーボード操作時のアクセシビリティ */
+.btn:focus-visible, .form-control:focus, .form-select:focus, .form-check-input:focus,
+a:focus-visible {
+  box-shadow: 0 0 0 0.2rem rgba(26, 109, 191, 0.25) !important;
+  outline: none;
+}
+
+/* ────────────────────────────────────
+   Bootstrap カラートーン微調整（プライマリの上書き）
+──────────────────────────────────── */
+.btn-primary {
+  background: var(--ii-primary);
+  border-color: var(--ii-primary);
+}
+.btn-primary:hover, .btn-primary:focus {
+  background: var(--ii-primary-dark);
+  border-color: var(--ii-primary-dark);
+}
+.text-primary { color: var(--ii-primary) !important; }
+.bg-primary { background: var(--ii-primary) !important; }
+.border-primary { border-color: var(--ii-primary) !important; }
+
+/* ────────────────────────────────────
+   Navbar：粘着ヘッダ + アクティブ表示
+──────────────────────────────────── */
+.navbar.bg-primary {
+  background: linear-gradient(90deg, var(--ii-primary-dark) 0%, var(--ii-primary) 100%) !important;
+  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  position: sticky;
+  top: 0;
+  z-index: 1030;
+}
+
+.navbar-brand {
+  letter-spacing: 0.02em;
+  font-size: 1.05rem;
+}
+
+.navbar-dark .navbar-nav .nav-link {
+  border-radius: var(--ii-radius-sm);
+  padding: 0.45rem 0.85rem;
+  margin: 0 2px;
+  transition: background 0.15s ease, color 0.15s ease;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.navbar-dark .navbar-nav .nav-link:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+}
+
+.navbar-dark .navbar-nav .nav-link.active {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+  font-weight: 600;
+  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.65);
+}
+
+/* ────────────────────────────────────
+   Cards：柔らかいシャドウと滑らかなホバー
+──────────────────────────────────── */
+.card {
+  border: 1px solid var(--ii-border);
+  border-radius: var(--ii-radius);
+  background: var(--ii-surface);
+  transition: box-shadow 0.18s ease, transform 0.18s ease;
+}
+
+.card.shadow-sm {
+  box-shadow: var(--ii-shadow) !important;
+}
+
+.card:hover {
+  box-shadow: var(--ii-shadow-lg) !important;
+}
+
+.card-header.bg-white {
+  background: var(--ii-surface) !important;
+  border-bottom: 1px solid var(--ii-border);
+  padding-top: 0.85rem;
+  padding-bottom: 0.85rem;
+}
+
+.card-header h6 {
+  font-size: 0.92rem;
+  font-weight: 600;
+  margin: 0;
+}
+
+/* KPI カード：左にアクセントバーを引いて視認性アップ */
+.kpi-card {
+  position: relative;
+  overflow: hidden;
+  border: 1px solid var(--ii-border);
+}
+.kpi-card::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 4px;
+  background: var(--ii-primary);
+  opacity: 0.85;
+}
+.kpi-card.kpi-secondary::before { background: var(--ii-text-muted); }
+.kpi-card.kpi-warning::before { background: var(--ii-warning); }
+.kpi-card.kpi-danger::before { background: var(--ii-danger); }
+.kpi-card.kpi-success::before { background: var(--ii-success); }
+
+.kpi-icon {
+  width: 56px;
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--ii-radius);
+  flex-shrink: 0;
+}
+
+.kpi-label {
+  font-size: 0.8rem;
+  color: var(--ii-text-muted);
+  font-weight: 500;
+  letter-spacing: 0.02em;
+}
+
+.kpi-value {
+  font-size: 2.2rem;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ii-text);
+}
+
+.kpi-value .unit {
+  font-size: 0.85rem;
+  color: var(--ii-text-muted);
+  font-weight: 500;
+  margin-left: 4px;
+}
+
+/* ────────────────────────────────────
+   Buttons：少し締まった見た目
+──────────────────────────────────── */
+.btn {
+  border-radius: var(--ii-radius-sm);
+  font-weight: 500;
+  transition: all 0.15s ease;
+}
+
+.btn-sm {
+  padding: 0.28rem 0.7rem;
+}
+
+.btn-outline-secondary {
+  border-color: var(--ii-border-strong);
+  color: var(--ii-text);
+}
+.btn-outline-secondary:hover {
+  background: var(--ii-text);
+  border-color: var(--ii-text);
+  color: #fff;
+}
+
+/* ────────────────────────────────────
+   Badges：少し濃いめの色で読みやすく
+──────────────────────────────────── */
+.badge {
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  padding: 0.35em 0.6em;
+  border-radius: 999px;
+}
+
+/* ────────────────────────────────────
+   Tables：余白と境界線を整える
+──────────────────────────────────── */
+.table {
+  --bs-table-hover-bg: rgba(26, 109, 191, 0.04);
+  margin-bottom: 0;
+}
+
+.table > thead {
+  background: #f8fafc;
+}
+
+.table > thead th {
+  font-size: 0.78rem;
+  font-weight: 600;
+  text-transform: none;
+  letter-spacing: 0.02em;
+  color: var(--ii-text-muted);
+  border-bottom: 1px solid var(--ii-border);
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+}
+
+.table tbody tr {
+  transition: background 0.12s ease;
+}
+
+.table tbody td {
+  padding-top: 0.75rem;
+  padding-bottom: 0.75rem;
+  vertical-align: middle;
+  border-color: var(--ii-border);
+}
+
+/* ────────────────────────────────────
+   Forms：入力欄を見やすく
+──────────────────────────────────── */
+.form-control, .form-select {
+  border-color: var(--ii-border-strong);
+  border-radius: var(--ii-radius-sm);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.form-label {
+  font-weight: 500;
+  color: var(--ii-text);
+}
+
+/* ────────────────────────────────────
+   Alerts：アクセントバー付きで視認性アップ
+──────────────────────────────────── */
+.alert {
+  border: 1px solid transparent;
+  border-radius: var(--ii-radius);
+  border-left-width: 4px;
+  box-shadow: var(--ii-shadow-sm);
+}
+
+.alert-success {
+  background: var(--ii-success-light);
+  border-color: rgba(31, 138, 91, 0.25);
+  border-left-color: var(--ii-success);
+  color: #14633f;
+}
+
+.alert-warning {
+  background: var(--ii-warning-light);
+  border-color: rgba(217, 119, 6, 0.25);
+  border-left-color: var(--ii-warning);
+  color: #8a4a04;
+}
+
+.alert-danger {
+  background: var(--ii-danger-light);
+  border-color: rgba(214, 49, 70, 0.25);
+  border-left-color: var(--ii-danger);
+  color: #921f30;
 }
 
 /* ────────────────────────────────────
    Utility
 ──────────────────────────────────── */
-.x-small {
-  font-size: 0.72rem;
-}
-
-.cursor-pointer {
-  cursor: pointer;
-}
+.x-small { font-size: 0.72rem; }
+.cursor-pointer { cursor: pointer; }
 
 /* ────────────────────────────────────
    5 Whys chain visualization
 ──────────────────────────────────── */
-.why-chain {
-  margin: 8px 0;
-}
+.why-chain { margin: 8px 0; }
 
 .why-item {
   display: flex;
   align-items: flex-start;
   gap: 10px;
-  padding: 10px 12px;
-  margin: 4px 0;
-  border-left: 4px solid #0d6efd;
-  background: #f8f9fa;
-  border-radius: 0 6px 6px 0;
+  padding: 10px 14px;
+  margin: 6px 0;
+  border-left: 4px solid var(--ii-primary);
+  background: var(--ii-primary-light);
+  border-radius: 0 var(--ii-radius-sm) var(--ii-radius-sm) 0;
   font-size: 0.9rem;
 }
 
 .why-item.why-root {
-  border-left-color: #dc3545;
-  background: #fff8e1;
+  border-left-color: var(--ii-danger);
+  background: var(--ii-danger-light);
   font-weight: 600;
 }
 
@@ -62,22 +350,21 @@ body {
   display: inline-block;
   flex-shrink: 0;
   font-weight: 700;
-  font-size: 0.72rem;
+  font-size: 0.7rem;
   color: #fff;
-  background: #0d6efd;
-  padding: 2px 7px;
-  border-radius: 4px;
+  background: var(--ii-primary);
+  padding: 3px 8px;
+  border-radius: 999px;
   white-space: nowrap;
+  letter-spacing: 0.04em;
 }
 
-.why-root .why-label {
-  background: #dc3545;
-}
+.why-root .why-label { background: var(--ii-danger); }
 
 .why-arrow {
   text-align: center;
   margin: 2px 0;
-  color: #6c757d;
+  color: var(--ii-text-muted);
   font-size: 1.1rem;
   line-height: 1;
 }
@@ -97,7 +384,7 @@ body {
   top: 0;
   bottom: 0;
   width: 2px;
-  background: #dee2e6;
+  background: var(--ii-border);
 }
 
 .timeline-item {
@@ -114,6 +401,7 @@ body {
   border-radius: 50%;
   border: 2px solid #fff;
   display: block;
+  box-shadow: 0 0 0 2px var(--ii-border);
 }
 
 .timeline-content {
@@ -122,28 +410,131 @@ body {
 }
 
 /* ────────────────────────────────────
-   Dashboard KPI card hover
+   Kanban：レーンごとに識別性のあるヘッダ
 ──────────────────────────────────── */
-.card {
-  transition: box-shadow 0.15s ease;
+.kanban-lane {
+  background: var(--ii-surface);
+  border: 1px solid var(--ii-border);
+  border-radius: var(--ii-radius);
+  overflow: hidden;
 }
 
-.card:hover {
-  box-shadow: 0 4px 16px rgba(0,0,0,0.10) !important;
+.kanban-lane-header {
+  padding: 0.85rem 1rem;
+  font-size: 0.92rem;
+  font-weight: 600;
+  border-bottom: 1px solid var(--ii-border);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.kanban-lane-header.lane-planned {
+  background: var(--ii-warning-light);
+  color: #8a4a04;
+  border-top: 3px solid var(--ii-warning);
+}
+
+.kanban-lane-header.lane-progress {
+  background: var(--ii-primary-light);
+  color: var(--ii-primary-dark);
+  border-top: 3px solid var(--ii-primary);
+}
+
+.kanban-lane-header.lane-completed {
+  background: var(--ii-success-light);
+  color: #14633f;
+  border-top: 3px solid var(--ii-success);
+}
+
+.kanban-lane-body {
+  padding: 0.6rem;
+  min-height: 80px;
+  background: #fbfcfd;
+}
+
+.measure-row { transition: border-color 0.15s; }
+
+.measure-card {
+  background: var(--ii-surface);
+  border: 1px solid var(--ii-border);
+  border-radius: var(--ii-radius-sm);
+  margin-bottom: 0.5rem;
+  transition: transform 0.12s ease, box-shadow 0.12s ease;
+}
+
+.measure-card:hover {
+  transform: translateY(-1px);
+  box-shadow: var(--ii-shadow);
+}
+
+.measure-card.is-overdue {
+  border-color: var(--ii-danger);
+  border-left: 3px solid var(--ii-danger);
 }
 
 /* ────────────────────────────────────
-   Navbar active link highlight
+   Login：ヒーロー＋カード
 ──────────────────────────────────── */
-.navbar-dark .navbar-nav .nav-link.active,
-.navbar-dark .navbar-nav .nav-link:hover {
-  background: rgba(255,255,255,0.15);
-  border-radius: 6px;
+.login-hero {
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(255, 255, 255, 0.15) 0%, transparent 40%),
+    radial-gradient(circle at 80% 80%, rgba(255, 255, 255, 0.10) 0%, transparent 40%),
+    linear-gradient(135deg, var(--ii-primary-dark) 0%, var(--ii-primary) 60%, #2484d6 100%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1rem;
+}
+
+.login-card {
+  width: 100%;
+  max-width: 420px;
+  border-radius: var(--ii-radius-lg);
+  border: none;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(8px);
+}
+
+.login-brand-icon {
+  width: 64px;
+  height: 64px;
+  border-radius: 16px;
+  background: linear-gradient(135deg, var(--ii-primary) 0%, var(--ii-primary-dark) 100%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 1.8rem;
+  box-shadow: 0 6px 16px rgba(26, 109, 191, 0.35);
+  margin-bottom: 0.5rem;
 }
 
 /* ────────────────────────────────────
-   Kanban measure cards
+   Footer
 ──────────────────────────────────── */
-.measure-row {
-  transition: border-color 0.15s;
+footer.app-footer {
+  background: var(--ii-surface);
+  border-top: 1px solid var(--ii-border);
+}
+
+/* ────────────────────────────────────
+   ページ遷移時のフェードイン
+──────────────────────────────────── */
+@keyframes ii-fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+main[role="main"] > * {
+  animation: ii-fade-in 0.25s ease-out;
+}
+
+/* prefers-reduced-motion を尊重してアニメーションを無効化 */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
 }

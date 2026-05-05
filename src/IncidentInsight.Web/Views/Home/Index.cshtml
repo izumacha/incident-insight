@@ -12,8 +12,12 @@
 }
 
 @* 画面上部: タイトル + 期間切り替え + 新規登録ボタン *@
-<div class="d-flex justify-content-between align-items-center mb-4">
-    <h2 class="mb-0"><i class="bi bi-speedometer2 me-2 text-primary"></i>ダッシュボード</h2>
+<div class="d-flex flex-wrap gap-2 justify-content-between align-items-center mb-4">
+    <div>
+        @* 大見出しと補助説明 *@
+        <h2 class="mb-1"><i class="bi bi-speedometer2 me-2 text-primary"></i>ダッシュボード</h2>
+        <div class="text-muted small">病棟・部署横断でインシデントの発生状況と再発防止策の進捗をひと目で確認</div>
+    </div>
     <div class="d-flex align-items-center gap-2">
         @* 集計期間(週/月/四半期/年)の切り替えボタン群 *@
         <div class="btn-group btn-group-sm" role="group" aria-label="期間選択">
@@ -30,69 +34,64 @@
 </div>
 
 <!-- KPI Cards -->
-@* KPI カード4枚(総件数/今月件数/未完了対策/期限超過対策) *@
+@* KPI カード4枚(総件数/今月件数/未完了対策/期限超過対策) — 新デザインの kpi-card クラスを利用 *@
 <div class="row g-3 mb-4">
-    @* 期間内のインシデント総数カード *@
+    @* 期間内のインシデント総数カード(セカンダリ系) *@
     <div class="col-xl-3 col-md-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0 bg-secondary bg-opacity-10 rounded-3 p-3 me-3">
-                        <i class="bi bi-clipboard2-pulse fs-3 text-secondary"></i>
-                    </div>
-                    <div>
-                        <div class="text-muted small">@(Model.Period == "week" ? "週間" : Model.Period == "month" ? "月間" : Model.Period == "quarter" ? "四半期" : "年間")インシデント数</div>
-                        <div class="fs-2 fw-bold">@Model.TotalIncidents <span class="fs-6 text-muted">件</span></div>
-                    </div>
+        <div class="card kpi-card kpi-secondary shadow-sm h-100">
+            <div class="card-body d-flex align-items-center">
+                @* アイコン枠(背景色は薄く、アイコンを目立たせる) *@
+                <div class="kpi-icon bg-secondary bg-opacity-10 me-3">
+                    <i class="bi bi-clipboard2-pulse fs-3 text-secondary"></i>
+                </div>
+                <div>
+                    @* 期間ラベル(週/月/四半期/年) *@
+                    <div class="kpi-label">@(Model.Period == "week" ? "週間" : Model.Period == "month" ? "月間" : Model.Period == "quarter" ? "四半期" : "年間")インシデント数</div>
+                    @* 件数の大きな数値表示 *@
+                    <div class="kpi-value">@Model.TotalIncidents<span class="unit">件</span></div>
                 </div>
             </div>
         </div>
     </div>
-    @* 今月のインシデント件数カード *@
+    @* 今月のインシデント件数カード(プライマリ系) *@
     <div class="col-xl-3 col-md-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0 bg-primary bg-opacity-10 rounded-3 p-3 me-3">
-                        <i class="bi bi-calendar3 fs-3 text-primary"></i>
-                    </div>
-                    <div>
-                        <div class="text-muted small">今月の発生件数</div>
-                        <div class="fs-2 fw-bold">@Model.ThisMonthIncidents <span class="fs-6 text-muted">件</span></div>
-                    </div>
+        <div class="card kpi-card shadow-sm h-100">
+            <div class="card-body d-flex align-items-center">
+                <div class="kpi-icon bg-primary bg-opacity-10 me-3">
+                    <i class="bi bi-calendar3 fs-3 text-primary"></i>
+                </div>
+                <div>
+                    <div class="kpi-label">今月の発生件数</div>
+                    <div class="kpi-value">@Model.ThisMonthIncidents<span class="unit">件</span></div>
                 </div>
             </div>
         </div>
     </div>
-    @* 未完了対策カード *@
+    @* 未完了対策カード(警告系) *@
     <div class="col-xl-3 col-md-6">
-        <div class="card border-0 shadow-sm h-100">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0 bg-warning bg-opacity-10 rounded-3 p-3 me-3">
-                        <i class="bi bi-hourglass-split fs-3 text-warning"></i>
-                    </div>
-                    <div>
-                        <div class="text-muted small">未完了対策</div>
-                        <div class="fs-2 fw-bold">@Model.OpenMeasures <span class="fs-6 text-muted">件</span></div>
-                    </div>
+        <div class="card kpi-card kpi-warning shadow-sm h-100">
+            <div class="card-body d-flex align-items-center">
+                <div class="kpi-icon bg-warning bg-opacity-10 me-3">
+                    <i class="bi bi-hourglass-split fs-3 text-warning"></i>
+                </div>
+                <div>
+                    <div class="kpi-label">未完了対策</div>
+                    <div class="kpi-value">@Model.OpenMeasures<span class="unit">件</span></div>
                 </div>
             </div>
         </div>
     </div>
-    @* 期限超過対策カード(件数 > 0 で枠を赤く強調) *@
+    @* 期限超過対策カード(危険系。0件のときはアクセントを抑える) *@
     <div class="col-xl-3 col-md-6">
-        <div class="card border-0 shadow-sm h-100 @(Model.OverdueMeasures > 0 ? "border-danger border" : "")">
-            <div class="card-body">
-                <div class="d-flex align-items-center">
-                    <div class="flex-shrink-0 bg-danger bg-opacity-10 rounded-3 p-3 me-3">
-                        <i class="bi bi-alarm fs-3 text-danger"></i>
-                    </div>
-                    <div>
-                        <div class="text-muted small">期限超過対策</div>
-                        <div class="fs-2 fw-bold @(Model.OverdueMeasures > 0 ? "text-danger" : "")">
-                            @Model.OverdueMeasures <span class="fs-6 text-muted">件</span>
-                        </div>
+        <div class="card kpi-card kpi-danger shadow-sm h-100 @(Model.OverdueMeasures > 0 ? "border border-danger" : "")">
+            <div class="card-body d-flex align-items-center">
+                <div class="kpi-icon bg-danger bg-opacity-10 me-3">
+                    <i class="bi bi-alarm fs-3 text-danger"></i>
+                </div>
+                <div>
+                    <div class="kpi-label">期限超過対策</div>
+                    <div class="kpi-value @(Model.OverdueMeasures > 0 ? "text-danger" : "")">
+                        @Model.OverdueMeasures<span class="unit">件</span>
                     </div>
                 </div>
             </div>
@@ -347,12 +346,15 @@
                 datasets: [{
                     label: 'インシデント件数',
                     data: counts,
-                    borderColor: '#0d6efd',
-                    backgroundColor: 'rgba(13,110,253,0.08)',
-                    tension: 0.3,
+                    // 新デザイントークンのプライマリカラーに合わせる
+                    borderColor: '#1a6dbf',
+                    backgroundColor: 'rgba(26,109,191,0.10)',
+                    tension: 0.35,
                     fill: true,
-                    pointRadius: 5,
-                    pointBackgroundColor: '#0d6efd'
+                    pointRadius: 4,
+                    pointHoverRadius: 6,
+                    pointBackgroundColor: '#1a6dbf',
+                    borderWidth: 2
                 }]
             },
             options: {
