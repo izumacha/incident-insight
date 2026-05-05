@@ -16,8 +16,10 @@
     @* ブラウザの UI もブランドカラーに合わせる *@
     <meta name="theme-color" content="#155a9e" />
     <title>IncidentInsight — ログイン</title>
-    @* Bootstrap 5 の CSS を CDN から読み込む *@
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" />
+    @* Bootstrap 5 の CSS を CDN から読み込む(_Layout と同じ 5.3.3 + SRI に統一) *@
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
+          integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YcnS/1VsMDVxYGkbvXsGpcB4fBI9e1lkChfS"
+          crossorigin="anonymous" />
     @* Bootstrap Icons の CSS を CDN から読み込む *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
     @* アプリ固有スタイル(login-hero など) *@
@@ -101,8 +103,10 @@
         </div>
     </div>
 </div>
-@* Bootstrap の JS をフッタで読み込む *@
-<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+@* Bootstrap の JS をフッタで読み込む(_Layout と同じ 5.3.3 + SRI に統一) *@
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
+        integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
+        crossorigin="anonymous"></script>
 @* クライアントサイドバリデーション用スクリプト *@
 <partial name="_ValidationScriptsPartial" />
 </body>
