@@ -29,6 +29,12 @@
   --ii-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
   --ii-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
   --ii-shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.05);
+
+  /* Bootstrap の組み込み変数を上書きして .text-primary / .bg-primary / .shadow-sm 等のユーティリティを医療系トークンに揃える(個別 !important ルールを増やさないため) */
+  --bs-primary: var(--ii-primary);
+  --bs-primary-rgb: 26, 109, 191;
+  --bs-link-color-rgb: 26, 109, 191;
+  --bs-box-shadow-sm: var(--ii-shadow);
 }
 
 /* ────────────────────────────────────
@@ -82,9 +88,7 @@ a:focus-visible {
   background: var(--ii-primary-dark);
   border-color: var(--ii-primary-dark);
 }
-.text-primary { color: var(--ii-primary) !important; }
-.bg-primary { background: var(--ii-primary) !important; }
-.border-primary { border-color: var(--ii-primary) !important; }
+/* .text-primary / .bg-primary / .border-primary は :root の --bs-primary-rgb 上書きで自動的に医療系ブルーになるため、ここでの個別ルールは不要 */
 
 /* ────────────────────────────────────
    Navbar：粘着ヘッダ + アクティブ表示
@@ -132,16 +136,18 @@ a:focus-visible {
   transition: box-shadow 0.18s ease, transform 0.18s ease;
 }
 
-.card.shadow-sm {
-  box-shadow: var(--ii-shadow) !important;
-}
+/* .card.shadow-sm は :root の --bs-box-shadow-sm 上書きで Bootstrap 純正ユーティリティ経由で医療系シャドウになる */
 
-.card:hover {
+/* ホバーリフトはクリック可能なカードに opt-in で限定する(情報表示のみのカードまで「押せそう」に見えるのを避けるため) */
+.card.is-interactive {
+  cursor: pointer;
+}
+.card.is-interactive:hover {
   box-shadow: var(--ii-shadow-lg) !important;
 }
 
 .card-header.bg-white {
-  background: var(--ii-surface) !important;
+  /* 背景色は --bs-white が #ffffff のままで十分なので Bootstrap 純正ユーティリティに任せ、見た目の調整(下線とパディング)だけここで行う */
   border-bottom: 1px solid var(--ii-border);
   padding-top: 0.85rem;
   padding-bottom: 0.85rem;

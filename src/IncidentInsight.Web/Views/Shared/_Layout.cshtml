@@ -37,6 +37,13 @@
                 @* サブブランド：英名と日本語名を併記して医療現場でも識別しやすくする *@
                 <span class="d-none d-md-inline ms-2 text-white-50 small fw-normal">医療インシデント管理</span>
             </a>
+            @* モバイル幅(<lg)ではハンバーガーを開かないと collapse 内の「新規登録」が見えないため、collapse の外側にもクイックアクションボタンを常駐させる(d-lg-none で lg 以上では非表示) *@
+            @if (User.Identity?.IsAuthenticated == true)
+            {
+                <a class="btn btn-light btn-sm d-lg-none ms-auto me-2" asp-controller="Incidents" asp-action="Create" aria-label="新規登録">
+                    <i class="bi bi-plus-circle text-primary"></i>
+                </a>
+            }
             @* モバイル用ハンバーガーメニュー *@
             <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarMain"
                     aria-controls="navbarMain" aria-expanded="false" aria-label="メニューを開く">
