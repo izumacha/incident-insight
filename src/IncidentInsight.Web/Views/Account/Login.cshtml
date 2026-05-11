@@ -22,6 +22,11 @@
           crossorigin="anonymous" />
     @* Bootstrap Icons の CSS を CDN から読み込む *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    @* Web フォント: Inter + Noto Sans JP (_Layout と揃える)。preconnect で初回読み込みを高速化 *@
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+JP:wght@400;500;700&amp;display=swap" />
     @* アプリ固有スタイル(login-hero など) *@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 </head>

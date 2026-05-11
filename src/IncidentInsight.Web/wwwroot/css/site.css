@@ -160,31 +160,57 @@
    ベース：タイポグラフィと背景
 ──────────────────────────────────── */
 html {
-  font-size: 14px;
+  /* 基準フォントサイズを 15px に引き上げ(従来 14px は事務的で詰まって見えた) */
+  font-size: 15px;
   position: relative;
   min-height: 100%;
 }
 
 @media (min-width: 768px) {
-  html { font-size: 15.5px; }
+  /* デスクトップ幅では SaaS ダッシュボード標準の 16px に */
+  html { font-size: 16px; }
 }
 
 body {
   margin-bottom: 60px;
   background: var(--ii-bg);
   color: var(--ii-text);
-  font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* Latin/数字は Inter(モダン SaaS の標準)、和文は Noto Sans JP を最優先。以降はシステムフォントへフォールバック */
+  font-family: "Inter", "Noto Sans JP", "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Yu Gothic UI", "Meiryo", system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  /* 和文の半角詰め(プロポーショナル詰め)を有効化 */
   font-feature-settings: "palt" 1;
-  letter-spacing: 0.01em;
+  /* Inter は素のままでもバランスが取れているので追加トラッキングはほぼゼロに */
+  letter-spacing: 0;
+  /* 本文の行間は読みやすさ重視で --ii-lh-normal (1.6) */
+  line-height: var(--ii-lh-normal);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 見出しの共通スタイル(色・ウェイト・トラッキング) */
 h1, h2, h3, h4, h5, h6 {
   color: var(--ii-text);
   font-weight: 700;
-  letter-spacing: -0.01em;
+  /* 見出しは本文より少し詰めて締まった印象に(Inter の見え方に最適化) */
+  letter-spacing: -0.015em;
+  /* 見出しは行間を詰める(--ii-lh-tight 〜 --ii-lh-snug) */
+  line-height: var(--ii-lh-tight);
+  /* 見出し直後の余白(本文との視覚的なつながりを確保) */
+  margin-bottom: 0.5rem;
 }
+
+/* ヒーロー見出し(ページ最上部の特大タイトル用) */
+h1 { font-size: var(--ii-fs-3xl); }
+/* ページ見出し(ダッシュボード・一覧画面の主タイトル) */
+h2 { font-size: var(--ii-fs-2xl); }
+/* セクション見出し */
+h3 { font-size: var(--ii-fs-xl); line-height: var(--ii-lh-snug); }
+/* サブセクション/カードヘッダ見出し */
+h4 { font-size: var(--ii-fs-lg); line-height: var(--ii-lh-snug); }
+/* 小見出し */
+h5 { font-size: var(--ii-fs-base); line-height: var(--ii-lh-snug); }
+/* カード内ラベル(現状の .card-header h6 と整合) */
+h6 { font-size: var(--ii-fs-sm); line-height: var(--ii-lh-snug); font-weight: 600; }
 
 a { color: var(--ii-primary); }
 a:hover { color: var(--ii-primary-dark); }
@@ -310,24 +336,39 @@ a:focus-visible {
 }
 
 .kpi-label {
-  font-size: 0.8rem;
+  /* KPI ラベルはトークン化された小フォント */
+  font-size: var(--ii-fs-xs);
   color: var(--ii-text-muted);
   font-weight: 500;
-  letter-spacing: 0.02em;
+  /* ラベルは少し開いた字間でラベル感を強調 */
+  letter-spacing: 0.04em;
+  /* ラベルを大文字英字風の質感に揃える(KPI の小ラベル定番) */
+  text-transform: none;
 }
 
 .kpi-value {
-  font-size: 2.2rem;
+  /* KPI 数値はヒーロー級のサイズに引き上げ(視覚階層の主役にする) */
+  font-size: var(--ii-fs-display);
   font-weight: 700;
-  line-height: 1.1;
+  /* タイトな行間で数値を引き締める */
+  line-height: var(--ii-lh-tight);
   color: var(--ii-text);
+  /* 桁を縦に揃えるための tabular-nums と等幅数字 */
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+  /* Inter の数字を引き締めるためわずかに詰める */
+  letter-spacing: -0.02em;
 }
 
 .kpi-value .unit {
-  font-size: 0.85rem;
+  /* 単位(「件」など)は小さく落ち着いた表示 */
+  font-size: var(--ii-fs-sm);
   color: var(--ii-text-muted);
   font-weight: 500;
   margin-left: 4px;
+  /* 単位部分はプロポーショナル数字に戻す(和文用に letter-spacing も解除) */
+  font-variant-numeric: normal;
+  letter-spacing: 0;
 }
 
 /* ────────────────────────────────────
@@ -395,6 +436,18 @@ a:focus-visible {
   padding-bottom: 0.75rem;
   vertical-align: middle;
   border-color: var(--ii-border);
+  /* テーブル内の数字は桁を縦に揃える(発生日・件数・日数などの可読性向上) */
+  font-variant-numeric: tabular-nums;
+}
+
+/* バッジ内の数字も桁揃え(件数バッジ、超過日数バッジなどで桁ズレを防ぐ) */
+.badge {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ページネーション数字も桁揃え */
+.pagination .page-link {
+  font-variant-numeric: tabular-nums;
 }
 
 /* ────────────────────────────────────
