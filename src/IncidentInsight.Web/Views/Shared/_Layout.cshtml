@@ -23,6 +23,12 @@
           crossorigin="anonymous" />
     @* Bootstrap Icons の CSS(CDN) *@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    @* Web フォント: Inter(Latin/数字、Modern SaaS 標準) + Noto Sans JP(和文) *@
+    @* preconnect で Google Fonts へのコネクション確立を先回りし、フォント FOIT を回避(display=swap) *@
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link rel="stylesheet"
+          href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+JP:wght@400;500;700&amp;display=swap" />
     @* アプリ固有のスタイル(キャッシュバスト用に asp-append-version="true") *@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
 </head>
