@@ -18,6 +18,17 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
+      # フロントエンド型チェック / TypeScript ビルド用に Node をセットアップ
+      - name: Setup Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # tsc などの devDependencies をインストール (package-lock.json から再現性のあるインストール)
+      - name: Install npm dependencies
+        run: npm ci
+
       - name: Restore dependencies
         run: dotnet restore
 

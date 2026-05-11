@@ -19,4 +19,20 @@
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="8.0.0" />
   </ItemGroup>
 
+  <!-- TypeScript ソースを追跡対象として MSBuild に登録 (主にエディタ統合と Inputs/Outputs 用) -->
+  <ItemGroup>
+    <TypeScriptCompile Include="Scripts\**\*.ts" />
+    <None Include="..\..\package.json" Link="package.json" />
+    <None Include="..\..\tsconfig.json" Link="tsconfig.json" />
+  </ItemGroup>
+
+  <!-- TypeScript コンパイル: dotnet build の前に tsc を呼んで wwwroot/js を再生成する。 -->
+  <!-- SkipTsBuild=true を環境変数または MSBuild プロパティで指定すれば本ターゲットをスキップ可能 (Node が無い環境向けの逃げ道)。 -->
+  <Target Name="CompileTypeScript" BeforeTargets="BeforeBuild" Condition="'$(SkipTsBuild)' != 'true'">
+    <!-- node_modules が無ければ npm ci でインストール (CI では事前に npm ci 済みのため通常スキップされる)。 -->
+    <Exec Command="npm ci" WorkingDirectory="$(MSBuildProjectDirectory)/../.." Condition="!Exists('$(MSBuildProjectDirectory)/../../node_modules')" />
+    <!-- 既にインストール済みの tsc を npx 経由で実行 (no-install フラグで誤って外部取得しに行くのを防ぐ)。 -->
+    <Exec Command="npx --no-install tsc" WorkingDirectory="$(MSBuildProjectDirectory)/../.." />
+  </Target>
+
 </Project>

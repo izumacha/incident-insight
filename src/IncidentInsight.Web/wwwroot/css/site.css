@@ -35,6 +35,125 @@
   --bs-primary-rgb: 26, 109, 191;
   --bs-link-color-rgb: 26, 109, 191;
   --bs-box-shadow-sm: var(--ii-shadow);
+
+  /* ────────────────────────────────────
+     拡張トークン: スペーシングスケール (4px 基準、Bootstrap の gap-0..5 と整合)
+  ──────────────────────────────────── */
+  /* 0px(余白なし) */
+  --ii-space-0: 0;
+  /* 4px(極小、アイコン横の隙間など) */
+  --ii-space-1: 4px;
+  /* 8px(小、要素どうしの最小余白) */
+  --ii-space-2: 8px;
+  /* 12px(中小、ボタン内パディング) */
+  --ii-space-3: 12px;
+  /* 16px(中、カード内パディング基準) */
+  --ii-space-4: 16px;
+  /* 24px(中大、セクション間の余白) */
+  --ii-space-5: 24px;
+  /* 32px(大、メジャーセクション区切り) */
+  --ii-space-6: 32px;
+  /* 40px(特大、ヒーロー帯の上下) */
+  --ii-space-7: 40px;
+  /* 48px(超大、ページ間の大きな区切り) */
+  --ii-space-8: 48px;
+
+  /* ────────────────────────────────────
+     拡張トークン: タイポグラフィスケール (本文 1rem 基準、見出しまで段階的に拡大)
+  ──────────────────────────────────── */
+  /* 補助テキスト(注釈・タイムスタンプなど) */
+  --ii-fs-xs: 0.75rem;
+  /* 小本文・キャプション */
+  --ii-fs-sm: 0.875rem;
+  /* 標準本文 */
+  --ii-fs-base: 1rem;
+  /* 中見出し本文・大きめ本文 */
+  --ii-fs-lg: 1.125rem;
+  /* セクション見出し */
+  --ii-fs-xl: 1.375rem;
+  /* ページ見出し(h2 相当) */
+  --ii-fs-2xl: 1.75rem;
+  /* ヒーロー大見出し(h1 相当) */
+  --ii-fs-3xl: 2.25rem;
+  /* KPI ヒーロー数値・ダッシュボードトップ数値 */
+  --ii-fs-display: 3rem;
+
+  /* 行間: タイトな見出し用(大見出しを締まらせる) */
+  --ii-lh-tight: 1.15;
+  /* 行間: 中見出し用 */
+  --ii-lh-snug: 1.35;
+  /* 行間: 本文用(読みやすさ重視) */
+  --ii-lh-normal: 1.6;
+  /* 行間: 長文用(注釈・説明の連続文) */
+  --ii-lh-loose: 1.8;
+
+  /* ────────────────────────────────────
+     拡張トークン: サーフェスのレイヤー (背景の階層表現に使う、ダークモード化の前提)
+  ──────────────────────────────────── */
+  /* 最前面: カードや主要コンテナ */
+  --ii-surface-1: #ffffff;
+  /* 第 2 層: テーブルヘッダなど、わずかに沈ませたい面 */
+  --ii-surface-2: #f8fafc;
+  /* プライマリ薄面: ヒーロー帯やセクションのアクセント */
+  --ii-surface-tinted: #f4f8fc;
+  /* 浮き上がる面: モーダル・ポップオーバーなど(白で固定だがダークモード対応のため別トークン化) */
+  --ii-surface-elevated: #ffffff;
+
+  /* ────────────────────────────────────
+     拡張トークン: 状態色の soft バリアント (既存 -light のエイリアス。今後はこちらを正準名にする)
+  ──────────────────────────────────── */
+  /* プライマリの薄色面 */
+  --ii-primary-soft: var(--ii-primary-light);
+  /* 成功の薄色面 */
+  --ii-success-soft: var(--ii-success-light);
+  /* 警告の薄色面 */
+  --ii-warning-soft: var(--ii-warning-light);
+  /* 危険の薄色面 */
+  --ii-danger-soft: var(--ii-danger-light);
+  /* 情報の薄色面 */
+  --ii-info-soft: var(--ii-info-light);
+
+  /* ────────────────────────────────────
+     拡張トークン: グラデーション (ヒーロー帯・ブランドアクセント用)
+  ──────────────────────────────────── */
+  /* プライマリ系の標準グラデーション(ボタン・アイコン枠などに) */
+  --ii-gradient-primary: linear-gradient(135deg, var(--ii-primary) 0%, var(--ii-primary-dark) 100%);
+  /* ヒーロー帯用の派手めのグラデーション(ダッシュボード上部などに) */
+  --ii-gradient-hero: linear-gradient(135deg, #1a6dbf 0%, #2484d6 60%, #4ea4e6 100%);
+  /* 控えめなグラデーション(セクション背景に少しだけ表情をつけたいとき) */
+  --ii-gradient-subtle: linear-gradient(180deg, var(--ii-surface-tinted) 0%, var(--ii-surface-1) 100%);
+}
+
+/* ────────────────────────────────────
+   ダークモード準備: data-theme="dark" 属性によるオプトイン適用
+   自動切り替え(@media prefers-color-scheme: dark)は、まだ全画面で配色検証が済んでいないため有効化しない。
+   #2 / #3 で実画面の配色を確認しながら順次有効化する。
+──────────────────────────────────── */
+:root[data-theme="dark"] {
+  /* 全体背景: 深いネイビー */
+  --ii-bg: #0f172a;
+  /* カード面 */
+  --ii-surface: #1e293b;
+  --ii-surface-1: #1e293b;
+  --ii-surface-2: #273449;
+  --ii-surface-tinted: #1a2a45;
+  --ii-surface-elevated: #243149;
+  /* 境界線(明るめのグレー寄り) */
+  --ii-border: #334155;
+  --ii-border-strong: #475569;
+  /* 文字色(白寄り、補助テキストはスレートグレー) */
+  --ii-text: #f1f5f9;
+  --ii-text-muted: #94a3b8;
+  /* 状態色の soft バリアント: ダーク背景でも色付きが見えるよう透過アルファに置き換え */
+  --ii-primary-light: rgba(26, 109, 191, 0.18);
+  --ii-success-light: rgba(31, 138, 91, 0.18);
+  --ii-warning-light: rgba(217, 119, 6, 0.20);
+  --ii-danger-light: rgba(214, 49, 70, 0.20);
+  --ii-info-light: rgba(14, 165, 183, 0.20);
+  /* シャドウ: 黒地では透過の濃いシャドウに置き換えて立体感を維持 */
+  --ii-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.30);
+  --ii-shadow: 0 2px 8px rgba(0, 0, 0, 0.30), 0 1px 2px rgba(0, 0, 0, 0.20);
+  --ii-shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.40), 0 4px 8px rgba(0, 0, 0, 0.20);
 }
 
 /* ────────────────────────────────────
@@ -328,6 +447,13 @@ a:focus-visible {
 ──────────────────────────────────── */
 .x-small { font-size: 0.72rem; }
 .cursor-pointer { cursor: pointer; }
+
+/* 数値表示用ユーティリティ: KPI 値・テーブル数値・期間ラベルなどで桁を縦に揃えたいときに使う */
+/* font-variant-numeric: tabular-nums で数字の幅を均一化し、Latin 由来の比例字形を防ぐ */
+.num-tabular {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1, "lnum" 1;
+}
 
 /* ────────────────────────────────────
    5 Whys chain visualization
