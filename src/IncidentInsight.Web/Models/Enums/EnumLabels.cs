@@ -46,6 +46,40 @@ public static class EnumLabels
         [MeasureTypeKind.LongTerm] = "長期対策"
     };
 
+    // 監査ログのエンティティ名(string) → 日本語ラベルへの変換表
+    // (AuditLog.EntityName は EF 由来の文字列なので enum ではなく string をキーにする)
+    private static readonly Dictionary<string, string> AuditEntityJa = new()
+    {
+        // インシデント本体
+        ["Incident"] = "インシデント",
+        // なぜなぜ分析(原因分析)
+        ["CauseAnalysis"] = "原因分析",
+        // 再発防止策
+        ["PreventiveMeasure"] = "再発防止策"
+    };
+
+    // 監査ログの操作種別(string) → 日本語ラベルへの変換表
+    private static readonly Dictionary<string, string> AuditOperationJa = new()
+    {
+        // レコード追加
+        ["Added"] = "追加",
+        // レコード更新
+        ["Modified"] = "更新",
+        // レコード削除
+        ["Deleted"] = "削除"
+    };
+
+    // 監査ログの操作種別 → Bootstrap カラー名への変換表(バッジ色分け用)
+    private static readonly Dictionary<string, string> AuditOperationColorMap = new()
+    {
+        // 追加は緑(中立的に新規追加を示す)
+        ["Added"] = "success",
+        // 更新は青(注意喚起だが警告レベルではない)
+        ["Modified"] = "primary",
+        // 削除は赤(取り消しできない操作なので強調)
+        ["Deleted"] = "danger"
+    };
+
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();
@@ -65,6 +99,18 @@ public static class EnumLabels
     // 対策種別に対応する Bootstrap カラー名を返す(長期は青、短期は緑)
     public static string MeasureTypeColor(MeasureTypeKind v) =>
         v == MeasureTypeKind.LongTerm ? "info" : "success";
+
+    // 監査ログのエンティティ名を日本語ラベルに変換(辞書にない場合は元の名前をそのまま返す)
+    public static string JapaneseAuditEntity(string name) =>
+        AuditEntityJa.TryGetValue(name, out var s) ? s : name;
+
+    // 監査ログの操作種別を日本語ラベルに変換(辞書にない場合は元の値をそのまま返す)
+    public static string JapaneseAuditOperation(string op) =>
+        AuditOperationJa.TryGetValue(op, out var s) ? s : op;
+
+    // 監査ログの操作種別に対応する Bootstrap カラー名を返す(見つからなければグレー)
+    public static string AuditOperationColor(string op) =>
+        AuditOperationColorMap.TryGetValue(op, out var c) ? c : "secondary";
 
     // 重症度 enum の全ての値を列挙して返す(ドロップダウン選択肢の生成などに使う)
     public static IEnumerable<IncidentSeverity> AllSeverities =>
