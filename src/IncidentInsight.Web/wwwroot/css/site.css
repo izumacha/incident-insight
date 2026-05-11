@@ -272,6 +272,119 @@ a:focus-visible {
 }
 
 /* ────────────────────────────────────
+   Hero Banner：ダッシュボード最上部の主役ブロック
+   プライマリブランド色のグラデーション帯で当期サマリーと主要アクションを掲げる
+──────────────────────────────────── */
+.hero-banner {
+  /* プライマリブランド色のグラデーション(--ii-gradient-hero で定義済み) */
+  background: var(--ii-gradient-hero);
+  /* テキストはすべて白基調 */
+  color: #fff;
+  /* 角丸を大きめに(--ii-radius-lg = 14px) */
+  border-radius: var(--ii-radius-lg);
+  /* 上下に十分な余白を取って存在感を出す */
+  padding: var(--ii-space-6) var(--ii-space-5);
+  /* 控えめな影で浮き上がり感 */
+  box-shadow: var(--ii-shadow);
+  /* 装飾の擬似要素を切り抜くため(後述の ::before のはみ出し防止) */
+  overflow: hidden;
+  /* 装飾の擬似要素の絶対配置基準 */
+  position: relative;
+}
+
+/* 右上の柔らかい光彩(放射状グラデで奥行きを演出) */
+.hero-banner::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.18) 0%, transparent 55%);
+  /* ホバーやクリックを下層に通す */
+  pointer-events: none;
+}
+
+/* 左テキスト・右アクションを横並びに */
+.hero-content {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--ii-space-4);
+  /* 擬似要素より前面に出す */
+  position: relative;
+  /* モバイルでは縦積みに */
+  flex-wrap: wrap;
+}
+
+/* ヒーロー大見出し */
+.hero-title {
+  /* 白文字に上書き(h1-h6 の色は --ii-text なので明示的に白へ) */
+  color: #fff;
+  margin: 0;
+  font-size: var(--ii-fs-3xl);
+  line-height: var(--ii-lh-tight);
+  /* Inter で英字混じりの見出しを引き締める */
+  letter-spacing: -0.015em;
+}
+
+/* ヒーローサブタイトル(当期のサマリー本文) */
+.hero-subtitle {
+  /* 白を少し落として階層を作る */
+  color: rgba(255, 255, 255, 0.88);
+  font-size: var(--ii-fs-lg);
+  line-height: var(--ii-lh-snug);
+  margin: 0.5rem 0 0 0;
+  /* 1 行が長くなりすぎないよう最大幅を制限 */
+  max-width: 60ch;
+}
+
+/* サブタイトル内の強調(数字・キーワード) */
+.hero-subtitle strong {
+  color: #fff;
+  font-weight: 600;
+}
+
+/* 右側のアクションエリア(期間切替 + 新規登録) */
+.hero-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+/* ヒーロー内のアウトラインボタン(非アクティブな期間切替): 半透明白枠 */
+.hero-actions .btn-outline-secondary {
+  background: rgba(255, 255, 255, 0.12);
+  border-color: rgba(255, 255, 255, 0.30);
+  color: #fff;
+}
+.hero-actions .btn-outline-secondary:hover {
+  background: rgba(255, 255, 255, 0.22);
+  border-color: rgba(255, 255, 255, 0.55);
+  color: #fff;
+}
+
+/* ヒーロー内のプライマリボタン(アクティブな期間切替・主要 CTA): 白塗り + ダークブルー文字 */
+.hero-actions .btn-primary {
+  background: #fff;
+  border-color: #fff;
+  color: var(--ii-primary-dark);
+}
+.hero-actions .btn-primary:hover,
+.hero-actions .btn-primary:focus {
+  background: rgba(255, 255, 255, 0.92);
+  border-color: rgba(255, 255, 255, 0.92);
+  color: var(--ii-primary-dark);
+}
+
+/* ヒーロー内の btn-light(目立つ CTA をさらに白枠で強調するパターン用) */
+.hero-actions .btn-light {
+  /* ヒーローの中で更に目立たせたいときに使う(白に濃いブルー文字) */
+  background: #fff;
+  color: var(--ii-primary-dark);
+  border-color: #fff;
+  font-weight: 600;
+}
+
+/* ────────────────────────────────────
    Cards：柔らかいシャドウと滑らかなホバー
 ──────────────────────────────────── */
 .card {
@@ -324,6 +437,25 @@ a:focus-visible {
 .kpi-card.kpi-warning::before { background: var(--ii-warning); }
 .kpi-card.kpi-danger::before { background: var(--ii-danger); }
 .kpi-card.kpi-success::before { background: var(--ii-success); }
+
+/* 主役 KPI 用の修飾子: ダッシュボード最上段で 1 枚だけ大きく見せたいときに付与 */
+.kpi-card.kpi-hero {
+  /* プライマリ薄色から白への斜めグラデーションで、他の KPI と差をつける */
+  background: linear-gradient(135deg, var(--ii-primary-soft) 0%, var(--ii-surface-1) 70%);
+}
+/* 主役 KPI は左アクセントバーを太く(4px→6px)して存在感を出す */
+.kpi-card.kpi-hero::before {
+  width: 6px;
+}
+/* 主役 KPI の数値はさらに大きく(3rem→3.5rem) */
+.kpi-card.kpi-hero .kpi-value {
+  font-size: 3.5rem;
+}
+/* 主役 KPI のアイコン枠を大きく(56px→64px) */
+.kpi-card.kpi-hero .kpi-icon {
+  width: 64px;
+  height: 64px;
+}
 
 .kpi-icon {
   width: 56px;
