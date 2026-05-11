@@ -4,30 +4,10 @@
     @* ブラウザタブのタイトル *@
     ViewData["Title"] = $"監査ログ #{Model.Log.Id}";
 
-    @* 操作種別バッジ色 *@
-    var opColor = Model.Log.Operation switch
-    {
-        "Added" => "success",
-        "Modified" => "primary",
-        "Deleted" => "danger",
-        _ => "secondary"
-    };
-    @* 操作種別の日本語ラベル *@
-    var opLabel = Model.Log.Operation switch
-    {
-        "Added" => "追加",
-        "Modified" => "更新",
-        "Deleted" => "削除",
-        _ => Model.Log.Operation
-    };
-    @* エンティティ名の日本語ラベル *@
-    var entityLabel = Model.Log.EntityName switch
-    {
-        "Incident" => "インシデント",
-        "CauseAnalysis" => "原因分析",
-        "PreventiveMeasure" => "再発防止策",
-        _ => Model.Log.EntityName
-    };
+    @* 操作種別バッジ色 / 日本語ラベル / エンティティ日本語ラベルは EnumLabels に集約 *@
+    var opColor = IncidentInsight.Web.Models.Enums.EnumLabels.AuditOperationColor(Model.Log.Operation);
+    var opLabel = IncidentInsight.Web.Models.Enums.EnumLabels.JapaneseAuditOperation(Model.Log.Operation);
+    var entityLabel = IncidentInsight.Web.Models.Enums.EnumLabels.JapaneseAuditEntity(Model.Log.EntityName);
 }
 
 @* ページヘッダ *@

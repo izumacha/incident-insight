@@ -83,8 +83,8 @@
                             <i class="bi bi-bar-chart-line me-1"></i>分析・集計
                         </a>
                     </li>
-                    @* 監査ログへのリンクは管理者のみ表示 *@
-                    @if (User.IsInRole("Admin"))
+                    @* 監査ログへのリンクは管理者のみ表示(ロール名は AppRoles 定数で参照) *@
+                    @if (User.IsInRole(AppRoles.Admin))
                     {
                         <li class="nav-item">
                             @* 監査ログ画面へのリンク *@

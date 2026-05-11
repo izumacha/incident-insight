@@ -146,38 +146,14 @@
                     @* 検索結果を1件ずつ行で描画 *@
                     @foreach (var log in Model.Logs)
                     {
-                        @* 操作種別ごとに行頭の色を変える *@
-                        var rowClass = log.Operation switch
-                        {
-                            "Added" => "border-start border-3 border-success",
-                            "Modified" => "border-start border-3 border-primary",
-                            "Deleted" => "border-start border-3 border-danger",
-                            _ => ""
-                        };
-                        @* 操作種別バッジの色 *@
-                        var opColor = log.Operation switch
-                        {
-                            "Added" => "success",
-                            "Modified" => "primary",
-                            "Deleted" => "danger",
-                            _ => "secondary"
-                        };
+                        @* 操作種別バッジの色を EnumLabels から取得(View にカラー名を直書きしない) *@
+                        var opColor = IncidentInsight.Web.Models.Enums.EnumLabels.AuditOperationColor(log.Operation);
                         @* 操作種別の日本語ラベル *@
-                        var opLabel = log.Operation switch
-                        {
-                            "Added" => "追加",
-                            "Modified" => "更新",
-                            "Deleted" => "削除",
-                            _ => log.Operation
-                        };
+                        var opLabel = IncidentInsight.Web.Models.Enums.EnumLabels.JapaneseAuditOperation(log.Operation);
                         @* エンティティ名の日本語ラベル *@
-                        var entityLabel = log.EntityName switch
-                        {
-                            "Incident" => "インシデント",
-                            "CauseAnalysis" => "原因分析",
-                            "PreventiveMeasure" => "再発防止策",
-                            _ => log.EntityName
-                        };
+                        var entityLabel = IncidentInsight.Web.Models.Enums.EnumLabels.JapaneseAuditEntity(log.EntityName);
+                        @* 行頭の左ボーダーは操作種別の色を流用(色名は EnumLabels に集約済み) *@
+                        var rowClass = string.IsNullOrEmpty(opColor) ? "" : $"border-start border-3 border-{opColor}";
                         <tr class="@rowClass">
                             <td class="ps-3">
                                 @* 日付 *@

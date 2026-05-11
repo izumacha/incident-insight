@@ -6,6 +6,8 @@ using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Data;
 // AuditLog モデルを使う
 using IncidentInsight.Web.Models;
+// 日本語ラベル / Bootstrap カラーの一元解決(EnumLabels)を使う
+using IncidentInsight.Web.Models.Enums;
 // 監査ログ画面用 ViewModel を使う
 using IncidentInsight.Web.Models.ViewModels;
 // 認可属性
@@ -93,12 +95,12 @@ public class AuditLogsController : Controller
             .Take(PageSize)
             .ToListAsync();
 
-        // ビュー用のドロップダウン選択肢を組み立てる
+        // ビュー用のドロップダウン選択肢を組み立てる(ラベルは EnumLabels で一元解決)
         var entityOptions = AllowedEntityNames
-            .Select(n => new SelectListItem(JapaneseEntityName(n), n))
+            .Select(n => new SelectListItem(EnumLabels.JapaneseAuditEntity(n), n))
             .ToList();
         var operationOptions = AllowedOperations
-            .Select(o => new SelectListItem(JapaneseOperation(o), o))
+            .Select(o => new SelectListItem(EnumLabels.JapaneseAuditOperation(o), o))
             .ToList();
 
         // ViewModel を組み立ててビューに渡す
@@ -206,29 +208,4 @@ public class AuditLogsController : Controller
         _ => el.ToString()
     };
 
-    // エンティティ名を日本語表記に変換するヘルパ(View のドロップダウン用)
-    private static string JapaneseEntityName(string name) => name switch
-    {
-        // インシデント
-        nameof(Incident) => "インシデント",
-        // なぜなぜ分析
-        nameof(CauseAnalysis) => "原因分析",
-        // 再発防止策
-        nameof(PreventiveMeasure) => "再発防止策",
-        // 想定外の値はそのまま返す
-        _ => name
-    };
-
-    // 操作種別を日本語表記に変換するヘルパ(View のドロップダウン用)
-    private static string JapaneseOperation(string op) => op switch
-    {
-        // 追加
-        "Added" => "追加",
-        // 更新
-        "Modified" => "更新",
-        // 削除
-        "Deleted" => "削除",
-        // 想定外の値はそのまま返す
-        _ => op
-    };
 }
