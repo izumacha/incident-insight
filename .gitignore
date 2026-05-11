@@ -16,6 +16,15 @@ obj/
 ## Bootstrap (CDN に移行済み、ローカル不要)
 src/IncidentInsight.Web/wwwroot/lib/bootstrap/
 
+## TypeScript 生成物 (src/IncidentInsight.Web/Scripts/*.ts を tsc が wwwroot/js/ に出力する)
+## dotnet build の MSBuild ターゲットで自動再生成されるため Git で追跡しない
+src/IncidentInsight.Web/wwwroot/js/*.js
+src/IncidentInsight.Web/wwwroot/js/*.js.map
+src/IncidentInsight.Web/wwwroot/js/*.tsbuildinfo
+
+## Node.js 依存パッケージ (フロントエンド型チェック用 tsc のみで利用、CDN ライブラリは含まない)
+node_modules/
+
 ## OS files
 .DS_Store
 Thumbs.db
