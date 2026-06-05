@@ -1261,6 +1261,15 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
   border-color: var(--ii-info);
   color: #fff;
 }
+/* 意味色テキストユーティリティ(カードヘッダのアイコンや完了率の数字などに使う .text-primary 等)は、
+   既定の濃いブランド色のままだとダーク面でコントラストが低い。明るい色に引き上げる。 */
+:root[data-theme="dark"] .text-primary { color: #5aa9e6 !important; }  /* 明るいブルー */
+:root[data-theme="dark"] .text-success { color: #6ee7b7 !important; }  /* 明るいグリーン */
+:root[data-theme="dark"] .text-danger  { color: #fca5a5 !important; }  /* 明るいレッド */
+:root[data-theme="dark"] .text-warning { color: #fcd34d !important; }  /* 明るいイエロー */
+:root[data-theme="dark"] .text-info    { color: #67e8f9 !important; }  /* 明るいシアン */
+/* ただし btn-light は白地のままなので、中のアイコンは濃いブランド色に戻して白地でのコントラストを保つ */
+:root[data-theme="dark"] .btn-light .text-primary { color: var(--ii-primary) !important; }
 /* モーダル: Bootstrap は背景を白固定にするため、ダーク時は明るい文字が白地に乗って読めなくなる。
    対策完了・有効性評価ダイアログ(Details.cshtml)が暗所でも使えるよう、面と境界をダーク用に上書きする。 */
 :root[data-theme="dark"] .modal-content {
