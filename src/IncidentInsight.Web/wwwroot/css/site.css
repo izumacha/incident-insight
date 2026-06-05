@@ -152,6 +152,16 @@
   /* 文字色(白寄り、補助テキストはスレートグレー) */
   --ii-text: #f1f5f9;
   --ii-text-muted: #94a3b8;
+  /* Bootstrap 標準ユーティリティもダーク配色に追従させる(.text-muted / .text-secondary / 罫線など)。
+     これらは --ii-* ではなく Bootstrap 自身の変数なので、ダーク時はここで明示的に上書きする。 */
+  --bs-body-color: #f1f5f9;                       /* 本文の既定文字色 */
+  --bs-body-color-rgb: 241, 245, 249;             /* 半透明計算に使う本文色の RGB */
+  --bs-secondary-color: rgba(148, 163, 184, 0.95);/* .text-muted / .text-secondary が参照する補助文字色 */
+  --bs-tertiary-color: rgba(148, 163, 184, 0.65); /* さらに薄い三次テキスト色 */
+  --bs-emphasis-color: #ffffff;                   /* 強調テキスト色 */
+  --bs-border-color: #334155;                     /* hr や border ユーティリティの罫線色 */
+  --bs-secondary-bg: #273449;                     /* secondary 系の薄い背景面 */
+  --bs-tertiary-bg: #1e293b;                      /* tertiary 系の背景面 */
   /* 状態色の soft バリアント: ダーク背景でも色付きが見えるよう透過アルファに置き換え */
   --ii-primary-light: rgba(26, 109, 191, 0.18);
   --ii-success-light: rgba(31, 138, 91, 0.18);
@@ -1112,9 +1122,16 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
 :root[data-theme="dark"] .alert-success { color: #6ee7b7; }
 :root[data-theme="dark"] .alert-warning { color: #fcd34d; }
 :root[data-theme="dark"] .alert-danger { color: #fca5a5; }
-/* テーブルの行ホバー色をダーク用に薄い白へ */
+/* テーブル: Bootstrap は各セルを --bs-table-* 変数で塗るため、color だけでなく
+   背景・文字・罫線・ストライプ・ホバーの各変数をダーク用に設定する(ダークカード内のセルが白く残るのを防ぐ)。 */
 :root[data-theme="dark"] .table {
-  --bs-table-hover-bg: rgba(255, 255, 255, 0.05);
+  --bs-table-bg: transparent;                       /* セル背景は透明にしてダークカード面を透かす */
+  --bs-table-color: var(--ii-text);                 /* セル文字は明るい色 */
+  --bs-table-border-color: var(--ii-border);        /* セルの罫線はダーク用境界色 */
+  --bs-table-striped-color: var(--ii-text);         /* 縞模様行の文字色 */
+  --bs-table-striped-bg: rgba(255, 255, 255, 0.03); /* 縞模様行の薄い背景 */
+  --bs-table-hover-color: var(--ii-text);           /* ホバー行の文字色 */
+  --bs-table-hover-bg: rgba(255, 255, 255, 0.05);   /* ホバー行の薄い背景 */
   color: var(--ii-text);
 }
 /* 危険系の行ハイライト(list-group-item-danger 等)をダーク用の半透明赤に */

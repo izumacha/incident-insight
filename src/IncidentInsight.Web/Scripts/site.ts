@@ -14,13 +14,39 @@
   // ────────────────────────────────────
   // 1) ダークモード切替: ボタンで light/dark を切り替え、localStorage に保存する
   // ────────────────────────────────────
+  // Chart.js のグラフ(ダッシュボード・分析画面)を、今のテーマに合わせて着色し直す関数。
+  // Chart.js は Bootstrap の CSS 変数を見ないので、軸ラベル・凡例の文字色とグリッド線色を明示的に渡す。
+  const applyChartTheme = (): void => {
+    // Chart.js が読み込まれていない画面(ログイン等)では何もしない。
+    if (typeof Chart === "undefined") { return; }
+    // 今がダークテーマかどうかを判定する。
+    const isDark = document.documentElement.getAttribute("data-theme") === "dark";
+    // 文字色: ダークなら明るいスレート、ライトなら従来の落ち着いたグレー。
+    Chart.defaults.color = isDark ? "#94a3b8" : "#5a6573";
+    // グリッド線・軸線の色: 背景に応じて薄い白/薄い黒にする。
+    Chart.defaults.borderColor = isDark ? "rgba(148, 163, 184, 0.18)" : "rgba(16, 24, 40, 0.08)";
+    // すでに描画済みのグラフがあれば、新しい既定色で再描画する(テーマ切替に即追従させる)。
+    document.querySelectorAll<HTMLCanvasElement>("canvas").forEach((canvas) => {
+      // canvas に紐づくチャートインスタンスを取得(無ければ undefined)。
+      const instance = Chart.getChart(canvas);
+      // 存在すれば再描画する。
+      if (instance) { instance.update(); }
+    });
+  };
+
   // テーマを適用してブラウザに保存する関数。
   const applyTheme = (theme: string): void => {
     // <html> 要素の data-theme 属性を書き換えると site.css の配色が切り替わる。
     document.documentElement.setAttribute("data-theme", theme);
     // 次回アクセス時も同じテーマになるよう保存する。
     try { localStorage.setItem("ii-theme", theme); } catch { /* プライベートモード等では無視 */ }
+    // グラフの配色もテーマに合わせて更新する。
+    applyChartTheme();
   };
+
+  // ページ読み込み時点でも、現在のテーマに合わせてグラフの既定色を設定しておく
+  // (この時点ではまだグラフ未生成だが、直後に走るページ固有スクリプトが新しい既定色で描画する)。
+  applyChartTheme();
 
   // ナビにあるテーマ切替ボタンを取得する。
   const themeToggle = document.querySelector<HTMLButtonElement>(".theme-toggle");

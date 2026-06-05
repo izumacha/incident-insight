@@ -94,4 +94,15 @@ declare class Chart {
   constructor(canvas: HTMLCanvasElement | CanvasRenderingContext2D, config: IIChartConfiguration);
   // チャートの破棄 (SPA でない本プロジェクトでは現状未使用だが将来用に宣言)
   destroy(): void;
+  // 既存チャートを再描画する (テーマ切替時に色を反映し直すために使う)
+  update(): void;
+  // Chart.js 全体の既定スタイル。軸ラベル/凡例の文字色やグリッド線色をここで一括設定できる。
+  static defaults: {
+    // 目盛り・凡例などの文字色
+    color: string;
+    // グリッド線・軸線の色
+    borderColor: string;
+  };
+  // canvas 要素 (または id) から既存のチャートインスタンスを取得する。無ければ undefined。
+  static getChart(item: HTMLCanvasElement | string): Chart | undefined;
 }
