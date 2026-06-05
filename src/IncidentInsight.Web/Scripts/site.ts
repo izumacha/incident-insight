@@ -38,16 +38,24 @@
   // ────────────────────────────────────
   // 1 つの KPI 数値要素を、目標値までアニメーションさせる関数。
   const animateCount = (el: HTMLElement): void => {
-    // 要素内の「単位(件 など)」スパンは残したいので、先頭のテキストノードだけを対象にする。
+    // 要素内の「単位(件 / % など)」スパンは残したいので、先頭のテキストノードだけを対象にする。
     const firstNode = el.firstChild;
     // 先頭がテキストでなければ何もしない。
     if (!firstNode || firstNode.nodeType !== Node.TEXT_NODE) { return; }
-    // 表示されている数字(カンマや空白を除く)を整数に変換する。
-    const target = parseInt((firstNode.textContent || "").replace(/[^0-9-]/g, ""), 10);
-    // 数字として読めない場合は何もしない。
+    // 数字部分(マイナス符号・小数点を含む)だけを取り出す。完了率 66.7 のような小数も拾えるようにする。
+    const match = (firstNode.textContent || "").match(/-?\d+(\.\d+)?/);
+    // 数字が見つからなければ何もしない。
+    if (!match) { return; }
+    // 取り出した数字を(小数も保てるよう)実数に変換する。
+    const target = parseFloat(match[0]);
+    // 数値として読めない場合は何もしない。
     if (isNaN(target)) { return; }
+    // 元の表示の小数点以下の桁数を数える(例: "66.7" → 1 桁、整数なら 0 桁)。
+    const decimals = match[0].includes(".") ? match[0].split(".")[1].length : 0;
+    // 途中値・最終値を、元と同じ小数桁数にそろえて文字列化する関数(66.7 を 667 にしないため)。
+    const fmt = (n: number): string => n.toFixed(decimals);
     // 動きを減らす設定なら、即座に最終値だけ表示して終わる。
-    if (prefersReducedMotion) { firstNode.textContent = String(target); return; }
+    if (prefersReducedMotion) { firstNode.textContent = fmt(target); return; }
     // アニメーションの開始時刻を記録する。
     const startTime = performance.now();
     // カウントアップにかける時間(ミリ秒)。
@@ -58,13 +66,13 @@
       const progress = Math.min((now - startTime) / duration, 1);
       // 終盤をゆっくり止めるイージング(ease-out)を掛ける。
       const eased = 1 - Math.pow(1 - progress, 3);
-      // 現在表示すべき整数値を求めて書き込む。
-      firstNode.textContent = String(Math.round(target * eased));
+      // 現在表示すべき値を、元の小数桁数を保ったまま書き込む。
+      firstNode.textContent = fmt(target * eased);
       // まだ途中なら次のフレームを予約する。
       if (progress < 1) { requestAnimationFrame(step); }
     };
-    // まず 0 を表示してからアニメーションを開始する。
-    firstNode.textContent = "0";
+    // まず 0(同じ桁数)を表示してからアニメーションを開始する。
+    firstNode.textContent = fmt(0);
     requestAnimationFrame(step);
   };
 

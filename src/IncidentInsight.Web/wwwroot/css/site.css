@@ -1140,3 +1140,19 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
 /* 注: btn-light はナビ・ヒーローの青い面に置かれており白のままが正しいので、ダーク用の上書きはしない */
 /* アウトライン系ボタンの文字をダークでも読めるよう明るいテキスト色に */
 :root[data-theme="dark"] .btn-outline-secondary { color: var(--ii-text); }
+/* モーダル: Bootstrap は背景を白固定にするため、ダーク時は明るい文字が白地に乗って読めなくなる。
+   対策完了・有効性評価ダイアログ(Details.cshtml)が暗所でも使えるよう、面と境界をダーク用に上書きする。 */
+:root[data-theme="dark"] .modal-content {
+  background: var(--ii-surface-elevated);   /* モーダル本体を浮いたダーク面の色に */
+  color: var(--ii-text);                    /* 本文の文字を明るい色に */
+  border-color: var(--ii-border);           /* 縁取りをダーク用の境界色に */
+}
+/* モーダルのヘッダ・フッタの仕切り線をダーク用の境界色にそろえる */
+:root[data-theme="dark"] .modal-header,
+:root[data-theme="dark"] .modal-footer {
+  border-color: var(--ii-border);
+}
+/* 閉じる(×)ボタンは黒アイコンのため、ダーク背景では反転フィルタをかけて白く見せる */
+:root[data-theme="dark"] .btn-close {
+  filter: invert(1) grayscale(100%) brightness(200%);
+}
