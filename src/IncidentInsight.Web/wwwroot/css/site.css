@@ -1214,3 +1214,44 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
 :root[data-theme="dark"] .btn-close {
   filter: invert(1) grayscale(100%) brightness(200%);
 }
+/* ページネーション(インシデント一覧・監査ログ): 既定は白地のため、ダーク時は面と文字を反転する */
+:root[data-theme="dark"] .page-link {
+  background-color: var(--ii-surface-2);   /* ページ番号の背景をダーク面に */
+  border-color: var(--ii-border);          /* 罫線をダーク用境界色に */
+  color: var(--ii-text);                   /* 数字は明るい文字色に */
+}
+:root[data-theme="dark"] .page-link:hover {
+  background-color: var(--ii-surface-1);   /* ホバーで少し沈ませる */
+  color: var(--ii-text);
+}
+:root[data-theme="dark"] .page-item.active .page-link {
+  background-color: var(--ii-primary);     /* 現在ページはブランド色で塗る */
+  border-color: var(--ii-primary);
+  color: #fff;
+}
+:root[data-theme="dark"] .page-item.disabled .page-link {
+  background-color: var(--ii-surface-2);   /* 無効ページは沈んだ面 */
+  color: var(--ii-text-muted);             /* 文字を補助色にして無効感を出す */
+  border-color: var(--ii-border);
+}
+/* タブ(新規登録フォームの種別タブ): 既定はアクティブが白地なので、ダーク面に合わせる */
+:root[data-theme="dark"] .nav-tabs { border-bottom-color: var(--ii-border); }
+:root[data-theme="dark"] .nav-tabs .nav-link { color: var(--ii-text-muted); }      /* 非アクティブタブは補助色 */
+:root[data-theme="dark"] .nav-tabs .nav-link:hover {
+  border-color: var(--ii-border) var(--ii-border) transparent;
+  color: var(--ii-text);
+}
+:root[data-theme="dark"] .nav-tabs .nav-link.active {
+  background-color: var(--ii-surface);                                              /* アクティブタブをカード面の色に */
+  border-color: var(--ii-border) var(--ii-border) var(--ii-surface);
+  color: var(--ii-text);
+}
+/* チェックボックス/ラジオ(有効性評価・詳細フォーム): 未チェックの白い升目をダーク面に合わせる */
+:root[data-theme="dark"] .form-check-input {
+  background-color: var(--ii-surface-2);   /* 升目の背景をダーク面に */
+  border-color: var(--ii-border-strong);   /* 枠線をダーク用に */
+}
+:root[data-theme="dark"] .form-check-input:checked {
+  background-color: var(--ii-primary);     /* チェック時はブランド色で塗る */
+  border-color: var(--ii-primary);
+}
