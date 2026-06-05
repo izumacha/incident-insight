@@ -1119,9 +1119,23 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
   border-color: var(--ii-border);
 }
 /* アラートの文字色: ダーク背景では暗い文字だと読めないため明るい色に上げる */
-:root[data-theme="dark"] .alert-success { color: #6ee7b7; }
-:root[data-theme="dark"] .alert-warning { color: #fcd34d; }
-:root[data-theme="dark"] .alert-danger { color: #fca5a5; }
+/* アラート: 文字色だけでなく背景・枠線もダーク用に明示設定する。
+   薄い色面に明るい文字を乗せ、成功/警告/エラーのフラッシュメッセージが暗所でもはっきり読めるようにする。 */
+:root[data-theme="dark"] .alert-success {
+  background: rgba(31, 138, 91, 0.22);     /* 成功: 緑の半透明面 */
+  border-color: rgba(31, 138, 91, 0.45);   /* 緑の枠線 */
+  color: #6ee7b7;                          /* 明るい緑の文字 */
+}
+:root[data-theme="dark"] .alert-warning {
+  background: rgba(217, 119, 6, 0.22);     /* 警告: 橙の半透明面 */
+  border-color: rgba(217, 119, 6, 0.45);   /* 橙の枠線 */
+  color: #fcd34d;                          /* 明るい黄の文字 */
+}
+:root[data-theme="dark"] .alert-danger {
+  background: rgba(214, 49, 70, 0.22);     /* エラー: 赤の半透明面 */
+  border-color: rgba(214, 49, 70, 0.45);   /* 赤の枠線 */
+  color: #fca5a5;                          /* 明るい赤の文字 */
+}
 /* テーブル: Bootstrap は各セルを --bs-table-* 変数で塗るため、color だけでなく
    背景・文字・罫線・ストライプ・ホバーの各変数をダーク用に設定する(ダークカード内のセルが白く残るのを防ぐ)。 */
 :root[data-theme="dark"] .table {
@@ -1133,6 +1147,26 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
   --bs-table-hover-color: var(--ii-text);           /* ホバー行の文字色 */
   --bs-table-hover-bg: rgba(255, 255, 255, 0.05);   /* ホバー行の薄い背景 */
   color: var(--ii-text);
+}
+/* Bootstrap の文脈クラス(.table-light の thead / .table-danger の超過行)は、
+   その要素自身に --bs-table-* を設定するため .table 側の上書きでは届かない。個別にダーク用へ上書きする。 */
+:root[data-theme="dark"] .table-light,
+:root[data-theme="dark"] .table-light > th,
+:root[data-theme="dark"] .table-light > td {
+  --bs-table-bg: var(--ii-surface-2);               /* 見出し行の背景を沈んだダーク面に */
+  --bs-table-color: var(--ii-text-muted);           /* 見出し文字は補助色 */
+  --bs-table-border-color: var(--ii-border);        /* 罫線はダーク用境界色 */
+  background-color: var(--ii-surface-2);            /* 変数を見ない描画系の保険として直接指定 */
+  color: var(--ii-text-muted);
+}
+:root[data-theme="dark"] .table-danger,
+:root[data-theme="dark"] .table-danger > th,
+:root[data-theme="dark"] .table-danger > td {
+  --bs-table-bg: var(--ii-danger-light);            /* 期限超過行は赤の半透明面に */
+  --bs-table-color: #fca5a5;                        /* 明るい赤の文字 */
+  --bs-table-border-color: rgba(214, 49, 70, 0.35); /* 赤系の罫線 */
+  background-color: var(--ii-danger-light);
+  color: #fca5a5;
 }
 /* 危険系の行ハイライト(list-group-item-danger 等)をダーク用の半透明赤に */
 :root[data-theme="dark"] .list-group-item-danger {
@@ -1157,6 +1191,13 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
 /* 注: btn-light はナビ・ヒーローの青い面に置かれており白のままが正しいので、ダーク用の上書きはしない */
 /* アウトライン系ボタンの文字をダークでも読めるよう明るいテキスト色に */
 :root[data-theme="dark"] .btn-outline-secondary { color: var(--ii-text); }
+/* ホバー時: 既定ルールは「近白の背景 + 白文字」になりダークで文字が消えるため、
+   キャンセル/戻る/編集などの二次ボタンが読めるよう、背景は明るいまま文字を暗い地色に反転する。 */
+:root[data-theme="dark"] .btn-outline-secondary:hover {
+  background: var(--ii-text);          /* 近白の塗り(明るいまま) */
+  border-color: var(--ii-text);
+  color: var(--ii-bg);                 /* 文字は暗い地色(ネイビー)にして十分なコントラストを確保 */
+}
 /* モーダル: Bootstrap は背景を白固定にするため、ダーク時は明るい文字が白地に乗って読めなくなる。
    対策完了・有効性評価ダイアログ(Details.cshtml)が暗所でも使えるよう、面と境界をダーク用に上書きする。 */
 :root[data-theme="dark"] .modal-content {
