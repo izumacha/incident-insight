@@ -1136,6 +1136,22 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
   border-color: rgba(214, 49, 70, 0.45);   /* 赤の枠線 */
   color: #fca5a5;                          /* 明るい赤の文字 */
 }
+/* alert-light(再発防止策の登録/編集フォームのインシデント要約パネル、分析のインサイト枠)は
+   既定の淡い背景のまま。.text-muted ラベルが明色になった分コントラストが落ちるため、ダーク面に置き換える。 */
+:root[data-theme="dark"] .alert-light {
+  background: var(--ii-surface-2);         /* 淡色面をダーク面に */
+  border-color: var(--ii-border);          /* 枠線をダーク用境界色に */
+  color: var(--ii-text);                   /* 本文を明るい文字色に */
+}
+
+/* リンク色: 既定の a { color: var(--ii-primary) } はダーク面でコントラストが 2〜3:1 と低い。
+   ダーク時は明るいブルーに引き上げる。ただしボタン(.btn)・ナビ項目・ブランドは独自配色なので除外する。 */
+:root[data-theme="dark"] a:not(.btn):not(.nav-link):not(.navbar-brand) {
+  color: #5aa9e6;                          /* 明るいブルーで十分なコントラストを確保 */
+}
+:root[data-theme="dark"] a:not(.btn):not(.nav-link):not(.navbar-brand):hover {
+  color: #8fc5f0;                          /* ホバーではさらに明るく(暗くならないように) */
+}
 /* テーブル: Bootstrap は各セルを --bs-table-* 変数で塗るため、color だけでなく
    背景・文字・罫線・ストライプ・ホバーの各変数をダーク用に設定する(ダークカード内のセルが白く残るのを防ぐ)。 */
 :root[data-theme="dark"] .table {
@@ -1197,6 +1213,53 @@ main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
   background: var(--ii-text);          /* 近白の塗り(明るいまま) */
   border-color: var(--ii-text);
   color: var(--ii-bg);                 /* 文字は暗い地色(ネイビー)にして十分なコントラストを確保 */
+}
+/* 二次以外のアウトラインボタン(詳細/戻る=primary、完了=success、削除=danger など)も
+   既定の濃い色文字のままだとダーク面でコントラストが低い。明るい文字+薄い枠線にし、ホバーで塗る。 */
+:root[data-theme="dark"] .btn-outline-primary {
+  color: #5aa9e6;                            /* 明るいブルーの文字 */
+  border-color: rgba(42, 111, 168, 0.8);     /* やや明るい枠線 */
+}
+:root[data-theme="dark"] .btn-outline-primary:hover {
+  background: var(--ii-primary);             /* ホバーでブランド色に塗る */
+  border-color: var(--ii-primary);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-success {
+  color: #6ee7b7;                            /* 明るい緑の文字 */
+  border-color: rgba(31, 138, 91, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-success:hover {
+  background: var(--ii-success);
+  border-color: var(--ii-success);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-danger {
+  color: #fca5a5;                            /* 明るい赤の文字 */
+  border-color: rgba(214, 49, 70, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-danger:hover {
+  background: var(--ii-danger);
+  border-color: var(--ii-danger);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-warning {
+  color: #fcd34d;                            /* 明るい黄の文字 */
+  border-color: rgba(217, 119, 6, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-warning:hover {
+  background: var(--ii-warning);
+  border-color: var(--ii-warning);
+  color: #1f2a37;                            /* 黄の塗りには暗い文字 */
+}
+:root[data-theme="dark"] .btn-outline-info {
+  color: #67e8f9;                            /* 明るい水色の文字 */
+  border-color: rgba(14, 165, 183, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-info:hover {
+  background: var(--ii-info);
+  border-color: var(--ii-info);
+  color: #fff;
 }
 /* モーダル: Bootstrap は背景を白固定にするため、ダーク時は明るい文字が白地に乗って読めなくなる。
    対策完了・有効性評価ダイアログ(Details.cshtml)が暗所でも使えるよう、面と境界をダーク用に上書きする。 */
