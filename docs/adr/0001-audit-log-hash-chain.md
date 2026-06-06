@@ -253,7 +253,7 @@ RowHash = SHA256( PrevHash ‖ 正準化シリアライズ(ChangedAt, ChangedBy,
 - provider 固有 SQL / 列型を一切持ち込まない。`Sequence` は `long`、`PrevHash` / `RowHash` は文字列（hex）で、
   全 provider が `TEXT` / `nvarchar` 相当へマップできる範囲に収める。
 - **provider 間で同一チェーン値になる正準化関数を 1 箇所に集約**する（`CanonicalAuditBytes(...)` のような単一関数）。
-  **正規化済み `ChangedAt`（固定精度・固定 `Kind`）**・列順・UTF-8・null トークン・enum 文字列化（既存 `JsonStringEnumConverter`）を
+  **永続化した正準時刻表現（`DateTimeOffset` 固定 +09:00／正準文字列／epoch ミリ秒の `long` を値コンバータで往復無損失に保存した値そのもの。`DateTime.Kind` 正規化に依存しない）**・列順・UTF-8・null トークン・enum 文字列化（既存 `JsonStringEnumConverter`）を
   すべてこの 1 関数に閉じ込め、SQLite / SQL Server / PostgreSQL で同一バイト列 → 同一 `RowHash` を保証する。
 - DB トリガ / computed column を使わないのは、この「単一の正準化関数」を provider 横断で共有するため
   （SQL 側に式を二重実装すると provider 間でズレる）。
