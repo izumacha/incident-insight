@@ -143,6 +143,91 @@ public class IncidentsControllerTests : IDisposable
         Assert.Empty(_db.Incidents);
     }
 
+    // --- Create POST: department scope enforcement for Staff (issue #63) ---
+
+    [Fact]
+    public async Task Create_Post_Staff_OverridesSubmittedDepartmentWithOwn()
+    {
+        // Staff(内科病棟)としてログインする
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        // フォームでは他部署(外科病棟)を選んで送信する
+        var vm = ValidViewModel("外科病棟");
+
+        // Create を実行する
+        await _controller.Create(vm);
+
+        // サーバ側で自部署(内科病棟)に上書きされて保存されることを確認する
+        var saved = await _db.Incidents.FirstOrDefaultAsync();
+        Assert.NotNull(saved);
+        Assert.Equal("内科病棟", saved!.Department);
+    }
+
+    [Fact]
+    public async Task Create_Post_StaffWithoutDepartmentClaim_ReturnsView_AndDoesNotSave()
+    {
+        // 所属部署クレームを持たない Staff としてログインする
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Build(AppRoles.Staff));
+        // 入力自体は妥当な ViewModel を送る
+        var vm = ValidViewModel("内科病棟");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 自部署を特定できないため再描画され、インシデントは保存されないことを確認する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Department)));
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_Admin_KeepsSubmittedDepartment()
+    {
+        // 既定の Admin(全件アクセス)のまま、他部署を指定して送信する
+        var vm = ValidViewModel("外来");
+
+        // Create を実行する
+        await _controller.Create(vm);
+
+        // Admin はフォームの部署がそのまま保存される(上書きされない)ことを確認する
+        var saved = await _db.Incidents.FirstOrDefaultAsync();
+        Assert.NotNull(saved);
+        Assert.Equal("外来", saved!.Department);
+    }
+
+    [Fact]
+    public async Task Edit_Post_Staff_CannotReassignDepartmentToAnother()
+    {
+        // 内科病棟のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+        // 楽観的同時実行制御用に現在のトークンを控える
+        var token = incident.ConcurrencyToken;
+
+        // Staff(内科病棟)としてログインする
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        // 編集フォームで部署を外科病棟へ付け替えようとする
+        var vm = ValidViewModel("外科病棟");
+        vm.ConcurrencyToken = token;
+
+        // Edit を実行する
+        await _controller.Edit(incident.Id, vm);
+
+        // 部署が内科病棟のまま(他部署へ付け替えられない)ことを確認する
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal("内科病棟", reloaded!.Department);
+    }
+
     // --- Index GET / Filtering ---
 
     [Fact]

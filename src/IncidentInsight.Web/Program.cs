@@ -10,10 +10,14 @@ using IncidentInsight.Web.Models.Auditing;
 using IncidentInsight.Web.Services;
 // IAuthorizationHandler インタフェース
 using Microsoft.AspNetCore.Authorization;
+// リバースプロキシの転送ヘッダ復元(ForwardedHeaders / ForwardedHeadersOptions)
+using Microsoft.AspNetCore.HttpOverrides;
 // ASP.NET Core Identity(認証・ユーザー管理)
 using Microsoft.AspNetCore.Identity;
 // EF Core(UseSqlite / UseSqlServer / UseNpgsql 等)
 using Microsoft.EntityFrameworkCore;
+// IPAddress(信頼するプロキシ IP の解析に使用)
+using System.Net;
 
 // WebApplication のビルダを作成(コマンドライン引数を受け取る)
 var builder = WebApplication.CreateBuilder(args);
@@ -27,8 +31,60 @@ builder.Services.AddSingleton<IClock, SystemClock>();
 // HashSalt は User Secrets / 環境変数で渡す(コミット禁止)
 builder.Services.Configure<AuditOptions>(
     builder.Configuration.GetSection(AuditOptions.SectionName));
+
+// 本番では HashSalt(監査ログの個人名ハッシュに使う秘密鍵)が空だと、
+// 弱い決定的ハッシュになり PHI(患者・職員の氏名)の擬似匿名化が破れる(issue #61)。
+// 誤って未設定のまま本番投入されるのを防ぐため、起動時に検査して空なら停止する(fail-fast)。
+if (builder.Environment.IsProduction())
+{
+    // Audit:HashSalt の設定値を直接読み取る(環境変数 Audit__HashSalt / User Secrets 由来)
+    var auditSalt = builder.Configuration[$"{AuditOptions.SectionName}:HashSalt"];
+    // 値が無い・空白のみなら構成不備として例外を投げ、サーバ起動を中止する(fail-closed)
+    if (string.IsNullOrWhiteSpace(auditSalt))
+    {
+        // 起動を止めて、空 salt のまま PHI ハッシュが弱くなる事故を未然に防ぐ
+        throw new InvalidOperationException(
+            "Audit:HashSalt is required in Production. Set it via the environment variable " +
+            "Audit__HashSalt or User Secrets. An empty salt makes audit-log person-name " +
+            "pseudonymization trivially reversible (issue #61).");
+    }
+}
 // 監査インターセプタを Scoped で登録(DbContext と同じスコープ)
 builder.Services.AddScoped<AuditSaveChangesInterceptor>();
+
+// リバースプロキシ(ロードバランサ等)配下で動かす場合に、転送ヘッダ
+// X-Forwarded-For / X-Forwarded-Proto を信頼してクライアント IP と
+// スキーム(https 判定)を正しく復元する(issue #64)。
+// 既定は無効で、設定 ForwardedHeaders:Enabled=true のときだけ有効化する。
+// 全許可にすると X-Forwarded-* を偽装されるため、信頼するプロキシは
+// 設定 ForwardedHeaders:KnownProxies(カンマ区切り IP)で明示的に与える。
+var forwardedHeadersEnabled = builder.Configuration.GetValue<bool>("ForwardedHeaders:Enabled");
+if (forwardedHeadersEnabled)
+{
+    // 転送ヘッダの取り扱いを設定する
+    builder.Services.Configure<ForwardedHeadersOptions>(options =>
+    {
+        // 復元するヘッダを限定する(For=クライアント IP / Proto=元のスキーム)
+        options.ForwardedHeaders =
+            ForwardedHeaders.XForwardedFor | ForwardedHeaders.XForwardedProto;
+        // 設定で渡された信頼プロキシ IP(カンマ区切り)を読み取る
+        var knownProxies = builder.Configuration["ForwardedHeaders:KnownProxies"];
+        // 値があれば 1 件ずつ解析して KnownProxies に登録する
+        if (!string.IsNullOrWhiteSpace(knownProxies))
+        {
+            // カンマで分割し、空白除去しつつ各 IP を処理する
+            foreach (var ip in knownProxies.Split(
+                ',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                // 正しい IP 形式のものだけ信頼プロキシとして追加する
+                if (IPAddress.TryParse(ip, out var address))
+                {
+                    options.KnownProxies.Add(address);
+                }
+            }
+        }
+    });
+}
 
 // DbContext を DI 登録。Database:Provider 設定で SQLite / SQL Server / PostgreSQL を切り替える
 builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
@@ -171,6 +227,14 @@ builder.Services.AddHealthChecks()
 // ここまでで DI 登録完了。アプリケーションを構築する
 var app = builder.Build();
 
+// 転送ヘッダの復元は、HSTS / HTTPS リダイレクト / 認証より「前」に行う必要がある
+// (これらが正しいスキーム・クライアント IP を見るため)。有効時のみ挿入する(issue #64)。
+if (forwardedHeadersEnabled)
+{
+    // X-Forwarded-* を読み取り、Request.Scheme / RemoteIpAddress を復元する
+    app.UseForwardedHeaders();
+}
+
 // Configure pipeline
 // 本番のみグローバルエラーハンドラ + HTTPS 強制を有効化
 if (!app.Environment.IsDevelopment())
@@ -181,6 +245,20 @@ if (!app.Environment.IsDevelopment())
     app.UseHsts();
     // HTTP → HTTPS リダイレクト
     app.UseHttpsRedirection();
+
+    // 本番で AllowedHosts が "*"(全ホスト許可)のままだと、Host ヘッダ偽装
+    // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
+    // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
+    var allowedHosts = app.Configuration["AllowedHosts"];
+    // 未設定・空・ワイルドカードのいずれかなら警告ログを出す
+    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Trim() == "*")
+    {
+        // 運用者が気づけるよう Warning レベルで通知する
+        app.Logger.LogWarning(
+            "AllowedHosts is '*' in Production. Set it to the real hostname(s) via the " +
+            "AllowedHosts setting or environment variable (semicolon-separated) to prevent " +
+            "Host-header spoofing, especially behind a reverse proxy (issue #64).");
+    }
 }
 
 // 静的ファイル(wwwroot)配信を有効化

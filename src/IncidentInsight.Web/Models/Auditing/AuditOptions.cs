@@ -13,7 +13,9 @@ public class AuditOptions
     // 設定セクション名(Program.cs から bind するときに使う)
     public const string SectionName = "Audit";
 
-    // [Sensitive(Mask.Hash)] のハッシュ計算に使う salt。空文字は許容するが
-    // 本番環境では必ず設定する(空のままだと弱い決定的ハッシュになる)。
+    // [Sensitive(Mask.Hash)] の擬似匿名化に使う秘密鍵(salt)。
+    // この値は HMAC-SHA256 の鍵として使われ、これを知らない限り氏名等のハッシュは
+    // 逆算できない。Development では空でも動くが、本番では空だと擬似匿名化が破れるため
+    // Program.cs が起動時に空をチェックして fail-fast する(issue #61)。
     public string HashSalt { get; set; } = "";
 }
