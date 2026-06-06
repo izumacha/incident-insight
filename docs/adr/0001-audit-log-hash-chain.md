@@ -140,16 +140,31 @@ RowHash = SHA256( PrevHash ‖ 正準化シリアライズ(ChangedAt, ChangedBy,
 - `Sequence` を `Id` から独立させることで、Id 体系を将来変えても順序意図が保たれ、かつ
   「挿入前にハッシュ計算 → 完成行を 1 回で書く」原子性が成立する。
 
+#### 競合再試行時の状態保持（state-preserving retry）
+
+手順 5 の先端更新が競合で失敗したとき、明示トランザクションを巻き戻すだけでは**安全に再試行できない**。
+呼び出し側が既定の `SaveChangesAsync()` を使うと、手順 2 の業務 `SaveChanges` 完了時点で EF は業務エントリを
+`Unchanged` に受理してしまい、巻き戻し後に**同一コンテキストで業務 insert/update/delete を再生できない**。
+そこで次のいずれかを**実装前に凍結**する:
+
+- **`SaveChanges(acceptAllChangesOnSuccess: false)` を使い、`AcceptAllChanges()` は監査挿入のコミット成功後にのみ呼ぶ**。
+  競合時はエントリ状態が保持されるため、トランザクション巻き戻し後に**同一コンテキストでそのまま再試行**できる。
+- もしくは **2 セーブ + トランザクションのオーケストレーションを `SavedChanges` インターセプタの外**（明示的な
+  Unit of Work ラッパ）に出し、競合時はラッパが業務変更ごとリトライする。
+  いずれにせよ「競合 → 巻き戻し → 業務変更を含めて再生 → 成功してから `AcceptAllChanges`」を原則とする。
+
 ### ② バイト列の正準化（provider 間で同一バイト列）
 
-- **`ChangedAt` は「正規化した時刻表現」を生成・永続化してからハッシュする**。`"o"`（round-trip, ISO 8601）整形
+- **時刻は「往復一致する正準スカラー/文字列」として永続化し、それをハッシュする**。`"o"`（round-trip, ISO 8601）整形
   **だけ**では provider 往復差は消えない: `SystemClock` は `Kind=Local` の値を供給する一方、
   SQLite / SQL Server / PostgreSQL は再読込時に `Kind` や小数秒精度を変え得る。**挿入前に計算した `RowHash`** と、
   **検証時に再読込した値から再計算した `RowHash`** がズレると、無改ざんの行が provider 次第で検証 NG になる。
-  これを防ぐため、**全 provider が無損失で往復できる固定精度（例: ミリ秒）・固定 `Kind`（JST を表す固定オフセット）へ
-  正規化した値を `ChangedAt` として永続化し、ハッシュ入力にもその正規化済み値を使う**。
-  「保存した値」「ハッシュした値」「検証時に再読込する値」が常にバイト一致するようにする
-  （`"o"` で“差を隠す”のではなく、保存前に差を“消す”）。
+  さらに `DateTime.Kind` は `Local` / `Utc` / `Unspecified` しか持てず **JST の固定オフセットを表現できない**ため、
+  `DateTime` 列に「正規化した Kind」を入れても往復で失われる。これを防ぐため、ハッシュ対象の時刻は
+  **`DateTimeOffset`（固定 +09:00）または正準文字列（固定精度の `"o"` 文字列）/ epoch ミリ秒の `long` を、
+  EF 値コンバータで往復無損失に永続化**し、**「保存した値 ＝ ハッシュした値 ＝ 検証時に再読込する値」がバイト一致**する
+  ようにする（`"o"` で“差を隠す”のではなく、保存前に差を“消し”、その消した値そのものを保存・ハッシュする）。
+  実装時は `ChangedAt` の列型/コンバータをこの正準表現に合わせる。
 - **列順を固定**: `ChangedAt → ChangedBy → EntityName → EntityKey → Operation → ChangesJson` の順。
 - **enum / JSON は既存の `JsonStringEnumConverter` を流用**し、`ChangesJson` は文字列としてそのまま連結する
   （`ChangesJson` は既にインターセプタが `JsonStringEnumConverter` で生成済みの文字列なので、再シリアライズしない）。
@@ -205,8 +220,12 @@ RowHash = SHA256( PrevHash ‖ 正準化シリアライズ(ChangedAt, ChangedBy,
   `PrevHash`/`RowHash` 連結は整合したままなので「健全」と誤判定し得る。これを防ぐため、検証は
   **チェーン末尾を `AuditChainState` の `LastSequence` / `LastRowHash` と必ず突合**する
   （`AuditChainState` は **Phase 1 で導入する持続的アンカー**）。最終行の `Sequence`/`RowHash` が先端と一致しなければ
-  末尾が削られた／改変されたと判定する。これにより **Phase 1 時点で末尾削除を検知できる**。
-  HMAC 封印 `AuditCheckpoint`（Phase 2）は、これに加えて**過去区間の一括差し替え**を検出する上位の防御層である。
+  末尾欠落／改変と判定する。
+  **ただし `AuditChainState` は同一 DB 内にあるため、これで確実に検知できるのは「事故・不完全な切詰め」**
+  （アプリ不具合や、tip を更新せずに行だけ消した削除）**に限る**。`AuditLog` を直接書ける特権攻撃者は、
+  末尾行を消したうえで `AuditChainState` の tip も新末尾へ書き戻せるため **Phase 1 単独では検知できない**。
+  この**特権・DB 直書きによる末尾切詰めへの保証は、Phase 2 の DB 外退避 ＋ HMAC 封印 `AuditCheckpoint` に依存する**
+  （封印値を DB 外の WORM/別系に置き、DB 内の全体差し替えと突合する）。Phase 1 の主張は上記スコープに限定する。
 
 ### 管理者専用の検証アクション
 
@@ -216,11 +235,16 @@ RowHash = SHA256( PrevHash ‖ 正準化シリアライズ(ChangedAt, ChangedBy,
 
 ### 日次封印 `AuditCheckpoint`
 
-- `AuditCheckpoint`（末尾 `Id`・末尾 `RowHash`・件数・封印時刻、**運用鍵による HMAC**）を日次で記録する。
+- `AuditCheckpoint`（末尾 `Sequence`・末尾 `RowHash`・件数・封印時刻、**運用鍵による HMAC**、後述の **`KeyId`/`KeyVersion`**）を日次で記録する。
   これは「ある時点までのチェーン状態」を 1 行に要約して固定するスナップショットであり、
   過去区間をまとめて差し替える攻撃を、checkpoint 時点の HMAC との突合で検出する。
 - 封印時刻も `IClock`（JST）で取得する（時刻源の不変条件を守る）。
 - HMAC の **運用鍵はコミットしない**（`Audit:HashSalt` と同様に環境変数 / Secret Manager。後述「残存リスク」）。
+- **鍵バージョニング（必須）**: `AuditCheckpoint` に **どの鍵で封印したかを示す `KeyId`/`KeyVersion` を保存**する。
+  運用上 HMAC 鍵をローテーションすると、**版を記録していない過去 checkpoint は再検証不能**になり（旧鍵を場当たりに推測する以外に検証できない）、
+  この層が担うはずの長期改ざん検査が崩れる。したがって **(a) checkpoint ごとに鍵版を記録**し、
+  **(b) 旧鍵を版付きで保持（リテンション）して過去 checkpoint を検証できるようにし**、
+  **(c) ローテーション/失効ポリシーを runbook 化**する（`Audit:HashSalt` のローテーション注意と同じ思想）。
 
 ---
 
