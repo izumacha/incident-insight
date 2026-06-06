@@ -22,13 +22,21 @@
   --ii-border-strong: #c8cfd9;
   --ii-text: #1f2a37;
   --ii-text-muted: #5a6573;
-  /* 角丸と影：ふわっとした柔らかい質感 */
-  --ii-radius-sm: 6px;
-  --ii-radius: 10px;
-  --ii-radius-lg: 14px;
-  --ii-shadow-sm: 0 1px 2px rgba(15, 23, 42, 0.06);
-  --ii-shadow: 0 2px 8px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
-  --ii-shadow-lg: 0 12px 28px rgba(15, 23, 42, 0.10), 0 4px 8px rgba(15, 23, 42, 0.05);
+  /* 角丸：少し大きめにして今どきの SaaS らしい柔らかさを出す */
+  --ii-radius-sm: 8px;   /* 小さめの角丸(ボタン・バッジ・入力欄) */
+  --ii-radius: 12px;     /* 標準の角丸(カード) */
+  --ii-radius-lg: 16px;  /* 大きめの角丸(ヒーロー帯・ログインカード) */
+  --ii-radius-xl: 22px;  /* 特大の角丸(モーダルや特別なパネル用) */
+  /* 影：複数レイヤーを重ねて「ふわっと浮く」モダンな立体感を作る */
+  --ii-shadow-sm: 0 1px 2px rgba(16, 24, 40, 0.04), 0 1px 3px rgba(16, 24, 40, 0.06);
+  --ii-shadow: 0 4px 12px -2px rgba(16, 24, 40, 0.08), 0 2px 6px -2px rgba(16, 24, 40, 0.05);
+  --ii-shadow-lg: 0 24px 48px -12px rgba(16, 24, 40, 0.18), 0 8px 16px -8px rgba(16, 24, 40, 0.08);
+  /* ブランド色の光彩シャドウ(主要ボタンやアクティブ要素のホバー時に使う) */
+  --ii-shadow-glow: 0 8px 24px -6px rgba(26, 109, 191, 0.45);
+  /* 滑らかな動きのための共通イージング(React 製アプリのような上質な減速感) */
+  --ii-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  /* 弾むようなイージング(ホバーの浮き上がりなどに使う) */
+  --ii-ease-spring: cubic-bezier(0.34, 1.56, 0.64, 1);
 
   /* Bootstrap の組み込み変数を上書きして .text-primary / .bg-primary / .shadow-sm 等のユーティリティを医療系トークンに揃える(個別 !important ルールを増やさないため) */
   --bs-primary: var(--ii-primary);
@@ -144,6 +152,16 @@
   /* 文字色(白寄り、補助テキストはスレートグレー) */
   --ii-text: #f1f5f9;
   --ii-text-muted: #94a3b8;
+  /* Bootstrap 標準ユーティリティもダーク配色に追従させる(.text-muted / .text-secondary / 罫線など)。
+     これらは --ii-* ではなく Bootstrap 自身の変数なので、ダーク時はここで明示的に上書きする。 */
+  --bs-body-color: #f1f5f9;                       /* 本文の既定文字色 */
+  --bs-body-color-rgb: 241, 245, 249;             /* 半透明計算に使う本文色の RGB */
+  --bs-secondary-color: rgba(148, 163, 184, 0.95);/* .text-muted / .text-secondary が参照する補助文字色 */
+  --bs-tertiary-color: rgba(148, 163, 184, 0.65); /* さらに薄い三次テキスト色 */
+  --bs-emphasis-color: #ffffff;                   /* 強調テキスト色 */
+  --bs-border-color: #334155;                     /* hr や border ユーティリティの罫線色 */
+  --bs-secondary-bg: #273449;                     /* secondary 系の薄い背景面 */
+  --bs-tertiary-bg: #1e293b;                      /* tertiary 系の背景面 */
   /* 状態色の soft バリアント: ダーク背景でも色付きが見えるよう透過アルファに置き換え */
   --ii-primary-light: rgba(26, 109, 191, 0.18);
   --ii-success-light: rgba(31, 138, 91, 0.18);
@@ -226,12 +244,16 @@ a:focus-visible {
    Bootstrap カラートーン微調整（プライマリの上書き）
 ──────────────────────────────────── */
 .btn-primary {
-  background: var(--ii-primary);
-  border-color: var(--ii-primary);
+  /* 単色ではなく上から下への淡いグラデにして、ボタンに奥行きを持たせる */
+  background: linear-gradient(180deg, var(--ii-primary) 0%, var(--ii-primary-dark) 100%);
+  border-color: var(--ii-primary-dark);
 }
 .btn-primary:hover, .btn-primary:focus {
-  background: var(--ii-primary-dark);
-  border-color: var(--ii-primary-dark);
+  /* ホバーでは少し濃いグラデに切り替える */
+  background: linear-gradient(180deg, var(--ii-primary-dark) 0%, #0f4a85 100%);
+  border-color: #0f4a85;
+  /* ブランド色の光彩を落として浮かせる */
+  box-shadow: var(--ii-shadow-glow);
 }
 /* .text-primary / .bg-primary / .border-primary は :root の --bs-primary-rgb 上書きで自動的に医療系ブルーになるため、ここでの個別ルールは不要 */
 
@@ -239,36 +261,60 @@ a:focus-visible {
    Navbar：粘着ヘッダ + アクティブ表示
 ──────────────────────────────────── */
 .navbar.bg-primary {
-  background: linear-gradient(90deg, var(--ii-primary-dark) 0%, var(--ii-primary) 100%) !important;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.08);
+  /* 斜めグラデーションに微かな奥行きを足したブランドヘッダ */
+  background: linear-gradient(100deg, var(--ii-primary-dark) 0%, var(--ii-primary) 55%, #2a82d8 100%) !important;
+  /* 下端に細いハイライトを入れてガラスのような艶を出す */
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.08) inset, 0 4px 20px rgba(16, 24, 40, 0.12);
+  /* 背景を少しだけ透かして、スクロール時に下のコンテンツが滲む磨りガラス効果 */
+  backdrop-filter: saturate(140%) blur(6px);
   position: sticky;
   top: 0;
   z-index: 1030;
+  /* 上下のパディングを少し詰めて引き締まった印象に */
+  padding-top: 0.4rem;
+  padding-bottom: 0.4rem;
 }
 
 .navbar-brand {
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   font-size: 1.05rem;
 }
 
+/* ブランドアイコンを丸いチップ風に囲って、ロゴらしい存在感を出す */
+.navbar-brand .bi-shield-plus {
+  /* アイコンを半透明の白チップで囲う */
+  background: rgba(255, 255, 255, 0.16);
+  /* チップの角を丸める */
+  border-radius: 9px;
+  /* アイコン周りの余白 */
+  padding: 5px 7px;
+  /* チップの縁を薄く光らせる */
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.25);
+}
+
 .navbar-dark .navbar-nav .nav-link {
-  border-radius: var(--ii-radius-sm);
-  padding: 0.45rem 0.85rem;
+  border-radius: 999px;                 /* ピル型(丸い)ナビ項目にして今どきの見た目に */
+  padding: 0.4rem 0.9rem;               /* 左右に余白を取りピルの形を活かす */
   margin: 0 2px;
-  transition: background 0.15s ease, color 0.15s ease;
-  color: rgba(255, 255, 255, 0.85);
+  /* 背景・色・浮き上がりを滑らかに変化させる */
+  transition: background 0.18s var(--ii-ease), color 0.18s var(--ii-ease), transform 0.18s var(--ii-ease);
+  color: rgba(255, 255, 255, 0.82);
+  white-space: nowrap;                  /* ピル内のラベルが途中で折り返さないようにする */
 }
 
 .navbar-dark .navbar-nav .nav-link:hover {
-  background: rgba(255, 255, 255, 0.12);
+  background: rgba(255, 255, 255, 0.14); /* ホバーで薄い白を敷く */
   color: #fff;
+  transform: translateY(-1px);           /* ほんの少し浮かせてクリック感を予告する */
 }
 
 .navbar-dark .navbar-nav .nav-link.active {
-  background: rgba(255, 255, 255, 0.18);
-  color: #fff;
+  /* アクティブ項目は白いピルで塗りつぶし、現在地をはっきり示す */
+  background: #fff;
+  color: var(--ii-primary-dark);
   font-weight: 600;
-  box-shadow: inset 0 -2px 0 rgba(255, 255, 255, 0.65);
+  /* 白ピルにごく薄い影を付けて浮かせる */
+  box-shadow: 0 2px 8px rgba(16, 24, 40, 0.18);
 }
 
 /* ────────────────────────────────────
@@ -292,12 +338,20 @@ a:focus-visible {
   position: relative;
 }
 
-/* 右上の柔らかい光彩(放射状グラデで奥行きを演出) */
+/* 右上の柔らかい光彩 + 細かいドットの装飾テクスチャ(奥行きと「作り込まれた」質感を演出) */
 .hero-banner::before {
   content: '';
   position: absolute;
   inset: 0;
-  background: radial-gradient(circle at top right, rgba(255, 255, 255, 0.18) 0%, transparent 55%);
+  background:
+    /* 右上から差し込む柔らかな光 */
+    radial-gradient(circle at top right, rgba(255, 255, 255, 0.20) 0%, transparent 55%),
+    /* 左下にうっすら影を落として帯に厚みを出す */
+    radial-gradient(circle at -10% 120%, rgba(0, 0, 0, 0.12) 0%, transparent 45%),
+    /* 全面に極小のドット格子を敷いて、のっぺりしない上質なテクスチャにする */
+    radial-gradient(rgba(255, 255, 255, 0.12) 1px, transparent 1px);
+  /* ドット格子の間隔 */
+  background-size: 100% 100%, 100% 100%, 22px 22px;
   /* ホバーやクリックを下層に通す */
   pointer-events: none;
 }
@@ -391,7 +445,8 @@ a:focus-visible {
   border: 1px solid var(--ii-border);
   border-radius: var(--ii-radius);
   background: var(--ii-surface);
-  transition: box-shadow 0.18s ease, transform 0.18s ease;
+  /* 影・浮き上がり・枠線色をまとめて滑らかに変化させる(ホバー時の上質な動き) */
+  transition: box-shadow 0.22s var(--ii-ease), transform 0.22s var(--ii-ease), border-color 0.22s var(--ii-ease);
 }
 
 /* .card.shadow-sm は :root の --bs-box-shadow-sm 上書きで Bootstrap 純正ユーティリティ経由で医療系シャドウになる */
@@ -401,6 +456,8 @@ a:focus-visible {
   cursor: pointer;
 }
 .card.is-interactive:hover {
+  transform: translateY(-3px);              /* クリックできるカードはホバーで少し浮かせる */
+  border-color: var(--ii-border-strong);    /* 枠線を少し濃くして反応を伝える */
   box-shadow: var(--ii-shadow-lg) !important;
 }
 
@@ -422,6 +479,13 @@ a:focus-visible {
   position: relative;
   overflow: hidden;
   border: 1px solid var(--ii-border);
+  /* 白からごく薄いグレーへの縦グラデで、平らな白より上品な表情を出す */
+  background: linear-gradient(180deg, var(--ii-surface-1) 0%, var(--ii-surface-2) 140%);
+}
+/* KPI カードはホバーで浮き上がらせ、ダッシュボードに反応性を持たせる */
+.kpi-card:hover {
+  transform: translateY(-3px);
+  box-shadow: var(--ii-shadow-lg) !important;
 }
 .kpi-card::before {
   content: '';
@@ -431,7 +495,7 @@ a:focus-visible {
   bottom: 0;
   width: 4px;
   background: var(--ii-primary);
-  opacity: 0.85;
+  opacity: 0.9;
 }
 .kpi-card.kpi-secondary::before { background: var(--ii-text-muted); }
 .kpi-card.kpi-warning::before { background: var(--ii-warning); }
@@ -463,8 +527,16 @@ a:focus-visible {
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--ii-radius);
+  border-radius: 14px;                 /* アイコンタイルの角を丸めて柔らかい印象に */
   flex-shrink: 0;
+  /* タイルの縁を内側に薄く光らせ、立体的なアイコンチップに見せる */
+  box-shadow: inset 0 0 0 1px rgba(16, 24, 40, 0.04);
+  /* ホバー時にアイコンタイルが弾むよう変化を滑らかにする */
+  transition: transform 0.25s var(--ii-ease-spring);
+}
+/* KPI カードをホバーしたらアイコンを少し拡大して生き生きとした反応を出す */
+.kpi-card:hover .kpi-icon {
+  transform: scale(1.08);
 }
 
 .kpi-label {
@@ -509,11 +581,21 @@ a:focus-visible {
 .btn {
   border-radius: var(--ii-radius-sm);
   font-weight: 500;
-  transition: all 0.15s ease;
+  /* 色・影・浮き沈みを滑らかに変化させ、押し心地のある操作感にする */
+  transition: transform 0.12s var(--ii-ease), box-shadow 0.18s var(--ii-ease), background 0.18s var(--ii-ease), border-color 0.18s var(--ii-ease);
+}
+
+/* マウスを乗せたボタンはわずかに浮き上がる(クリックを誘う反応) */
+.btn:hover {
+  transform: translateY(-1px);
+}
+/* 押し込んだ瞬間は沈み込ませて、物理ボタンのような手応えを与える */
+.btn:active {
+  transform: translateY(0) scale(0.98);
 }
 
 .btn-sm {
-  padding: 0.28rem 0.7rem;
+  padding: 0.3rem 0.75rem;
 }
 
 .btn-outline-secondary {
@@ -545,7 +627,7 @@ a:focus-visible {
 }
 
 .table > thead {
-  background: #f8fafc;
+  background: var(--ii-surface-2);   /* ヘッダ背景をトークン化(ダークモードでも自動で沈んだ色になる) */
 }
 
 .table > thead th {
@@ -767,7 +849,7 @@ a:focus-visible {
 .kanban-lane-body {
   padding: 0.6rem;
   min-height: 80px;
-  background: #fbfcfd;
+  background: var(--ii-surface-2);   /* レーン本体の背景をトークン化(ダークモード対応) */
 }
 
 .measure-row { transition: border-color 0.15s; }
@@ -840,13 +922,23 @@ footer.app-footer {
    ページ遷移時のフェードイン
 ──────────────────────────────────── */
 @keyframes ii-fade-in {
-  from { opacity: 0; transform: translateY(4px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
+/* メイン領域直下の各ブロックを、ほんの少し時間をずらしながら順番に立ち上げる(段階的リビール) */
 main[role="main"] > * {
-  animation: ii-fade-in 0.25s ease-out;
+  /* 滑らかなイージングでフェードイン */
+  animation: ii-fade-in 0.45s var(--ii-ease) both;
 }
+/* 上から順に遅延を足していき、コンテンツが波のように現れるようにする */
+main[role="main"] > *:nth-child(1) { animation-delay: 0.02s; }
+main[role="main"] > *:nth-child(2) { animation-delay: 0.08s; }
+main[role="main"] > *:nth-child(3) { animation-delay: 0.14s; }
+main[role="main"] > *:nth-child(4) { animation-delay: 0.20s; }
+main[role="main"] > *:nth-child(5) { animation-delay: 0.26s; }
+main[role="main"] > *:nth-child(6) { animation-delay: 0.32s; }
+main[role="main"] > *:nth-child(n+7) { animation-delay: 0.36s; }
 
 /* prefers-reduced-motion を尊重してアニメーションを無効化 */
 @media (prefers-reduced-motion: reduce) {
@@ -854,4 +946,384 @@ main[role="main"] > * {
     animation-duration: 0.001ms !important;
     transition-duration: 0.001ms !important;
   }
+}
+
+/* ────────────────────────────────────
+   モダン化レイヤー: React 製アプリのような細部の作り込み
+   (カスタムスクロールバー・進捗バー演出・スケルトン・トースト演出など)
+──────────────────────────────────── */
+
+/* カスタムスクロールバー: 既定の無骨なバーを細く上品なものに置き換える(WebKit 系) */
+*::-webkit-scrollbar {
+  /* 縦・横スクロールバーの太さ */
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  /* レール部分は背景色になじませて目立たせない */
+  background: transparent;
+}
+*::-webkit-scrollbar-thumb {
+  /* つまみ部分は薄いグレーの丸みのあるバー */
+  background: var(--ii-border-strong);
+  border-radius: 999px;
+  /* 周囲に余白を作り、細く見せる */
+  border: 2px solid transparent;
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:hover {
+  /* ホバーで少し濃くして操作対象だと分かるようにする */
+  background: var(--ii-text-muted);
+  background-clip: content-box;
+}
+
+/* 進捗バー: 数値の変化と光の流れる演出で「生きている」感じを出す */
+.progress {
+  /* バーの角を丸め、背景をごく薄いグレーに */
+  border-radius: 999px;
+  background: var(--ii-surface-2);
+  overflow: hidden;
+}
+.progress-bar {
+  /* 幅の変化を滑らかにアニメーションさせる(JS で 0 → 目標値に伸ばす) */
+  transition: width 1s var(--ii-ease);
+  /* バー自体も角丸に */
+  border-radius: 999px;
+  /* バーの上に斜めのストライプ光沢を重ねて立体感を出す */
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, 0.15) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, 0.15) 50%, rgba(255, 255, 255, 0.15) 75%, transparent 75%, transparent);
+  background-size: 1rem 1rem;
+}
+
+/* スケルトン: データ読み込み中に表示する、光が流れるプレースホルダ */
+.skeleton {
+  /* グレーの帯に明るい光を斜めに走らせるグラデーション */
+  background: linear-gradient(100deg, var(--ii-surface-2) 30%, var(--ii-border) 50%, var(--ii-surface-2) 70%);
+  background-size: 200% 100%;
+  /* 光が左から右へ流れ続けるアニメーション */
+  animation: ii-shimmer 1.4s infinite linear;
+  border-radius: var(--ii-radius-sm);
+  /* 読み込み中なので中の文字は見せない */
+  color: transparent;
+}
+@keyframes ii-shimmer {
+  /* 背景位置を動かして光のハイライトを移動させる */
+  from { background-position: 200% 0; }
+  to { background-position: -200% 0; }
+}
+
+/* バッジ: ホバーでわずかに拡大し、インタラクティブな印象を添える */
+.badge {
+  transition: transform 0.15s var(--ii-ease-spring);
+}
+
+/* テーブル行: ホバーで左にプライマリ色の細いバーを差し込み、選択行を目立たせる */
+.table.table-hover tbody tr {
+  /* 行の手前に挿入するアクセントバーのための余白基準 */
+  box-shadow: inset 3px 0 0 transparent;
+  transition: box-shadow 0.15s var(--ii-ease), background 0.15s var(--ii-ease);
+}
+.table.table-hover tbody tr:hover {
+  /* ホバー行の左端にブランド色のラインを表示 */
+  box-shadow: inset 3px 0 0 var(--ii-primary);
+}
+
+/* リストグループ項目: ホバーで薄いプライマリ背景に変え、クリック先を示す */
+.list-group-item-action:hover,
+.list-group-flush .list-group-item:hover {
+  background: var(--ii-primary-soft);
+}
+
+/* 入力欄フォーカス: 枠線をブランド色に変え、操作中の欄をはっきりさせる */
+.form-control:focus, .form-select:focus {
+  border-color: var(--ii-primary);
+}
+
+/* トースト/アラート: 上からふわっと滑り込ませて登場感を出す */
+.alert {
+  animation: ii-slide-down 0.4s var(--ii-ease) both;
+}
+@keyframes ii-slide-down {
+  from { opacity: 0; transform: translateY(-12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* セクション見出しの装飾: アイコン+見出しの左に短いブランド色のバーを足せるユーティリティ */
+.section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-weight: 700;
+}
+.section-title::before {
+  content: '';
+  /* 見出し左の縦バー(ブランド色のアクセント) */
+  width: 4px;
+  height: 1.2em;
+  border-radius: 999px;
+  background: var(--ii-gradient-primary);
+}
+
+/* ────────────────────────────────────
+   ダークモード切替トグル(ナビ右側のボタン)
+──────────────────────────────────── */
+.theme-toggle {
+  /* ナビ内に置く半透明の丸ボタン */
+  width: 36px;
+  height: 36px;
+  border-radius: 999px;
+  border: 1px solid rgba(255, 255, 255, 0.3);
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  /* ホバー時の変化を滑らかに */
+  transition: background 0.18s var(--ii-ease), transform 0.18s var(--ii-ease);
+  cursor: pointer;
+}
+.theme-toggle:hover {
+  background: rgba(255, 255, 255, 0.22);
+  transform: translateY(-1px);
+}
+/* ライト時は月アイコン、ダーク時は太陽アイコンを表示するため、両方を用意して切り替える */
+.theme-toggle .bi-sun-fill { display: none; }
+:root[data-theme="dark"] .theme-toggle .bi-moon-stars-fill { display: none; }
+:root[data-theme="dark"] .theme-toggle .bi-sun-fill { display: inline-block; }
+
+/* 数値カウントアップ中は等幅数字で桁が揺れないよう固定する */
+.kpi-value { font-variant-numeric: tabular-nums; }
+
+/* リップル(波紋)アニメーション: 中心から外側へ広がりながら薄れて消える */
+@keyframes ii-ripple {
+  to { transform: scale(2.2); opacity: 0; }
+}
+
+/* ────────────────────────────────────
+   ダークモード補正: Bootstrap が白固定にしている部分をダーク面に合わせる
+   (まだ全画面を個別検証していないため、共通の落とし所をここで一括して整える)
+──────────────────────────────────── */
+/* 本文・カードを白固定にする bg-white / bg-light を、ダーク時はカード面の色に置き換える */
+:root[data-theme="dark"] .bg-white,
+:root[data-theme="dark"] .bg-light {
+  background-color: var(--ii-surface) !important;
+  color: var(--ii-text);
+}
+/* カードヘッダの白背景もダーク面に */
+:root[data-theme="dark"] .card-header.bg-white {
+  background: var(--ii-surface) !important;
+}
+/* リストグループの薄い罫線をダーク用の境界色にそろえる */
+:root[data-theme="dark"] .list-group-item {
+  background: transparent;
+  color: var(--ii-text);
+  border-color: var(--ii-border);
+}
+/* アラートの文字色: ダーク背景では暗い文字だと読めないため明るい色に上げる */
+/* アラート: 文字色だけでなく背景・枠線もダーク用に明示設定する。
+   薄い色面に明るい文字を乗せ、成功/警告/エラーのフラッシュメッセージが暗所でもはっきり読めるようにする。 */
+:root[data-theme="dark"] .alert-success {
+  background: rgba(31, 138, 91, 0.22);     /* 成功: 緑の半透明面 */
+  border-color: rgba(31, 138, 91, 0.45);   /* 緑の枠線 */
+  color: #6ee7b7;                          /* 明るい緑の文字 */
+}
+:root[data-theme="dark"] .alert-warning {
+  background: rgba(217, 119, 6, 0.22);     /* 警告: 橙の半透明面 */
+  border-color: rgba(217, 119, 6, 0.45);   /* 橙の枠線 */
+  color: #fcd34d;                          /* 明るい黄の文字 */
+}
+:root[data-theme="dark"] .alert-danger {
+  background: rgba(214, 49, 70, 0.22);     /* エラー: 赤の半透明面 */
+  border-color: rgba(214, 49, 70, 0.45);   /* 赤の枠線 */
+  color: #fca5a5;                          /* 明るい赤の文字 */
+}
+/* alert-light(再発防止策の登録/編集フォームのインシデント要約パネル、分析のインサイト枠)は
+   既定の淡い背景のまま。.text-muted ラベルが明色になった分コントラストが落ちるため、ダーク面に置き換える。 */
+:root[data-theme="dark"] .alert-light {
+  background: var(--ii-surface-2);         /* 淡色面をダーク面に */
+  border-color: var(--ii-border);          /* 枠線をダーク用境界色に */
+  color: var(--ii-text);                   /* 本文を明るい文字色に */
+}
+
+/* リンク色: 既定の a { color: var(--ii-primary) } はダーク面でコントラストが 2〜3:1 と低い。
+   ダーク時は明るいブルーに引き上げる。ただしボタン(.btn)・ナビ項目・ブランドは独自配色なので除外する。 */
+:root[data-theme="dark"] a:not(.btn):not(.nav-link):not(.navbar-brand) {
+  color: #5aa9e6;                          /* 明るいブルーで十分なコントラストを確保 */
+}
+:root[data-theme="dark"] a:not(.btn):not(.nav-link):not(.navbar-brand):hover {
+  color: #8fc5f0;                          /* ホバーではさらに明るく(暗くならないように) */
+}
+/* テーブル: Bootstrap は各セルを --bs-table-* 変数で塗るため、color だけでなく
+   背景・文字・罫線・ストライプ・ホバーの各変数をダーク用に設定する(ダークカード内のセルが白く残るのを防ぐ)。 */
+:root[data-theme="dark"] .table {
+  --bs-table-bg: transparent;                       /* セル背景は透明にしてダークカード面を透かす */
+  --bs-table-color: var(--ii-text);                 /* セル文字は明るい色 */
+  --bs-table-border-color: var(--ii-border);        /* セルの罫線はダーク用境界色 */
+  --bs-table-striped-color: var(--ii-text);         /* 縞模様行の文字色 */
+  --bs-table-striped-bg: rgba(255, 255, 255, 0.03); /* 縞模様行の薄い背景 */
+  --bs-table-hover-color: var(--ii-text);           /* ホバー行の文字色 */
+  --bs-table-hover-bg: rgba(255, 255, 255, 0.05);   /* ホバー行の薄い背景 */
+  color: var(--ii-text);
+}
+/* Bootstrap の文脈クラス(.table-light の thead / .table-danger の超過行)は、
+   その要素自身に --bs-table-* を設定するため .table 側の上書きでは届かない。個別にダーク用へ上書きする。 */
+:root[data-theme="dark"] .table-light,
+:root[data-theme="dark"] .table-light > th,
+:root[data-theme="dark"] .table-light > td {
+  --bs-table-bg: var(--ii-surface-2);               /* 見出し行の背景を沈んだダーク面に */
+  --bs-table-color: var(--ii-text-muted);           /* 見出し文字は補助色 */
+  --bs-table-border-color: var(--ii-border);        /* 罫線はダーク用境界色 */
+  background-color: var(--ii-surface-2);            /* 変数を見ない描画系の保険として直接指定 */
+  color: var(--ii-text-muted);
+}
+:root[data-theme="dark"] .table-danger,
+:root[data-theme="dark"] .table-danger > th,
+:root[data-theme="dark"] .table-danger > td {
+  --bs-table-bg: var(--ii-danger-light);            /* 期限超過行は赤の半透明面に */
+  --bs-table-color: #fca5a5;                        /* 明るい赤の文字 */
+  --bs-table-border-color: rgba(214, 49, 70, 0.35); /* 赤系の罫線 */
+  background-color: var(--ii-danger-light);
+  color: #fca5a5;
+}
+/* 危険系の行ハイライト(list-group-item-danger 等)をダーク用の半透明赤に */
+:root[data-theme="dark"] .list-group-item-danger {
+  background: var(--ii-danger-light) !important;
+  color: #fca5a5 !important;
+}
+/* フォーム入力欄・セレクトをダーク面に合わせる */
+:root[data-theme="dark"] .form-control,
+:root[data-theme="dark"] .form-select {
+  background-color: var(--ii-surface-2);
+  color: var(--ii-text);
+  border-color: var(--ii-border-strong);
+}
+/* 入力欄のプレースホルダはやや暗めのグレーに */
+:root[data-theme="dark"] .form-control::placeholder { color: var(--ii-text-muted); }
+/* 入力グループのアイコン枠(bg-white)もダーク面に */
+:root[data-theme="dark"] .input-group-text {
+  background: var(--ii-surface-2) !important;
+  color: var(--ii-text-muted);
+  border-color: var(--ii-border-strong);
+}
+/* 注: btn-light はナビ・ヒーローの青い面に置かれており白のままが正しいので、ダーク用の上書きはしない */
+/* アウトライン系ボタンの文字をダークでも読めるよう明るいテキスト色に */
+:root[data-theme="dark"] .btn-outline-secondary { color: var(--ii-text); }
+/* ホバー時: 既定ルールは「近白の背景 + 白文字」になりダークで文字が消えるため、
+   キャンセル/戻る/編集などの二次ボタンが読めるよう、背景は明るいまま文字を暗い地色に反転する。 */
+:root[data-theme="dark"] .btn-outline-secondary:hover {
+  background: var(--ii-text);          /* 近白の塗り(明るいまま) */
+  border-color: var(--ii-text);
+  color: var(--ii-bg);                 /* 文字は暗い地色(ネイビー)にして十分なコントラストを確保 */
+}
+/* 二次以外のアウトラインボタン(詳細/戻る=primary、完了=success、削除=danger など)も
+   既定の濃い色文字のままだとダーク面でコントラストが低い。明るい文字+薄い枠線にし、ホバーで塗る。 */
+:root[data-theme="dark"] .btn-outline-primary {
+  color: #5aa9e6;                            /* 明るいブルーの文字 */
+  border-color: rgba(42, 111, 168, 0.8);     /* やや明るい枠線 */
+}
+:root[data-theme="dark"] .btn-outline-primary:hover {
+  background: var(--ii-primary);             /* ホバーでブランド色に塗る */
+  border-color: var(--ii-primary);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-success {
+  color: #6ee7b7;                            /* 明るい緑の文字 */
+  border-color: rgba(31, 138, 91, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-success:hover {
+  background: var(--ii-success);
+  border-color: var(--ii-success);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-danger {
+  color: #fca5a5;                            /* 明るい赤の文字 */
+  border-color: rgba(214, 49, 70, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-danger:hover {
+  background: var(--ii-danger);
+  border-color: var(--ii-danger);
+  color: #fff;
+}
+:root[data-theme="dark"] .btn-outline-warning {
+  color: #fcd34d;                            /* 明るい黄の文字 */
+  border-color: rgba(217, 119, 6, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-warning:hover {
+  background: var(--ii-warning);
+  border-color: var(--ii-warning);
+  color: #1f2a37;                            /* 黄の塗りには暗い文字 */
+}
+:root[data-theme="dark"] .btn-outline-info {
+  color: #67e8f9;                            /* 明るい水色の文字 */
+  border-color: rgba(14, 165, 183, 0.6);
+}
+:root[data-theme="dark"] .btn-outline-info:hover {
+  background: var(--ii-info);
+  border-color: var(--ii-info);
+  color: #fff;
+}
+/* 意味色テキストユーティリティ(カードヘッダのアイコンや完了率の数字などに使う .text-primary 等)は、
+   既定の濃いブランド色のままだとダーク面でコントラストが低い。明るい色に引き上げる。 */
+:root[data-theme="dark"] .text-primary { color: #5aa9e6 !important; }  /* 明るいブルー */
+:root[data-theme="dark"] .text-success { color: #6ee7b7 !important; }  /* 明るいグリーン */
+:root[data-theme="dark"] .text-danger  { color: #fca5a5 !important; }  /* 明るいレッド */
+:root[data-theme="dark"] .text-warning { color: #fcd34d !important; }  /* 明るいイエロー */
+:root[data-theme="dark"] .text-info    { color: #67e8f9 !important; }  /* 明るいシアン */
+/* ただし btn-light は白地のままなので、中のアイコンは濃いブランド色に戻して白地でのコントラストを保つ */
+:root[data-theme="dark"] .btn-light .text-primary { color: var(--ii-primary) !important; }
+/* モーダル: Bootstrap は背景を白固定にするため、ダーク時は明るい文字が白地に乗って読めなくなる。
+   対策完了・有効性評価ダイアログ(Details.cshtml)が暗所でも使えるよう、面と境界をダーク用に上書きする。 */
+:root[data-theme="dark"] .modal-content {
+  background: var(--ii-surface-elevated);   /* モーダル本体を浮いたダーク面の色に */
+  color: var(--ii-text);                    /* 本文の文字を明るい色に */
+  border-color: var(--ii-border);           /* 縁取りをダーク用の境界色に */
+}
+/* モーダルのヘッダ・フッタの仕切り線をダーク用の境界色にそろえる */
+:root[data-theme="dark"] .modal-header,
+:root[data-theme="dark"] .modal-footer {
+  border-color: var(--ii-border);
+}
+/* 閉じる(×)ボタンは黒アイコンのため、ダーク背景では反転フィルタをかけて白く見せる */
+:root[data-theme="dark"] .btn-close {
+  filter: invert(1) grayscale(100%) brightness(200%);
+}
+/* ページネーション(インシデント一覧・監査ログ): 既定は白地のため、ダーク時は面と文字を反転する */
+:root[data-theme="dark"] .page-link {
+  background-color: var(--ii-surface-2);   /* ページ番号の背景をダーク面に */
+  border-color: var(--ii-border);          /* 罫線をダーク用境界色に */
+  color: var(--ii-text);                   /* 数字は明るい文字色に */
+}
+:root[data-theme="dark"] .page-link:hover {
+  background-color: var(--ii-surface-1);   /* ホバーで少し沈ませる */
+  color: var(--ii-text);
+}
+:root[data-theme="dark"] .page-item.active .page-link {
+  background-color: var(--ii-primary);     /* 現在ページはブランド色で塗る */
+  border-color: var(--ii-primary);
+  color: #fff;
+}
+:root[data-theme="dark"] .page-item.disabled .page-link {
+  background-color: var(--ii-surface-2);   /* 無効ページは沈んだ面 */
+  color: var(--ii-text-muted);             /* 文字を補助色にして無効感を出す */
+  border-color: var(--ii-border);
+}
+/* タブ(新規登録フォームの種別タブ): 既定はアクティブが白地なので、ダーク面に合わせる */
+:root[data-theme="dark"] .nav-tabs { border-bottom-color: var(--ii-border); }
+:root[data-theme="dark"] .nav-tabs .nav-link { color: var(--ii-text-muted); }      /* 非アクティブタブは補助色 */
+:root[data-theme="dark"] .nav-tabs .nav-link:hover {
+  border-color: var(--ii-border) var(--ii-border) transparent;
+  color: var(--ii-text);
+}
+:root[data-theme="dark"] .nav-tabs .nav-link.active {
+  background-color: var(--ii-surface);                                              /* アクティブタブをカード面の色に */
+  border-color: var(--ii-border) var(--ii-border) var(--ii-surface);
+  color: var(--ii-text);
+}
+/* チェックボックス/ラジオ(有効性評価・詳細フォーム): 未チェックの白い升目をダーク面に合わせる */
+:root[data-theme="dark"] .form-check-input {
+  background-color: var(--ii-surface-2);   /* 升目の背景をダーク面に */
+  border-color: var(--ii-border-strong);   /* 枠線をダーク用に */
+}
+:root[data-theme="dark"] .form-check-input:checked {
+  background-color: var(--ii-primary);     /* チェック時はブランド色で塗る */
+  border-color: var(--ii-primary);
 }

@@ -31,6 +31,18 @@
           href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&amp;family=Noto+Sans+JP:wght@400;500;700&amp;display=swap" />
     @* アプリ固有のスタイル(キャッシュバスト用に asp-append-version="true") *@
     <link rel="stylesheet" href="~/css/site.css" asp-append-version="true" />
+    @* テーマのちらつき防止: CSS 適用前に保存済みテーマを <html> に反映しておく(FOUC 回避) *@
+    <script>
+        // 前回ユーザーが選んだテーマ(light/dark)を localStorage から取り出す
+        (function () {
+            try {
+                // 保存されているテーマ名を読む(無ければ null)
+                var saved = localStorage.getItem('ii-theme');
+                // dark が保存されていたときだけ、描画前に data-theme="dark" を付ける
+                if (saved === 'dark') { document.documentElement.setAttribute('data-theme', 'dark'); }
+            } catch (e) { /* プライベートモード等で失敗しても無視する */ }
+        })();
+    </script>
 </head>
 <body>
     @* 上部ナビゲーションバー(粘着) *@
@@ -98,6 +110,14 @@
                 @if (User.Identity?.IsAuthenticated == true)
                 {
                     <ul class="navbar-nav ms-auto align-items-lg-center">
+                        @* ダークモード切替ボタン(クリックで light↔dark を反転、site.js が処理) *@
+                        <li class="nav-item me-lg-2">
+                            <button type="button" class="theme-toggle" aria-label="テーマ切替" title="ダークモード切替">
+                                @* 月アイコン(ライト時に表示)とサンアイコン(ダーク時に表示)を両方置き、CSS で出し分ける *@
+                                <i class="bi bi-moon-stars-fill"></i>
+                                <i class="bi bi-sun-fill"></i>
+                            </button>
+                        </li>
                         @* 新規登録のクイックアクション(常時アクセス可能) *@
                         <li class="nav-item me-lg-2">
                             <a class="btn btn-light btn-sm fw-semibold" asp-controller="Incidents" asp-action="Create">
