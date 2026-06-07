@@ -233,6 +233,19 @@ if (forwardedHeadersEnabled)
 {
     // X-Forwarded-* を読み取り、Request.Scheme / RemoteIpAddress を復元する
     app.UseForwardedHeaders();
+    // 信頼プロキシ(KnownProxies)を 1 件も設定せずに有効化すると、直接接続してきた
+    // クライアントが X-Forwarded-For を偽装できる(またはプロキシ配下でも転送ヘッダが
+    // 信頼されない)設定ミスになる。値を発明できないため起動は止めず、AllowedHosts と
+    // 同様に運用者へ Warning で気づかせる(issue #64)。
+    if (string.IsNullOrWhiteSpace(app.Configuration["ForwardedHeaders:KnownProxies"]))
+    {
+        // 信頼プロキシ未設定のまま転送ヘッダを有効化している旨を警告する
+        app.Logger.LogWarning(
+            "ForwardedHeaders:Enabled=true but ForwardedHeaders:KnownProxies is empty. " +
+            "X-Forwarded-For/Proto could be spoofed by a direct client (or will not be trusted " +
+            "from your reverse proxy). Set ForwardedHeaders:KnownProxies to the trusted proxy " +
+            "IP(s) (comma-separated) (issue #64).");
+    }
 }
 
 // Configure pipeline

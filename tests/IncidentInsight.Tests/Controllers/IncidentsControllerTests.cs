@@ -386,6 +386,42 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Edit_Post_Staff_OtherDepartment_ReturnsForbid()
+    {
+        // 外来(他部署)のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "外来",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "他部署担当",
+            OccurredAt = DateTime.Now
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+        // 楽観的同時実行制御用に現在のトークンを控える
+        var token = incident.ConcurrencyToken;
+
+        // Staff(内科病棟)として、他部署(外来)のインシデントを編集しようとする
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
+        // 編集フォームを用意する(自部署を送っても、そもそも編集権限が無いはず)
+        var vm = ValidViewModel("内科病棟");
+        vm.ConcurrencyToken = token;
+
+        // Edit(POST) を実行する
+        var result = await _controller.Edit(incident.Id, vm);
+
+        // 他部署のインシデントは部署スコープ認可で弾かれ ForbidResult になる
+        // (部署上書きより前に認可で拒否されることの確認 = IDOR 防止)
+        Assert.IsType<ForbidResult>(result);
+        // インシデントの内容が一切変更されていないことを確認する
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal("編集前", reloaded!.Description);
+        Assert.Equal("外来", reloaded.Department);
+    }
+
+    [Fact]
     public async Task Delete_Staff_OtherDepartment_ReturnsForbid()
     {
         var incident = new Incident
