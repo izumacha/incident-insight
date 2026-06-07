@@ -340,24 +340,41 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
             case Mask.LengthOnly:
                 // 値を文字列化してから長さを取る(数値などにも対応)
                 return $"[len={value.ToString()?.Length ?? 0}]";
-            // Salt 付き SHA-256 の先頭 8 桁
+            // 秘密鍵(salt)付き HMAC-SHA256 による擬似匿名化(先頭 128bit)
             case Mask.Hash:
-                return ComputeShortHash(value.ToString() ?? "");
+                return ComputePseudonym(value.ToString() ?? "");
             // 想定外の Mask 値が来たら安全側に倒して REDACTED に
             default:
                 return RedactedPlaceholder;
         }
     }
 
-    // 入力文字列を Salt 付き SHA-256 でハッシュ化し、先頭 8 桁の hex を返す
-    private string ComputeShortHash(string input)
+    // 入力文字列を HMAC-SHA256(鍵 = HashSalt)で擬似匿名化し、先頭 128bit(hex 32 桁)を返す。
+    //
+    // なぜ素の SHA-256 ではなく HMAC か(issue #61): 日本人の氏名は取りうる値が少なく
+    // エントロピーが低いため、salt を連結しただけの決定的 SHA-256 は、AuditLogs を読める者
+    // (Admin / DB バックアップ漏洩)が事前計算した辞書で簡単に逆算できてしまう。秘密鍵付きの
+    // HMAC にすれば、鍵(HashSalt)を知らない限り逆算できない。本番では HashSalt が空でないことを
+    // 起動時(Program.cs)に保証している。
+    //
+    // なぜ 8 桁(32bit)ではなく 128bit か(issue #62): 32bit は衝突しやすく、規制対応の監査証跡で
+    // 「同一人物が X と Y を編集した」という相関に誤検出(別人が同じ値)を生む。128bit に拡張して
+    // 衝突をほぼ起こさないようにしつつ、ログを過度に冗長にしない。
+    //
+    // 注意: ハッシュ方式(SHA-256 連結 → HMAC・128bit)を変えたため、本変更より前に書かれた
+    // 既存 AuditLogs のハッシュ値とは突合できない(salt 回転と同じ扱い)。過去ログは書き換えない。
+    private string ComputePseudonym(string input)
     {
-        // Salt + 入力 を UTF-8 バイト列に変換
-        var bytes = Encoding.UTF8.GetBytes(_auditOptions.HashSalt + input);
-        // SHA-256 で固定長(32 byte)のハッシュを計算
-        var hash = SHA256.HashData(bytes);
-        // hex 化して先頭 8 桁(4 byte 分)だけ採用(同値性確認には十分、衝突は許容)
-        return $"#{Convert.ToHexString(hash)[..8].ToLowerInvariant()}";
+        // HashSalt を HMAC の鍵(バイト列)に変換する(本番では非空を起動時に保証済み)
+        var key = Encoding.UTF8.GetBytes(_auditOptions.HashSalt);
+        // 擬似匿名化したい入力(氏名など)を UTF-8 バイト列に変換する
+        var message = Encoding.UTF8.GetBytes(input);
+        // 鍵付きハッシュ HMAC-SHA256 を計算する(鍵が無いと値を逆算できない)
+        using var hmac = new HMACSHA256(key);
+        // 入力バイト列から固定長(32 byte)の HMAC を求める
+        var hash = hmac.ComputeHash(message);
+        // hex 化して先頭 32 桁(128bit 分)だけ採用する(衝突耐性を確保しつつ冗長さを抑える)
+        return $"#{Convert.ToHexString(hash)[..32].ToLowerInvariant()}";
     }
 
     // 指定 (型, プロパティ名) に対する [Sensitive] の Mask 種別をキャッシュ付きで取得

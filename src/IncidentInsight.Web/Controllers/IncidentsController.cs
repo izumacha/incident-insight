@@ -204,6 +204,9 @@ public class IncidentsController : Controller
         // サブフォーム側のドロップダウン選択肢バリデーションは不要なので除外
         ModelState.Remove("CauseAnalysis.CauseCategoryOptions");
 
+        // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
+        EnforceOwnDepartmentForStaff(vm);
+
         // 業務ルール: 再発防止策が1件も無ければ登録不可
         if (!HasAtLeastOneValidMeasure(vm.Measures))
             ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
@@ -287,6 +290,34 @@ public class IncidentsController : Controller
     private static bool HasAtLeastOneValidMeasure(IEnumerable<MeasureFormViewModel>? measures)
         => measures?.Any(m => !string.IsNullOrWhiteSpace(m.Description)) == true;
 
+    // Staff(全件アクセス権を持たない役割)が登録・編集するインシデントの部署を、
+    // フォーム入力ではなく本人の所属部署クレームに固定する(issue #63)。
+    // 画面で他部署を選んでもサーバ側で上書きするため、他部署のキュー・ダッシュボード・
+    // 再発統計への誤投入やなりすまし、編集での部署付け替えを防ぐ。閲覧側の
+    // DepartmentScope.ScopedByUser と同じ判定(Admin/RiskManager は全件)で整合させる。
+    private void EnforceOwnDepartmentForStaff(IncidentCreateEditViewModel vm)
+    {
+        // Admin / RiskManager は全部署を扱えるので、フォームの値をそのまま使う
+        if (User.IsInRole(AppRoles.Admin) || User.IsInRole(AppRoles.RiskManager))
+            return;
+
+        // ログインユーザー(Staff)の所属部署クレームを取り出す
+        var ownDepartment = User.FindFirst(AppClaimTypes.Department)?.Value;
+
+        // 所属部署が未設定の Staff は自部署を特定できないので操作を拒否する(fail-closed)
+        if (string.IsNullOrWhiteSpace(ownDepartment))
+        {
+            // 入力画面に戻すためのエラーを積む(Department 欄に紐づける)
+            ModelState.AddModelError(
+                nameof(vm.Department),
+                "所属部署が設定されていないため、この操作は行えません。管理者に連絡してください。");
+            return;
+        }
+
+        // フォームの値を無視し、必ず本人の所属部署に固定する(他部署への投入/付け替え防止)
+        vm.Department = ownDepartment;
+    }
+
     // GET /Incidents/Edit/5
     // 編集画面の初期表示
     public async Task<IActionResult> Edit(int id)
@@ -337,6 +368,10 @@ public class IncidentsController : Controller
         {
             ModelState.Remove(key);
         }
+
+        // 部署スコープを強制する: Staff は自部署のインシデントしか編集できず、
+        // 他部署への付け替えもできない(issue #63)
+        EnforceOwnDepartmentForStaff(vm);
 
         // バリデーション NG なら入力値を残してフォームを再描画
         if (!ModelState.IsValid)
