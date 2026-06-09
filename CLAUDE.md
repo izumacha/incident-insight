@@ -2,76 +2,80 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## Project
+> このファイルの **§4 以降（共通規約 ＋ 付録）は原本テンプレート `izumacha/claude-code-rules` の
+> `CLAUDE.md` と同期**している。共通規約を変更するときは、**まず原本を改訂してから**各リポジトリへ
+> 反映すること（このファイルで共通規約だけを勝手に書き換えない）。§1〜§3 は本リポジトリ固有の内容。
 
-IncidentInsight is a medical incident management system (ASP.NET Core 8 MVC + EF Core 8). It covers the full incident lifecycle: reporting → 5 Whys root-cause analysis → preventive measure planning → completion → effectiveness review → recurrence detection. UI strings and the domain vocabulary are Japanese (e.g. `重症度`, `なぜなぜ分析`, `再発防止策`).
+---
 
-The app is **database-provider-agnostic**: SQLite (default, single-file), SQL Server (on-prem Windows), and PostgreSQL (Linux / cloud / Supabase / any managed Postgres) are all first-class at runtime — selected via the `Database:Provider` setting. Model + query code contains zero provider-specific SQL or column types, so the same codebase ships everywhere.
+## 1. プロジェクト概要
 
-## Common commands
+IncidentInsight は医療インシデント管理システム（ASP.NET Core 8 MVC + EF Core 8）。報告 → なぜなぜ分析（5 Whys）→ 予防策立案 → 完了 → 効果評価 → 再発検知までのライフサイクルを扱う。UI 文字列とドメイン語彙は日本語（`重症度`, `なぜなぜ分析`, `再発防止策` 等）。
 
-All commands assume the repo root as the working directory.
+アプリは**DB プロバイダ非依存**: SQLite（既定・単一ファイル）/ SQL Server（オンプレ Windows）/ PostgreSQL（Linux・クラウド・Supabase 等）を `Database:Provider` 設定で実行時切替する。モデル・クエリにプロバイダ固有 SQL／列型を持ち込まないため、同一コードベースでどこへでも配備できる。
+
+## 2. コマンド
 
 ```bash
-# Build (whole solution)
+# ビルド（ソリューション全体）
 dotnet build
 
-# Run the web app (creates SQLite DB + seeds data on first launch at http://localhost:5000)
+# Web アプリ起動（初回起動で SQLite DB 作成＋シード）
+# 待受 URL はハードコードせず、起動ログの「Now listening on:」か launchSettings.json の
+# applicationUrl（例: http://localhost:32562 / http://localhost:5093）を見る。
 dotnet run --project src/IncidentInsight.Web/IncidentInsight.Web.csproj
 
-# Run all tests (xUnit)
+# 全テスト（xUnit）
 dotnet test
 
-# Run a single test class / method
+# 単一テストクラス / メソッド
 dotnet test --filter "FullyQualifiedName~IncidentsControllerTests"
 dotnet test --filter "FullyQualifiedName=IncidentInsight.Tests.Controllers.IncidentsControllerTests.Create_RequiresAtLeastOneMeasure"
 
-# Add an EF Core migration after model changes (auto-applied on next startup via Database.Migrate())
-# NOTE: Committed migrations target the currently-configured provider (default: SQLite).
-# When switching to SQL Server or PostgreSQL for production, regenerate migrations against
-# that provider (delete the Migrations/ folder, set Database__Provider and a valid
-# ConnectionStrings__DefaultConnection, then run the command below).
+# モデル変更後の EF Core マイグレーション追加（起動時 Database.Migrate() で自動適用）
+# 注: コミット済みマイグレーションは既定プロバイダ(SQLite)向け。SQL Server / PostgreSQL 本番に
+#     切替える場合は Migrations/ を削除し Database__Provider と接続文字列を設定して再生成する。
 dotnet ef migrations add <MigrationName> --project src/IncidentInsight.Web
 
-# Seed demo accounts for local login (Development only; no passwords are committed)
+# ローカルログイン用デモアカウントのシード（Development のみ。パスワードはコミットしない）
 dotnet user-secrets init --project src/IncidentInsight.Web
 dotnet user-secrets set "SeedAccounts:AdminPassword" "AdminPass1" --project src/IncidentInsight.Web
 dotnet user-secrets set "SeedAccounts:RiskManagerPassword" "RiskPass1" --project src/IncidentInsight.Web
 ```
 
-Dev password policy: 8+ chars, uppercase, digit. Prod policy: 12+ chars and non-alphanumeric (see `Program.cs`). The `SeedAccounts` section only seeds accounts in `Development`; it is skipped silently if passwords are blank (a warning is logged).
+Dev パスワードポリシー: 8 文字以上・大文字・数字。Prod: 12 文字以上・非英数字含む（`Program.cs`）。`SeedAccounts` は Development のみシードし、空なら警告ログを出してスキップする。
 
-## Architecture
+## 3. アーキテクチャ
 
-### Request pipeline & bootstrapping (`Program.cs`)
-- `ApplicationDbContext` is wired with a runtime provider switch keyed off `Database:Provider` (`sqlite` | `sqlserver` | `postgres`). SQLite is the default. The connection string comes from `ConnectionStrings:DefaultConnection`. Providers use the `UseSqlite` / `UseSqlServer` / `UseNpgsql` methods respectively. No code changes required to move between them — only config.
-- `AuditSaveChangesInterceptor` is registered on the `DbContext`. It is **provider-neutral** — works identically on SQLite / SQL Server / PostgreSQL — and writes a row to the `AuditLogs` table for every Add / Modify / Delete on `Incident`, `CauseAnalysis`, `PreventiveMeasure`. It also rotates the `ConcurrencyToken` Guid on Modified entries.
-- ASP.NET Core Identity is wired up with a custom `ApplicationUser` and three roles in `AppRoles` (`Admin`, `RiskManager`, `Staff`). Cookie auth redirects to `/Account/Login`; sliding expiration of 8h; lockout after 5 failed attempts.
-- On startup (inside a scope): `db.Database.Migrate()` → `DbSeeder.Seed(db)` (cause categories + sample incidents, idempotent) → `IdentitySeeder.SeedAsync(...)` (creates roles always; creates demo admin/RM only in Development when `SeedAccounts` passwords are present).
+### リクエストパイプライン / 起動（`Program.cs`）
 
-### Database provider matrix
+- `ApplicationDbContext` は `Database:Provider`（`sqlite` | `sqlserver` | `postgres`）で実行時プロバイダ切替。接続文字列は `ConnectionStrings:DefaultConnection`。`UseSqlite` / `UseSqlServer` / `UseNpgsql` を使い分け、移行はコード変更不要（設定のみ）。
+- `AuditSaveChangesInterceptor` を `DbContext` に登録（プロバイダ中立）。`Incident` / `CauseAnalysis` / `PreventiveMeasure` の Add/Modify/Delete ごとに `AuditLogs` 行を書き、Modified では `ConcurrencyToken` Guid を回転させる。
+- ASP.NET Core Identity を `ApplicationUser` ＋ 3 ロール（`AppRoles`: `Admin` / `RiskManager` / `Staff`）で構成。Cookie 認証は `/Account/Login` リダイレクト、8h スライディング、5 回失敗でロックアウト。
+- 起動時（スコープ内）: `db.Database.Migrate()` → `DbSeeder.Seed(db)`（冪等）→ `IdentitySeeder.SeedAsync(...)`（ロールは常時、デモ管理者/RM は Development かつ `SeedAccounts` パスワード有時のみ）。
 
-| Target deployment | `Database:Provider` | Example connection string |
+### DB プロバイダ・マトリクス
+
+| 配備先 | `Database:Provider` | 接続文字列の例 |
 |---|---|---|
-| Single clinic / dev (default) | `sqlite` | `Data Source=incident_insight.db` |
-| On-prem hospital (Windows / existing SQL Server) | `sqlserver` | `Server=...;Database=IncidentInsight;Trusted_Connection=True;TrustServerCertificate=True;` |
-| Linux / self-hosted Postgres | `postgres` | `Host=...;Database=incidentinsight;Username=...;Password=...` |
-| Managed (Supabase / Azure DB for PostgreSQL / Aurora) | `postgres` | provider's standard Postgres connection string |
+| 単一クリニック / dev（既定） | `sqlite` | `Data Source=incident_insight.db` |
+| オンプレ病院（Windows / 既存 SQL Server） | `sqlserver` | `Server=...;Database=IncidentInsight;Trusted_Connection=True;TrustServerCertificate=True;` |
+| Linux / 自前 Postgres | `postgres` | `Host=...;Database=incidentinsight;Username=...;Password=...` |
+| マネージド（Supabase / Azure DB / Aurora） | `postgres` | プロバイダ標準の Postgres 接続文字列 |
 
-Set via `appsettings*.json` or environment variables (`Database__Provider`, `ConnectionStrings__DefaultConnection`).
+設定は `appsettings*.json` か環境変数（`Database__Provider`, `ConnectionStrings__DefaultConnection`）。
 
-### Domain model (EF Core, `src/IncidentInsight.Web/Models/`)
-The schema is centered on four aggregates with cascade rules configured in `ApplicationDbContext.OnModelCreating`:
+### ドメインモデル（`src/IncidentInsight.Web/Models/`）
 
-- **`Incident`** — the root. Holds occurrence metadata (`OccurredAt`, `Department`, `IncidentType`, `Severity`, `Description`, `ReporterName`). Severity codes (`Level0`…`Level5`), department list, and incident-type list are hard-coded `static readonly` dictionaries/arrays on the class and are the single source of truth for dropdowns and labels. Computed helpers like `SeverityLabel`, `SeverityColor`, `MeasureStatusSummary`, `MeasureStatusColor` are consumed directly in Razor views for Bootstrap badge classes.
-- **`CauseAnalysis`** — 5 Whys stored as independent `Why1`..`Why5` columns (so SQL can search at specific depths). Always tied to one `CauseCategory`. Helpers: `DeepestWhy`, `WhyDepth`.
-- **`CauseCategory`** — self-referential hierarchy (parent/child via `ParentId`). `BuildCauseCategoryOptionsAsync()` in `Controllers/Internal/IncidentControllerHelpers.cs` emits leaf categories grouped by parent as `<optgroup>` — never add a category-picker that bypasses this helper.
-- **`PreventiveMeasure`** — the "most important" entity per the domain: tracks the full lifecycle `Planned → InProgress → Completed` plus post-completion fields `EffectivenessRating` (1–5), `EffectivenessNote`, `EffectivenessReviewedAt`, and `RecurrenceObserved` (true ⇒ surface warning and prompt re-analysis). `IsOverdue` is a computed property used all over the UI; keep the `DueDate < DateTime.Today && Status != "Completed"` semantics consistent.
-- **`AuditLog`** — regulatory audit trail written automatically by `AuditSaveChangesInterceptor`. Holds `ChangedAt`, `ChangedBy` (user name from the current `HttpContext`), `EntityName`, `EntityKey`, `Operation` (`Added` / `Modified` / `Deleted`), and a JSON `ChangesJson` with before/after values. Never write to this table directly — the interceptor is the single source of truth.
+4 つの集約に `OnModelCreating` でカスケードを設定:
 
-`Incident` / `CauseAnalysis` / `PreventiveMeasure` each carry a `ConcurrencyToken` (Guid, `[ConcurrencyCheck]`) for optimistic concurrency. The interceptor rotates this on each modification so concurrent edits fail-safe with `DbUpdateConcurrencyException`.
+- **`Incident`**（ルート）— 発生メタデータを保持。重症度コード（`Level0`…`Level5`）・部署一覧・インシデント種別一覧は `Incident` クラスの `static readonly` 辞書/配列が**唯一の真実の源**（ドロップダウン/ラベル）。`SeverityLabel` / `SeverityColor` / `MeasureStatusSummary` 等の計算プロパティを Razor で直接使う。
+- **`CauseAnalysis`** — 5 Whys を独立列 `Why1`..`Why5` で保持（深さ別検索のため）。常に 1 つの `CauseCategory` に紐づく。`DeepestWhy` / `WhyDepth`。
+- **`CauseCategory`** — `ParentId` による自己参照階層。`BuildCauseCategoryOptionsAsync()`（`Controllers/Internal/IncidentControllerHelpers.cs`）が leaf を parent ごとに `<optgroup>` で出力。これをバイパスするカテゴリピッカーを作らない。
+- **`PreventiveMeasure`**（ドメイン最重要）— `Planned → InProgress → Completed` と完了後フィールド（`EffectivenessRating` 1–5, `EffectivenessNote`, `EffectivenessReviewedAt`, `RecurrenceObserved`）。`IsOverdue`（`DueDate < DateTime.Today && Status != "Completed"`）の意味を一貫させる。
+- **`AuditLog`** — 規制対応の監査証跡。`AuditSaveChangesInterceptor` が自動で書く。**このテーブルに直接書かない**（インターセプタが唯一の源）。
 
-**Edit POST contract**: mutating actions reload the entity via `FindAsync` before applying form data. If we relied on the default `OriginalValue` (which would be the token EF just loaded from the DB — always current), the concurrency check would never trip. Every edit POST therefore pins the client's pre-edit token explicitly before saving:
+`Incident` / `CauseAnalysis` / `PreventiveMeasure` は `ConcurrencyToken`（Guid, `[ConcurrencyCheck]`）を持つ。**Edit POST 契約**: `FindAsync` で再読込後、クライアントの編集前トークンを `OriginalValue` に明示ピンしてから保存し、`DbUpdateConcurrencyException` を捕捉する:
 
 ```csharp
 _db.Entry(entity).Property(nameof(Entity.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
@@ -79,87 +83,247 @@ try { await _db.SaveChangesAsync(); }
 catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; }
 ```
 
-The client round-trips the token via a hidden form field (`<input type="hidden" asp-for="ConcurrencyToken" />`, or a `name="concurrencyToken"` value for modal/kanban forms that POST raw parameters). Applied across `IncidentsController.Edit`, `CauseAnalysesController.EditCauseAnalysis`, `IncidentMeasuresController.CompleteMeasure` / `RateMeasure`, and `PreventiveMeasuresController.Edit` / `Complete` / `Review` / `UpdateStatus`. When adding a new mutating POST action on any of these three entities, follow the same pattern.
+トークンは hidden field（`<input type="hidden" asp-for="ConcurrencyToken" />` 等）で round-trip する。インデックス: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`, `AuditLog(ChangedAt)`, `AuditLog(EntityName, EntityKey)`。
 
-Indexes worth knowing about: `Incident(OccurredAt)`, `Incident(Department, IncidentType)`, `PreventiveMeasure(Status, DueDate)`, `CauseCategory(ParentId, DisplayOrder)`, `AuditLog(ChangedAt)`, `AuditLog(EntityName, EntityKey)`.
+### コントローラ / 横断パターン
 
-### Controllers & cross-cutting patterns
-- All app controllers except `AccountController` use `[Authorize]`. `AccountController` is explicitly `[AllowAnonymous]` on `Login` / `AccessDenied`.
-- The incident lifecycle is split across **three** controllers, all routed under `/Incidents/...`:
-  - `IncidentsController` — Index / Details / Create / Edit / Delete on the Incident root. Create enforces "at least one preventive measure" via `HasAtLeastOneValidMeasure` (business-critical). Strips sub-form keys from `ModelState` before validating the parent form (see the `ModelState.Remove` loop in `Edit`).
-  - `CauseAnalysesController` — `AddCauseAnalysis` / `EditCauseAnalysis` (GET+POST) / `DeleteCauseAnalysis`. Uses `[Route("Incidents/[action]/{id?}")]` to keep URLs unchanged after the split. Re-uses `Views/Incidents/EditCauseAnalysis.cshtml` via explicit `View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm)`.
-  - `IncidentMeasuresController` — `AddMeasure` / `CompleteMeasure` / `RateMeasure` (the inline operations launched from the Incident detail page). Same `[Route]` trick. The kanban-side `Create` / `Edit` / `Complete` / `Review` / `UpdateStatus` / `Delete` continue to live on `PreventiveMeasuresController`.
-- Shared helpers (cause-category dropdown builder, resource-policy evaluation) live in `Controllers/Internal/IncidentControllerHelpers.cs`. **Do not** add business rules there — keep it to pure reusable functions; rules like `HasAtLeastOneValidMeasure` stay on the controller that owns them.
-- View tag helpers must specify `asp-controller="CauseAnalyses"` / `asp-controller="IncidentMeasures"` for the actions that moved out of `IncidentsController` (the URL is still `/Incidents/...`, but the route table needs the new controller name to resolve URL generation).
-- `PreventiveMeasuresController` powers the kanban board (`Index` buckets measures into `Planned` / `InProgress` / `Completed` via `ViewBag`) and provides a separate `Review` action for the effectiveness evaluation form.
-- `AnalyticsController` exposes JSON endpoints for Chart.js (`MonthlyTrend`, `ByCause`, `ByDepartment`, `BySeverity`, `MeasureStatus`, `EffectivenessRating`, `ByIncidentType`, `GetSubcategories`). These return `{ labels, data }` shapes that the Analytics views consume verbatim — keep the shape stable.
-- `HomeController.Index` is the dashboard. It accepts a `period` (`week` | `month` | `quarter` | `year`, default `year`) and computes KPIs, trend buckets (daily for `week`, monthly otherwise), and **recurrence alerts** (same department + same incident type + overlapping cause category within the last 90 days — the 90-day window is independent of `period`). Duplicate this algorithm carefully if you touch it.
-- Success/warning toasts are passed via `TempData["Success"]` / `TempData["Warning"]` and rendered in shared layout.
+- `AccountController` 以外は `[Authorize]`。`AccountController` は `Login` / `AccessDenied` が `[AllowAnonymous]`。
+- インシデントのライフサイクルは `/Incidents/...` 配下の**3 コントローラ**に分割:
+  - `IncidentsController` — Index/Details/Create/Edit/Delete。Create は `HasAtLeastOneValidMeasure`（業務必須）を強制。`Edit` で親フォーム検証前にサブフォームキーを `ModelState.Remove` で除去。
+  - `CauseAnalysesController` — `AddCauseAnalysis` / `EditCauseAnalysis` / `DeleteCauseAnalysis`。`[Route("Incidents/[action]/{id?}")]` で URL を維持し、`View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm)` を再利用。
+  - `IncidentMeasuresController` — `AddMeasure` / `CompleteMeasure` / `RateMeasure`（詳細ページからのインライン操作）。kanban 側の `Create`/`Edit`/`Complete`/`Review`/`UpdateStatus`/`Delete` は `PreventiveMeasuresController`。
+- 共有ヘルパー（カテゴリドロップダウン生成・リソースポリシー評価）は `Controllers/Internal/IncidentControllerHelpers.cs`。**業務ルールはここに置かない**（`HasAtLeastOneValidMeasure` 等は所有コントローラに残す）。
+- 移動したアクションの Tag Helper は `asp-controller="CauseAnalyses"` / `asp-controller="IncidentMeasures"` を指定する（URL は `/Incidents/...` のままだがルート解決に必要）。
+- `AnalyticsController` は Chart.js 用 JSON（`{ labels, data }` 形状を変えない）。
+- `HomeController.Index` はダッシュボード。`period`（`week`|`month`|`quarter`|`year`、既定 `year`）で KPI・トレンド・**再発アラート**（同部署＋同種別＋原因カテゴリ重複、直近 90 日。90 日窓は `period` から独立）を計算。
+- 成功/警告トーストは `TempData["Success"]` / `TempData["Warning"]`。
 
-### Views & frontend
-- Razor views under `src/IncidentInsight.Web/Views/` matching controller names. Severity/status badges rely on the Bootstrap color names returned from the computed `*Color` properties on model classes — don't hardcode them in views.
-- Bootstrap 5, Bootstrap Icons, jQuery Validation Unobtrusive, and Chart.js 4 are loaded from CDN (no npm / build step on the frontend).
+### ビュー / フロント
 
-### Tests (`tests/IncidentInsight.Tests/`)
-- xUnit, targeting `net8.0`. Uses `Microsoft.EntityFrameworkCore.InMemory` with a fresh `Guid.NewGuid()`-named database per test (see `IncidentsControllerTests` constructor). Controllers that set `TempData` are injected with `TestTempData` from `Helpers/`.
-- Tests cover controller happy/edge paths and model computed properties. When adding controller logic that reads/writes new entities, extend the in-memory setup in the corresponding `*ControllerTests` rather than adding mocks.
+- Razor ビューはコントローラ名に対応（`src/IncidentInsight.Web/Views/`）。重症度/状態バッジは Model の計算 `*Color` プロパティ（Bootstrap カラー名）を使い、View に直書きしない。
+- Bootstrap 5 / Bootstrap Icons / jQuery Validation Unobtrusive / Chart.js 4 を CDN から読み込み（npm ビルドなし）。
 
-## Things to watch for
+### テスト（`tests/IncidentInsight.Tests/`）
 
-- **Migrations are auto-applied at startup** via `Database.Migrate()`. When you change a model, add a migration in the same change set or the next developer's first run will throw.
-- **Don't bypass `HasAtLeastOneValidMeasure`.** The product rule is "an incident cannot be registered without at least one preventive measure."
-- **Severity / department / incident-type enums live on the `Incident` class**, not in the DB. Adding a value requires updating the static dictionary/array and any views that iterate it; no migration needed.
-- **`SeedAccounts` passwords must never be committed.** `appsettings.Development.json` ships with blank passwords on purpose; use User Secrets or environment variables (`SeedAccounts__AdminPassword`, etc.).
-- **Recurrence logic is centralized in `IRecurrenceService`** (`src/IncidentInsight.Web/Services/RecurrenceService.cs`). Both `HomeController.Index` (dashboard alerts, 90-day window via `FindRecurrenceAlertsAsync`) and `IncidentsController.Details` (per-incident similar list, no time bound via `FindRecurrencesForIncidentAsync`) delegate candidate extraction + matching to the service. The underlying matcher (`RecurrenceDetector.FindSimilar`) is still a pure in-memory function. If you change the matching rule (same dept + same incident type + cause category overlap), update the service and its tests in `tests/IncidentInsight.Tests/Services/RecurrenceServiceTests.cs`.
-- **Committed migrations are for SQLite**. Switching production to `sqlserver` or `postgres` requires regenerating migrations against that provider (one-time operation). Don't keep multiple provider migration folders in parallel — EF Core's `ModelSnapshot` is single-provider by design; trying to mix them causes apply-time errors.
-- **Don't add provider-specific SQL or column types**. The value of the abstraction comes from staying portable. If a feature absolutely requires SQL Server-only (e.g. Temporal Tables) or Postgres-only (e.g. JSONB) behavior, gate it behind a runtime `Database:Provider` check and keep a portable fallback.
-- **Audit log correctness depends on going through `SaveChanges`**. Don't use `ExecuteUpdate` / `ExecuteDelete` for `Incident` / `CauseAnalysis` / `PreventiveMeasure` — those bypass the change tracker and silently skip auditing.
-- **PHI must not land in `AuditLog.ChangesJson` in plaintext.** Free-text properties on `Incident` / `CauseAnalysis` / `PreventiveMeasure` (descriptions, notes, why-chains, names) carry `[Sensitive(Mask.Redact)]` or `[Sensitive(Mask.Hash)]` (`Models/Auditing/SensitiveAttribute.cs`). The `AuditSaveChangesInterceptor` reads the attribute via reflection and replaces values with `[REDACTED]` / a keyed **HMAC-SHA256 pseudonym** (first 128 bits, hex) before writing the change set. **When you add a new free-text or person-name column, you must also annotate it.** The key/salt comes from `Audit:HashSalt` (User Secrets / environment variable `Audit__HashSalt`) and is used as the HMAC key, so person-name hashes cannot be dictionary-reversed without it (issue #61). **In Production an empty `Audit:HashSalt` fails startup** (fail-fast guard in `Program.cs`). Rotating the salt — or the one-time switch from the old salted-SHA-256 8-hex scheme to HMAC-128bit — invalidates correlation against past hashes; document it in any rotation runbook.
-- **Time source is always `IClock`** (`src/IncidentInsight.Web/Services/IClock.cs`). Never call `DateTime.Now` / `DateTime.Today` / `DateTime.UtcNow` from controllers, services, the audit interceptor, or the seeder — use the injected `IClock` instead. This is both a testability lever (tests can substitute a fake clock) and an explicit-policy point: **all persisted business timestamps and audit log `ChangedAt` are stored in operational-local time (JST)**. Previously only audit logs used UTC, which produced a confusing 9h offset vs. business data (Issue #31). If you need to migrate to UTC later, change `SystemClock` in one place and update display formatting — don't start sprinkling `DateTime.UtcNow` again. Razor views currently use `DateTime.Today` directly for display-only date arithmetic (e.g. "days overdue"); this is intentional since views don't persist data, but prefer `@inject IClock Clock` + `Clock.Today` in new views. **Upgrading across the PR #37 boundary requires a one-time `UPDATE AuditLogs SET ChangedAt = ChangedAt + 9h` on existing data (run before deploying the new binary); see PR #37 description for per-provider SQL and rollback.**
-- **`SameDepartmentHandler` requires `Incident` to be eager-loaded** (`src/IncidentInsight.Web/Authorization/SameDepartmentHandler.cs`). When calling `AuthorizeAsync(User, resource, …)` with `PreventiveMeasure` or `CauseAnalysis`, the controller must `.Include(x => x.Incident)` first. The handler is **fail-closed**: if `Incident` is null on the navigation, authorization is denied (no silent fallback to `ResponsibleDepartment` — Issue #29). Authorization judges "where did the incident happen?", not "who is working on the fix?".
+- xUnit / `net8.0`。`Microsoft.EntityFrameworkCore.InMemory` をテストごとに `Guid.NewGuid()` 名で使う。`TempData` を使うコントローラには `TestTempData` を注入。**Mock より `InMemory` を優先**し、新エンティティを読む/書くロジックを足したら対応 `*ControllerTests` の InMemory セットアップを拡張する。`UserContextHelper.AttachUser()` でユーザーコンテキストを設定。
 
-## Coding conventions
+### 注意点（固有の不変条件）
 
-- **1行ごとに初心者でも意味がわかるコメントアウトをつける**。新規または変更したコード行には、プログラミング初心者でも理解できる平易な日本語のコメントを各行に付与する。コメントは「何をしているか」を具体的に説明し、専門用語や省略語を避ける(例: `var x = users.Where(u => u.IsActive); // アクティブなユーザーだけを抜き出す`)。C# は `//`、Razor (`.cshtml`) は `@* *@`、JavaScript は `//`、設定ファイル (JSON など) はコメントをサポートしないため対象外。このルールは本プロジェクト固有の方針であり、汎用的な「コメントは最小限に」というガイダンスよりも優先される。
+- **マイグレーションは起動時 `Database.Migrate()` で自動適用** — モデル変更は同一変更セットでマイグレーションを追加する。
+- **`HasAtLeastOneValidMeasure` をバイパスしない**（インシデントは予防策が最低 1 件ないと登録不可）。
+- **重症度/部署/インシデント種別の enum は `Incident` クラス上**（DB ではない）。値追加は static 辞書/配列＋それを回す View を更新（マイグレーション不要）。enum の日本語ラベルと Bootstrap カラーは `Models/Enums/EnumLabels.cs` に集約し、`EnumLabels.Japanese()` と `EnumLabels.Color()` の両方を更新。`IncidentTypeMapping.cs` が日本語↔DB 文字列の双方向変換を担う。
+- **再発ロジックは `IRecurrenceService`**（`Services/RecurrenceService.cs`）に集約。`HomeController.Index`（90 日窓 `FindRecurrenceAlertsAsync`）と `IncidentsController.Details`（時間無制限 `FindRecurrencesForIncidentAsync`）が委譲。マッチャ `RecurrenceDetector.FindSimilar` は純粋関数。ルール変更時はサービスとそのテストを更新。
+- **監査ログの正しさは `SaveChanges` 経由が前提** — `Incident` / `CauseAnalysis` / `PreventiveMeasure` に `ExecuteUpdate` / `ExecuteDelete` を使わない（変更追跡を迂回し監査漏れになる）。
+- **PHI を `AuditLog.ChangesJson` に平文で残さない** — 自由記述・個人名カラムには `[Sensitive(Mask.Redact)]` か `[Sensitive(Mask.Hash)]`（`Models/Auditing/SensitiveAttribute.cs`）を付与。インターセプタが `[REDACTED]` か HMAC-SHA256 擬似匿名化（鍵 = `Audit:HashSalt`）に置換。**新しい自由記述/個人名カラムは必ず annotate**。本番で `Audit:HashSalt` 空は起動失敗。salt ローテーションは過去ハッシュとの相関を失うので runbook に記録。
+- **時刻は常に `IClock`**（`Services/IClock.cs`、JST）。`DateTime.Now/Today/UtcNow` を直接呼ばない。永続業務タイムスタンプと `AuditLog.ChangedAt` は運用ローカル時刻(JST)で保存。新規 View では `@inject IClock Clock` ＋ `Clock.Today` を使う。
+- **`SameDepartmentHandler`（`Authorization/SameDepartmentHandler.cs`）は `Incident` の eager-load が前提**。`PreventiveMeasure` / `CauseAnalysis` で `AuthorizeAsync` する前に `.Include(x => x.Incident)`。**fail-closed**（`Incident` が null なら拒否）。
 
-## Enum ラベル管理
+### 新規 POST アクション追加時のチェックリスト
 
-- すべての Enum の日本語ラベルと Bootstrap カラーは `Models/Enums/EnumLabels.cs` に集約する。View で直接文字列を書かない。
-- 新しい Enum 値を追加したら `EnumLabels.Japanese()` と `EnumLabels.Color()` の両方を更新すること。
-- `IncidentTypeMapping.cs` は日本語 ↔ DB 文字列の双方向変換を担う。新しいインシデント種別はここにも追加する。
+1. `[Authorize]`（または適切なポリシー）を付与。
+2. `[ValidateAntiForgeryToken]` を付与（View には `@Html.AntiForgeryToken()`）。
+3. `ConcurrencyToken` を hidden field で round-trip し `OriginalValue` にピン。
+4. `SameDepartmentHandler` が必要なら `.Include(x => x.Incident)`（`IncidentControllerHelpers.IsAuthorizedForAsync` 経由でも同様）。
+5. `SaveChangesAsync` を使い `ExecuteUpdate` / `ExecuteDelete` を使わない。
+6. 成功時 `TempData["Success"]`、失敗時 `TempData["Warning"]`。
+7. 新しい自由記述/個人名カラムには `[Sensitive(...)]` を付与。
+8. 対応するテストを `tests/` に追加（`InMemory` DbContext 優先）。
 
-## Controller 新規アクション追加時のチェックリスト
+### セキュリティ（固有事項）
 
-新しい POST アクションを追加する際は以下を確認:
+- **部署スコープは Create/Edit でサーバ側強制**（issue #63）。Staff は自部署のみ登録/編集でき、フォームの部署値は `EnforceOwnDepartmentForStaff` で本人の `AppClaimTypes.Department` に上書き。Admin/RiskManager は全部署可。
+- 認証 Cookie は `HttpOnly=true`, `SameSite=Strict`。Production は HTTPS リダイレクト＋HSTS 有効。
+- **リバースプロキシ配下では `AllowedHosts` を実ホスト名に絞り、転送ヘッダを有効化**（issue #64）。既定 `"*"` のままにしない。`X-Forwarded-For` / `X-Forwarded-Proto` を信頼させるには `ForwardedHeaders:Enabled=true` ＋ `ForwardedHeaders:KnownProxies`。
 
-1. `[Authorize]` 属性（または適切なポリシー）を付与したか
-2. `[ValidateAntiForgeryToken]` を付与したか
-3. `ConcurrencyToken` を hidden field で round-trip し、`OriginalValue` にピンしているか
-4. `SameDepartmentHandler` が必要なら `.Include(x => x.Incident)` しているか（`IncidentControllerHelpers.IsAuthorizedForAsync` 経由でも同様）
-5. `SaveChangesAsync` を使い、`ExecuteUpdate` / `ExecuteDelete` を使っていないか（監査ログのため）
-6. 成功時に `TempData["Success"]`、失敗時に `TempData["Warning"]` をセットしているか
-7. 新しい自由記述 / 個人名カラムを追加した場合は `[Sensitive(Mask.Redact)]` か `[Sensitive(Mask.Hash)]` を付けたか（PHI 監査ログ漏洩防止）
-8. 対応するテストを `tests/` に追加したか
+---
 
-## View 規約
+## 4. 実装フロー（プランモード必須）
 
-- Badge のカラーは Model の `*Color` プロパティを使う。View に直接 `bg-danger` 等を書かない。
-- フォームには必ず `@Html.AntiForgeryToken()` を含める。
-- 新規 View では `@inject IClock Clock` を使い、`DateTime.Today` の直接参照を避ける。
-- Chart.js エンドポイント（`AnalyticsController`）の `{ labels, data }` レスポンス形状を変更しない。
+コード変更を伴う作業に着手する前に、**必ず Claude Code のプランモード（Plan Mode）で計画を作成し、ユーザーの承認を得てから実装に移る**こと。
 
-## テスト追加ガイド
+- 対象: 機能追加・改修・リファクタ・バグ修正など、ソースコード／スキーマ／設定ファイルを変更するすべての作業。
+- 計画には以下を含める:
+  1. **Context**: 何を、なぜ変更するのか。正本（要件定義書・計画書）のどの項目に対応するか。
+  2. **変更対象ファイル**: 修正・追加するファイルの絶対パス（既存ファイルは行番号や関数名まで具体化）。
+  3. **再利用する既存実装**: 既にある関数・モジュール・Port を優先して再利用する。新規作成する場合はその理由を明記。
+  4. **検証方法**: lint / typecheck / test（必要に応じて E2E）と、画面確認の手順。
+- **例外**: タイポ修正・コメントのみの変更・1 行以下の自明な修正は計画作成を省略してよい。それ以外は必ず `ExitPlanMode` でユーザー承認を得る。
+- 計画と異なる実装が必要になったら、いったん手を止めてプランを更新（または `AskUserQuestion` で確認）してから続行する。
 
-- 新しい Controller ロジックには `InMemory` DbContext を使ったテストを追加する。Mock よりも `InMemory` を優先。
-- `UserContextHelper.AttachUser()` でテスト用ユーザーコンテキストを設定する。
-- `TempData` を使う Controller は `TestTempData` を注入する。
-- テストクラス名: `<対象クラス名>Tests`（例: `PreventiveMeasuresControllerTests`）
+## 5. コメント規約（最優先）
 
-## セキュリティ
+- **1 行ごとに初心者でも意味がわかるコメントを書く。** コード 1 行ごとに、プログラミング初心者でも処理内容が理解できる日本語コメントを付ける。変数宣言・条件分岐・関数呼び出し・ループ・`return` など、すべての実行行に対して「何をしているか」を説明するコメントを必ず添える（型定義の単純な再エクスポートなど明らかに自明な行は除く）。
+- コメントは行の直前または行末に記述し、専門用語を使うときは平易な言い換えを併記する。
+  - 例: `var x = users.Where(u => u.IsActive); // アクティブなユーザーだけを抜き出す`
+- このルールは本方針固有であり、汎用的な「コメントは最小限に」というガイダンスよりも**優先**する。
+- 言語別コメント記法: C# / JS / TS は `//`、Razor (`.cshtml`) は `@* *@`、JSON など非対応形式は対象外。
 
-- `SeedAccounts` のパスワードは絶対にコミットしない（User Secrets または環境変数を使用）。
-- Production では HTTPS リダイレクト + HSTS が有効。ローカル開発でも `https://` で動作確認を推奨。
-- 認証 Cookie は `HttpOnly=true`, `SameSite=Strict`。JavaScript から Cookie を操作しない。
-- **`Audit:HashSalt` は本番で必須**（空だと起動失敗。issue #61）。監査ログの個人名は HMAC-SHA256（鍵=salt）で擬似匿名化される。
-- **部署スコープは Create/Edit でサーバ側強制**（issue #63）。Staff は自部署のインシデントしか登録・編集できず、フォームの部署値は `EnforceOwnDepartmentForStaff` で本人の `AppClaimTypes.Department` に上書きされる。Admin/RiskManager は全部署可。
-- **リバースプロキシ配下では `AllowedHosts` を実ホスト名に絞り、転送ヘッダを有効化する**（issue #64）。`AllowedHosts` は `appsettings.Production.json` か環境変数 `AllowedHosts`（セミコロン区切り）で本番ホストに限定する（既定の `"*"` のままにしない）。`X-Forwarded-For` / `X-Forwarded-Proto` を信頼させるには `ForwardedHeaders:Enabled=true` と、信頼するプロキシ IP を `ForwardedHeaders:KnownProxies`（カンマ区切り）で設定する。既定は無効（偽装防止のため全許可にはしない）。
+## 6. コーディング規約
+
+- **既存コードのスタイルに合わせる。** インデント・命名・ファイル構成は周囲の慣習を踏襲する。
+- **自己説明的な構成にする。** モジュールは単一責務に分割し、ファイル名・関数名から役割が推測できるようにする。公開関数には docstring / コメントで意図を残す。
+- **設計判断を残す。** 非自明な実装やトレードオフには「なぜそうしたか」をコメントで残す。
+- **定数・ラベルは一元管理する。** 配色・フォント・余白・UI 文言・enum ラベルなどは単一の参照元（例: `theme.py`, `constants.ts`, `EnumLabels.cs`, CSS の `:root` 変数）に集約し、各所に直書きしない。新しい値を追加したら参照元をすべて更新する。
+- **マジックナンバー・マジック文字列を避ける。** 意味のある値（しきい値・キー名・パスなど）は名前付き定数にし、上記の一元管理に従って単一の参照元に置く。意図が読み取れない裸の数値・文字列をコードに散らさない。
+- **重複を避ける（DRY）。** 同じロジックを書き写す前に既存の関数・モジュール・Port を探して再利用する（§4 のプラン段階で確認）。ただし将来を見越した過度な抽象化は避け、実際に 2〜3 箇所目で重複したら共通化する。
+- **エラーを握り潰さない。** 例外は黙って捨てず、文脈を付けて再送出するかログに残す。空の `catch` / 裸の `except:` を作らない。回復不能な失敗は安全側に倒し（§9 の fail-closed）、ユーザーには内部詳細を含まない安全なメッセージを返す。
+- **デッドコードを残さない。** 使われない import・変数・関数や、コメントアウトしただけの旧コードは削除する（履歴は Git に残る）。
+- **変更は最小スコープに保つ。** 1 つの変更は単一の目的に絞り、無関係なリファクタや整形を同じ差分に混ぜない（§12 の「1 コミット = 1 論理変更」と整合）。レビューしやすい粒度を保つ。
+- 言語別の補足:
+  - **TypeScript**: `strict: true` を維持。`any` は禁止（不明なら `unknown`）。Props は `interface` で定義。パスエイリアス `@/*` → `src/*`。Server Component をデフォルトにし、必要時のみ `'use client'`。
+  - **Python**: `from __future__ import annotations` を先頭に。公開関数に docstring。入力検証は「範囲外→クランプ、非数値→デフォルト」パターン。定数は `UPPER_SNAKE_CASE`。
+  - **Bash**: 先頭で `set -euo pipefail`。ログは stderr。インデント 4 スペース。
+
+## 7. アクセシビリティ（a11y）
+
+- **対象は Web フロントエンド（HTML/CSS/JS を伴う UI）。** CLI・ライブラリ・バッチや、HTML を持たないネイティブ GUI（tkinter 等）には適用しない（共通規約の中で数少ない、適用範囲が限定される項目）。ネイティブ GUI の a11y は各リポジトリの固有ルールで扱う。
+- **セマンティック HTML を使う。** 見出しは階層（`h1`→`h2`→…）を飛ばさず、操作要素は `<button>` / `<a>` を使う。`div` / `span` に `onClick` を乗せて疑似ボタン化しない。
+- **キーボードだけで全機能を操作できるようにする。** フォーカス可能要素は可視のフォーカスリングを残す（`outline` を消す場合は代替の見た目を用意）。モーダルはフォーカストラップ＋`Esc` で閉じ、`tabindex` は `0` / `-1` のみ使う（正の値は使わない）。SPA でページ遷移したらフォーカスを新ページの先頭（`main` 等）へ移し、本文へ飛ぶスキップリンクも用意する。
+- **スクリーンリーダーに情報を伝える。** 画像に `alt`（装飾画像は `alt=""`）、アイコンだけのボタンに `aria-label`、フォーム入力に対応する `<label>`（または `aria-labelledby`）を付ける。`aria-live` は簡潔な状態通知・エラーなど「即時に読み上げてほしい変化」に限って使う（検索結果・タイマー・カルーセル・ストリーミング等、頻繁に変わる領域全体に付けると読み上げ過多でかえって使いづらくなる）。
+- **色だけに意味を持たせない。** エラー・成功などの状態はテキストやアイコンも併用する。コントラスト比は WCAG AA を満たす（通常文 4.5:1 / 大きな文字 3:1。加えて UI 部品の境界・状態・フォーカスリングや意味のある図形などの非テキストは 3:1＝SC 1.4.11）。配色は §6 の一元管理（CSS の `:root` 変数・`theme`）側でコントラストも担保する。
+- **動きを抑えられるようにする。** `prefers-reduced-motion` を尊重し、過度なアニメーションは無効化できるようにする。
+- **言語属性と外部リンクを正しく設定する。** ルート要素の `lang` は実際の文書の言語（§1 で宣言した UI 言語）に一致させる。多くは日本語なので `lang="ja"` だが、UI が他言語のリポジトリやローカライズページでは、その言語を正しく指定する（発音・言語処理が支援技術の挙動を左右するため）。別タブで開く外部リンクには `rel="noopener noreferrer"` を付ける。
+- **検証する。** Lighthouse / axe などで a11y を確認し、可能なら CI（§14）に組み込む。キーボードのみでの操作確認を手動チェックに含める。
+
+## 8. パフォーマンス・リソース
+
+- **N+1 クエリを避ける。** ORM では関連を eager-load（EF Core の `.Include`、Prisma の `include` / `select`）でまとめて取得する（§E の `.Include(x => x.Incident)` と整合）。ループの中で 1 件ずつクエリを投げない。
+- **よく絞り込む列にインデックスを張る。** `where` / `order by` / `join` で頻繁に使う列（ユーザー ID・日付・ステータス等）には DB インデックスを作成し、全件走査（sequential scan）を避ける。複合条件では複合インデックスの列順も意識する。
+- **一覧取得は必ず上限・ページネーションを持たせる。** 件数無制限の取得をしない（§9 の DoS・リソース枯渇防止と整合）。既定件数・最大件数は定数で一元管理する（§6）。
+- **計測してから最適化する。** 推測で最適化せず、プロファイラ／メトリクスで遅い箇所を特定してから手を入れる。早すぎる最適化で可読性を犠牲にしない。
+- **重い処理で UI／イベントループを止めない。** 大量データの計算・変換・パースは分割や非同期化（Web Worker・ストリーム処理・バックグラウンドジョブ）で行い、メインスレッドやリクエスト処理をブロックしない。
+- **フロントの配信を最適化する。** Web ではバンドルを分割（dynamic import / code splitting）し、画像は適切なフォーマット・サイズで最適化する。フォールド下や重要でない画像は `loading="lazy"` で遅延読み込みし、ファーストビューの LCP 候補（ヒーロー画像等）は遅延させず優先的に読み込む（Next.js は `next/image`。LCP 画像の優先読み込みはバージョンに応じて指定する: 16+ は `preload`、〜15 は `priority`）。重い依存は遅延読み込みする。
+- **Core Web Vitals を意識する。** LCP / CLS / INP を悪化させない。画像・広告枠などにはサイズを指定してレイアウトシフトを防ぎ、Web フォントには `font-display: swap`（または `fallback`、装飾用途は `optional`）を設定して FOIT（文字が一定時間不可視になる現象）で LCP を悪化させない。
+- **キャッシュを活用する。** 同じ計算・取得を繰り返さない（メモ化やフレームワークのキャッシュ機構 — Next.js なら 16+ の `use cache`／〜15 の `unstable_cache`、§D と整合 — を使う）。キャッシュは無効化条件を明確にし、古いデータを返さないようにする。
+- **リソースを確実に解放する。** 接続・ファイル・タイマー・購読は使い終わったら閉じる（§D の SSE 購読のように、購読解除を必ず実装する）。
+
+## 9. セキュリティ（必達）
+
+- **入力は信用しない。** 外部入力（ユーザー入力・設定ファイル・JSON・環境変数）は必ず検証する。Web ではスキーマ検証（例: Zod の `safeParse`）を通してから永続化・API へ渡す。壊れたデータでクラッシュさせず、不正値はフォールバックする。
+- **正規表現で algorithmic DoS（ReDoS）を起こさない。** 信頼できない入力に使う正規表現はネストした量指定子（`(a+)+` など）を避け、入力長に上限を設ける。複雑なパターンは線形時間のマッチャや専用の検証ライブラリに寄せ、未検証の正規表現を外部入力に直接当てない。
+- **秘密情報をコミットしない。** 認証情報・トークン・API キー・個人情報をコード・ログ・コミットに含めない。`.env` / `.env.local` はコミットせず、`.env.example` にキー名だけ記載する。
+- **API キーをフロントエンドに露出させない。** 外部 API はサーバー側（API ルート / Server Action）経由で呼ぶ。モデル名やエンドポイントは定数・環境変数で管理し、ハードコードしない。
+- **認可はサーバー側で強制する。** UI を隠すだけに頼らず、Server Action / コントローラの冒頭で認証・ロールチェックを行う。マルチテナントではクエリに必ずテナント条件（`where.tenantId = session.user.tenantId`）を差し込み、クロステナント漏洩を防ぐ。
+- **外部 Webhook は署名を検証する。** 受信 Webhook は共有シークレットで HMAC 署名（例: `X-Hub-Signature-256`）を検証し、一致しないリクエストは拒否する。アプリ層の認証だけに頼らず、なりすまし POST で状態を変えられないようにする。検証は定数時間比較で行う。
+- **危険な実行・安全でない解析を避ける。** `eval` / `exec` / `pickle` / `shell=True` を使わない。外部コマンドは引数配列で実行し、ユーザー入力を文字列連結でシェルに渡さない。信頼できない XML は外部実体（XXE）・DTD を無効化したパーサで読み（.NET は `DtdProcessing = Prohibit`、Python は `defusedxml`）、YAML は `safe_load`、JSON は eval せず標準パーサで解析する。
+- **失敗しても安全側に倒す（fail-safe / fail-closed）。** 例外時はクラッシュや権限昇格ではなく機能を縮退して継続する。権限・ネットワーク・パスの判定は「不明なら拒否」をデフォルトにする。
+- **最小権限・最小公開。** 読み書きするファイルは想定パス配下に限定し、外部由来の値をそのままパスに連結しない（パストラバーサル防止）。
+- **サーバー側の外向きリクエストを検証する（SSRF 対策）。** ユーザー由来の URL をそのまま `fetch` / HTTP クライアントに渡さない。スキーム・ホストを許可リストで制限し、プライベート IP（`127.0.0.0/8` / `10.0.0.0/8` / `169.254.0.0/16` 等）やクラウドメタデータ（`169.254.169.254`）への到達を遮断する。リダイレクト追跡先も同様に検証する。
+- **リダイレクト先を検証する（オープンリダイレクト対策）。** `returnUrl` / `next` など外部由来の遷移先は、自サイト内パス（または許可リスト）に照合してからリダイレクトする。任意の絶対 URL へ飛ばさない（ログイン後フィッシング防止）。
+- **出力もエスケープする（インジェクション対策）。** SQL は ORM／パラメータ化クエリで組み立て、ユーザー値を文字列連結で SQL に混ぜない。HTML はフレームワークの自動エスケープに任せ、`dangerouslySetInnerHTML` / `v-html` / `innerHTML` などの生 HTML 挿入は原則避ける（やむを得ない場合はサニタイズしてから）。OS コマンド・パス・LDAP なども同様に値を直接連結しない。
+- **状態変更リクエストを保護する。** フォーム送信や書き込み系 API には CSRF トークン（またはダブルサブミットクッキー）を必須とする。`SameSite` クッキーはそれを置き換えるものではなく、多層防御として併用する（OWASP 準拠。登録ドメインを他サービスと共有する場合、サブドメイン経由や `Lax` のトップレベル遷移では `SameSite` だけでは防げない）。副作用のある操作を GET で行わない。
+- **機密情報・PII・スタックトレースをログやエラー応答に漏らさない。** 外部にはサニタイズした安全なメッセージだけを返し、詳細はサーバ内ログに限定する。ログに残す前にトークン・個人情報はマスク／伏字化する。
+- **暗号・認証情報は自前実装しない。** パスワードは平文・可逆形式で保存せず bcrypt / argon2 等でハッシュ化する。暗号化は標準ライブラリを使い、自前の暗号方式を発明しない。署名・擬似匿名化に使うソルトや鍵は環境変数から取得し、未設定なら起動を失敗させる（fail-closed）。
+- **依存（サプライチェーン）を管理する。** ロックファイルをコミットし、新規依存は最小限に絞って出所・メンテ状況を確認する。`npm audit` / Dependabot 等で既知脆弱性を定期的に確認し、放置しない。
+- **公開エンドポイントを保護する。** レート制限と、リクエストサイズ・タイムアウト・ページネーション上限を設けて DoS とリソース枯渇を防ぐ。
+
+## 10. 移植性・プラットフォーム差異ゼロ設計
+
+- **ロジックと UI を分離する。** ビジネスロジックは表示層に依存しない純粋関数として保ち、Web / デスクトップ / モバイルで共有できる状態を維持する。
+- **プラットフォーム差を 1 か所に閉じ込める。** OS / 実行環境固有の処理は分岐（例: `platform.system()`）で局所化し、必ずフォールバックを用意する。
+- **移植可能な書き方をする。** 特定 OS でしか動かない記述（例: `strftime` の `%-d`）を持ち込まない。同じ操作はどの環境でも同じ結果になるよう、判定ロジックは共有層に置きテストで担保する。
+- **契約（contract）で同一性を保証する。** 言語・プラットフォーム非依存の入力→期待出力ケース（例: JSON の契約ファイル）を真実の源とし、各実装はそれに従う。
+
+## 11. テスト
+
+- **テストは必ず通過させること。** 変更の前後で、そのリポジトリの §2 と CI 設定（`.github/workflows/`）に記載された実際の検証コマンド（lint / 型チェック / テスト等、存在するものすべて）を通す。コマンド名や有無はスタックごとに異なるため、§2 と CI 設定を正本とし、ここに書かれた例（`lint && typecheck && test` 等）をそのまま当てはめない。
+- テストファイルはそのスタックの慣習に従った場所・命名で配置する（例: Python/JS は `tests/` に `test_<module>.py` / `*.test.ts`、Maven は `src/test/java` に `<Class>Test.java`、.NET は専用テストプロジェクトに `<Class>Tests.cs`）。
+- **純粋ロジックはユニットテスト、DB / 外部依存は E2E or 契約テストに寄せる。** ユニットテストに DB アクセスを持ち込まない。外部 API はモックして実際には呼ばない。
+- 境界値（0・最大・空文字列・非数値など）を重視する。OS 依存処理はモック（`@patch` 等）し、特定 OS でしか通らないテストを作らない。
+- DB を破壊的に扱う契約テストは、専用 DB を明示フラグで起動したときだけ走らせ、開発 DB を指さない。共有 DB を `TRUNCATE` するテストは直列実行する。
+
+## 12. Git 規約
+
+- コミットメッセージ形式: `type(scope): 日本語の説明`
+  - type: `feat` / `fix` / `refactor` / `test` / `docs` / `chore`
+  - scope: 変更領域（例: `chat`, `api`, `ui`, `tickets`, `reminder`）
+  - 例: `feat(chat): ストリーミング応答の実装`
+- **1 コミット = 1 論理変更。** スキーマ変更とマイグレーションは同一コミットに含める。
+- 開発は機能ブランチで行い、`main`（デフォルトブランチ）への直 push は避ける。
+
+## 13. PR・レビュー運用
+
+- **PR は draft ではなく open（ready）で作成する。** harness のデフォルトが draft の場合は、作成直後に ready 化してから次の手順に進む。
+- **コードレビューは `/code-review ultra` と `/security-review ultra` で行う（Codex 自動レビューは廃止）。** PR を ready 化して open にした直後、および PR ブランチへ push するたび（初回 PR 作成時を含む）に、この 2 つのスキルを実行して差分をレビューする。`@codex review` コメントの投稿は行わない（`chatgpt-codex-connector` 連携には依存しない）。
+  - `/code-review ultra` — 差分の正確性（バグ）と、再利用・簡素化・効率・粒度（altitude）の観点でレビューする。
+  - `/security-review ultra` — ブランチの保留中変更に対してセキュリティレビューを行う。
+  - 指摘は対応可否を判断して反映し、対応・見送りの理由をチャットで報告する。質問返信やレビュー不要な状況報告では実行しない。
+- **CI の成否（グリーン）はチャット上で報告する。** GitHub MCP（check-runs / status）で取得して報告する。
+- **ユーザーへの結果報告・要約は必ず日本語で出力する。** CI の成否・レビュー結果・作業サマリなど、要約した結果は常に日本語で記述する（各リポジトリの UI／コード言語に関わらず、チャットでの報告は日本語に統一する）。
+
+## 14. CI
+
+- GitHub Actions（`.github/workflows/`）でそのリポジトリに必要な検証を実行する。実行するジョブはスタックに応じて異なる（例: Web/TS なら lint → typecheck → test → E2E、Maven なら `mvn -B verify`、.NET なら `dotnet build` ＋ `dotnet test`、シェル/Docker なら shellcheck / hadolint / `docker compose config` ＋ e2e）。**PR を出す前に、§2 と CI 設定に記載のローカル検証コマンド（そのリポジトリに実在するものすべて）を通す。** 存在しないコマンドを当てはめない。
+- DB / ブラウザ依存のジョブはサービスコンテナ（PostgreSQL 等）や chromium を使う。依存があるスタックでは、ローカルでも `docker compose up` などで依存を起動してから実行する。
+
+---
+
+## 付録: リポジトリ別のルール（Appendix）
+
+各リポジトリの `CLAUDE.md` から、**§4〜§14 の共通規約と重複しない固有ルールだけ**を抜き出したカタログ。
+新規リポジトリが似た技術スタックの場合、該当ブロックを §1〜§3 の具体化や追補として流用できる。
+（出典の `CLAUDE.md` には、ここに載らないプロジェクト固有のアーキテクチャ詳細も含まれる。詳細は各リポジトリを参照。）
+
+### A. profile-portfolio（静的 HTML/CSS/JS, GitHub Pages）
+
+- ビルドツール・パッケージマネージャを使わない。確認は `open index.html` または `python -m http.server 8000`。
+- ファイル構成: `index.html`（ダークテーマ）/ `resume.html`（ライトテーマ・印刷対応）。
+- 色の変更は `:root` の CSS 変数（`--primary`, `--accent`, `--bg-dark` 等）経由。個別要素にカラーコードを直書きしない。
+- レスポンシブ: ブレークポイント 968px（タブレット）・768px（モバイル）。グリッドは `auto-fit, minmax()` でメディアクエリを最小化。フォントは `clamp()` で流体タイポグラフィを適用。
+- CSS は BEM 風命名（`.section-header` 等）、JS は Vanilla のみ（外部ライブラリを追加しない）。a11y の基本（セマンティック HTML・`alt`・外部リンクの `rel`・`lang`）は §7 に従う（この repo は日本語 UI なので `lang="ja"`）。
+- セクション追加時は Intersection Observer の `.observe()` 対象に追加し、ナビリンク・768px 表示・`resume.html` 反映を確認する。
+
+### B. my-task-manager（Python + tkinter, GUI）
+
+- ビジネスロジックは GUI 非依存の純粋関数に保つ（`timeline.py` / `stats.py` / `recurrence.py` / `task.py`）。表示層を差し替えてもロジックを共有できる状態を維持。
+- デザイントークン（配色・フォント・余白・カレンダー寸法）は `theme.py` に一元化。見た目の値をコードに直書きしない。
+- 繰り返しタスクは「完了した時点」を起点に日/週/月/年で再スケジュール（月末日・うるう年はクランプ）。
+- 言語・プラットフォーム非依存の繰り返し契約は `contract/recurrence_cases.json` を真実の源とし、契約駆動テスト（`test_recurrence_contract.py`）で検証。Web/スマホ版も同一契約に従う。
+- tkinter の `StringVar` / `IntVar` はテスト用 `_DummyVar` で代替し、`_create_app()` ファクトリでモック済みインスタンスを生成（Tk 無しでテスト可能）。
+- 入力検証は `_coerce_int()` パターン（範囲外→クランプ、非数値→デフォルト）。
+- 今日のタスクは Treeview でなく `tk.Canvas` の「デイビュー」で描画し、位置・高さは分→px 換算（`HOUR_HEIGHT`）で Canvas 実サイズに依存させない。
+- クロスプラットフォーム: 音/通知は macOS(`afplay`)・Windows(`winsound`)・Linux(`notify-send`+`tk.bell()`)を `platform.system()` で分岐。`cairosvg` はオプション依存で `ImportError` 時 graceful degradation。
+
+### C. my-first-ai-app（Next.js 16 + Claude API）
+
+- システムプロンプトは `src/lib/prompts.ts` に集約し、コンポーネントやルートハンドラに直接書かない。プロンプトは日本語で記述。
+- モデル名（`claude-sonnet-4-6` 等）は環境変数または定数で管理しハードコードしない。`max_tokens` 既定 1024、長文が必要なカテゴリは `prompts.ts` で個別設定。
+- `POST /api/chat` が唯一の API。Claude へのストリーミングプロキシで、`ANTHROPIC_API_KEY` はサーバ側環境変数から取得しフロントに露出させない。
+- API ルートに簡易レート制限（IP ベース、1 分あたり 20 リクエスト目安）。
+- API ルートのエラーは HTTP ステータスを使い分け: 401（キー未設定/無効）/ 429（レート制限超過）/ 500（その他）。フロントはユーザーフレンドリーな日本語メッセージを表示。
+
+### D. helpdesk-hub（Next.js 15 / Prisma / Auth.js v5）
+
+- 正本は `docs/smb-dx-pivot-plan.md`。Lite/Pro 二層・マルチテナント化・用語簡素化等の方針に反する変更をしない。Phase 0→1→2→3→4 の順序を尊重し、後フェーズ機能を前フェーズに混ぜない。
+- Prisma クライアントは `src/generated/prisma` に出力される。型/enum は必ず `@/generated/prisma` から import（`@prisma/client` ではない）。クローン後やスキーマ変更後は `npm run db:generate` を実行。
+- ロールは実質 requester と agent/admin の 2 種。`isAgent(role)`（`src/lib/role.ts`）を使い、`role === 'admin'` を直接比較しない（admin 限定の意図がある場合を除く）。
+- Mutation（Server Action）の定型: `auth()`＋ロール表明 → `findUniqueOrThrow` → 状態変更は `isValidTransition(from,to)` でゲート → Prisma で更新 → `recordHistory(...)` → `createNotification(...)` → `revalidatePath(...)`。
+- 状態遷移テーブル `ALLOWED_TRANSITIONS`（`src/domain/ticket-status.ts`）が唯一の真実の源。バイパスせず、ブロックされたら表とテストを更新する。
+- Data 層は Ports & Adapters。Port を `src/data/ports/` に定義し、本番は `adapters/prisma/`、テストは `adapters/memory/`。Prisma を直接 import するのは Adapter 内のみ。
+- 未読通知数は SSE（`/api/notifications/stream`）＋ `unstable_cache` で配信。`sse-subscribers.ts` はインプロセス Map のため、水平スケール前に要注意。
+- 契約テストは `*.contract.prisma.test.ts` 命名。`RUN_PRISMA_CONTRACT=1` のときだけ走り、`beforeEach` で全テーブル `TRUNCATE` するため**開発 DB を指さない**。`--no-file-parallelism` で直列実行。
+
+### E. incident-insight（ASP.NET Core 8 MVC + EF Core 8）
+
+- DB プロバイダ非依存。SQLite（既定）/ SQL Server / PostgreSQL を `Database:Provider` で切替。プロバイダ固有 SQL・列型をコードに持ち込まない。
+- 楽観的同時実行制御: 編集 POST は `FindAsync` で再読込後、クライアントの編集前 `ConcurrencyToken` を `OriginalValue` に明示ピンして保存し、`DbUpdateConcurrencyException` を捕捉。トークンは hidden field で round-trip。
+- 時刻は常に注入された `IClock`（JST）。`DateTime.Now/Today/UtcNow` を直接呼ばない。
+- 監査ログは `AuditSaveChangesInterceptor` が唯一の源。`AuditLog` に直接書かない。`SaveChanges` 経由で更新し、`ExecuteUpdate`/`ExecuteDelete` を使わない（変更追跡を迂回し監査漏れになるため）。
+- PHI 保護: 自由記述・個人名カラムには `[Sensitive(Mask.Redact)]` か `[Sensitive(Mask.Hash)]` を付与（`[REDACTED]` か HMAC-SHA256 擬似匿名化）。新カラム追加時も必ず annotate。本番で `Audit:HashSalt` 空は起動失敗。
+- ビジネスルール `HasAtLeastOneValidMeasure`（インシデントは予防策が最低 1 件ないと登録不可）をバイパスしない。
+- Enum（重症度・部署・インシデント種別）は `Incident` クラスの `static readonly` 辞書/配列が真実の源（DB ではない）。`EnumLabels.cs` に日本語ラベル＋Bootstrap カラーを集約。
+- `SameDepartmentHandler` は `Incident` の eager-load（`.Include(x => x.Incident)`）が前提で fail-closed（null なら拒否）。
+- 新規 POST アクション時チェック: `[Authorize]` / `[ValidateAntiForgeryToken]` / `ConcurrencyToken` ピン / 必要なら `.Include(Incident)` / `SaveChangesAsync` 使用 / `TempData["Success"|"Warning"]` / 新 PHI カラムに `[Sensitive]` / 対応テスト追加。テストは InMemory DbContext を優先（Mock より）。
+
+### F. AI-Docker-Environment（Docker サンドボックス, bash, Linux 専用）
+
+- 正本は `docs/requirements.md`。実装・新機能はすべて要件定義書に従い、衝突したら先に要件を改訂してから実装変更（同一 PR 内で §3/§4/§6 を更新）。
+- すべて `bin/aidock` 経由で実行（`build`/`login`/`run`/`shell`/`firewall-refresh`/`logout`）。`guard_workspace()` の `/` および `$HOME` をマウント拒否するガードを削除しない。
+- セキュリティ不変条件（変更禁止 or 影響必須検討）:
+  - `compose.yaml`: `cap_drop: ALL`（必要 cap のみ add）/ `no-new-privileges:true` / `read_only: true`＋最小 `tmpfs` / メモリ・CPU・PID 上限 / ホストパスの追加 bind mount 原則禁止（`~/.ssh` 等）。
+  - `HOST_WORKSPACE` に既定値を付けない（`${HOST_WORKSPACE:?...}`）。`bin/aidock` 非経由の直接 `docker compose run` を fail-closed にする。
+  - `Dockerfile`/`entrypoint.sh`: `sudo` を含めず、root 起動 → firewall 初期化後に `gosu agent` で降格。ワークロードは `agent` で実行。
+  - `init-firewall.sh`: `iptables -P OUTPUT DROP` と `ip6tables -P OUTPUT DROP`（IPv4/IPv6 両方 default-deny）を維持。許可ホスト追加は最小限・理由を PR に明記。DNS は許可 nameserver 限定。
+- OAuth トークンは名前付きボリューム `claude-home` に置き、ホスト FS や Docker イメージ層に書き出さない。
+- Linux 専用（iptables/ipset/cap_add 依存。macOS Docker Desktop 非対応）。スクリプトは Bash・先頭で `set -euo pipefail`、ログは stderr、インデント 4 スペース。
+- このリポジトリのコミットメッセージは英語・命令形・1 行要約（既存履歴に倣う。§12 の日本語コミット規約より優先する例外）。
