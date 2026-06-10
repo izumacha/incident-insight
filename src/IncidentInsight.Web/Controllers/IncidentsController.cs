@@ -235,8 +235,10 @@ public class IncidentsController : Controller
                 // 保存される行はフィールド検証を残すのでスキップ
                 continue;
 
-            // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する
-            var rowPrefix = $"Measures[{i}]";
+            // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する。
+            // 末尾に "]." まで含めてプレフィックス照合する。"Measures[1]" のように
+            // 角括弧で止めると "Measures[10]." 等の別の行にも誤一致してしまうため。
+            var rowPrefix = $"Measures[{i}].";
             foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix)).ToList())
             {
                 // 空行由来の各キーを ModelState から除去する

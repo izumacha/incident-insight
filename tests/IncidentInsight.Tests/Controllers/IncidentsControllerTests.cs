@@ -195,6 +195,35 @@ public class IncidentsControllerTests : IDisposable
         Assert.Single(_db.PreventiveMeasures);
     }
 
+    [Fact]
+    public async Task Create_Post_EmptyRow_DoesNotStripHigherIndexedRowError()
+    {
+        // [0] は妥当な対策行。[1..9] は空行、[10] は対策内容ありの保存対象行にする。
+        var vm = ValidViewModel();
+        // インデックス 1〜10 を埋める(1〜9 は空行、10 は対策内容あり)
+        for (int i = 1; i <= 10; i++)
+        {
+            // i==10 のときだけ対策内容を入れて保存対象の行にする
+            vm.Measures.Add(new MeasureFormViewModel { Description = i == 10 ? "10番目の対策" : "" });
+        }
+        // 空行[1]の Required エラーと、保存対象[10]のフィールドエラーを再現する
+        _controller.ModelState.AddModelError("Measures[1].DueDate", "実施期限を入力してください");
+        _controller.ModelState.AddModelError("Measures[10].DueDate", "実施期限を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 空行[1]の除去で [10] のエラーが巻き込まれないこと(プレフィックス誤一致防止)を確認する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        // 保存対象[10]のエラーは残っていること
+        Assert.True(_controller.ModelState.ContainsKey("Measures[10].DueDate"));
+        // 空行[1]のエラーは除去されていること
+        Assert.False(_controller.ModelState.ContainsKey("Measures[1].DueDate"));
+        // 不正データなのでインシデントは保存されないこと
+        Assert.Empty(_db.Incidents);
+    }
+
     // --- Create POST: department scope enforcement for Staff (issue #63) ---
 
     [Fact]
