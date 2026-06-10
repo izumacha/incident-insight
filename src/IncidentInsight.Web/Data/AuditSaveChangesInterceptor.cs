@@ -1,3 +1,5 @@
+// スレッドセーフなコレクション(ConcurrentDictionary)を使う
+using System.Collections.Concurrent;
 // リフレクション(プロパティ属性の取得)を使う
 using System.Reflection;
 // SHA-256 ハッシュを計算するため
@@ -55,8 +57,15 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // 監査ログ用設定(Hash の salt など)。null の場合は既定値で動かす
     private readonly AuditOptions _auditOptions;
 
-    // DbContext インスタンスごとの保留監査エントリ。Scoped に一致するため競合しない。
-    private readonly Dictionary<DbContext, List<PendingAudit>> _pending = new();
+    // HMAC の鍵バイト列をコンストラクタで一度だけ変換してキャッシュする。
+    // ComputePseudonym が呼ばれるたびに Encoding.UTF8.GetBytes() を実行する無駄を避ける。
+    private readonly byte[] _hmacKeyBytes;
+
+    // DbContext インスタンスごとの保留監査エントリ。
+    // このインターセプタは Singleton 登録のため、複数の Scoped DbContext (HTTP リクエスト)が
+    // 同時に SaveChanges を呼ぶ可能性がある。Dictionary<> はスレッドセーフでないため、
+    // ConcurrentDictionary<> に変えてスレッド安全を保証する(Fix: issue #67)。
+    private readonly ConcurrentDictionary<DbContext, List<PendingAudit>> _pending = new();
 
     // [Sensitive] 属性の検索結果をキャッシュ(プロパティ毎にリフレクションを毎回走らせないため)
     // キーは (CLR Type, プロパティ名)。null は属性なしを表す。
@@ -75,6 +84,9 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         _clock = clock;
         // null の場合は規定値の AuditOptions を使う(salt が空のテスト用)
         _auditOptions = auditOptions?.Value ?? new AuditOptions();
+        // HMAC 鍵を一度だけバイト列に変換してキャッシュする
+        // (ComputePseudonym が毎回 Encoding.UTF8.GetBytes を呼ぶ代わりにこの値を使う)
+        _hmacKeyBytes = Encoding.UTF8.GetBytes(_auditOptions.HashSalt);
     }
 
     // 同期版 SaveChanges の直前フック: スナップショットとトークン更新を行う
@@ -125,7 +137,7 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
         // 失敗した場合は保留エントリを破棄(ゴミを残さない)
-        if (eventData.Context is not null) _pending.Remove(eventData.Context);
+        if (eventData.Context is not null) _pending.TryRemove(eventData.Context, out _);
         // 基底処理へ委譲
         base.SaveChangesFailed(eventData);
     }
@@ -136,7 +148,7 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         CancellationToken cancellationToken = default)
     {
         // 失敗時も保留エントリをクリア
-        if (eventData.Context is not null) _pending.Remove(eventData.Context);
+        if (eventData.Context is not null) _pending.TryRemove(eventData.Context, out _);
         // 基底処理へ委譲
         return base.SaveChangesFailedAsync(eventData, cancellationToken);
     }
@@ -224,12 +236,13 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         // 保留が無ければ false を返して終了
         if (!_pending.TryGetValue(context, out var captured) || captured.Count == 0)
         {
-            _pending.Remove(context);
+            // エントリが空でも念のためキーを削除してメモリを解放する
+            _pending.TryRemove(context, out _);
             return false;
         }
 
         // 同じ DbContext に対する再入を防ぐため先にクリアしてから組み立て
-        _pending.Remove(context);
+        _pending.TryRemove(context, out _);
 
         // 保留エントリを1件ずつ AuditLog に変換して追加
         foreach (var item in captured)
@@ -365,12 +378,11 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // 既存 AuditLogs のハッシュ値とは突合できない(salt 回転と同じ扱い)。過去ログは書き換えない。
     private string ComputePseudonym(string input)
     {
-        // HashSalt を HMAC の鍵(バイト列)に変換する(本番では非空を起動時に保証済み)
-        var key = Encoding.UTF8.GetBytes(_auditOptions.HashSalt);
+        // コンストラクタでキャッシュ済みの鍵バイト列を使う(毎回 GetBytes しない)
         // 擬似匿名化したい入力(氏名など)を UTF-8 バイト列に変換する
         var message = Encoding.UTF8.GetBytes(input);
         // 鍵付きハッシュ HMAC-SHA256 を計算する(鍵が無いと値を逆算できない)
-        using var hmac = new HMACSHA256(key);
+        using var hmac = new HMACSHA256(_hmacKeyBytes);
         // 入力バイト列から固定長(32 byte)の HMAC を求める
         var hash = hmac.ComputeHash(message);
         // hex 化して先頭 32 桁(128bit 分)だけ採用する(衝突耐性を確保しつつ冗長さを抑える)

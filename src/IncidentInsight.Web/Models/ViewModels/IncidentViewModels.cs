@@ -75,10 +75,12 @@ public class IncidentCreateEditViewModel
     // hidden field でクライアントに渡して POST 時に戻ってきたものを OriginalValue に設定する。
     public Guid ConcurrencyToken { get; set; }
 
-    // 発生日時。必須で初期値は現在時刻
+    // 発生日時。必須。初期値は Get アクションで IClock.Now を代入する(ここでは default)。
+    // ViewModel の既定値に DateTime.Now を使うと IClock 規約違反になり、
+    // テストで時刻制御ができなくなるため、コントローラ側で設定する方式に統一する。
     [Required(ErrorMessage = "発生日時は必須です")]
     [Display(Name = "発生日時")]
-    public DateTime OccurredAt { get; set; } = DateTime.Now;
+    public DateTime OccurredAt { get; set; }
 
     // 発生部署。必須で最大100文字
     [Required(ErrorMessage = "部署は必須です")]
@@ -216,10 +218,11 @@ public class MeasureFormViewModel
     [Display(Name = "担当部署")]
     public string ResponsibleDepartment { get; set; } = "";
 
-    // 実施期限(必須、初期値は30日後)
+    // 実施期限(必須)。初期値はコントローラ側で IClock を使って設定する。
+    // DateTime.Now.AddDays(30) をここに書くと IClock 規約違反になるため削除した。
     [Required(ErrorMessage = "実施期限を入力してください")]
     [Display(Name = "実施期限")]
-    public DateTime DueDate { get; set; } = DateTime.Now.AddDays(30);
+    public DateTime DueDate { get; set; }
 
     // 優先度(1=高/2=中/3=低、初期値2)
     [Display(Name = "優先度")]

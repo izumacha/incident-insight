@@ -184,10 +184,18 @@ public class IncidentsController : Controller
     // 登録画面の初期表示
     public async Task<IActionResult> Create()
     {
-        // 発生日時の既定値を「現在時刻」にして空の ViewModel を用意
+        // IClock から現在時刻を取得する(DateTime.Now を ViewModel 内で使わないための委譲)
+        var now = _clock.Now;
+        // 発生日時と対策の実施期限の既定値をクロックから設定して空の ViewModel を用意
         var vm = new IncidentCreateEditViewModel
         {
-            OccurredAt = _clock.Now,
+            // 発生日時の初期値: 現在時刻(JST ベースの IClock 経由)
+            OccurredAt = now,
+            // 対策リストの最初の行: 実施期限を30日後に設定する
+            Measures = new List<MeasureFormViewModel>
+            {
+                new MeasureFormViewModel { DueDate = now.AddDays(30) }
+            },
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
         // 登録フォームを描画
@@ -201,8 +209,17 @@ public class IncidentsController : Controller
     public async Task<IActionResult> Create(IncidentCreateEditViewModel vm)
     {
         // Remove sub-form validation noise from ModelState
-        // サブフォーム側のドロップダウン選択肢バリデーションは不要なので除外
-        ModelState.Remove("CauseAnalysis.CauseCategoryOptions");
+        // サブフォーム(原因分析・対策)由来の ModelState キーをまとめて除外する。
+        // Edit POST と同じパターンに揃える: CauseAnalysis.*、Measures[*] を削除する。
+        // これを省略すると、オプション列(Why2–5 など)の hidden フィールドが
+        // 未送信の場合に不要な Required エラーが残り、Create が常に失敗する。
+        foreach (var key in ModelState.Keys
+            .Where(k => k.StartsWith("CauseAnalysis.") || k.StartsWith("Measures["))
+            .ToList())
+        {
+            // サブフォーム由来の各キーを ModelState から除去する
+            ModelState.Remove(key);
+        }
 
         // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
@@ -218,6 +235,11 @@ public class IncidentsController : Controller
             return View(vm);
         }
 
+        // Incident と関連エンティティを単一トランザクションで保存する。
+        // トランザクションがないと、Incident は保存されたが対策がまだ保存されていない
+        // 中間状態が生じ、「最低1件の対策が必要」という業務ルールが DB 上で破れる。
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+
         // 入力値から新しい Incident を作成
         var incident = new Incident
         {
@@ -231,7 +253,7 @@ public class IncidentsController : Controller
             ReportedAt = _clock.Now
         };
 
-        // ChangeTracker に追加して Id を得るため一旦保存
+        // ChangeTracker に追加して Id を採番するため一旦保存(まだコミットしない)
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
 
@@ -280,6 +302,9 @@ public class IncidentsController : Controller
         // 原因分析+対策をまとめて DB に反映
         await _db.SaveChangesAsync();
 
+        // すべて正常に保存できたのでトランザクションをコミットする
+        await transaction.CommitAsync();
+
         // 成功通知をセット(画面上のトースト表示用)
         TempData["Success"] = "インシデントを登録しました。";
         // 詳細画面にリダイレクト
@@ -316,6 +341,12 @@ public class IncidentsController : Controller
 
         // フォームの値を無視し、必ず本人の所属部署に固定する(他部署への投入/付け替え防止)
         vm.Department = ownDepartment;
+
+        // model binding が先に「Department が空」と判定した [Required] エラーを取り除く。
+        // この時点では vm.Department に正しい値を設定済みなのでエラーは無効となる。
+        // これを除去しないと ModelState.IsValid が false のままになり、
+        // Staff がフォームを送信しても常にバリデーションエラーになってしまう(issue #63)。
+        ModelState.Remove(nameof(vm.Department));
     }
 
     // GET /Incidents/Edit/5
