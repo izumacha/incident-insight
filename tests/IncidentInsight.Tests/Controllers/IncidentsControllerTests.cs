@@ -149,6 +149,52 @@ public class IncidentsControllerTests : IDisposable
         Assert.Empty(_db.Incidents);
     }
 
+    [Fact]
+    public async Task Create_Post_PersistedMeasureWithFieldError_KeepsError_AndDoesNotSave()
+    {
+        // 対策内容ありの行(=保存対象)を 1 件持つ妥当な ViewModel を用意する
+        var vm = ValidViewModel();
+        // model binding が「実施期限が不正」と判定した状況を再現する(保存される行のエラー)
+        _controller.ModelState.AddModelError("Measures[0].DueDate", "実施期限を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 保存される対策行のフィールド検証は除去されず、再描画されることを確認する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        // ModelState は無効のまま(エラーが残っている)であること
+        Assert.False(_controller.ModelState.IsValid);
+        // 該当行のエラーキーが残っていること(空行のように消されていないこと)
+        Assert.True(_controller.ModelState.ContainsKey("Measures[0].DueDate"));
+        // 不正なデータでインシデントが保存されていないことを確認する
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_EmptyExtraMeasureRow_RemovesItsErrors_AndSaves()
+    {
+        // [0] は妥当な対策行、[1] は対策内容が空の余分な行(保存されない行)を用意する
+        var vm = ValidViewModel();
+        vm.Measures.Add(new MeasureFormViewModel { Description = "" });
+        // 空行に対して model binding が付けた Required エラーを再現する
+        _controller.ModelState.AddModelError("Measures[1].DueDate", "実施期限を入力してください");
+        _controller.ModelState.AddModelError("Measures[1].ResponsiblePerson", "担当者を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 空行のエラーは除去され、検証を通過して詳細画面へリダイレクトされることを確認する
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        // 空行のエラーキーが ModelState から除去されていること
+        Assert.False(_controller.ModelState.ContainsKey("Measures[1].DueDate"));
+        // インシデントが 1 件保存されていること
+        Assert.Single(_db.Incidents);
+        // 保存される対策は対策内容ありの 1 件だけ(空行は永続化されない)であること
+        Assert.Single(_db.PreventiveMeasures);
+    }
+
     // --- Create POST: department scope enforcement for Staff (issue #63) ---
 
     [Fact]

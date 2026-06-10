@@ -208,17 +208,40 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(IncidentCreateEditViewModel vm)
     {
-        // Remove sub-form validation noise from ModelState
-        // サブフォーム(原因分析・対策)由来の ModelState キーをまとめて除外する。
-        // Edit POST と同じパターンに揃える: CauseAnalysis.*、Measures[*] を削除する。
-        // これを省略すると、オプション列(Why2–5 など)の hidden フィールドが
-        // 未送信の場合に不要な Required エラーが残り、Create が常に失敗する。
+        // なぜなぜ分析サブフォーム由来の ModelState キーを除外する。
+        // Why2–5 などの任意項目やドロップダウン選択肢(CauseCategoryOptions)が
+        // 未送信のときに残る不要な Required エラーを取り除く。原因分析は
+        // CauseCategoryId と Why1 が揃ったときだけ保存するため、ここで一括除外してよい。
         foreach (var key in ModelState.Keys
-            .Where(k => k.StartsWith("CauseAnalysis.") || k.StartsWith("Measures["))
+            .Where(k => k.StartsWith("CauseAnalysis."))
             .ToList())
         {
-            // サブフォーム由来の各キーを ModelState から除去する
+            // 原因分析サブフォーム由来の各キーを ModelState から除去する
             ModelState.Remove(key);
+        }
+
+        // 対策サブフォームの ModelState は「行ごと」に整理する。
+        // Edit POST は対策を永続化しないため Measures[*] を一括削除して問題ないが、
+        // Create POST は下の Where(Description 非空)で残った対策行を実際に保存する。
+        // そのため一括削除はせず、保存されない空行(対策内容が未入力の行)だけ
+        // Required エラーを取り除き、保存される行(対策内容あり)の担当者・担当部署・
+        // 実施期限などのフィールド検証は残してデータ整合性を守る。
+        // (一括削除すると DueDate=default(0001-01-01) のまま保存され IsOverdue が
+        //  常に true になる等の不正データを生む。)
+        for (int i = 0; vm.Measures != null && i < vm.Measures.Count; i++)
+        {
+            // この行が保存対象か(対策内容が入力されているか)を判定する
+            if (!string.IsNullOrWhiteSpace(vm.Measures[i].Description))
+                // 保存される行はフィールド検証を残すのでスキップ
+                continue;
+
+            // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する
+            var rowPrefix = $"Measures[{i}]";
+            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix)).ToList())
+            {
+                // 空行由来の各キーを ModelState から除去する
+                ModelState.Remove(key);
+            }
         }
 
         // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
