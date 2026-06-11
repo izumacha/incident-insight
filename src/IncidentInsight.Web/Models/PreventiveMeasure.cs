@@ -51,10 +51,10 @@ public class PreventiveMeasure
     [Display(Name = "担当部署")]
     public string ResponsibleDepartment { get; set; } = "";
 
-    // 実施期限。必須で、初期値は今日から30日後
+    // 実施期限。必須。初期値はコントローラが IClock 経由で設定する(ここでは DateTime.Now を使わない)
     [Required(ErrorMessage = "実施期限を入力してください")]
     [Display(Name = "実施期限")]
-    public DateTime DueDate { get; set; } = DateTime.Now.AddDays(30);
+    public DateTime DueDate { get; set; }
 
     // 対策立案の根拠や背景メモ(省略可、最大500文字)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
@@ -115,19 +115,25 @@ public class PreventiveMeasure
 
     // Computed helpers
     // DueDate の .Date を使うことで、期限日当日は「期限超過」にならない。
-    // 完了していない かつ 期限日が今日より前 なら「期限超過」と判定する
-    public bool IsOverdue => Status != MeasureStatus.Completed && DueDate.Date < DateTime.Today;
+    // 完了していない かつ 期限日が today より前 なら「期限超過」と判定する。
+    // today は IClock 経由で取得した値をコントローラ/ビューから渡す(DateTime.Today を直接使わない)
+    public bool IsOverdueOn(DateTime today) =>
+        // 完了済みは「期限超過」にならない
+        Status != MeasureStatus.Completed &&
+        // DueDate の日付部分だけを today と比較(当日は超過とみなさない)
+        DueDate.Date < today.Date;
 
     // ステータスの日本語ラベル(例: 「進行中」)
     public string StatusLabel => EnumLabels.Japanese(Status);
 
     // ステータスに応じた Bootstrap カラー名(期限超過なら danger に切り替え)
-    public string StatusColor => Status switch
+    // today は IClock 経由で取得した値をコントローラ/ビューから渡す
+    public string StatusColorOn(DateTime today) => Status switch
     {
         // 計画中: 期限超過なら赤、そうでなければ黄
-        MeasureStatus.Planned => IsOverdue ? "danger" : "warning",
+        MeasureStatus.Planned => IsOverdueOn(today) ? "danger" : "warning",
         // 進行中: 期限超過なら赤、そうでなければ青
-        MeasureStatus.InProgress => IsOverdue ? "danger" : "primary",
+        MeasureStatus.InProgress => IsOverdueOn(today) ? "danger" : "primary",
         // 完了は緑
         MeasureStatus.Completed => "success",
         // それ以外はグレー

@@ -95,7 +95,8 @@ public class PreventiveMeasuresController : Controller
         // Stats
         // 統計値(総数・期限超過数・完了率・失敗件数)を計算してビューに渡す
         ViewBag.TotalCount = measures.Count;
-        ViewBag.OverdueCount = measures.Count(m => m.IsOverdue);
+        // IsOverdueOn に _clock.Today を渡して期限超過数を計算する(DateTime.Today を直接使わない)
+        ViewBag.OverdueCount = measures.Count(m => m.IsOverdueOn(_clock.Today));
         ViewBag.CompletionRate = measures.Count == 0 ? 0
             : Math.Round((double)completed.Count / measures.Count * 100, 1);
         ViewBag.FailedCount = measures.Count(m => m.RecurrenceObserved == true);

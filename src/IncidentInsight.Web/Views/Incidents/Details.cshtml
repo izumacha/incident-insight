@@ -1,10 +1,14 @@
 @* 詳細画面用の ViewModel を宣言（インシデント本体＋類似事例＋フォーム用の新規分析/対策入れ子） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentDetailViewModel
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブのタイトル *@
     ViewData["Title"] = "インシデント詳細";
     @* 毎回 Model.Incident と書くのが煩雑なのでローカル変数に束ねる *@
     var incident = Model.Incident;
+    @* 今日の日付を一度だけ取得してビュー内で使い回す *@
+    var today = Clock.Today;
 }
 
 @* ページヘッダ：見出し＋重症度バッジ＋アクションボタン *@
@@ -275,8 +279,8 @@
         <h5 class="mb-0">
             <i class="bi bi-shield-check me-2 text-success"></i>再発防止策
             @{
-                @* 期限超過件数を集計し、0件より多ければ赤バッジで強調 *@
-                var overduePmCount = incident.PreventiveMeasures.Count(m => m.IsOverdue);
+                @* 期限超過件数を集計し、0件より多ければ赤バッジで強調(IClock 経由の today を渡す) *@
+                var overduePmCount = incident.PreventiveMeasures.Count(m => m.IsOverdueOn(today));
                 if (overduePmCount > 0)
                 {
                     <span class="badge bg-danger ms-2">@overduePmCount 件期限超過</span>
@@ -314,8 +318,8 @@
                         @* 優先度→期限の順で並べて表示 *@
                         @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.Priority).ThenBy(m => m.DueDate))
                         {
-                            @* 期限超過の行は赤背景で強調 *@
-                            <tr class="@(m.IsOverdue ? "table-danger" : "")">
+                            @* 期限超過の行は赤背景で強調(IClock 経由の today を渡す) *@
+                            <tr class="@(m.IsOverdueOn(today) ? "table-danger" : "")">
                                 <td style="max-width:200px">
                                     @* 対策内容は長すぎれば先頭 45 文字に省略 *@
                                     <div>@(m.Description.Length > 45 ? m.Description[..45] + "…" : m.Description)</div>
@@ -333,10 +337,11 @@
                                     <div class="text-muted x-small">@m.ResponsibleDepartment</div>
                                 </td>
                                 <td>
-                                    <div class="small @(m.IsOverdue ? "text-danger fw-bold" : "")">
+                                    @* 期限表示(IClock 経由の today を渡して超過判定) *@
+                                    <div class="small @(m.IsOverdueOn(today) ? "text-danger fw-bold" : "")">
                                         @m.DueDate.ToString("MM/dd")
-                                        @* 超過バッジ *@
-                                        @if (m.IsOverdue)
+                                        @* 超過バッジ(IClock 経由の today を渡す) *@
+                                        @if (m.IsOverdueOn(today))
                                         {
                                             <span class="badge bg-danger ms-1">超過</span>
                                         }
@@ -344,8 +349,8 @@
                                 </td>
                                 @* 優先度バッジ *@
                                 <td><span class="badge bg-@m.PriorityColor">@m.PriorityLabel</span></td>
-                                @* ステータスバッジ（計画中／実行中／完了） *@
-                                <td><span class="badge bg-@m.StatusColor">@m.StatusLabel</span></td>
+                                @* ステータスバッジ（計画中／実行中／完了）(IClock 経由の today を渡す) *@
+                                <td><span class="badge bg-@m.StatusColorOn(today)">@m.StatusLabel</span></td>
                                 <td>
                                     @* 有効性評価が入力済みなら星と再発有無を表示 *@
                                     @if (m.EffectivenessRating.HasValue)
@@ -476,10 +481,12 @@
             @foreach (var m in incident.PreventiveMeasures.OrderBy(m => m.DueDate))
             {
                 <div class="timeline-item">
-                    <span class="timeline-badge bg-@m.StatusColor"></span>
+                    @* タイムラインバッジの色を IClock 経由の today で決定する(StatusColorOn に today を渡す) *@
+                    <span class="timeline-badge bg-@m.StatusColorOn(today)"></span>
                     <div class="timeline-content">
                         <strong>@m.DueDate.ToString("yyyy/MM/dd")</strong> 期限：@(m.Description.Length > 40 ? m.Description[..40] + "…" : m.Description)
-                        <span class="badge bg-@m.StatusColor ms-1">@m.StatusLabel</span>
+                        @* ステータスバッジの色も IClock 経由の today で決定する *@
+                        <span class="badge bg-@m.StatusColorOn(today) ms-1">@m.StatusLabel</span>
                     </div>
                 </div>
                 @* 完了日が記録されていれば追加の完了イベントを描画 *@

@@ -1,8 +1,12 @@
 @* ダッシュボード画面で使う ViewModel の型を宣言 *@
 @model IncidentInsight.Web.Models.ViewModels.DashboardViewModel
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブのタイトル *@
     ViewData["Title"] = "ダッシュボード";
+    @* 今日の日付を一度だけ取得してビュー内で使い回す *@
+    var today = Clock.Today;
 }
 
 @* 画面上部: Hero バナー(プライマリブランド色のグラデーション帯で当期サマリーを掲げる) *@
@@ -126,8 +130,8 @@
             @* 期限超過の対策を最大 5 件まで列挙 *@
             @foreach (var m in Model.OverdueMeasureList.Take(5))
             {
-                @* 超過日数を計算(表示専用なので DateTime.Today を直接使用) *@
-                var daysOverdue = (int)(DateTime.Today - m.DueDate).TotalDays;
+                @* 超過日数を today ベースで計算(DateTime.Today 直接使用を避ける) *@
+                var daysOverdue = (int)(today - m.DueDate).TotalDays;
                 <li>
                     <strong>@m.Incident?.Department</strong> —
                     @* 長すぎる説明は 40 文字で切って末尾に … を付ける *@
@@ -225,8 +229,8 @@
                 <ul class="list-group list-group-flush">
                     @foreach (var incident in Model.RecentIncidents)
                     {
-                        @* 期限超過の対策を持つ場合は赤背景で強調 *@
-                        <li class="list-group-item px-3 py-2 @(incident.PreventiveMeasures.Any(m => m.IsOverdue) ? "list-group-item-danger" : "")">
+                        @* 期限超過の対策を持つ場合は赤背景で強調(IClock 経由の today を渡す) *@
+                        <li class="list-group-item px-3 py-2 @(incident.PreventiveMeasures.Any(m => m.IsOverdueOn(today)) ? "list-group-item-danger" : "")">
                             <div class="d-flex justify-content-between align-items-start">
                                 <div class="flex-grow-1">
                                     <span class="badge bg-@incident.SeverityColor me-1">@incident.SeverityLabel</span>
@@ -316,8 +320,8 @@
                             <tbody>
                                 @foreach (var m in Model.OverdueMeasureList.Take(5))
                                 {
-                                    @* 超過日数を計算(表示用) *@
-                                    var days = (int)(DateTime.Today - m.DueDate).TotalDays;
+                                    @* 超過日数を today ベースで計算(DateTime.Today 直接使用を避ける) *@
+                                    var days = (int)(today - m.DueDate).TotalDays;
                                     <tr>
                                         <td class="ps-3">
                                             <div class="small fw-medium">@(m.Description.Length > 35 ? m.Description[..35] + "…" : m.Description)</div>

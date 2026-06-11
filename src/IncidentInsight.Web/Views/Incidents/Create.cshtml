@@ -1,8 +1,12 @@
 @* 使用する ViewModel の型を宣言（基本情報+原因分析+対策一覧をまとめた登録フォーム用の入れ物） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブに表示するタイトル *@
     ViewData["Title"] = "インシデント新規登録";
+    @* 今日の日付を IClock 経由で取得して DueDate の初期値などに使う *@
+    var today = Clock.Today;
 }
 
 @* ページヘッダ：見出しと一覧画面に戻るボタンを横並びに配置 *@
@@ -247,8 +251,9 @@
                                 <div class="col-md-2">
                                     @* 実施期限（初期値は30日後） *@
                                     <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                                    @* 実施期限の初期値を今日から30日後に設定する(DateTime.Today を直接使わず today 変数を使う) *@
                                     <input type="date" name="Measures[0].DueDate" class="form-control form-control-sm"
-                                           value="@DateTime.Today.AddDays(30).ToString("yyyy-MM-dd")" />
+                                           value="@today.AddDays(30).ToString("yyyy-MM-dd")" />
                                 </div>
                                 <div class="col-md-1">
                                     @* 優先度（高=1／中=2／低=3、初期は中） *@

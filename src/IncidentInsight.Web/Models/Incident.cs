@@ -14,10 +14,10 @@ public class Incident
     // 主キー(自動採番)
     public int Id { get; set; }
 
-    // インシデント発生日時。必須で、初期値は現在時刻
+    // インシデント発生日時。必須。初期値はコントローラが IClock 経由で設定する(ここでは DateTime.Now を使わない)
     [Required(ErrorMessage = "発生日時は必須です")]
     [Display(Name = "発生日時")]
-    public DateTime OccurredAt { get; set; } = DateTime.Now;
+    public DateTime OccurredAt { get; set; }
 
     // 発生部署名。必須で最大100文字まで
     [Required(ErrorMessage = "部署は必須です")]
@@ -56,9 +56,9 @@ public class Incident
     [Sensitive(Mask.Hash)]
     public string ReporterName { get; set; } = "";
 
-    // 報告を登録した日時。初期値は現在時刻
+    // 報告を登録した日時。コントローラが IClock 経由で設定する(ここでは DateTime.Now を使わない)
     [Display(Name = "報告日時")]
-    public DateTime ReportedAt { get; set; } = DateTime.Now;
+    public DateTime ReportedAt { get; set; }
 
     /// <summary>
     /// 楽観的同時実行制御トークン(全プロバイダ共通の Guid ベース)。
@@ -99,26 +99,25 @@ public class Incident
     // インシデント種別の日本語ラベル
     public string IncidentTypeLabel => IncidentTypeMapping.JapaneseLabel(IncidentType);
 
-    // 再発防止策の全体状況を日本語の一言で返す
-    public string MeasureStatusSummary
+    // 再発防止策の全体状況を日本語の一言で返す。
+    // today は IClock 経由で取得した値をコントローラ/ビューから渡す(DateTime.Today を直接使わない)
+    public string MeasureStatusSummaryOn(DateTime today)
     {
-        get
-        {
-            // 対策が1件もなければ「未登録」
-            if (!PreventiveMeasures.Any()) return "未登録";
-            // 全ての対策が完了していれば「完了」
-            if (PreventiveMeasures.All(m => m.Status == Enums.MeasureStatus.Completed)) return "完了";
-            // 1件でも期限超過があれば「期限超過」
-            if (PreventiveMeasures.Any(m => m.IsOverdue)) return "期限超過";
-            // 進行中のものがあれば「進行中」
-            if (PreventiveMeasures.Any(m => m.Status == Enums.MeasureStatus.InProgress)) return "進行中";
-            // どれにも当てはまらなければ「計画中」
-            return "計画中";
-        }
+        // 対策が1件もなければ「未登録」
+        if (!PreventiveMeasures.Any()) return "未登録";
+        // 全ての対策が完了していれば「完了」
+        if (PreventiveMeasures.All(m => m.Status == Enums.MeasureStatus.Completed)) return "完了";
+        // 1件でも期限超過があれば「期限超過」(IsOverdueOn に today を渡して判定)
+        if (PreventiveMeasures.Any(m => m.IsOverdueOn(today))) return "期限超過";
+        // 進行中のものがあれば「進行中」
+        if (PreventiveMeasures.Any(m => m.Status == Enums.MeasureStatus.InProgress)) return "進行中";
+        // どれにも当てはまらなければ「計画中」
+        return "計画中";
     }
 
-    // 状況サマリ文字列から Bootstrap のカラー名に変換(バッジ色分け用)
-    public string MeasureStatusColor => MeasureStatusSummary switch
+    // 状況サマリ文字列から Bootstrap のカラー名に変換(バッジ色分け用)。
+    // today は IClock 経由で取得した値をコントローラ/ビューから渡す
+    public string MeasureStatusColorOn(DateTime today) => MeasureStatusSummaryOn(today) switch
     {
         "完了" => "success",
         "期限超過" => "danger",
