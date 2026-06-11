@@ -23,8 +23,8 @@
                 @* 期限超過の日数を赤バッジで表示(IClock 経由の today を渡す) *@
                 @if (m.IsOverdueOn(today))
                 {
-                    @* 超過日数を today ベースで計算(DateTime.Today 直接使用を避ける) *@
-                    <span class="badge bg-danger">期限超過 @((int)(today - m.DueDate).TotalDays)日</span>
+                    @* Date 同士の差分を Days で取ることで時刻部分の切り捨て誤差を防ぐ *@
+                    <span class="badge bg-danger">期限超過 @((today.Date - m.DueDate.Date).Days)日</span>
                 }
             </div>
             @* 編集画面への遷移 *@

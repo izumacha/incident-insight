@@ -119,10 +119,17 @@ public class Incident
     // today は IClock 経由で取得した値をコントローラ/ビューから渡す
     public string MeasureStatusColorOn(DateTime today) => MeasureStatusSummaryOn(today) switch
     {
+        // 全件完了: 緑
         "完了" => "success",
+        // 期限超過あり: 赤
         "期限超過" => "danger",
+        // 進行中(期限内): 青
         "進行中" => "primary",
+        // 計画中のみ(期限内): 黄
         "計画中" => "warning",
+        // 再発防止策が一件も登録されていない: グレー
+        "未登録" => "secondary",
+        // 想定外の値: フォールバックとしてグレー
         _ => "secondary"
     };
 }

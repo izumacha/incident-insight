@@ -44,8 +44,8 @@ public class IncidentsControllerTests : IDisposable
 
     private IncidentCreateEditViewModel ValidViewModel(string dept = "内科病棟") => new()
     {
-        // DateTime.Now / DateTime.Today を直接使わず SystemClock 経由で取得する(CLAUDE.md §3 準拠)
-        OccurredAt = new SystemClock().Now,
+        // TestFixtures.Today を使い実行日時に依存しない決定論的テストにする
+        OccurredAt = TestFixtures.Today,
         Department = dept,
         IncidentType = IncidentTypeKind.Medication,
         Severity = IncidentSeverity.Level2,
@@ -59,8 +59,8 @@ public class IncidentsControllerTests : IDisposable
                 MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当者",
                 ResponsibleDepartment = dept,
-                // DueDate も SystemClock 経由で設定(DateTime.Today を直接使わない)
-                DueDate = new SystemClock().Today.AddDays(30),
+                // DueDate も TestFixtures.Today 基準にして決定論的テストにする
+                DueDate = TestFixtures.Today.AddDays(30),
                 Priority = 2
             }
         }
@@ -114,7 +114,7 @@ public class IncidentsControllerTests : IDisposable
         var result = await _controller.Create(vm);
 
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
     }
 
     [Fact]
@@ -126,7 +126,7 @@ public class IncidentsControllerTests : IDisposable
         var result = await _controller.Create(vm);
 
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
         Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Measures)));
         Assert.Empty(_db.Incidents);
@@ -145,7 +145,7 @@ public class IncidentsControllerTests : IDisposable
         var result = await _controller.Create(vm);
 
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
         Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Measures)));
         Assert.Empty(_db.Incidents);
@@ -164,7 +164,7 @@ public class IncidentsControllerTests : IDisposable
 
         // 保存される対策行のフィールド検証は除去されず、再描画されることを確認する
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
         // ModelState は無効のまま(エラーが残っている)であること
         Assert.False(_controller.ModelState.IsValid);
         // 該当行のエラーキーが残っていること(空行のように消されていないこと)
@@ -217,7 +217,7 @@ public class IncidentsControllerTests : IDisposable
 
         // 空行[1]の除去で [10] のエラーが巻き込まれないこと(プレフィックス誤一致防止)を確認する
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
         // 保存対象[10]のエラーは残っていること
         Assert.True(_controller.ModelState.ContainsKey("Measures[10].DueDate"));
         // 空行[1]のエラーは除去されていること
@@ -258,7 +258,7 @@ public class IncidentsControllerTests : IDisposable
 
         // 自部署を特定できないため再描画され、インシデントは保存されないことを確認する
         var viewResult = Assert.IsType<ViewResult>(result);
-        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
         Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Department)));
         Assert.Empty(_db.Incidents);
@@ -290,7 +290,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "編集前",
             ReporterName = "担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -317,8 +317,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_NoFilter_ReturnsAllIncidents()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = TestFixtures.Today }
         );
         await _db.SaveChangesAsync();
 
@@ -332,8 +332,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_DepartmentFilter_ReturnsMatchingOnly()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = TestFixtures.Today }
         );
         await _db.SaveChangesAsync();
 
@@ -348,8 +348,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_SeverityFilter_ReturnsMatchingOnly()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level4, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level0, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level4, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level0, Description = "B", ReporterName = "B", OccurredAt = TestFixtures.Today }
         );
         await _db.SaveChangesAsync();
 
@@ -364,8 +364,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_SearchFilter_MatchesDescription()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "点滴ラインが抜けた", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "薬を誤投与", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "点滴ラインが抜けた", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "薬を誤投与", ReporterName = "B", OccurredAt = TestFixtures.Today }
         );
         await _db.SaveChangesAsync();
 
@@ -388,7 +388,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "廊下で転倒",
             ReporterName = "山田",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -413,8 +413,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Index_Staff_OnlySeesOwnDepartment()
     {
         _db.Incidents.AddRange(
-            new Incident { Department = "内科病棟", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = DateTime.Now },
-            new Incident { Department = "外来",     IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "B", ReporterName = "B", OccurredAt = DateTime.Now }
+            new Incident { Department = "内科病棟", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来",     IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level2, Description = "B", ReporterName = "B", OccurredAt = TestFixtures.Today }
         );
         await _db.SaveChangesAsync();
 
@@ -436,7 +436,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "他部署",
             ReporterName = "他部署担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -457,7 +457,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "他部署",
             ReporterName = "他部署担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -479,7 +479,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "編集前",
             ReporterName = "他部署担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -514,7 +514,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "他部署",
             ReporterName = "他部署担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -543,7 +543,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "削除対象",
             ReporterName = "担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -567,7 +567,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "他部署の削除対象",
             ReporterName = "担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -590,7 +590,7 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "同部署",
             ReporterName = "担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();

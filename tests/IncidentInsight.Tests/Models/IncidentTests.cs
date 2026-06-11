@@ -6,8 +6,8 @@ namespace IncidentInsight.Tests.Models;
 
 public class IncidentTests
 {
-    // テスト内で使う固定の「今日」— DateTime.Today 直呼びを避け決定論的テストにするため固定値を使う
-    private static readonly DateTime Today = new DateTime(2026, 6, 11);
+    // テスト内で使う「今日」は TestFixtures.Today を参照する。
+    // 各テストクラスで独立定義すると値が乖離するリスクがあるため、共通定数で一元管理する。
 
     // --- SeverityLabel / SeverityColor ---
 
@@ -34,7 +34,7 @@ public class IncidentTests
         // 再発防止策が一件も登録されていないとき「未登録」になることを確認する
         var incident = new Incident();
         // MeasureStatusSummaryOn に固定の今日を渡して「未登録」が返るか検証する
-        Assert.Equal("未登録", incident.MeasureStatusSummaryOn(Today));
+        Assert.Equal("未登録", incident.MeasureStatusSummaryOn(TestFixtures.Today));
     }
 
     [Fact]
@@ -47,13 +47,13 @@ public class IncidentTests
             PreventiveMeasures = new List<PreventiveMeasure>
             {
                 // 1件目：10日後が期限の完了済み対策
-                new() { Status = MeasureStatus.Completed, DueDate = Today.AddDays(10) },
+                new() { Status = MeasureStatus.Completed, DueDate = TestFixtures.Today.AddDays(10) },
                 // 2件目：5日後が期限の完了済み対策
-                new() { Status = MeasureStatus.Completed, DueDate = Today.AddDays(5) }
+                new() { Status = MeasureStatus.Completed, DueDate = TestFixtures.Today.AddDays(5) }
             }
         };
         // 全件完了なので「完了」が返るはずと検証する
-        Assert.Equal("完了", incident.MeasureStatusSummaryOn(Today));
+        Assert.Equal("完了", incident.MeasureStatusSummaryOn(TestFixtures.Today));
     }
 
     [Fact]
@@ -65,11 +65,11 @@ public class IncidentTests
             PreventiveMeasures = new List<PreventiveMeasure>
             {
                 // 昨日が期限の計画中対策（期限超過）
-                new() { Status = MeasureStatus.Planned, DueDate = Today.AddDays(-1) }
+                new() { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(-1) }
             }
         };
         // 超過対策があるので「期限超過」が返るはずと検証する
-        Assert.Equal("期限超過", incident.MeasureStatusSummaryOn(Today));
+        Assert.Equal("期限超過", incident.MeasureStatusSummaryOn(TestFixtures.Today));
     }
 
     [Fact]
@@ -81,11 +81,11 @@ public class IncidentTests
             PreventiveMeasures = new List<PreventiveMeasure>
             {
                 // 5日後が期限の進行中対策（期限内）
-                new() { Status = MeasureStatus.InProgress, DueDate = Today.AddDays(5) }
+                new() { Status = MeasureStatus.InProgress, DueDate = TestFixtures.Today.AddDays(5) }
             }
         };
         // 期限内の進行中対策があるので「進行中」が返るはずと検証する
-        Assert.Equal("進行中", incident.MeasureStatusSummaryOn(Today));
+        Assert.Equal("進行中", incident.MeasureStatusSummaryOn(TestFixtures.Today));
     }
 
     [Fact]
@@ -97,11 +97,11 @@ public class IncidentTests
             PreventiveMeasures = new List<PreventiveMeasure>
             {
                 // 10日後が期限の計画中対策（期限内）
-                new() { Status = MeasureStatus.Planned, DueDate = Today.AddDays(10) }
+                new() { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(10) }
             }
         };
         // 期限内の計画中対策のみなので「計画中」が返るはずと検証する
-        Assert.Equal("計画中", incident.MeasureStatusSummaryOn(Today));
+        Assert.Equal("計画中", incident.MeasureStatusSummaryOn(TestFixtures.Today));
     }
 
     // --- Validation ---
@@ -134,8 +134,8 @@ public class IncidentTests
         // 必須フィールドをすべて設定したとき DataAnnotations バリデーションが通ることを確認する
         var incident = new Incident
         {
-            // 発生日時に固定の今日を設定する（DateTime.Now 直呼びを避ける）
-            OccurredAt = Today,
+            // 発生日時に固定の今日を設定する（DateTime.Now 直呼びを避け決定論的テストにする）
+            OccurredAt = TestFixtures.Today,
             // 部署名を設定する
             Department = "内科病棟",
             // インシデント種別を設定する

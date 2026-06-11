@@ -5,8 +5,8 @@ namespace IncidentInsight.Tests.Models;
 
 public class PreventiveMeasureTests
 {
-    // テスト内で使う固定の「今日」— DateTime.Today 直呼びを避け決定論的テストにするため固定値を使う
-    private static readonly DateTime Today = new DateTime(2026, 6, 11);
+    // テスト内で使う「今日」は TestFixtures.Today を参照する。
+    // 各テストクラスで独立定義すると値が乖離するリスクがあるため、共通定数で一元管理する。
 
     // --- IsOverdueOn ---
 
@@ -14,27 +14,27 @@ public class PreventiveMeasureTests
     public void IsOverdueOn_PlannedPastDue_ReturnsTrue()
     {
         // 期限を今日の1日前に設定し、計画中ステータスで期限超過になることを確認する
-        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(-1) };
         // IsOverdueOnに固定の今日を渡して期限超過と判定されるか検証する
-        Assert.True(m.IsOverdueOn(Today));
+        Assert.True(m.IsOverdueOn(TestFixtures.Today));
     }
 
     [Fact]
     public void IsOverdueOn_Completed_ReturnsFalse_EvenIfPastDue()
     {
         // 完了済みは期限を過ぎていても超過扱いにならないことを確認する（完了後は期限無効）
-        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = Today.AddDays(-30) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = TestFixtures.Today.AddDays(-30) };
         // 完了済みなのでfalseが返るはずと検証する
-        Assert.False(m.IsOverdueOn(Today));
+        Assert.False(m.IsOverdueOn(TestFixtures.Today));
     }
 
     [Fact]
     public void IsOverdueOn_DueTodayOrFuture_ReturnsFalse()
     {
         // 期限が今日ちょうどの場合は超過扱いにならない（境界値テスト）
-        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = Today };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today };
         // DueDate == today なので超過ではなくfalseであることを検証する
-        Assert.False(m.IsOverdueOn(Today));
+        Assert.False(m.IsOverdueOn(TestFixtures.Today));
     }
 
     // --- StatusLabel / StatusColorOn ---
@@ -46,7 +46,7 @@ public class PreventiveMeasureTests
     public void StatusLabel_IsCorrect(MeasureStatus status, string expected)
     {
         // 各ステータスに対応する日本語ラベルが正しく返るかを検証する
-        var m = new PreventiveMeasure { Status = status, DueDate = Today.AddDays(10) };
+        var m = new PreventiveMeasure { Status = status, DueDate = TestFixtures.Today.AddDays(10) };
         // StatusLabel プロパティが期待文字列と一致することを確認する
         Assert.Equal(expected, m.StatusLabel);
     }
@@ -55,27 +55,37 @@ public class PreventiveMeasureTests
     public void StatusColorOn_Planned_NotOverdue_IsWarning()
     {
         // 計画中かつ期限内（5日後）の場合は警告色(warning)になることを確認する
-        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = Today.AddDays(5) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(5) };
         // StatusColorOnに固定の今日を渡して"warning"が返るか検証する
-        Assert.Equal("warning", m.StatusColorOn(Today));
+        Assert.Equal("warning", m.StatusColorOn(TestFixtures.Today));
     }
 
     [Fact]
     public void StatusColorOn_Planned_Overdue_IsDanger()
     {
         // 計画中かつ期限超過（昨日が期限）の場合は危険色(danger)になることを確認する
-        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(-1) };
         // StatusColorOnに固定の今日を渡して"danger"が返るか検証する
-        Assert.Equal("danger", m.StatusColorOn(Today));
+        Assert.Equal("danger", m.StatusColorOn(TestFixtures.Today));
+    }
+
+    [Fact]
+    public void StatusColorOn_InProgress_NotOverdue_ReturnsPrimary()
+    {
+        // 進行中かつ期限内の対策は「primary」(青)になることを確認する
+        // InProgress + 期限内 → "primary" のブランチは他テストでカバーされていなかった未検査パス
+        var m = new PreventiveMeasure { Status = MeasureStatus.InProgress, DueDate = TestFixtures.Today.AddDays(5) };
+        // StatusColorOnに固定の今日を渡して"primary"が返るか検証する
+        Assert.Equal("primary", m.StatusColorOn(TestFixtures.Today));
     }
 
     [Fact]
     public void StatusColorOn_Completed_IsSuccess()
     {
         // 完了済みは期限超過でも成功色(success)になることを確認する
-        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = Today.AddDays(-1) };
+        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = TestFixtures.Today.AddDays(-1) };
         // StatusColorOnに固定の今日を渡して"success"が返るか検証する
-        Assert.Equal("success", m.StatusColorOn(Today));
+        Assert.Equal("success", m.StatusColorOn(TestFixtures.Today));
     }
 
     // --- PriorityLabel / PriorityColor ---
