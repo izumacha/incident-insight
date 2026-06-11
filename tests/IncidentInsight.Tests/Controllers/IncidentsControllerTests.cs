@@ -44,7 +44,8 @@ public class IncidentsControllerTests : IDisposable
 
     private IncidentCreateEditViewModel ValidViewModel(string dept = "内科病棟") => new()
     {
-        OccurredAt = DateTime.Now,
+        // DateTime.Now / DateTime.Today を直接使わず SystemClock 経由で取得する(CLAUDE.md §3 準拠)
+        OccurredAt = new SystemClock().Now,
         Department = dept,
         IncidentType = IncidentTypeKind.Medication,
         Severity = IncidentSeverity.Level2,
@@ -58,7 +59,8 @@ public class IncidentsControllerTests : IDisposable
                 MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当者",
                 ResponsibleDepartment = dept,
-                DueDate = DateTime.Today.AddDays(30),
+                // DueDate も SystemClock 経由で設定(DateTime.Today を直接使わない)
+                DueDate = new SystemClock().Today.AddDays(30),
                 Priority = 2
             }
         }
