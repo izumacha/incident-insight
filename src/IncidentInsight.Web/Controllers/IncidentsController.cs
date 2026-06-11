@@ -42,6 +42,8 @@ public class IncidentsController : Controller
     private readonly ILogger<IncidentsController> _logger;
     // 一覧の 1 ページあたりの件数
     private const int PageSize = 20;
+    // Create 登録画面で対策の実施期限の初期値として使う日数（今日から30日後）
+    private const int DefaultMeasureDueDays = 30;
 
     // コンストラクタ: DI で依存を受け取る
     public IncidentsController(
@@ -194,7 +196,7 @@ public class IncidentsController : Controller
             // 対策リストの最初の行: 実施期限を30日後に設定する
             Measures = new List<MeasureFormViewModel>
             {
-                new MeasureFormViewModel { DueDate = now.AddDays(30) }
+                new MeasureFormViewModel { DueDate = now.AddDays(DefaultMeasureDueDays) }
             },
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
