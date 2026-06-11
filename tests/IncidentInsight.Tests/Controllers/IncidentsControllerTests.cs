@@ -7,6 +7,8 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -20,6 +22,10 @@ public class IncidentsControllerTests : IDisposable
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            // InMemory プロバイダはトランザクションをサポートしないため警告が出るが、
+            // テスト用途ではトランザクション整合性を検証しないので例外扱いにせず無視する。
+            // 本番の SQLite/SQL Server/PostgreSQL では BeginTransactionAsync は正常に動作する。
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         _db = new ApplicationDbContext(options);
         _controller = new IncidentsController(
@@ -140,6 +146,81 @@ public class IncidentsControllerTests : IDisposable
         Assert.Equal("Create", viewResult.ViewName ?? "Create");
         Assert.False(_controller.ModelState.IsValid);
         Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Measures)));
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_PersistedMeasureWithFieldError_KeepsError_AndDoesNotSave()
+    {
+        // 対策内容ありの行(=保存対象)を 1 件持つ妥当な ViewModel を用意する
+        var vm = ValidViewModel();
+        // model binding が「実施期限が不正」と判定した状況を再現する(保存される行のエラー)
+        _controller.ModelState.AddModelError("Measures[0].DueDate", "実施期限を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 保存される対策行のフィールド検証は除去されず、再描画されることを確認する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        // ModelState は無効のまま(エラーが残っている)であること
+        Assert.False(_controller.ModelState.IsValid);
+        // 該当行のエラーキーが残っていること(空行のように消されていないこと)
+        Assert.True(_controller.ModelState.ContainsKey("Measures[0].DueDate"));
+        // 不正なデータでインシデントが保存されていないことを確認する
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_EmptyExtraMeasureRow_RemovesItsErrors_AndSaves()
+    {
+        // [0] は妥当な対策行、[1] は対策内容が空の余分な行(保存されない行)を用意する
+        var vm = ValidViewModel();
+        vm.Measures.Add(new MeasureFormViewModel { Description = "" });
+        // 空行に対して model binding が付けた Required エラーを再現する
+        _controller.ModelState.AddModelError("Measures[1].DueDate", "実施期限を入力してください");
+        _controller.ModelState.AddModelError("Measures[1].ResponsiblePerson", "担当者を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 空行のエラーは除去され、検証を通過して詳細画面へリダイレクトされることを確認する
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        // 空行のエラーキーが ModelState から除去されていること
+        Assert.False(_controller.ModelState.ContainsKey("Measures[1].DueDate"));
+        // インシデントが 1 件保存されていること
+        Assert.Single(_db.Incidents);
+        // 保存される対策は対策内容ありの 1 件だけ(空行は永続化されない)であること
+        Assert.Single(_db.PreventiveMeasures);
+    }
+
+    [Fact]
+    public async Task Create_Post_EmptyRow_DoesNotStripHigherIndexedRowError()
+    {
+        // [0] は妥当な対策行。[1..9] は空行、[10] は対策内容ありの保存対象行にする。
+        var vm = ValidViewModel();
+        // インデックス 1〜10 を埋める(1〜9 は空行、10 は対策内容あり)
+        for (int i = 1; i <= 10; i++)
+        {
+            // i==10 のときだけ対策内容を入れて保存対象の行にする
+            vm.Measures.Add(new MeasureFormViewModel { Description = i == 10 ? "10番目の対策" : "" });
+        }
+        // 空行[1]の Required エラーと、保存対象[10]のフィールドエラーを再現する
+        _controller.ModelState.AddModelError("Measures[1].DueDate", "実施期限を入力してください");
+        _controller.ModelState.AddModelError("Measures[10].DueDate", "実施期限を入力してください");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 空行[1]の除去で [10] のエラーが巻き込まれないこと(プレフィックス誤一致防止)を確認する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Equal("Create", viewResult.ViewName ?? "Create");
+        // 保存対象[10]のエラーは残っていること
+        Assert.True(_controller.ModelState.ContainsKey("Measures[10].DueDate"));
+        // 空行[1]のエラーは除去されていること
+        Assert.False(_controller.ModelState.ContainsKey("Measures[1].DueDate"));
+        // 不正データなのでインシデントは保存されないこと
         Assert.Empty(_db.Incidents);
     }
 

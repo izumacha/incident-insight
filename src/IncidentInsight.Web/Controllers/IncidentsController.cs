@@ -184,10 +184,18 @@ public class IncidentsController : Controller
     // 登録画面の初期表示
     public async Task<IActionResult> Create()
     {
-        // 発生日時の既定値を「現在時刻」にして空の ViewModel を用意
+        // IClock から現在時刻を取得する(DateTime.Now を ViewModel 内で使わないための委譲)
+        var now = _clock.Now;
+        // 発生日時と対策の実施期限の既定値をクロックから設定して空の ViewModel を用意
         var vm = new IncidentCreateEditViewModel
         {
-            OccurredAt = _clock.Now,
+            // 発生日時の初期値: 現在時刻(JST ベースの IClock 経由)
+            OccurredAt = now,
+            // 対策リストの最初の行: 実施期限を30日後に設定する
+            Measures = new List<MeasureFormViewModel>
+            {
+                new MeasureFormViewModel { DueDate = now.AddDays(30) }
+            },
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
         // 登録フォームを描画
@@ -200,9 +208,43 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(IncidentCreateEditViewModel vm)
     {
-        // Remove sub-form validation noise from ModelState
-        // サブフォーム側のドロップダウン選択肢バリデーションは不要なので除外
-        ModelState.Remove("CauseAnalysis.CauseCategoryOptions");
+        // なぜなぜ分析サブフォーム由来の ModelState キーを除外する。
+        // Why2–5 などの任意項目やドロップダウン選択肢(CauseCategoryOptions)が
+        // 未送信のときに残る不要な Required エラーを取り除く。原因分析は
+        // CauseCategoryId と Why1 が揃ったときだけ保存するため、ここで一括除外してよい。
+        foreach (var key in ModelState.Keys
+            .Where(k => k.StartsWith("CauseAnalysis."))
+            .ToList())
+        {
+            // 原因分析サブフォーム由来の各キーを ModelState から除去する
+            ModelState.Remove(key);
+        }
+
+        // 対策サブフォームの ModelState は「行ごと」に整理する。
+        // Edit POST は対策を永続化しないため Measures[*] を一括削除して問題ないが、
+        // Create POST は下の Where(Description 非空)で残った対策行を実際に保存する。
+        // そのため一括削除はせず、保存されない空行(対策内容が未入力の行)だけ
+        // Required エラーを取り除き、保存される行(対策内容あり)の担当者・担当部署・
+        // 実施期限などのフィールド検証は残してデータ整合性を守る。
+        // (一括削除すると DueDate=default(0001-01-01) のまま保存され IsOverdue が
+        //  常に true になる等の不正データを生む。)
+        for (int i = 0; vm.Measures != null && i < vm.Measures.Count; i++)
+        {
+            // この行が保存対象か(対策内容が入力されているか)を判定する
+            if (!string.IsNullOrWhiteSpace(vm.Measures[i].Description))
+                // 保存される行はフィールド検証を残すのでスキップ
+                continue;
+
+            // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する。
+            // 末尾に "]." まで含めてプレフィックス照合する。"Measures[1]" のように
+            // 角括弧で止めると "Measures[10]." 等の別の行にも誤一致してしまうため。
+            var rowPrefix = $"Measures[{i}].";
+            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix)).ToList())
+            {
+                // 空行由来の各キーを ModelState から除去する
+                ModelState.Remove(key);
+            }
+        }
 
         // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
@@ -218,6 +260,11 @@ public class IncidentsController : Controller
             return View(vm);
         }
 
+        // Incident と関連エンティティを単一トランザクションで保存する。
+        // トランザクションがないと、Incident は保存されたが対策がまだ保存されていない
+        // 中間状態が生じ、「最低1件の対策が必要」という業務ルールが DB 上で破れる。
+        await using var transaction = await _db.Database.BeginTransactionAsync();
+
         // 入力値から新しい Incident を作成
         var incident = new Incident
         {
@@ -231,7 +278,7 @@ public class IncidentsController : Controller
             ReportedAt = _clock.Now
         };
 
-        // ChangeTracker に追加して Id を得るため一旦保存
+        // ChangeTracker に追加して Id を採番するため一旦保存(まだコミットしない)
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
 
@@ -280,6 +327,9 @@ public class IncidentsController : Controller
         // 原因分析+対策をまとめて DB に反映
         await _db.SaveChangesAsync();
 
+        // すべて正常に保存できたのでトランザクションをコミットする
+        await transaction.CommitAsync();
+
         // 成功通知をセット(画面上のトースト表示用)
         TempData["Success"] = "インシデントを登録しました。";
         // 詳細画面にリダイレクト
@@ -316,6 +366,12 @@ public class IncidentsController : Controller
 
         // フォームの値を無視し、必ず本人の所属部署に固定する(他部署への投入/付け替え防止)
         vm.Department = ownDepartment;
+
+        // model binding が先に「Department が空」と判定した [Required] エラーを取り除く。
+        // この時点では vm.Department に正しい値を設定済みなのでエラーは無効となる。
+        // これを除去しないと ModelState.IsValid が false のままになり、
+        // Staff がフォームを送信しても常にバリデーションエラーになってしまう(issue #63)。
+        ModelState.Remove(nameof(vm.Department));
     }
 
     // GET /Incidents/Edit/5
