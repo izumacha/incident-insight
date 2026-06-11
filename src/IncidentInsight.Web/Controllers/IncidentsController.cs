@@ -42,6 +42,8 @@ public class IncidentsController : Controller
     private readonly ILogger<IncidentsController> _logger;
     // 一覧の 1 ページあたりの件数
     private const int PageSize = 20;
+    // Create 登録画面で対策の実施期限の初期値として使う日数（今日から30日後）
+    private const int DefaultMeasureDueDays = 30;
 
     // コンストラクタ: DI で依存を受け取る
     public IncidentsController(
@@ -194,7 +196,7 @@ public class IncidentsController : Controller
             // 対策リストの最初の行: 実施期限を30日後に設定する
             Measures = new List<MeasureFormViewModel>
             {
-                new MeasureFormViewModel { DueDate = now.AddDays(30) }
+                new MeasureFormViewModel { DueDate = now.AddDays(DefaultMeasureDueDays) }
             },
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
@@ -265,6 +267,10 @@ public class IncidentsController : Controller
         // 中間状態が生じ、「最低1件の対策が必要」という業務ルールが DB 上で破れる。
         await using var transaction = await _db.Database.BeginTransactionAsync();
 
+        // 登録時刻を一度だけ取得する。ReportedAt と AnalyzedAt に同じ時刻を使うため、
+        // _clock.Now を 2 回以上呼ぶと微妙にズレる可能性があるので単一変数に束縛する。
+        var now = _clock.Now;
+
         // 入力値から新しい Incident を作成
         var incident = new Incident
         {
@@ -275,7 +281,7 @@ public class IncidentsController : Controller
             Description = vm.Description,
             ImmediateActions = vm.ImmediateActions,
             ReporterName = vm.ReporterName,
-            ReportedAt = _clock.Now
+            ReportedAt = now
         };
 
         // ChangeTracker に追加して Id を採番するため一旦保存(まだコミットしない)
@@ -298,7 +304,7 @@ public class IncidentsController : Controller
                 Why5 = vm.CauseAnalysis.Why5,
                 RootCauseSummary = vm.CauseAnalysis.RootCauseSummary,
                 AnalystName = vm.CauseAnalysis.AnalystName,
-                AnalyzedAt = _clock.Now,
+                AnalyzedAt = now,
                 AdditionalNotes = vm.CauseAnalysis.AdditionalNotes
             };
             // ChangeTracker に追加(実 INSERT は下の SaveChanges で)

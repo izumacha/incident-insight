@@ -62,9 +62,11 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     private readonly byte[] _hmacKeyBytes;
 
     // DbContext インスタンスごとの保留監査エントリ。
-    // このインターセプタは Singleton 登録のため、複数の Scoped DbContext (HTTP リクエスト)が
-    // 同時に SaveChanges を呼ぶ可能性がある。Dictionary<> はスレッドセーフでないため、
-    // ConcurrentDictionary<> に変えてスレッド安全を保証する(Fix: issue #67)。
+    // このインターセプタは AddScoped で登録されるが、DbContext オプションの設定時に
+    // sp.GetRequiredService<AuditSaveChangesInterceptor>() で取得するため、
+    // DbContext と同一スコープ(1 HTTP リクエスト)につき 1 インスタンス生成される。
+    // 理論上は 1 インスタンス:1 リクエストなので単純な Dictionary<> でも動くが、
+    // 将来的に登録方式が変わってもスレッド安全になるよう ConcurrentDictionary<> を使う(issue #67)。
     private readonly ConcurrentDictionary<DbContext, List<PendingAudit>> _pending = new();
 
     // [Sensitive] 属性の検索結果をキャッシュ(プロパティ毎にリフレクションを毎回走らせないため)
