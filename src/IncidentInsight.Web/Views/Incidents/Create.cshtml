@@ -1,8 +1,12 @@
 @* 使用する ViewModel の型を宣言（基本情報+原因分析+対策一覧をまとめた登録フォーム用の入れ物） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブに表示するタイトル *@
     ViewData["Title"] = "インシデント新規登録";
+    @* 今日の日付を IClock 経由で取得して DueDate の初期値などに使う *@
+    var today = Clock.Today;
 }
 
 @* ページヘッダ：見出しと一覧画面に戻るボタンを横並びに配置 *@
@@ -213,7 +217,8 @@
                         「誰が」「何を」「いつまでに」を明確にし、短期対策と長期対策の両方を検討しましょう。
                     </div>
                     @* 対策行の入れ物（JS で動的に追加／削除される） *@
-                    <div id="measuresContainer">
+                    @* data-default-due-date: JS で新規行を追加するときの実施期限初期値(IClock 経由の今日+30日) *@
+                    <div id="measuresContainer" data-default-due-date="@today.AddDays(30).ToString("yyyy-MM-dd")">
                         @* 初期状態では対策行を1件用意（最低1件必須） *@
                         <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="0">
                             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -247,8 +252,9 @@
                                 <div class="col-md-2">
                                     @* 実施期限（初期値は30日後） *@
                                     <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                                    @* バリデーション失敗後の再描画では投稿済み値を維持し、初回表示時は今日+30日を初期値とする *@
                                     <input type="date" name="Measures[0].DueDate" class="form-control form-control-sm"
-                                           value="@DateTime.Today.AddDays(30).ToString("yyyy-MM-dd")" />
+                                           value="@((Model.Measures != null && Model.Measures.Count > 0 && Model.Measures[0].DueDate != default ? Model.Measures[0].DueDate : today.AddDays(30)).ToString("yyyy-MM-dd"))" />
                                 </div>
                                 <div class="col-md-1">
                                     @* 優先度（高=1／中=2／低=3、初期は中） *@
@@ -335,11 +341,9 @@ function addMeasureRow() {
     const container = document.getElementById('measuresContainer');
     // 今回の新規インデックス
     const idx = measureCount++;
-    // 期限の初期値：本日 +30 日
-    const tomorrow = new Date();
-    tomorrow.setDate(tomorrow.getDate() + 30);
-    // yyyy-MM-dd 形式に整形
-    const dateStr = tomorrow.toISOString().split('T')[0];
+    // 実施期限の初期値: サーバ側 IClock(JST)で計算した今日+30日を data-default-due-date から取得する。
+    // ブラウザの new Date() はクライアントのタイムゾーン依存で IClock(JST) と日付がずれる恐れがあるため使わない。
+    const dateStr = container.dataset.defaultDueDate;
 
     // 新しい対策行の DOM を構築
     const div = document.createElement('div');

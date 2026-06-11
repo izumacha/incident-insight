@@ -179,8 +179,9 @@ public class AnalyticsController : Controller
     // 対策のステータス(計画/進行/期限超過/完了)の件数を返す
     public async Task<IActionResult> MeasureStatus()
     {
-        // IsOverdue is a CLR-only computed property, so we inline its predicate
-        // (Status != Completed && DueDate < today) so EF can translate it.
+        // IsOverdueOn は CLR 専用の計算プロパティのため、EF が SQL に変換できない。
+        // そのため (Status != Completed && DueDate < today) の条件を直接インラインで書き、
+        // EF がサーバ側 SQL として翻訳できるようにしている。
         // 今日の日付(JST)
         var today = _clock.Today;
         // 単一行で 4 種類の件数を一度に集計(SQL 1 本に集約)

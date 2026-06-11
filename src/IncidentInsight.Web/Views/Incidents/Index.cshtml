@@ -1,8 +1,12 @@
 @* 一覧画面の ViewModel（絞り込み条件・表示件数・検索結果・ページ情報をまとめた入れ物） *@
 @model IncidentInsight.Web.Models.ViewModels.IncidentListViewModel
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブのタイトル *@
     ViewData["Title"] = "インシデント一覧";
+    @* 今日の日付を一度だけ取得してビュー内で使い回す *@
+    var today = Clock.Today;
 }
 
 @* ページヘッダ：見出しと新規登録ボタン *@
@@ -178,8 +182,8 @@
                     @* 検索結果を1件ずつ行で描画 *@
                     @foreach (var incident in Model.Incidents)
                     {
-                        @* 期限超過対策があれば赤背景で強調 *@
-                        <tr class="@(incident.PreventiveMeasures.Any(m => m.IsOverdue) ? "table-danger" : "")">
+                        @* 期限超過対策があれば赤背景で強調(IClock 経由の today を渡す) *@
+                        <tr class="@(incident.PreventiveMeasures.Any(m => m.IsOverdueOn(today)) ? "table-danger" : "")">
                             <td class="ps-3">
                                 @* 発生日 *@
                                 <div>@incident.OccurredAt.ToString("yyyy/MM/dd")</div>
@@ -197,8 +201,8 @@
                             </td>
                             <td>@incident.ReporterName</td>
                             <td>
-                                @* 対策状況サマリ（未着手／進行中／完了 等） *@
-                                <span class="badge bg-@incident.MeasureStatusColor">@incident.MeasureStatusSummary</span>
+                                @* 対策状況サマリ（未着手／進行中／完了 等）(IClock 経由の today を渡す) *@
+                                <span class="badge bg-@incident.MeasureStatusColorOn(today)">@incident.MeasureStatusSummaryOn(today)</span>
                             </td>
                             <td class="text-end pe-3">
                                 @* 詳細画面への遷移 *@

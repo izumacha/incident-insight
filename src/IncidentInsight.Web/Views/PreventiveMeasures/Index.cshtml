@@ -1,5 +1,7 @@
 @* カンバン画面に渡される生のモデル型（IEnumerable）を宣言。ViewBag で3バケットに分けて渡される *@
 @model IEnumerable<IncidentInsight.Web.Models.PreventiveMeasure>
+@* IClock を DI で受け取り、今日の日付を DateTime.Today 直呼びなしで取得する *@
+@inject IncidentInsight.Web.Services.IClock Clock
 @{
     @* ブラウザタブのタイトル *@
     ViewData["Title"] = "再発防止策管理";
@@ -9,6 +11,8 @@
     var inProgress = ViewBag.InProgress as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
     @* 完了バケット *@
     var completed = ViewBag.Completed as List<IncidentInsight.Web.Models.PreventiveMeasure> ?? new();
+    @* 今日の日付を一度だけ取得してビュー内で使い回す *@
+    var today = Clock.Today;
 }
 
 @* ページヘッダ *@
@@ -128,10 +132,10 @@ else
                 <span>計画中</span>
                 @* レーン内の総数 *@
                 <span class="badge bg-warning text-dark ms-1">@planned.Count</span>
-                @* レーン内の超過件数（0件超なら赤バッジ） *@
-                @if (planned.Count(m => m.IsOverdue) > 0)
+                @* レーン内の超過件数（0件超なら赤バッジ）(IClock 経由の today を渡す) *@
+                @if (planned.Count(m => m.IsOverdueOn(today)) > 0)
                 {
-                    <span class="badge bg-danger ms-1">@planned.Count(m => m.IsOverdue) 件超過</span>
+                    <span class="badge bg-danger ms-1">@planned.Count(m => m.IsOverdueOn(today)) 件超過</span>
                 }
             </div>
             <div class="kanban-lane-body">

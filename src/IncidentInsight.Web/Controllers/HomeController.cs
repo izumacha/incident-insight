@@ -26,6 +26,12 @@ namespace IncidentInsight.Web.Controllers;
 [Authorize]
 public class HomeController : Controller
 {
+    // 集計期間を識別する文字列定数（クエリパラメータと View のラベルで共用）
+    private const string PeriodWeek    = "week";    // 直近 7 日間
+    private const string PeriodMonth   = "month";   // 直近 1 か月
+    private const string PeriodQuarter = "quarter"; // 直近 3 か月
+    private const string PeriodYear    = "year";    // 直近 1 年（既定値）
+
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
     // 再発検出ロジックのサービス
@@ -45,7 +51,7 @@ public class HomeController : Controller
     public async Task<IActionResult> Index(string? period)
     {
         // period 未指定なら既定の「year」を使う
-        period ??= "year";
+        period ??= PeriodYear;
         // 今日の日付(JST)
         var today = _clock.Today;
         // 今月の 1 日(月次集計の基準)
@@ -55,10 +61,10 @@ public class HomeController : Controller
         // 期間指定(week/month/quarter/year)から集計開始日を算出
         var periodStart = period switch
         {
-            "week"    => today.AddDays(-7),
-            "month"   => today.AddMonths(-1),
-            "quarter" => today.AddMonths(-3),
-            _         => today.AddYears(-1)
+            PeriodWeek    => today.AddDays(-7),
+            PeriodMonth   => today.AddMonths(-1),
+            PeriodQuarter => today.AddMonths(-3),
+            _             => today.AddYears(-1)    // PeriodYear が既定
         };
 
         // Staff は自部署のデータのみ。Admin / RiskManager はフィルタなし。
@@ -107,7 +113,7 @@ public class HomeController : Controller
         // トレンドチャート用の件数バケットを溜めるリスト
         var monthlyCounts = new List<MonthlyCount>();
         // 週表示の場合は日別集計
-        if (period == "week")
+        if (period == PeriodWeek)
         {
             // 過去 7 日間の範囲を作成
             var weekStart = today.AddDays(-6);
@@ -132,7 +138,7 @@ public class HomeController : Controller
         else
         {
             // 表示する月数(month=4, quarter=6, year=12)
-            int months = period switch { "month" => 4, "quarter" => 6, _ => 12 };
+            int months = period switch { PeriodMonth => 4, PeriodQuarter => 6, _ => 12 };
             // 集計対象の最初の月の 1 日
             var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-(months - 1));
             // 年月ごとの件数を SQL 側でグループ化して取得

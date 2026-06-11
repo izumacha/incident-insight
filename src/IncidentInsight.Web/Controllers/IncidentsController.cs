@@ -258,6 +258,9 @@ public class IncidentsController : Controller
         // バリデーション NG なら入力値を残してフォームを再描画
         if (!ModelState.IsValid)
         {
+            // POST ボディに Measures[] フィールドが一つも無い場合 vm.Measures が null になるため
+            // null 合体代入で空リストを保証し、View 側の foreach で NullReferenceException を防ぐ
+            vm.Measures ??= new List<MeasureFormViewModel>();
             vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
             return View(vm);
         }
