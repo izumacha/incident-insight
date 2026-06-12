@@ -91,6 +91,11 @@ public class IncidentMeasuresController : Controller
             // 成功通知
             TempData["Success"] = "再発防止策を追加しました。";
         }
+        else
+        {
+            // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する
+            TempData["Warning"] = "入力内容に不備があります。再発防止策フォームの項目を確認してください。";
+        }
         // 詳細画面へ戻す
         return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
     }
