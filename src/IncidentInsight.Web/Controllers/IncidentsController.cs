@@ -175,7 +175,8 @@ public class IncidentsController : Controller
             SimilarIncidents = similar,
             CauseCategoryOptions = causeOptions,
             NewCauseAnalysis = new CauseAnalysisFormViewModel { IncidentId = id },
-            NewMeasure = new MeasureFormViewModel { IncidentId = id }
+            // DueDate を IClock で 30 日後に初期化（ViewModel のデフォルト値を IClock 規約で削除したため、ここで補完する）
+            NewMeasure = new MeasureFormViewModel { IncidentId = id, DueDate = _clock.Today.AddDays(DefaultMeasureDueDays) }
         };
 
         // 詳細ビューを描画
