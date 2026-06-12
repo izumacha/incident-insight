@@ -234,16 +234,6 @@ public class MeasureFormViewModel
     public string? AnalysisNote { get; set; }
 }
 
-// 対策を「完了」にするときのモデル
-public class CompleteViewModel
-{
-    // 対象対策のID
-    public int Id { get; set; }
-    // 完了報告内容(任意)
-    [Display(Name = "完了報告内容")]
-    public string? CompletionNote { get; set; }
-}
-
 // 対策の有効性レビュー画面のモデル
 public class ReviewViewModel
 {
