@@ -94,9 +94,7 @@ public class AnalyticsController : Controller
         if (dateTo.HasValue)
             query = query.Where(ca => ca.Incident.OccurredAt < dateTo.Value.Date.AddDays(1));
 
-        // GroupBy runs on the server: we pick the parent name when present, otherwise
-        // the leaf name, without materializing each CauseAnalysis row.
-        // 親カテゴリがあれば親名、なければ自分の名前でグループ化
+        // 親カテゴリがあれば親名、なければ自分の名前でグループ化（サーバ側 GroupBy で集計）
         var grouped = await query
             .GroupBy(ca => ca.CauseCategory!.Parent != null
                 ? ca.CauseCategory.Parent.Name

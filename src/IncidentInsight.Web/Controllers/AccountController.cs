@@ -17,14 +17,11 @@ public class AccountController : Controller
 {
     // サインイン操作用のマネージャー(パスワード検証・クッキー発行など)
     private readonly SignInManager<ApplicationUser> _signInManager;
-    // ユーザー情報操作用のマネージャー(参照だけで未使用だが DI 注入は残す)
-    private readonly UserManager<ApplicationUser> _userManager;
 
-    // コンストラクタ: DI で Identity の依存を受け取る
-    public AccountController(SignInManager<ApplicationUser> signInManager, UserManager<ApplicationUser> userManager)
+    // コンストラクタ: DI で SignInManager を受け取る
+    public AccountController(SignInManager<ApplicationUser> signInManager)
     {
         _signInManager = signInManager;
-        _userManager = userManager;
     }
 
     // GET /Account/Login
