@@ -96,6 +96,17 @@ public class CauseAnalysesController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> EditCauseAnalysis(int id, CauseAnalysisFormViewModel vm)
     {
+        // 対象分析を再取得(認可判定のため Incident を eager-load)
+        // 認可チェックを ModelState 検証より先に行うことで、未認可ユーザが無効入力でも 403 を受け取れるようにする（防御的設計）
+        var analysis = await _db.CauseAnalyses
+            .Include(a => a.Incident)
+            .FirstOrDefaultAsync(a => a.Id == id);
+        // 無ければ 404
+        if (analysis == null) return NotFound();
+        // 親インシデントへの編集権限がなければ 403（バリデーション前にチェックして認可バイパスを防ぐ）
+        if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, analysis.Incident, Policies.CanEditIncident))
+            return Forbid();
+
         // ドロップダウン選択肢はサーバーで補完するのでバリデーション対象外
         ModelState.Remove("CauseCategoryOptions");
         // バリデーション NG なら入力値を残して再描画
@@ -104,15 +115,6 @@ public class CauseAnalysesController : Controller
             vm.CauseCategoryOptions = await IncidentControllerHelpers.BuildCauseCategoryOptionsAsync(_db);
             return View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm);
         }
-        // 対象分析を再取得(認可判定のため Incident を eager-load)
-        var analysis = await _db.CauseAnalyses
-            .Include(a => a.Incident)
-            .FirstOrDefaultAsync(a => a.Id == id);
-        // 無ければ 404
-        if (analysis == null) return NotFound();
-        // 親インシデントへの編集権限がなければ 403
-        if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, analysis.Incident, Policies.CanEditIncident))
-            return Forbid();
 
         // 入力値で各フィールドを更新
         analysis.CauseCategoryId = vm.CauseCategoryId;
@@ -186,6 +188,11 @@ public class CauseAnalysesController : Controller
             await _db.SaveChangesAsync();
             // 成功通知
             TempData["Success"] = "原因分析を追加しました。";
+        }
+        else
+        {
+            // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する
+            TempData["Warning"] = "入力内容に不備があります。原因分析フォームの項目を確認してください。";
         }
         // 詳細画面へ戻す
         return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
