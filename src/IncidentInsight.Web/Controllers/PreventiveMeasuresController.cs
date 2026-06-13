@@ -159,6 +159,8 @@ public class PreventiveMeasuresController : Controller
             ResponsibleDepartment = vm.ResponsibleDepartment,
             DueDate = vm.DueDate,
             Priority = vm.Priority,
+            // 立案根拠メモも保存する(詳細ページからの登録と挙動を揃える)
+            AnalysisNote = vm.AnalysisNote,
             Status = MeasureStatus.Planned
         });
         // DB 保存(監査ログも自動挿入される)
@@ -195,7 +197,9 @@ public class PreventiveMeasuresController : Controller
             ResponsiblePerson = measure.ResponsiblePerson,
             ResponsibleDepartment = measure.ResponsibleDepartment,
             DueDate = measure.DueDate,
-            Priority = measure.Priority
+            Priority = measure.Priority,
+            // 立案根拠メモも現在値で初期化する(編集画面が空欄にならないように)
+            AnalysisNote = measure.AnalysisNote
         };
         return View(vm);
     }
@@ -229,6 +233,8 @@ public class PreventiveMeasuresController : Controller
         measure.ResponsibleDepartment = vm.ResponsibleDepartment;
         measure.DueDate = vm.DueDate;
         measure.Priority = vm.Priority;
+        // 立案根拠メモも反映する(編集ビューに入力欄があるため保存漏れを防ぐ)
+        measure.AnalysisNote = vm.AnalysisNote;
 
         // 同時編集検知のため、クライアントが持っていた元トークンを OriginalValue に固定する
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
@@ -384,9 +390,13 @@ public class PreventiveMeasuresController : Controller
         if (measure == null) return NotFound();
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
-        // ステータスを更新。完了に遷移した場合は完了日時も記録
+        // ステータスを更新。完了に遷移した場合は完了日時を記録し、
+        // 完了から差し戻した場合は完了日時をクリアする(古い完了日が残らないように)
         measure.Status = status;
-        if (status == MeasureStatus.Completed) measure.CompletedAt = _clock.Now;
+        if (status == MeasureStatus.Completed)
+            measure.CompletedAt = _clock.Now;
+        else
+            measure.CompletedAt = null;
 
         // 同時編集検知のトークン固定
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
