@@ -61,6 +61,65 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Edit_Get_PopulatesAnalysisNote()
+    {
+        // 編集画面を開いたとき、既存の立案根拠メモが ViewModel に積まれること
+        var measure = await SeedMeasureAsync("内科病棟");
+        measure.AnalysisNote = "根本原因はダブルチェック未実施";
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Edit(measure.Id);
+
+        var view = Assert.IsType<ViewResult>(result);
+        var vm = Assert.IsType<IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel>(view.Model);
+        Assert.Equal("根本原因はダブルチェック未実施", vm.AnalysisNote);
+    }
+
+    [Fact]
+    public async Task Edit_Post_SavesAnalysisNote()
+    {
+        // 編集 POST で立案根拠メモが保存されること(保存漏れ回帰防止)
+        var measure = await SeedMeasureAsync("内科病棟");
+        var vm = new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+        {
+            Id = measure.Id,
+            IncidentId = measure.IncidentId,
+            ConcurrencyToken = measure.ConcurrencyToken,
+            Description = measure.Description,
+            MeasureType = measure.MeasureType,
+            ResponsiblePerson = measure.ResponsiblePerson,
+            ResponsibleDepartment = measure.ResponsibleDepartment,
+            DueDate = measure.DueDate,
+            Priority = measure.Priority,
+            AnalysisNote = "対策の根拠メモ"
+        };
+
+        var result = await _controller.Edit(measure.Id, vm);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal("対策の根拠メモ", saved.AnalysisNote);
+    }
+
+    [Fact]
+    public async Task UpdateStatus_RevertFromCompleted_ClearsCompletedAt()
+    {
+        // 完了 → 進行中へ差し戻したとき、CompletedAt が null にクリアされること
+        var measure = await SeedMeasureAsync("内科病棟");
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = DateTime.Now;
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.InProgress, measure.ConcurrencyToken);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(MeasureStatus.InProgress, saved.Status);
+        Assert.Null(saved.CompletedAt);
+    }
+
+    [Fact]
     public async Task Delete_Staff_OtherDepartment_ReturnsForbid()
     {
         var measure = await SeedMeasureAsync("外来");
