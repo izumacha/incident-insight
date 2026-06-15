@@ -57,6 +57,17 @@ internal static class IncidentControllerHelpers
     }
 
     /// <summary>
+    /// 指定された原因カテゴリ Id が実在するかを返す。CauseAnalysis を保存する前に
+    /// 外部キー(CauseCategoryId)の存在を確認し、存在しない Id による INSERT 失敗
+    /// (未捕捉の DbUpdateException = HTTP 500)を未然に防ぐためのバリデーション用。
+    /// </summary>
+    public static Task<bool> CauseCategoryExistsAsync(ApplicationDbContext db, int causeCategoryId)
+    {
+        // 指定 Id の原因カテゴリが 1 件でも存在するかを問い合わせて返す
+        return db.CauseCategories.AnyAsync(c => c.Id == causeCategoryId);
+    }
+
+    /// <summary>
     /// リソース(Incident)に対する Policy 評価。fail-closed: incident が null の場合は拒否する。
     /// SameDepartmentHandler が判定する都合上、呼び出し側は Incident を eager-load しておくこと。
     /// </summary>

@@ -256,6 +256,19 @@ public class IncidentsController : Controller
         if (!HasAtLeastOneValidMeasure(vm.Measures))
             ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
 
+        // 原因分析を保存する場合のみ、選択された原因カテゴリが実在するか検証する。
+        // CauseAnalysis.* の ModelState は上で一括除外しているため、ここで外部キーの存在を
+        // 明示確認しないと、存在しない CauseCategoryId が来たとき下の INSERT が失敗し、
+        // トランザクション全体が未捕捉の DbUpdateException(=HTTP 500)になって入力が全消失する。
+        // 事前に検証してフォームを再描画する(§9 入力は信用しない / fail-closed)。
+        if (vm.CauseAnalysis.CauseCategoryId > 0
+            && !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1)
+            && !await IncidentControllerHelpers.CauseCategoryExistsAsync(_db, vm.CauseAnalysis.CauseCategoryId))
+        {
+            // 存在しないカテゴリが選ばれた場合は入力不備として扱う
+            ModelState.AddModelError("CauseAnalysis.CauseCategoryId", "選択された原因カテゴリが存在しません。");
+        }
+
         // バリデーション NG なら入力値を残してフォームを再描画
         if (!ModelState.IsValid)
         {

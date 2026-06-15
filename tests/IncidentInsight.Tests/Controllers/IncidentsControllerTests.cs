@@ -152,6 +152,50 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_NonExistentCauseCategory_ReturnsView_AndDoesNotSave()
+    {
+        var vm = ValidViewModel();
+        // DB にカテゴリを一切投入していないので、この Id は必ず存在しない。
+        // Why1 も入れて「原因分析を保存する」分岐に入る条件を満たす。
+        vm.CauseAnalysis.CauseCategoryId = 999999;
+        vm.CauseAnalysis.Why1 = "原因の仮説";
+
+        var result = await _controller.Create(vm);
+
+        // 未捕捉の 500 ではなく、入力値を保持したまま登録フォームを再描画する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey("CauseAnalysis.CauseCategoryId"));
+        // インシデント・原因分析ともに保存されていないこと
+        Assert.Empty(_db.Incidents);
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
+    public async Task Create_Post_ExistingCauseCategoryWithWhy1_SavesCauseAnalysis()
+    {
+        // 実在する原因カテゴリを 1 件用意する
+        var category = new CauseCategory { Name = "手順" };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        var vm = ValidViewModel();
+        // 実在カテゴリ Id と Why1 を指定して原因分析を保存させる
+        vm.CauseAnalysis.CauseCategoryId = category.Id;
+        vm.CauseAnalysis.Why1 = "手順が未整備だった";
+
+        var result = await _controller.Create(vm);
+
+        // 正常系は詳細画面へリダイレクトし、原因分析が保存される
+        Assert.IsType<RedirectToActionResult>(result);
+        var analysis = await _db.CauseAnalyses.FirstOrDefaultAsync();
+        Assert.NotNull(analysis);
+        Assert.Equal(category.Id, analysis.CauseCategoryId);
+        Assert.Equal("手順が未整備だった", analysis.Why1);
+    }
+
+    [Fact]
     public async Task Create_Post_PersistedMeasureWithFieldError_KeepsError_AndDoesNotSave()
     {
         // 対策内容ありの行(=保存対象)を 1 件持つ妥当な ViewModel を用意する

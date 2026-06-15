@@ -109,6 +109,13 @@ public class CauseAnalysesController : Controller
 
         // ドロップダウン選択肢はサーバーで補完するのでバリデーション対象外
         ModelState.Remove("CauseCategoryOptions");
+        // 選択された原因カテゴリが実在しない場合は入力不備として扱い、存在しない外部キーによる
+        // INSERT 失敗(未捕捉の DbUpdateException = HTTP 500)を未然に防ぐ
+        if (vm.CauseCategoryId > 0
+            && !await IncidentControllerHelpers.CauseCategoryExistsAsync(_db, vm.CauseCategoryId))
+        {
+            ModelState.AddModelError(nameof(vm.CauseCategoryId), "選択された原因カテゴリが存在しません。");
+        }
         // バリデーション NG なら入力値を残して再描画
         if (!ModelState.IsValid)
         {
@@ -166,6 +173,13 @@ public class CauseAnalysesController : Controller
 
         // ドロップダウン選択肢はバリデーション対象外
         ModelState.Remove("CauseCategoryOptions");
+        // 選択された原因カテゴリが実在しない場合は入力不備として扱い、存在しない外部キーによる
+        // INSERT 失敗(未捕捉の DbUpdateException = HTTP 500)を未然に防ぐ
+        if (vm.CauseCategoryId > 0
+            && !await IncidentControllerHelpers.CauseCategoryExistsAsync(_db, vm.CauseCategoryId))
+        {
+            ModelState.AddModelError(nameof(vm.CauseCategoryId), "選択された原因カテゴリが存在しません。");
+        }
         // 入力が妥当なら保存
         if (ModelState.IsValid)
         {
