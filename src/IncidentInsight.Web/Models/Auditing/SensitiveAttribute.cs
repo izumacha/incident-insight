@@ -9,7 +9,10 @@ public enum Mask
 {
     // 値を完全に伏せる(JSON 上は "[REDACTED]" になる)
     Redact,
-    // 値を Salt 付き SHA-256 ハッシュの先頭 8 桁に置換(同値性の確認だけ可能)
+    // 値を鍵付き HMAC-SHA256 擬似匿名化の先頭 32 桁(128bit)に置換し "#xxxx" の形で残す。
+    // 鍵は設定 Audit:HashSalt から取得する(AuditSaveChangesInterceptor.ComputePseudonym)。
+    // 同値性の確認だけ可能で、鍵が無ければ元値を復元できない(旧 Salt 付き SHA-256 8 桁は
+    // 反転・衝突が容易だったため廃止した。詳細は issue #61/#62)。
     Hash,
     // 値そのものは出さず、文字数だけ "[len=42]" のように残す
     LengthOnly
