@@ -37,6 +37,59 @@ public class PreventiveMeasureTests
         Assert.False(m.IsOverdueOn(TestFixtures.Today));
     }
 
+    // --- OverdueOn (クエリ用の唯一の定義。IsOverdueOn と同じ結果になることを担保する) ---
+
+    [Fact]
+    public void OverdueOn_PlannedPastDue_ReturnsTrue()
+    {
+        // 期限を今日の1日前に設定（計画中）し、式を評価して期限超過になることを確認する
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today.AddDays(-1) };
+        // 式ツリーをコンパイルして実データに適用する（EF では同じ式が SQL に翻訳される）
+        var pred = PreventiveMeasure.OverdueOn(TestFixtures.Today).Compile();
+        // 未完了かつ期限切れなので true を期待する
+        Assert.True(pred(m));
+    }
+
+    [Fact]
+    public void OverdueOn_Completed_ReturnsFalse_EvenIfPastDue()
+    {
+        // 完了済みは期限を過ぎていても超過扱いにならないことを確認する
+        var m = new PreventiveMeasure { Status = MeasureStatus.Completed, DueDate = TestFixtures.Today.AddDays(-30) };
+        // コンパイルした式で判定する
+        var pred = PreventiveMeasure.OverdueOn(TestFixtures.Today).Compile();
+        // 完了済みなので false を期待する
+        Assert.False(pred(m));
+    }
+
+    [Fact]
+    public void OverdueOn_DueToday_ReturnsFalse()
+    {
+        // 期限が今日ちょうど（深夜0時）の場合は超過扱いにならない（境界値）
+        var m = new PreventiveMeasure { Status = MeasureStatus.Planned, DueDate = TestFixtures.Today };
+        // コンパイルした式で判定する
+        var pred = PreventiveMeasure.OverdueOn(TestFixtures.Today).Compile();
+        // DueDate == today なので false を期待する
+        Assert.False(pred(m));
+    }
+
+    [Theory]
+    [InlineData(-1, MeasureStatus.Planned)]    // 昨日期限・計画中 → 超過
+    [InlineData(0, MeasureStatus.Planned)]     // 今日期限・計画中 → 非超過
+    [InlineData(1, MeasureStatus.InProgress)]  // 明日期限・進行中 → 非超過
+    [InlineData(-5, MeasureStatus.Completed)]  // 期限切れでも完了 → 非超過
+    public void OverdueOn_MatchesIsOverdueOn(int dayOffset, MeasureStatus status)
+    {
+        // today が深夜0時である限り、クエリ用の式 OverdueOn とインメモリ版 IsOverdueOn は
+        // 必ず同じ結果になる（定義のドリフトが無いことを保証する回帰テスト）
+        var m = new PreventiveMeasure { Status = status, DueDate = TestFixtures.Today.AddDays(dayOffset) };
+        // 式ツリーをコンパイルした結果
+        var fromExpr = PreventiveMeasure.OverdueOn(TestFixtures.Today).Compile()(m);
+        // インメモリ計算プロパティの結果
+        var fromProp = m.IsOverdueOn(TestFixtures.Today);
+        // 両者が一致することを検証する
+        Assert.Equal(fromProp, fromExpr);
+    }
+
     // --- StatusLabel / StatusColorOn ---
 
     [Theory]

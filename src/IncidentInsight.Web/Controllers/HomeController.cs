@@ -83,9 +83,9 @@ public class HomeController : Controller
         // 未完了の対策件数
         var openMeasures = await measures
             .CountAsync(m => m.Status != MeasureStatus.Completed);
-        // 期限超過の対策件数(未完了 かつ 期限が今日より前)
+        // 期限超過の対策件数(未完了 かつ 期限が今日より前)。判定は唯一の定義 OverdueOn に委譲
         var overdueMeasures = await measures
-            .CountAsync(m => m.Status != MeasureStatus.Completed && m.DueDate < today);
+            .CountAsync(PreventiveMeasure.OverdueOn(today));
         // 完了済みの対策件数
         var completedMeasures = await measures
             .CountAsync(m => m.Status == MeasureStatus.Completed);
@@ -101,10 +101,10 @@ public class HomeController : Controller
             .Take(5)
             .ToListAsync();
 
-        // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)
+        // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)。判定は OverdueOn に委譲
         var overdueMeasureList = await measures
             .Include(m => m.Incident)
-            .Where(m => m.Status != MeasureStatus.Completed && m.DueDate < today)
+            .Where(PreventiveMeasure.OverdueOn(today))
             .OrderBy(m => m.DueDate)
             .ToListAsync();
 

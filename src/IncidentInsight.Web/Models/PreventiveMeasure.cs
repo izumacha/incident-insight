@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 「期限超過」を式ツリー(Expression)で表し EF が SQL へ翻訳できるようにするため取り込む
+using System.Linq.Expressions;
 // 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
 using IncidentInsight.Web.Models.Auditing;
 // 自プロジェクトの enum 群(対策種別・状態など)を使えるようにする
@@ -114,8 +116,20 @@ public class PreventiveMeasure
     public Guid ConcurrencyToken { get; set; } = Guid.NewGuid();
 
     // Computed helpers
-    // DueDate の .Date を使うことで、期限日当日は「期限超過」にならない。
-    // 完了していない かつ 期限日が today より前 なら「期限超過」と判定する。
+
+    // 「期限超過」判定の唯一の定義(真実の源)。クエリ側(HomeController / AnalyticsController)は
+    // この式を使い、判定ロジックが各所でコピーされてドリフトするのを防ぐ。
+    // EF Core が SQL へ翻訳できるよう DueDate を切り捨てず today 未満で比較する
+    // (DueDate の索引が効くサーバ側評価)。today には IClock.Today(JST の深夜0時)を渡す。
+    // today が深夜0時である限り「DueDate < today」は「DueDate.Date < today.Date」と等価で、
+    // 期限日当日は「期限超過」にならない。
+    public static Expression<Func<PreventiveMeasure, bool>> OverdueOn(DateTime today) =>
+        // 未完了 かつ 期限が today(深夜0時) より前
+        m => m.Status != MeasureStatus.Completed && m.DueDate < today;
+
+    // 上記 OverdueOn のインメモリ版(ビュー等で 1 件ずつ判定する用途)。
+    // today が深夜0時である限り OverdueOn と同じ結果になる。.Date 比較にすることで、
+    // 万一 today に時刻成分が混じっても当日を「期限超過」にしない頑健性を持たせている。
     // today は IClock 経由で取得した値をコントローラ/ビューから渡す(DateTime.Today を直接使わない)
     public bool IsOverdueOn(DateTime today) =>
         // 完了済みは「期限超過」にならない
