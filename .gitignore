@@ -28,4 +28,9 @@ node_modules/
 ## OS files
 .DS_Store
 Thumbs.db
-.claude/
+# .claude/ は個人設定を含むため原則無視するが、
+# チームで共有する SessionStart フックと共有設定だけは追跡する。
+.claude/*
+!.claude/hooks/
+!.claude/settings.json
+.claude/settings.local.json
