@@ -120,6 +120,26 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_UndefinedEnumValue_ReturnsBadRequest_AndDoesNotPersist()
+    {
+        // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら 400 で拒否し
+        // DB のステータスが書き換わらない(fail-closed)ことを検証する
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 事前状態は既定の Planned(計画中)
+        Assert.Equal(MeasureStatus.Planned, measure.Status);
+
+        // enum に存在しない値(99)をキャストして渡す
+        var result = await _controller.UpdateStatus(
+            measure.Id, (MeasureStatus)99, measure.ConcurrencyToken);
+
+        // 400 BadRequest が返ること
+        Assert.IsType<BadRequestObjectResult>(result);
+        // DB のステータスは Planned のまま変化していないこと(不正値が永続化されない)
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(MeasureStatus.Planned, saved.Status);
+    }
+
+    [Fact]
     public async Task Delete_Staff_OtherDepartment_ReturnsForbid()
     {
         var measure = await SeedMeasureAsync("外来");

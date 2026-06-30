@@ -390,6 +390,13 @@ public class PreventiveMeasuresController : Controller
         if (measure == null) return NotFound();
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
+        // 受け取った status が enum の定義値(Planned/InProgress/Completed)かを検証する。
+        // ASP.NET のモデルバインドは未定義の整数(例: 99)もそのまま (MeasureStatus)99 として束縛してしまうため、
+        // ここで弾かないと未定義値が DB に保存され、カンバンの振り分けやラベル表示が壊れる。
+        // 「不明なら拒否」(fail-closed)の原則で、定義外の値は 400 で拒否する。
+        if (!Enum.IsDefined(typeof(MeasureStatus), status))
+            return BadRequest("不正なステータス値です。");
+
         // ステータスを更新。完了に遷移した場合は完了日時を記録し、
         // 完了から差し戻した場合は完了日時をクリアする(古い完了日が残らないように)
         measure.Status = status;
