@@ -12,10 +12,13 @@ namespace IncidentInsight.Tests.Controllers;
 public class AuthorizationAttributeTests
 {
     [Theory]
-    [InlineData(typeof(HomeController))]
-    [InlineData(typeof(IncidentsController))]
-    [InlineData(typeof(PreventiveMeasuresController))]
-    [InlineData(typeof(AnalyticsController))]
+    [InlineData(typeof(HomeController))]           // ダッシュボード: 認証必須
+    [InlineData(typeof(IncidentsController))]       // インシデント CRUD: 認証必須
+    [InlineData(typeof(PreventiveMeasuresController))] // 予防策 kanban: 認証必須
+    [InlineData(typeof(AnalyticsController))]       // 分析グラフ: 認証必須（CanViewAnalytics ポリシー）
+    [InlineData(typeof(CauseAnalysesController))]   // 原因分析 CRUD: 認証必須
+    [InlineData(typeof(AuditLogsController))]        // 監査ログ閲覧: 認証必須
+    [InlineData(typeof(IncidentMeasuresController))] // インシデント詳細からのインライン操作: 認証必須
     public void AppController_HasAuthorizeAttribute(Type controllerType)
     {
         var attr = controllerType.GetCustomAttribute<AuthorizeAttribute>(inherit: true);

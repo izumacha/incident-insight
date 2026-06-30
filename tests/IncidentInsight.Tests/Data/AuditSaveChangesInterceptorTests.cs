@@ -195,8 +195,9 @@ public class AuditSaveChangesInterceptorTests : IDisposable
         var log = await _db.AuditLogs.SingleAsync(a => a.EntityName == nameof(Incident));
         // 平文の氏名は出ない
         Assert.DoesNotContain("山田花子", log.ChangesJson);
-        // # で始まる 8 桁 hex のプレフィックスがある
-        Assert.Matches("#[0-9a-f]{8}", log.ChangesJson!);
+        // # で始まる 32 桁 hex（HMAC-SHA256 の先頭 128 bit）のプレフィックスがある
+        // ComputePseudonym は Convert.ToHexString(hash)[..32].ToLowerInvariant() を返すため 32 文字
+        Assert.Matches("#[0-9a-f]{32}", log.ChangesJson!);
     }
 
     [Fact]
