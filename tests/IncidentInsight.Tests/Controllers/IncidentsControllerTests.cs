@@ -405,6 +405,50 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_SeveritySort_PaginationUsesIdTieBreaker_NoOverlapOrGap()
+    {
+        // 重症度がすべて同値のインシデントを 25 件投入する(PageSize=20 の 2 ページに跨る)。
+        // severity 並び替えでは全行が同値となり、タイブレーカー(Id 降順)が無いと
+        // ページングが非決定的になって重複・欠落が起きる。それを検証する。
+        for (int i = 0; i < 25; i++)
+        {
+            // 全件同じ重症度・同じ発生日で追加し、severity ソートのキーを完全に同値にする
+            _db.Incidents.Add(new Incident
+            {
+                Department = "ICU",
+                IncidentType = IncidentTypeKind.Fall,
+                Severity = IncidentSeverity.Level2,
+                Description = $"case {i}",
+                ReporterName = "R",
+                OccurredAt = TestFixtures.Today
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        // severity 並び替えで 1 ページ目(20 件)を取得する
+        var page1 = (await _controller.Index(null, null, null, null, null, null, null, "severity", 1) as ViewResult)!
+            .Model as IncidentListViewModel;
+        // severity 並び替えで 2 ページ目(残り 5 件)を取得する
+        var page2 = (await _controller.Index(null, null, null, null, null, null, null, "severity", 2) as ViewResult)!
+            .Model as IncidentListViewModel;
+
+        // 各ページの主キー Id を取り出す
+        var page1Ids = page1!.Incidents.Select(x => x.Id).ToList();
+        var page2Ids = page2!.Incidents.Select(x => x.Id).ToList();
+
+        // 総件数 25 件が 20 + 5 に分割されることを確認する
+        Assert.Equal(25, page1.TotalCount);
+        Assert.Equal(20, page1Ids.Count);
+        Assert.Equal(5, page2Ids.Count);
+        // 1 ページ目が Id 降順(タイブレーカー)で並ぶこと。タイブレーカーが無ければ成立しない
+        Assert.Equal(page1Ids.OrderByDescending(x => x).ToList(), page1Ids);
+        // ページ間で重複が無いこと
+        Assert.Empty(page1Ids.Intersect(page2Ids));
+        // 2 ページ合わせて 25 件すべてを漏れなく網羅すること
+        Assert.Equal(25, page1Ids.Concat(page2Ids).Distinct().Count());
+    }
+
+    [Fact]
     public async Task Index_SearchFilter_MatchesDescription()
     {
         _db.Incidents.AddRange(
