@@ -225,6 +225,10 @@ public class MeasureFormViewModel
     public DateTime DueDate { get; set; }
 
     // 優先度(1=高/2=中/3=低、初期値2)
+    // EF Core は保存時に DataAnnotations を自動検証しないため、AddMeasure /
+    // PreventiveMeasuresController.Create / Edit の3経路をすり抜けないよう、
+    // ドメインモデル PreventiveMeasure.Priority と同じ範囲をここでも明示検証する。
+    [Range(1, 3, ErrorMessage = "優先度は1(高)〜3(低)の範囲で指定してください")]
     [Display(Name = "優先度")]
     public int Priority { get; set; } = 2;
 
