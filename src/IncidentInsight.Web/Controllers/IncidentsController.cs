@@ -99,12 +99,17 @@ public class IncidentsController : Controller
 
         // Sort
         // 並び替え: severity=重症度降順、overdue=期限超過あり優先、既定=発生日の新しい順
+        // どの並び順も末尾に主キー Id 降順のタイブレーカーを付ける。
+        // 理由: 重症度(7値)や期限超過フラグ(真偽2値)は同値の行が大量に発生し、DB は
+        // 同値行の並び順を保証しない。タイブレーカーが無いと Skip/Take のページングが
+        // 非決定的になり、同じ行が複数ページに出たり抜け落ちたりする(AuditLogsController と同じ対策)。
         query = sortBy switch
         {
-            "severity" => query.OrderByDescending(i => i.Severity),
+            "severity" => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
             "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
-                              .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < _clock.Today)),
-            _          => query.OrderByDescending(i => i.OccurredAt)
+                              .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < _clock.Today))
+                              .ThenByDescending(i => i.Id),
+            _          => query.OrderByDescending(i => i.OccurredAt).ThenByDescending(i => i.Id)
         };
 
         // 総件数(ページング計算用)
