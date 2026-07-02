@@ -33,7 +33,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
 
     private async Task<PreventiveMeasure> SeedMeasureAsync(
         string incidentDepartment,
-        string? responsibleDepartment = null)
+        string? responsibleDepartment = null,
+        int siblingMeasureCount = 0)
     {
         var incident = new Incident
         {
@@ -55,6 +56,21 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Priority = 2
         };
         incident.PreventiveMeasures.Add(measure);
+        // HasAtLeastOneValidMeasure 不変条件の検証用に、削除しても0件にならないよう
+        // 同じインシデントに追加の対策(sibling)を必要数だけ積んでおく
+        for (var i = 0; i < siblingMeasureCount; i++)
+        {
+            incident.PreventiveMeasures.Add(new PreventiveMeasure
+            {
+                Incident = incident,
+                Description = $"対策(sibling {i + 1})",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当B",
+                ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
+                DueDate = DateTime.Today.AddDays(30),
+                Priority = 2
+            });
+        }
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
         return measure;
@@ -161,7 +177,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
     [Fact]
     public async Task Delete_Admin_RemovesMeasure()
     {
-        var measure = await SeedMeasureAsync("内科病棟");
+        // 削除後も対策が1件残るよう sibling を1件追加しておく(0件になる削除は別途拒否ケースで検証)
+        var measure = await SeedMeasureAsync("内科病棟", siblingMeasureCount: 1);
 
         var result = await _controller.Delete(measure.Id);
 
@@ -175,7 +192,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
     public async Task Delete_RiskManager_RemovesMeasure_RegardlessOfDepartment()
     {
         // RiskManager は全部署横断で削除可能 (Policies.CanDeleteIncident)。
-        var measure = await SeedMeasureAsync("外来");
+        // 削除後も対策が1件残るよう sibling を1件追加しておく。
+        var measure = await SeedMeasureAsync("外来", siblingMeasureCount: 1);
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.RiskManager());
         var result = await _controller.Delete(measure.Id);
@@ -183,6 +201,38 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
         Assert.False(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+    }
+
+    [Fact]
+    public async Task Delete_LastRemainingMeasure_IsRejected()
+    {
+        // インシデントに対策が1件しかない場合、削除すると「対策0件のインシデント」という
+        // 不正状態(HasAtLeastOneValidMeasure 不変条件違反)が生まれるため拒否されるべき
+        var measure = await SeedMeasureAsync("内科病棟");
+
+        var result = await _controller.Delete(measure.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
+        // 削除は行われず、対策は DB に残ったまま
+        Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+        Assert.NotNull(_controller.TempData["Warning"]);
+    }
+
+    [Fact]
+    public async Task Delete_WithMultipleRemainingMeasures_Succeeds()
+    {
+        // 対策が2件以上残っている場合は、1件削除しても不変条件を満たすため成功する
+        var measure = await SeedMeasureAsync("内科病棟", siblingMeasureCount: 2);
+
+        var result = await _controller.Delete(measure.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
+        Assert.False(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+        // 残りの2件は削除されずに残っていること
+        Assert.Equal(2, await _db.PreventiveMeasures.CountAsync(m => m.IncidentId == measure.IncidentId));
+        Assert.NotNull(_controller.TempData["Success"]);
     }
 
     [Fact]

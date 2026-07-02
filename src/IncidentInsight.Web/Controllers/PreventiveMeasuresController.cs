@@ -440,6 +440,18 @@ public class PreventiveMeasuresController : Controller
         // 削除権限(部署一致/管理者系)の確認
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanDeleteIncident)) return Forbid();
 
+        // 業務ルール: インシデントは再発防止策が最低1件ないと登録できない
+        // (IncidentsController.Create の HasAtLeastOneValidMeasure と同じ不変条件)。
+        // 削除でこの不変条件が崩れないよう、削除対象を除いた残り件数を数えて確認する。
+        var remainingMeasureCount = await _db.PreventiveMeasures
+            .CountAsync(m => m.IncidentId == measure.IncidentId && m.Id != measure.Id);
+        if (remainingMeasureCount == 0)
+        {
+            // 残り0件になる削除は拒否し、理由を警告トーストで伝えて一覧へ戻す
+            TempData["Warning"] = "この対策はインシデントに残る唯一の再発防止策のため削除できません。先に別の対策を追加してから削除してください。";
+            return RedirectToAction(nameof(Index));
+        }
+
         // 削除対象に追加して保存(監査ログへも自動で記録される)
         _db.PreventiveMeasures.Remove(measure);
         await _db.SaveChangesAsync();
