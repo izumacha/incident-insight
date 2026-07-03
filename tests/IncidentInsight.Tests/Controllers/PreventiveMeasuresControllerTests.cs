@@ -250,4 +250,59 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
     }
+
+    [Fact]
+    public async Task Review_Post_Completed_PersistsAndRedirectsToIndex()
+    {
+        // 完了済み対策なら有効性評価が保存され、一覧へリダイレクトされること
+        var measure = await SeedMeasureAsync("内科病棟");
+        measure.Status = MeasureStatus.Completed;
+        await _db.SaveChangesAsync();
+
+        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        {
+            Id = measure.Id,
+            ConcurrencyToken = measure.ConcurrencyToken,
+            EffectivenessRating = 4,
+            EffectivenessNote = "効果あり",
+            RecurrenceObserved = false
+        };
+
+        var result = await _controller.Review(measure.Id, vm);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        var updated = await _db.PreventiveMeasures.FindAsync(measure.Id);
+        Assert.Equal(4, updated!.EffectivenessRating);
+        Assert.False(updated.RecurrenceObserved);
+        Assert.NotNull(updated.EffectivenessReviewedAt);
+    }
+
+    [Fact]
+    public async Task Review_Post_NotCompleted_RejectsWithoutPersisting()
+    {
+        // 未完了(Planned)の対策への有効性評価は fail-closed で拒否され、
+        // 再発フラグ・評価値が書き込まれないこと(KPI 汚染の回帰防止)
+        var measure = await SeedMeasureAsync("内科病棟");
+
+        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        {
+            Id = measure.Id,
+            ConcurrencyToken = measure.ConcurrencyToken,
+            EffectivenessRating = 1,
+            EffectivenessNote = "未完了なのに評価",
+            RecurrenceObserved = true
+        };
+
+        var result = await _controller.Review(measure.Id, vm);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.NotNull(_controller.TempData["Warning"]);
+        var updated = await _db.PreventiveMeasures.FindAsync(measure.Id);
+        // 評価値・再発有無・評価日時のいずれも保存されていないこと
+        Assert.Null(updated!.EffectivenessRating);
+        Assert.Null(updated.RecurrenceObserved);
+        Assert.Null(updated.EffectivenessReviewedAt);
+    }
 }

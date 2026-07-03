@@ -339,6 +339,17 @@ public class PreventiveMeasuresController : Controller
         if (measure == null) return NotFound();
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
+        // ライフサイクル(Planned → InProgress → Completed → 有効性評価)を強制する。
+        // 完了していない対策は「実施していない」ため有効性評価の対象外。フォーム改ざんや、
+        // カンバンでの完了差し戻し(UpdateStatus)後の再送で未完了の対策へ再発フラグを書き込むと、
+        // 再発/効果なし KPI が実態と乖離するため、ここで fail-closed に拒否する。
+        if (measure.Status != MeasureStatus.Completed)
+        {
+            // 未完了なら保存せず警告を出してカンバン一覧へ戻す
+            TempData["Warning"] = "対策が完了していないため、有効性評価は登録できません。先に対策を完了してください。";
+            return RedirectToAction(nameof(Index));
+        }
+
         // バリデーション NG なら入力値を残して再描画
         if (!ModelState.IsValid)
         {

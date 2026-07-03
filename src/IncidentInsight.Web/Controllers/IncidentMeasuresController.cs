@@ -162,6 +162,17 @@ public class IncidentMeasuresController : Controller
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, measure.Incident, Policies.CanEditIncident))
             return Forbid();
 
+        // ライフサイクル(Planned → InProgress → Completed → 有効性評価)を強制する。
+        // 完了していない対策は「実施していない」ため有効性評価の対象外。ここで拒否しないと、
+        // フォーム改ざんやカンバンでの完了差し戻し(UpdateStatus)後の再送により、未完了の対策へ
+        // RecurrenceObserved=true を書き込め、再発/効果なし KPI が実態と乖離してしまう(fail-closed)。
+        if (measure.Status != MeasureStatus.Completed)
+        {
+            // 未完了なら保存せず警告を出して詳細画面へ戻す
+            TempData["Warning"] = "対策が完了していないため、有効性評価は登録できません。先に対策を完了してください。";
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
+
         // 評価値・コメント・再発有無・評価日時を設定
         measure.EffectivenessRating = effectivenessRating;
         measure.EffectivenessNote = effectivenessNote;
