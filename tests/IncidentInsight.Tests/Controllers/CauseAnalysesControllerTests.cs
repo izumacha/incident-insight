@@ -93,6 +93,32 @@ public class CauseAnalysesControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task AddCauseAnalysis_NonExistentCauseCategory_DoesNotSave_AndDoesNotThrow()
+    {
+        // 実在するインシデントだけを用意し、原因カテゴリは投入しない
+        var (incident, _) = await SeedAsync();
+
+        var vm = new CauseAnalysisFormViewModel
+        {
+            IncidentId = incident.Id,
+            // カテゴリを一切投入していないので、この Id は必ず存在しない
+            CauseCategoryId = 999999,
+            Why1 = "なぜ1"
+        };
+
+        var result = await _controller.AddCauseAnalysis(vm);
+
+        // 未捕捉の 500(DbUpdateException)ではなく、入力不備として詳細画面へ戻ること
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        // ModelState にエラーが積まれ、保存されていないこと
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.CauseCategoryId)));
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
     public async Task AddCauseAnalysis_Staff_OtherDepartment_ReturnsForbid()
     {
         var (incident, category) = await SeedAsync("外来");
@@ -137,6 +163,42 @@ public class CauseAnalysesControllerTests : IDisposable
     {
         var result = await _controller.EditCauseAnalysis(99999);
         Assert.IsType<NotFoundResult>(result);
+    }
+
+    [Fact]
+    public async Task EditCauseAnalysis_Post_NonExistentCauseCategory_ReturnsView_AndDoesNotSave()
+    {
+        var (incident, category) = await SeedAsync();
+        var analysis = new CauseAnalysis
+        {
+            IncidentId = incident.Id,
+            CauseCategoryId = category.Id,
+            Why1 = "初期値"
+        };
+        _db.CauseAnalyses.Add(analysis);
+        await _db.SaveChangesAsync();
+
+        var vm = new CauseAnalysisFormViewModel
+        {
+            Id = analysis.Id,
+            IncidentId = incident.Id,
+            ConcurrencyToken = analysis.ConcurrencyToken,
+            // 存在しない原因カテゴリ Id へ書き換えようとする
+            CauseCategoryId = 999999,
+            Why1 = "更新後の値"
+        };
+
+        var result = await _controller.EditCauseAnalysis(analysis.Id, vm);
+
+        // 未捕捉の 500(DbUpdateException)ではなく、入力値を保持したまま編集フォームを再描画する
+        var view = Assert.IsType<ViewResult>(result);
+        Assert.Equal("~/Views/Incidents/EditCauseAnalysis.cshtml", view.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.CauseCategoryId)));
+        // DB 上の値は書き換わっていないこと
+        var unchanged = await _db.CauseAnalyses.SingleAsync();
+        Assert.Equal("初期値", unchanged.Why1);
+        Assert.Equal(category.Id, unchanged.CauseCategoryId);
     }
 
     [Fact]

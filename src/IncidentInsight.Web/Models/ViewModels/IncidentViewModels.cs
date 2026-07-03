@@ -89,12 +89,18 @@ public class IncidentCreateEditViewModel
     public string Department { get; set; } = "";
 
     // インシデント種別。必須で初期値「その他」
+    // EnumDataType: モデルバインドは未定義の整数(例:99以外の未使用値)もそのまま
+    // (IncidentTypeKind)値 として束縛してしまうため、Enum.IsDefined 相当の検証を追加し、
+    // フォーム改ざんで未定義値が保存されるのを防ぐ(UpdateStatus の fail-closed 方針と同じ考え方)
     [Required(ErrorMessage = "インシデント種別は必須です")]
+    [EnumDataType(typeof(IncidentTypeKind), ErrorMessage = "インシデント種別の値が不正です")]
     [Display(Name = "インシデント種別")]
     public IncidentTypeKind IncidentType { get; set; } = IncidentTypeKind.Other;
 
     // 重症度。必須で初期値「レベル0」
+    // EnumDataType: IncidentType と同じ理由で未定義値の束縛を拒否する
     [Required(ErrorMessage = "重症度は必須です")]
+    [EnumDataType(typeof(IncidentSeverity), ErrorMessage = "重症度の値が不正です")]
     [Display(Name = "重症度")]
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
@@ -202,7 +208,10 @@ public class MeasureFormViewModel
     public string Description { get; set; } = "";
 
     // 対策種別(短期/長期、必須)
+    // EnumDataType: フォーム改ざんで未定義の整数値が束縛されるのを拒否する
+    // (IncidentCreateEditViewModel.IncidentType/Severity と同じ理由)
     [Required(ErrorMessage = "対策種別を選択してください")]
+    [EnumDataType(typeof(MeasureTypeKind), ErrorMessage = "対策種別の値が不正です")]
     [Display(Name = "対策種別")]
     public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
 
