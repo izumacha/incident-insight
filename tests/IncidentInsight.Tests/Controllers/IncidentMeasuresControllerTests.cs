@@ -51,7 +51,7 @@ public class IncidentMeasuresControllerTests : IDisposable
         return incident;
     }
 
-    private async Task<PreventiveMeasure> SeedMeasureAsync(int incidentId)
+    private async Task<PreventiveMeasure> SeedMeasureAsync(int incidentId, MeasureStatus status = MeasureStatus.Planned)
     {
         var measure = new PreventiveMeasure
         {
@@ -62,7 +62,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             ResponsibleDepartment = "内科病棟",
             DueDate = DateTime.Today.AddDays(30),
             Priority = 2,
-            Status = MeasureStatus.Planned
+            Status = status
         };
         _db.PreventiveMeasures.Add(measure);
         await _db.SaveChangesAsync();
@@ -154,7 +154,8 @@ public class IncidentMeasuresControllerTests : IDisposable
     public async Task RateMeasure_RecurrenceObserved_SetsWarning()
     {
         var incident = await SeedIncidentAsync();
-        var measure = await SeedMeasureAsync(incident.Id);
+        // 有効性評価は完了済み対策にのみ許可されるため、完了状態でシードする
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
         var result = await _controller.RateMeasure(measure.Id, 4, "再発が確認された", true, measure.ConcurrencyToken);
 
@@ -170,11 +171,32 @@ public class IncidentMeasuresControllerTests : IDisposable
     public async Task RateMeasure_NoRecurrence_SetsSuccess()
     {
         var incident = await SeedIncidentAsync();
-        var measure = await SeedMeasureAsync(incident.Id);
+        // 有効性評価は完了済み対策にのみ許可されるため、完了状態でシードする
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
         var result = await _controller.RateMeasure(measure.Id, 5, "効果あり", false, measure.ConcurrencyToken);
 
         Assert.IsType<RedirectToActionResult>(result);
         Assert.NotNull(_controller.TempData["Success"]);
+    }
+
+    [Fact]
+    public async Task RateMeasure_NotCompleted_RejectsWithoutPersisting()
+    {
+        // 未完了(Planned)の対策への有効性評価は fail-closed で拒否され、
+        // 再発フラグ・評価値が書き込まれないこと(KPI 汚染の回帰防止)
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Planned);
+
+        var result = await _controller.RateMeasure(measure.Id, 1, "未完了なのに評価", true, measure.ConcurrencyToken);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.NotNull(_controller.TempData["Warning"]);
+        var updated = await _db.PreventiveMeasures.FindAsync(measure.Id);
+        // 評価値・再発有無・評価日時のいずれも保存されていないこと
+        Assert.Null(updated!.EffectivenessRating);
+        Assert.Null(updated.RecurrenceObserved);
+        Assert.Null(updated.EffectivenessReviewedAt);
     }
 }
