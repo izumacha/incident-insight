@@ -412,9 +412,23 @@ public class PreventiveMeasuresController : Controller
         // 完了から差し戻した場合は完了日時をクリアする(古い完了日が残らないように)
         measure.Status = status;
         if (status == MeasureStatus.Completed)
+        {
+            // 完了へ遷移: 完了日時を記録する
             measure.CompletedAt = _clock.Now;
+        }
         else
+        {
+            // 完了以外へ差し戻し: 完了日時をクリアする(古い完了日が残らないように)
             measure.CompletedAt = null;
+            // 効果評価は「完了済みの対策」だけに存在してよいデータ(Review/RateMeasure が
+            // 未完了への書き込みを fail-closed で拒否している)。ここで差し戻したのに評価値を
+            // 残すと、未完了の対策が再発/効果なし KPI に計上され実態と乖離するため、
+            // 完了日時と一緒に評価4項目もクリアして不変条件を保つ。
+            measure.EffectivenessRating = null;        // 有効性評価(1〜5)をクリア
+            measure.EffectivenessNote = null;          // 有効性評価コメントをクリア
+            measure.RecurrenceObserved = null;         // 再発確認フラグをクリア
+            measure.EffectivenessReviewedAt = null;    // 有効性評価日時をクリア
+        }
 
         // 同時編集検知のトークン固定
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
