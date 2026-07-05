@@ -136,6 +136,38 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_RevertFromCompleted_ClearsEffectivenessReviewData()
+    {
+        // 完了 → 有効性評価済み の対策をカンバンで進行中へ差し戻したとき、
+        // 完了後にしか存在してはいけない効果評価4項目(評価値/コメント/再発フラグ/評価日時)が
+        // すべて null にクリアされること(残ると未完了の対策が再発/効果なし KPI を汚染するため)
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 完了させ、さらに「再発あり・低評価」で有効性評価済みの状態を作る
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = DateTime.Now;
+        measure.EffectivenessRating = 2;
+        measure.EffectivenessNote = "効果が薄かった";
+        measure.RecurrenceObserved = true;
+        measure.EffectivenessReviewedAt = DateTime.Now;
+        await _db.SaveChangesAsync();
+
+        // カンバン上で完了から進行中へ差し戻す
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.InProgress, measure.ConcurrencyToken);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        // ステータスと完了日時が差し戻されていること
+        Assert.Equal(MeasureStatus.InProgress, saved.Status);
+        Assert.Null(saved.CompletedAt);
+        // 効果評価4項目がすべてクリアされていること(KPI汚染防止の不変条件)
+        Assert.Null(saved.EffectivenessRating);
+        Assert.Null(saved.EffectivenessNote);
+        Assert.Null(saved.RecurrenceObserved);
+        Assert.Null(saved.EffectivenessReviewedAt);
+    }
+
+    [Fact]
     public async Task UpdateStatus_UndefinedEnumValue_ReturnsBadRequest_AndDoesNotPersist()
     {
         // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら 400 で拒否し
