@@ -116,6 +116,13 @@ public class IncidentMeasuresController : Controller
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, measure.Incident, Policies.CanEditIncident))
             return Forbid();
 
+        // 完了報告メモの長さを検証する。この経路は ViewModel を介さず生の文字列を
+        // 直接受け取るため、他の自由記述欄(Description/AnalysisNote 等)と同じ
+        // 500文字上限をここで明示検証しないと無制限の自由記述が保存されてしまう
+        // (§9 入力は信用しない / PreventiveMeasuresController.Complete と同じ理由)。
+        if (completionNote != null && completionNote.Length > 500)
+            return BadRequest("完了報告内容は500文字以内で入力してください。");
+
         // ステータスを完了へ、完了日時と完了コメントをセット
         measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = _clock.Now;
@@ -151,6 +158,13 @@ public class IncidentMeasuresController : Controller
         // 評価値の範囲チェック
         if (effectivenessRating < 1 || effectivenessRating > 5)
             return BadRequest("有効性評価は1〜5の値を指定してください。");
+
+        // 有効性評価コメントの長さを検証する。この経路は ViewModel を介さず生の文字列を
+        // 直接受け取るため、他の自由記述欄(Description/AnalysisNote 等)と同じ
+        // 500文字上限をここで明示検証しないと無制限の自由記述が保存されてしまう
+        // (§9 入力は信用しない / ReviewViewModel.EffectivenessNote と同じ理由)。
+        if (effectivenessNote != null && effectivenessNote.Length > 500)
+            return BadRequest("有効性評価コメントは500文字以内で入力してください。");
 
         // 対象の対策を取得
         var measure = await _db.PreventiveMeasures

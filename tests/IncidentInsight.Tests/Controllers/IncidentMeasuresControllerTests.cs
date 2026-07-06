@@ -144,10 +144,44 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task CompleteMeasure_NoteTooLong_ReturnsBadRequest_AndDoesNotPersist()
+    {
+        // この経路は ViewModel を介さず生の文字列を受け取るため、他の自由記述欄
+        // (Description/AnalysisNote 等)と同じ500文字上限がここで検証されることを確認する
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id);
+        var tooLongNote = new string('あ', 501);
+
+        var result = await _controller.CompleteMeasure(measure.Id, tooLongNote, measure.ConcurrencyToken);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(MeasureStatus.Planned, unchanged.Status);
+        Assert.Null(unchanged.CompletionNote);
+    }
+
+    [Fact]
     public async Task RateMeasure_OutOfRange_ReturnsBadRequest()
     {
         var result = await _controller.RateMeasure(1, 0, null, false, Guid.NewGuid());
         Assert.IsType<BadRequestObjectResult>(result);
+    }
+
+    [Fact]
+    public async Task RateMeasure_NoteTooLong_ReturnsBadRequest_AndDoesNotPersist()
+    {
+        // この経路は ViewModel を介さず生の文字列を受け取るため、他の自由記述欄と同じ
+        // 500文字上限がここで検証されることを確認する
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
+        var tooLongNote = new string('あ', 501);
+
+        var result = await _controller.RateMeasure(measure.Id, 3, tooLongNote, false, measure.ConcurrencyToken);
+
+        Assert.IsType<BadRequestObjectResult>(result);
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Null(unchanged.EffectivenessRating);
+        Assert.Null(unchanged.EffectivenessNote);
     }
 
     [Fact]
