@@ -120,7 +120,10 @@ public class RecurrenceService : IRecurrenceService
                 {
                     CurrentIncident = incident,
                     SimilarIncidents = similar,
-                    PatternDescription = $"{incident.Department} / {incident.IncidentType}"
+                    // 種別は enum の英語名ではなく日本語ラベル(IncidentTypeLabel)で表示する。
+                    // 生の enum を文字列化すると "Medication" 等が医療現場の日本語UIに漏れるため、
+                    // 既存の計算プロパティ(唯一のラベル変換元)を再利用して表記を統一する。
+                    PatternDescription = $"{incident.Department} / {incident.IncidentTypeLabel}"
                 });
                 // 処理済みとして記録(以降の巡回で再び採用しないようにする)
                 processed.Add(incident.Id);
