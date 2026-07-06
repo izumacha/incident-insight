@@ -238,6 +238,46 @@ public class RecurrenceServiceTests : IDisposable
     }
 
     /// <summary>
+    /// 再発アラートの PatternDescription が、インシデント種別を英語の enum 名ではなく
+    /// 日本語ラベル（例: "投薬ミス"）で表示することを検証する。
+    /// 医療現場の日本語 UI に生の enum 名（"Medication" 等）が漏れる回帰を防ぐ。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_UsesJapaneseTypeLabel()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(cat); // カテゴリを追加する
+        await _db.SaveChangesAsync(); // DB に保存する
+
+        // 同部署・同種別（Medication = "投薬ミス"）の 2 件を直近 90 日以内に作成する
+        var a = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10)); // 最新
+        var b = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-20)); // 過去
+        // 2 件のインシデントを DB に追加する
+        _db.Incidents.AddRange(a, b);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 各インシデントに同じ原因分類の原因分析を紐づける（再発として一致させる）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = a.Id, CauseCategoryId = cat.Id, Why1 = "w1" }, // 最新用
+            new CauseAnalysis { IncidentId = b.Id, CauseCategoryId = cat.Id, Why1 = "w2" }  // 過去用
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+
+        // アラートが 1 件生成されることを確認する
+        Assert.Single(alerts);
+        // PatternDescription に日本語ラベル「投薬ミス」が含まれることを確認する
+        Assert.Contains("投薬ミス", alerts[0].PatternDescription);
+        // 生の英語 enum 名「Medication」が漏れていないことを確認する（回帰防止）
+        Assert.DoesNotContain("Medication", alerts[0].PatternDescription);
+    }
+
+    /// <summary>
     /// 直近窓外のインシデントのみ存在する場合、再発アラートが生成されないことを検証する。
     /// 古すぎる（90 日超）インシデントは再発候補に含まれない。
     /// </summary>
