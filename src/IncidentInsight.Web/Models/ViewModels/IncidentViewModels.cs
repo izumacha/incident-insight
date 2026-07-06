@@ -262,7 +262,10 @@ public class ReviewViewModel
     [Display(Name = "有効性評価（1=効果なし〜5=非常に効果あり）")]
     public int EffectivenessRating { get; set; }
 
-    // 有効性評価のコメント(任意)
+    // 有効性評価のコメント(任意)。他の自由記述欄(Description/AnalysisNote 等)と同じ
+    // 500文字上限を明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、
+    // ここが唯一の防波堤になる(未検証だと無制限の自由記述が保存されうる)。
+    [MaxLength(500, ErrorMessage = "有効性評価コメントは500文字以内で入力してください")]
     [Display(Name = "有効性評価コメント")]
     public string? EffectivenessNote { get; set; }
 
