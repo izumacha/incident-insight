@@ -114,6 +114,13 @@ public class IncidentsController : Controller
 
         // 総件数(ページング計算用)
         var total = await query.CountAsync();
+        // ページ番号を有効範囲[1..総ページ数]に補正する(URL 改ざん・桁あふれ対策)。
+        // 補正しないと ?page=0 や負数で (page-1)*PageSize が負の OFFSET になり、
+        // また巨大値では (page-1)*PageSize が int の範囲を超えて桁あふれ(オーバーフロー)で
+        // 負値に化ける。SQLite は負の OFFSET を 0 とみなすが、PostgreSQL / SQL Server は
+        // 例外を投げて 500 になるため、DB プロバイダ非依存の不変条件を守るためにここで丸める。
+        var totalPages = (int)Math.Ceiling(total / (double)PageSize);
+        page = Math.Clamp(page, 1, Math.Max(1, totalPages));
         // 現在ページ分のレコードだけ取得
         var incidents = await query
             .Skip((page - 1) * PageSize)
