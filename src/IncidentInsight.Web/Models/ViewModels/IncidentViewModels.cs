@@ -104,12 +104,16 @@ public class IncidentCreateEditViewModel
     [Display(Name = "重症度")]
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
-    // 状況・経緯の記述(必須)
+    // 状況・経緯の記述(必須)。他の自由記述欄(Why1-5/AnalysisNote等)と同じ500文字上限を
+    // 明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、MaxLength を
+    // 付けないと ModelState.IsValid が無制限の自由記述を素通りさせてしまう(§9 入力は信用しない)。
     [Required(ErrorMessage = "状況・経緯を入力してください")]
+    [MaxLength(500, ErrorMessage = "状況・経緯は500文字以内で入力してください")]
     [Display(Name = "状況・経緯")]
     public string Description { get; set; } = "";
 
-    // 発生直後の応急対応(省略可)
+    // 発生直後の応急対応(省略可)。他の自由記述欄と同じ500文字上限を明示検証する(理由は上記 Description と同じ)
+    [MaxLength(500, ErrorMessage = "発生直後の対応は500文字以内で入力してください")]
     [Display(Name = "発生直後の対応")]
     public string? ImmediateActions { get; set; }
 
@@ -182,7 +186,10 @@ public class CauseAnalysisFormViewModel
     [Display(Name = "分析者")]
     public string? AnalystName { get; set; }
 
-    // 補足メモ(任意)
+    // 補足メモ(任意)。他の自由記述欄(Why1-5/RootCauseSummary等)と同じ500文字上限を明示検証する。
+    // EF Core は保存時に DataAnnotations を自動検証しないため、MaxLength を付けないと
+    // ModelState.IsValid が無制限の自由記述を素通りさせてしまう(§9 入力は信用しない)。
+    [MaxLength(500, ErrorMessage = "補足メモは500文字以内で入力してください")]
     [Display(Name = "補足メモ")]
     public string? AdditionalNotes { get; set; }
 

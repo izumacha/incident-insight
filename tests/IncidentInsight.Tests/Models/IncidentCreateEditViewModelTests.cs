@@ -102,4 +102,68 @@ public class IncidentCreateEditViewModelTests
         // Severity が失敗リストに含まれることを確認する
         Assert.Contains(nameof(IncidentCreateEditViewModel.Severity), failedFields);
     }
+
+    // Description / ImmediateActions の文字数上限検証(EF Core は保存時に DataAnnotations を
+    // 自動検証しないため、IncidentsController.Create/Edit の ModelState.IsValid チェックで
+    // ここが唯一の防波堤になる。他の自由記述欄(Why1-5/AnalysisNote 等)と同じ500文字上限)。
+    [Fact]
+    public void Description_WithinLimit_PassesValidation()
+    {
+        // 500文字ちょうどの状況・経緯でフォームを作る
+        var vm = CreateValidForm();
+        vm.Description = new string('あ', 500);
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 上限ちょうどなのでバリデーションが通るはず
+        Assert.True(isValid);
+        // Description に関する検証エラーが含まれていないことを確認する
+        Assert.DoesNotContain(results, r => r.MemberNames.Contains(nameof(IncidentCreateEditViewModel.Description)));
+    }
+
+    [Fact]
+    public void Description_ExceedsLimit_FailsValidation()
+    {
+        // 501文字(上限超過、フォーム改ざんや制限のないクライアントからの入力を想定)の状況・経緯
+        var vm = CreateValidForm();
+        vm.Description = new string('あ', 501);
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 上限超過なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // 失敗した項目名一覧を取り出す
+        var failedFields = results.SelectMany(r => r.MemberNames).ToList();
+        // Description が失敗リストに含まれることを確認する
+        Assert.Contains(nameof(IncidentCreateEditViewModel.Description), failedFields);
+    }
+
+    [Fact]
+    public void ImmediateActions_ExceedsLimit_FailsValidation()
+    {
+        // 501文字(上限超過)の発生直後の対応
+        var vm = CreateValidForm();
+        vm.ImmediateActions = new string('あ', 501);
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 上限超過なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // 失敗した項目名一覧を取り出す
+        var failedFields = results.SelectMany(r => r.MemberNames).ToList();
+        // ImmediateActions が失敗リストに含まれることを確認する
+        Assert.Contains(nameof(IncidentCreateEditViewModel.ImmediateActions), failedFields);
+    }
 }
