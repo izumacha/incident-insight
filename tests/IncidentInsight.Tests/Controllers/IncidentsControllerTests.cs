@@ -448,6 +448,35 @@ public class IncidentsControllerTests : IDisposable
         Assert.Equal(25, page1Ids.Concat(page2Ids).Distinct().Count());
     }
 
+    [Theory]
+    [InlineData(0)]              // ?page=0     : 補正しないと (0-1)*20 = 負の OFFSET
+    [InlineData(-5)]            // ?page=-5    : 負数
+    [InlineData(int.MaxValue)] // ?page=巨大 : (page-1)*20 が int 桁あふれで負値に化ける
+    public async Task Index_OutOfRangePage_ClampsToFirstPageWithoutThrowing(int page)
+    {
+        // ページング境界(0・負数・巨大値)を投入する。
+        // 補正しないと Skip((page-1)*PageSize) が負の OFFSET になり、
+        // PostgreSQL / SQL Server では例外→500 になる(SQLite は 0 とみなすため見逃されやすい)。
+        // ここではコントローラ側の Math.Clamp 補正で 1 ページ目にフォールバックすることを検証する。
+        _db.Incidents.AddRange(
+            // 3 件だけ投入し、総ページ数 1 の状態を作る
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level1, Description = "a", ReporterName = "R", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level1, Description = "b", ReporterName = "R", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level1, Description = "c", ReporterName = "R", OccurredAt = TestFixtures.Today }
+        );
+        await _db.SaveChangesAsync();
+
+        // 範囲外のページ番号で一覧を要求する(例外を投げないこと自体が検証対象)
+        var vm = (await _controller.Index(null, null, null, null, null, null, null, null, page) as ViewResult)!
+            .Model as IncidentListViewModel;
+
+        // 補正後のページ番号が 1(先頭ページ)であること
+        Assert.Equal(1, vm!.Page);
+        // 先頭ページに全 3 件が漏れなく載ること(負の OFFSET で欠落していない)
+        Assert.Equal(3, vm.TotalCount);
+        Assert.Equal(3, vm.Incidents.Count);
+    }
+
     [Fact]
     public async Task Index_SearchFilter_MatchesDescription()
     {
