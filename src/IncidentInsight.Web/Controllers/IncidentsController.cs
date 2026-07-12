@@ -420,8 +420,17 @@ public class IncidentsController : Controller
     // フォーム改ざん(未定義文字列の直接 POST)をサーバ側で拒否しないと、任意の文字列が
     // Department として保存されてしまう(IncidentType/Severity の EnumDataType 検証と同じ
     // fail-closed の考え方。§9 入力は信用しない)。
+    // Staff はこの検証の対象外: vm.Department は EnforceOwnDepartmentForStaff によって
+    // 常に本人のクレーム値(ユーザーが直接入力できない、管理者管理下の信頼できる値)へ
+    // 上書きされるため、フォーム改ざんの経路が存在しない。もし対象にすると、クレームの
+    // 値が(部署名変更やタイポで)許可リストと一時的に食い違っただけで本人が復旧できない
+    // ままロックアウトされてしまう。
     private void EnforceKnownDepartment(IncidentCreateEditViewModel vm)
     {
+        // Admin/RiskManager 以外(=Staff)はフォーム改ざんの経路が無いため検証をスキップする
+        if (!User.IsInRole(AppRoles.Admin) && !User.IsInRole(AppRoles.RiskManager))
+            return;
+
         // 許可リストに含まれない値なら不正入力としてエラーを積む
         if (!Incident.Departments.Contains(vm.Department))
         {

@@ -342,6 +342,25 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_Staff_DepartmentClaimNotInAllowList_StillSaves()
+    {
+        // Staff のクレームが Incident.Departments の許可リストと食い違っているケース
+        // (部署名変更・タイポ等)を想定する。EnforceKnownDepartment は Admin/RiskManager の
+        // フォーム改ざん対策であり、Staff の部署は EnforceOwnDepartmentForStaff により
+        // 常にこの信頼できるクレーム値へ上書きされるため、許可リスト外でも本人が
+        // ロックアウトされず登録できることを確認する。
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("旧・内科病棟"));
+        var vm = ValidViewModel("内科病棟");
+
+        var result = await _controller.Create(vm);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.Incidents.FirstOrDefaultAsync();
+        Assert.NotNull(saved);
+        Assert.Equal("旧・内科病棟", saved!.Department);
+    }
+
+    [Fact]
     public async Task Edit_Post_Admin_UnknownDepartment_ReturnsView_AndDoesNotSave()
     {
         // 許可リストに載っている部署のインシデントを 1 件用意する
