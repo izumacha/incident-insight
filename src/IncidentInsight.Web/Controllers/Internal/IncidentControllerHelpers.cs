@@ -83,4 +83,24 @@ internal static class IncidentControllerHelpers
         var result = await auth.AuthorizeAsync(user, incident, policy);
         return result.Succeeded;
     }
+
+    /// <summary>
+    /// 自由記述欄(Description/AnalysisNote/CompletionNote/EffectivenessNote 等)の共通文字数上限。
+    /// ViewModel を介さず生の文字列を直接受け取る POST アクション(CompleteMeasure/RateMeasure/
+    /// PreventiveMeasuresController.Complete)が、この定数を参照して手動検証する。
+    /// </summary>
+    public const int FreeTextMaxLength = 500;
+
+    /// <summary>
+    /// 生の文字列を直接受け取る POST アクション用の自由記述文字数チェック。EF Core は保存時に
+    /// DataAnnotations を自動検証しないため、ViewModel を経由しない入力はここで明示的に検証する
+    /// (§9 入力は信用しない)。null(未入力)は許容し、上限を超えたときだけメッセージを返す。
+    /// </summary>
+    public static string? ValidateFreeTextLength(string? value, string fieldLabel)
+    {
+        // 未入力、または上限内ならエラーなし
+        if (value == null || value.Length <= FreeTextMaxLength) return null;
+        // 上限超過なら呼び出し側がそのまま BadRequest に渡せるメッセージを返す
+        return $"{fieldLabel}は{FreeTextMaxLength}文字以内で入力してください。";
+    }
 }

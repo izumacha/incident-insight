@@ -266,6 +266,9 @@ public class IncidentsController : Controller
         // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
 
+        // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
+        EnforceKnownDepartment(vm);
+
         // 業務ルール: 再発防止策が1件も無ければ登録不可
         if (!HasAtLeastOneValidMeasure(vm.Measures))
             ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
@@ -411,6 +414,21 @@ public class IncidentsController : Controller
         ModelState.Remove(nameof(vm.Department));
     }
 
+    // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
+    // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は
+    // EnforceOwnDepartmentForStaff で上書きされずフォームの値がそのまま使われるため、
+    // フォーム改ざん(未定義文字列の直接 POST)をサーバ側で拒否しないと、任意の文字列が
+    // Department として保存されてしまう(IncidentType/Severity の EnumDataType 検証と同じ
+    // fail-closed の考え方。§9 入力は信用しない)。
+    private void EnforceKnownDepartment(IncidentCreateEditViewModel vm)
+    {
+        // 許可リストに含まれない値なら不正入力としてエラーを積む
+        if (!Incident.Departments.Contains(vm.Department))
+        {
+            ModelState.AddModelError(nameof(vm.Department), "部署の値が不正です。");
+        }
+    }
+
     // GET /Incidents/Edit/5
     // 編集画面の初期表示
     public async Task<IActionResult> Edit(int id)
@@ -465,6 +483,9 @@ public class IncidentsController : Controller
         // 部署スコープを強制する: Staff は自部署のインシデントしか編集できず、
         // 他部署への付け替えもできない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
+
+        // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
+        EnforceKnownDepartment(vm);
 
         // バリデーション NG なら入力値を残してフォームを再描画
         if (!ModelState.IsValid)

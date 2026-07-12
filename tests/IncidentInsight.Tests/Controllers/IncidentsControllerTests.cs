@@ -324,6 +324,56 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_Admin_UnknownDepartment_ReturnsView_AndDoesNotSave()
+    {
+        // Admin が Incident.Departments の許可リストに無い文字列を送信する
+        // (<select> をバイパスしたフォーム改ざんを想定。issue: Analytics 画面での XSS 対策)
+        var vm = ValidViewModel("<script>alert(1)</script>");
+
+        var result = await _controller.Create(vm);
+
+        // 許可リスト外の値は拒否され、フォームを再描画する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.Department)));
+        // DB には保存されないことを確認する
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Edit_Post_Admin_UnknownDepartment_ReturnsView_AndDoesNotSave()
+    {
+        // 許可リストに載っている部署のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = TestFixtures.Today
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+        var token = incident.ConcurrencyToken;
+
+        // Admin が許可リスト外の文字列へ書き換えようとする
+        var vm = ValidViewModel("<script>alert(1)</script>");
+        vm.ConcurrencyToken = token;
+
+        var result = await _controller.Edit(incident.Id, vm);
+
+        // 許可リスト外の値は拒否され、フォームを再描画する
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        // 部署が書き換わっていないことを確認する
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal("内科病棟", reloaded!.Department);
+    }
+
+    [Fact]
     public async Task Edit_Post_Staff_CannotReassignDepartmentToAnother()
     {
         // 内科病棟のインシデントを 1 件用意する
