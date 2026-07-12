@@ -163,7 +163,12 @@ public class IncidentMeasuresControllerTests : IDisposable
     [Fact]
     public async Task RateMeasure_OutOfRange_ReturnsBadRequest()
     {
-        var result = await _controller.RateMeasure(1, 0, null, false, Guid.NewGuid());
+        // 認可チェックが評価値の範囲検証より先に行われる設計のため、
+        // 未認可扱い(403)ではなく検証エラー(400)を確認するには実在の対策をシードする必要がある
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
+
+        var result = await _controller.RateMeasure(measure.Id, 0, null, false, measure.ConcurrencyToken);
         Assert.IsType<BadRequestObjectResult>(result);
     }
 

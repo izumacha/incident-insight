@@ -155,6 +155,18 @@ public class IncidentMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool recurrenceObserved, Guid concurrencyToken)
     {
+        // 対象の対策を取得
+        var measure = await _db.PreventiveMeasures
+            .Include(m => m.Incident)
+            .FirstOrDefaultAsync(m => m.Id == id);
+        // 無ければ 404
+        if (measure == null) return NotFound();
+        // 親インシデントへの編集権限がなければ 403
+        // (認可チェックは入力値検証より必ず先に行う。EditCauseAnalysis と同じ設計原則:
+        // 未認可ユーザーに入力バリデーションの詳細を先に返してしまわないため)
+        if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, measure.Incident, Policies.CanEditIncident))
+            return Forbid();
+
         // 評価値の範囲チェック
         if (effectivenessRating < 1 || effectivenessRating > 5)
             return BadRequest("有効性評価は1〜5の値を指定してください。");
@@ -165,16 +177,6 @@ public class IncidentMeasuresController : Controller
         // (§9 入力は信用しない / ReviewViewModel.EffectivenessNote と同じ理由)。
         if (effectivenessNote != null && effectivenessNote.Length > 500)
             return BadRequest("有効性評価コメントは500文字以内で入力してください。");
-
-        // 対象の対策を取得
-        var measure = await _db.PreventiveMeasures
-            .Include(m => m.Incident)
-            .FirstOrDefaultAsync(m => m.Id == id);
-        // 無ければ 404
-        if (measure == null) return NotFound();
-        // 親インシデントへの編集権限がなければ 403
-        if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, measure.Incident, Policies.CanEditIncident))
-            return Forbid();
 
         // ライフサイクル(Planned → InProgress → Completed → 有効性評価)を強制する。
         // 完了していない対策は「実施していない」ため有効性評価の対象外。ここで拒否しないと、
