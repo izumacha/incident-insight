@@ -1,5 +1,7 @@
 // 部署スコープ拡張メソッド
 using IncidentInsight.Web.Authorization;
+// 共通ヘルパ(自由記述の文字数検証など)
+using IncidentInsight.Web.Controllers.Internal;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // モデル(PreventiveMeasure など)を使う
@@ -274,11 +276,12 @@ public class PreventiveMeasuresController : Controller
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         // 完了報告メモの長さを検証する。この経路は ViewModel を介さず生の文字列を
-        // 直接受け取るため、他の自由記述欄(Description/AnalysisNote 等)と同じ
-        // 500文字上限をここで明示検証しないと無制限の自由記述が保存されてしまう
+        // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
+        // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / EF Core は保存時に DataAnnotations を自動検証しない)。
-        if (completionNote != null && completionNote.Length > 500)
-            return BadRequest("完了報告内容は500文字以内で入力してください。");
+        var completionNoteError = IncidentControllerHelpers.ValidateFreeTextLength(completionNote, "完了報告内容");
+        if (completionNoteError != null)
+            return BadRequest(completionNoteError);
 
         // ステータス・完了日時・報告メモを更新
         measure.Status = MeasureStatus.Completed;

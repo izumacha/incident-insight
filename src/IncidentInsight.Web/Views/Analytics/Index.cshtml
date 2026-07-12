@@ -146,6 +146,16 @@ async function loadChart(url, callback) {
     } catch(e) { console.error('Chart load error:', url, e); }
 }
 
+// DB 由来の文字列(部署名・インシデント種別など)を innerHTML に埋め込む前に
+// HTML として解釈されないようエスケープする(XSS対策の多層防御。サーバ側でも
+// 部署の許可リスト検証を行っているが、想定外の書き込み経路や過去データにも
+// 備え、表示側でも安全に倒す)
+function escapeHtml(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+
 // Monthly Trend
 // 月別トレンド: 折れ線チャートを描画
 loadChart('/Analytics/MonthlyTrend', (d) => {
@@ -207,8 +217,8 @@ loadChart('/Analytics/ByDepartment', (d) => {
         }
     });
     // Store dept for later use in summary panel
-    // 最多発生部署(1 位)をサマリー用に退避
-    window._topDept = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
+    // 最多発生部署(1 位)をサマリー用に退避。escapeHtml で HTML 特殊文字を無害化してから保持する
+    window._topDept = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
 });
 
 // By Severity
@@ -315,8 +325,8 @@ loadChart('/Analytics/ByIncidentType', (d) => {
         }
     });
 
-    // 最多種別と最多部署をサマリーに出すため計算
-    const topType = d.labels.length > 0 ? d.labels[0] + ' (' + d.data[0] + '件)' : '-';
+    // 最多種別と最多部署をサマリーに出すため計算。escapeHtml で HTML 特殊文字を無害化する
+    const topType = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
     const topDept = window._topDept || '-';
 
     // Reveal summary panel (injected once all data is ready)
