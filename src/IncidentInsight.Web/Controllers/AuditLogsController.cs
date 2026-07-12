@@ -82,11 +82,16 @@ public class AuditLogsController : Controller
         if (dateTo.HasValue)
             query = query.Where(a => a.ChangedAt < dateTo.Value.Date.AddDays(1));
 
-        // ページ番号を 1 以上に補正(URL 改ざん対策)
-        if (page < 1) page = 1;
-
         // 総件数を取得(ページング用)
         var total = await query.CountAsync();
+        // ページ番号を有効範囲[1..総ページ数]に補正する(URL 改ざん・桁あふれ対策)。
+        // 補正しないと ?page=0 や負数で (page-1)*PageSize が負の OFFSET になり、
+        // また巨大値では (page-1)*PageSize が int の範囲を超えて桁あふれ(オーバーフロー)で
+        // 負値に化ける。SQLite は負の OFFSET を 0 とみなすが、PostgreSQL / SQL Server は
+        // 例外を投げて 500 になるため、DB プロバイダ非依存の不変条件を守るためにここで丸める。
+        // (IncidentsController.Index と同じ補正パターン)
+        var totalPages = (int)Math.Ceiling(total / (double)PageSize);
+        page = Math.Clamp(page, 1, Math.Max(1, totalPages));
         // 新しい順に並べて現在ページ分だけ取得
         var logs = await query
             .OrderByDescending(a => a.ChangedAt)
