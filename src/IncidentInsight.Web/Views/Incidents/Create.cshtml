@@ -7,6 +7,11 @@
     ViewData["Title"] = "インシデント新規登録";
     @* 今日の日付を IClock 経由で取得して DueDate の初期値などに使う *@
     var today = Clock.Today;
+    @* 画面に描画する対策行のリスト。バリデーション失敗後の再描画では入力済みの Model.Measures を
+       そのまま使い、初回表示などで1件も無ければ空行を1件補って「最低1件必須」の入力欄を保証する *@
+    var measureRows = (Model.Measures != null && Model.Measures.Count > 0)
+        ? Model.Measures
+        : new List<IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel> { new() };
 }
 
 @* ページヘッダ：見出しと一覧画面に戻るボタンを横並びに配置 *@
@@ -219,60 +224,75 @@
                     @* 対策行の入れ物（JS で動的に追加／削除される） *@
                     @* data-default-due-date: JS で新規行を追加するときの実施期限初期値(IClock 経由の今日+30日) *@
                     <div id="measuresContainer" data-default-due-date="@today.AddDays(30).ToString("yyyy-MM-dd")">
-                        @* 初期状態では対策行を1件用意（最低1件必須） *@
-                        <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="0">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">対策 1</h6>
+                        @* 対策行を Model の内容から描画する。バリデーション失敗後の POST-back でも
+                           入力済みの全行（値付き）が復元されるよう、固定の空行1件ではなくループで出力する *@
+                        @for (var j = 0; j < measureRows.Count; j++)
+                        {
+                            @* j 行目の対策行（name の添字 Measures[j] がモデルバインドの行番号になる） *@
+                            <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="@j">
+                                <div class="d-flex justify-content-between align-items-center mb-2">
+                                    @* 行タイトル（人間向けの連番なので添字+1を表示） *@
+                                    <h6 class="mb-0">対策 @(j + 1)</h6>
+                                    @* 2行目以降にはJS追加行と同じ削除ボタンを付ける（1行目は最低1件必須のため削除不可） *@
+                                    @if (j > 0)
+                                    {
+                                        <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="this.closest('.measure-row').remove()">
+                                            <i class="bi bi-trash"></i>
+                                        </button>
+                                    }
+                                </div>
+                                <div class="row g-2">
+                                    <div class="col-12">
+                                        @* 対策内容（必須）。textarea の中身に投稿済みの値を復元する *@
+                                        <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
+                                        <textarea name="Measures[@(j)].Description" class="form-control form-control-sm" rows="2"
+                                                  placeholder="具体的な再発防止策（5W1Hで記載）">@measureRows[j].Description</textarea>
+                                    </div>
+                                    <div class="col-md-3">
+                                        @* 対策種別（短期 or 長期）。投稿済みの選択値に selected を付けて復元する *@
+                                        <label class="form-label small">対策種別</label>
+                                        <select name="Measures[@(j)].MeasureType" class="form-select form-select-sm">
+                                            <option value="ShortTerm" selected="@(measureRows[j].MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.ShortTerm)">短期対策（即時〜1ヶ月）</option>
+                                            <option value="LongTerm" selected="@(measureRows[j].MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">長期対策（仕組み改善）</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-md-3">
+                                        @* 担当者（必須）。投稿済みの値を value で復元する *@
+                                        <label class="form-label small">担当者 <span class="text-danger">*</span></label>
+                                        <input name="Measures[@(j)].ResponsiblePerson" class="form-control form-control-sm"
+                                               value="@measureRows[j].ResponsiblePerson" />
+                                    </div>
+                                    <div class="col-md-3">
+                                        @* 担当部署（必須）。投稿済みの値を value で復元する *@
+                                        <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
+                                        <input name="Measures[@(j)].ResponsibleDepartment" class="form-control form-control-sm"
+                                               value="@measureRows[j].ResponsibleDepartment" />
+                                    </div>
+                                    <div class="col-md-2">
+                                        @* 実施期限（初期値は30日後） *@
+                                        <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                                        @* バリデーション失敗後の再描画では投稿済み値を維持し、未入力(default)なら今日+30日を初期値とする *@
+                                        <input type="date" name="Measures[@(j)].DueDate" class="form-control form-control-sm"
+                                               value="@((measureRows[j].DueDate != default ? measureRows[j].DueDate : today.AddDays(30)).ToString("yyyy-MM-dd"))" />
+                                    </div>
+                                    <div class="col-md-1">
+                                        @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
+                                        <label class="form-label small">優先度</label>
+                                        <select name="Measures[@(j)].Priority" class="form-select form-select-sm">
+                                            <option value="1" selected="@(measureRows[j].Priority == 1)">高</option>
+                                            <option value="2" selected="@(measureRows[j].Priority == 2)">中</option>
+                                            <option value="3" selected="@(measureRows[j].Priority == 3)">低</option>
+                                        </select>
+                                    </div>
+                                    <div class="col-12">
+                                        @* 立案根拠メモ（任意）。textarea の中身に投稿済みの値を復元する *@
+                                        <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                                        <textarea name="Measures[@(j)].AnalysisNote" class="form-control form-control-sm" rows="1"
+                                                  placeholder="なぜこの対策を選んだか、根本原因との対応を記入">@measureRows[j].AnalysisNote</textarea>
+                                    </div>
+                                </div>
                             </div>
-                            <div class="row g-2">
-                                <div class="col-12">
-                                    @* 対策内容（必須） *@
-                                    <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
-                                    <textarea name="Measures[0].Description" class="form-control form-control-sm" rows="2"
-                                              placeholder="具体的な再発防止策（5W1Hで記載）"></textarea>
-                                </div>
-                                <div class="col-md-3">
-                                    @* 対策種別（短期 or 長期） *@
-                                    <label class="form-label small">対策種別</label>
-                                    <select name="Measures[0].MeasureType" class="form-select form-select-sm">
-                                        <option value="ShortTerm">短期対策（即時〜1ヶ月）</option>
-                                        <option value="LongTerm">長期対策（仕組み改善）</option>
-                                    </select>
-                                </div>
-                                <div class="col-md-3">
-                                    @* 担当者（必須） *@
-                                    <label class="form-label small">担当者 <span class="text-danger">*</span></label>
-                                    <input name="Measures[0].ResponsiblePerson" class="form-control form-control-sm" />
-                                </div>
-                                <div class="col-md-3">
-                                    @* 担当部署（必須） *@
-                                    <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
-                                    <input name="Measures[0].ResponsibleDepartment" class="form-control form-control-sm" />
-                                </div>
-                                <div class="col-md-2">
-                                    @* 実施期限（初期値は30日後） *@
-                                    <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
-                                    @* バリデーション失敗後の再描画では投稿済み値を維持し、初回表示時は今日+30日を初期値とする *@
-                                    <input type="date" name="Measures[0].DueDate" class="form-control form-control-sm"
-                                           value="@((Model.Measures != null && Model.Measures.Count > 0 && Model.Measures[0].DueDate != default ? Model.Measures[0].DueDate : today.AddDays(30)).ToString("yyyy-MM-dd"))" />
-                                </div>
-                                <div class="col-md-1">
-                                    @* 優先度（高=1／中=2／低=3、初期は中） *@
-                                    <label class="form-label small">優先度</label>
-                                    <select name="Measures[0].Priority" class="form-select form-select-sm">
-                                        <option value="1">高</option>
-                                        <option value="2" selected>中</option>
-                                        <option value="3">低</option>
-                                    </select>
-                                </div>
-                                <div class="col-12">
-                                    @* 立案根拠メモ（任意） *@
-                                    <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
-                                    <textarea name="Measures[0].AnalysisNote" class="form-control form-control-sm" rows="1"
-                                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
-                                </div>
-                            </div>
-                        </div>
+                        }
                     </div>
 
                     @* 対策行を追加するボタン（JS の addMeasureRow を呼ぶ） *@
@@ -333,8 +353,9 @@ function reindexMeasures() {
     });
 }
 
-// 追加された対策のインデックス（最初の行が index=0 なので 1 から開始）
-let measureCount = 1;
+// 追加する対策行の次のインデックス。サーバー側で描画済みの行数（Measures[0..N-1]）の
+// 続きから採番することで、POST-back 後に行を追加しても name の添字が重複しないようにする
+let measureCount = @measureRows.Count;
 // 「対策を追加」ボタンから呼ばれる関数：対策行を複製して末尾に追加
 function addMeasureRow() {
     // 追加先コンテナ
