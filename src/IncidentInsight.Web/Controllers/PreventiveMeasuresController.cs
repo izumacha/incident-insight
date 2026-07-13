@@ -224,7 +224,10 @@ public class PreventiveMeasuresController : Controller
         // バリデーション NG なら入力値を残して再描画
         if (!ModelState.IsValid)
         {
-            ViewBag.Incident = await _db.Incidents.FindAsync(vm.IncidentId);
+            // 再描画用の親インシデントには、上で取得・認可済みの measure.Incident を使う。
+            // クライアントが hidden field で送る vm.IncidentId をそのまま FindAsync に渡すと、
+            // 値を改ざんされたとき認可チェックなしで他部署のインシデント情報が表示されてしまう
+            ViewBag.Incident = measure.Incident;
             return View(vm);
         }
 

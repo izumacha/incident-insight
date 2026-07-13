@@ -118,6 +118,66 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_InvalidModel_RetainsEnteredMeasuresInViewModel()
+    {
+        // バリデーション失敗で再描画する際、入力済みの対策行が ViewModel に
+        // そのまま残ること(Create.cshtml は Model.Measures をループ描画するため、
+        // ここが消えると利用者が入力した再発防止策が全消失する)
+        // 有効な入力から始めて対策行を2件に増やす
+        var vm = ValidViewModel();
+        // 2件目の対策行を追加する(入力途中のデータを想定)
+        vm.Measures.Add(new MeasureFormViewModel
+        {
+            Description = "テスト対策2",
+            MeasureType = MeasureTypeKind.LongTerm,
+            ResponsiblePerson = "担当者2",
+            ResponsibleDepartment = "内科病棟",
+            DueDate = TestFixtures.Today.AddDays(60),
+            Priority = 1
+        });
+        // 別項目のバリデーション失敗を人為的に発生させる
+        _controller.ModelState.AddModelError("Description", "状況・経緯を入力してください");
+
+        // Create POST を実行する
+        var result = await _controller.Create(vm);
+
+        // フォーム再描画(ViewResult)になること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        // ビューへ渡されたモデルを取り出す
+        var model = Assert.IsType<IncidentCreateEditViewModel>(viewResult.Model);
+        // 対策行が2件とも保持されていること
+        Assert.Equal(2, model.Measures.Count);
+        // 1件目の入力内容が失われていないこと
+        Assert.Equal("テスト対策", model.Measures[0].Description);
+        // 2件目の入力内容も失われていないこと
+        Assert.Equal("テスト対策2", model.Measures[1].Description);
+        // インシデント自体は保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_InvalidModel_NullMeasures_ReturnsEmptyListNotNull()
+    {
+        // POST ボディに Measures が1件も無い場合(null)でも、再描画用モデルの
+        // Measures が空リストに補正され、ビュー側のループが null 参照で落ちないこと
+        var vm = ValidViewModel();
+        // Measures をあえて null にして未送信の POST を模す
+        vm.Measures = null!;
+
+        // Create POST を実行する
+        var result = await _controller.Create(vm);
+
+        // フォーム再描画(ViewResult)になること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        // ビューへ渡されたモデルを取り出す
+        var model = Assert.IsType<IncidentCreateEditViewModel>(viewResult.Model);
+        // Measures が null ではなく空リストになっていること
+        Assert.NotNull(model.Measures);
+        // 補正結果が空リスト(0件)であり、勝手な空行が追加されていないこと
+        Assert.Empty(model.Measures);
+    }
+
+    [Fact]
     public async Task Create_Post_WithoutMeasures_ReturnsCreateView_AndDoesNotSaveIncident()
     {
         var vm = ValidViewModel();

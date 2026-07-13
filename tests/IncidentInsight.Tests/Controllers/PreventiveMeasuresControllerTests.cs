@@ -3,6 +3,7 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -87,7 +88,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var result = await _controller.Edit(measure.Id);
 
         var view = Assert.IsType<ViewResult>(result);
-        var vm = Assert.IsType<IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel>(view.Model);
+        var vm = Assert.IsType<MeasureFormViewModel>(view.Model);
         Assert.Equal("根本原因はダブルチェック未実施", vm.AnalysisNote);
     }
 
@@ -96,7 +97,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     {
         // 編集 POST で立案根拠メモが保存されること(保存漏れ回帰防止)
         var measure = await SeedMeasureAsync("内科病棟");
-        var vm = new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+        var vm = new MeasureFormViewModel
         {
             Id = measure.Id,
             IncidentId = measure.IncidentId,
@@ -115,6 +116,53 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.IsType<RedirectToActionResult>(result);
         var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Equal("対策の根拠メモ", saved.AnalysisNote);
+    }
+
+    [Fact]
+    public async Task Edit_Post_InvalidModel_UsesOwnIncidentForViewBag_IgnoringClientIncidentId()
+    {
+        // 編集 POST のバリデーション失敗時、再描画用の ViewBag.Incident には
+        // クライアント送信の vm.IncidentId ではなく、認可済みの measure.Incident が
+        // 使われること(改ざんされた IncidentId で他インシデントの情報を覗けない)
+        // 対象の対策を1件シードする
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 攻撃者が指したい「別のインシデント」をシードする(別部署想定)
+        var otherIncident = new Incident
+        {
+            Department = "外科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level3a,
+            Description = "他部署の機微情報",
+            ReporterName = "別部署担当",
+            // 発生日時は固定日付(TestFixtures.Today)にして実行日時に依存しない決定論的テストにする
+            OccurredAt = TestFixtures.Today
+        };
+        // 別インシデントを DB に登録する
+        _db.Incidents.Add(otherIncident);
+        // 保存を確定して Id を採番させる
+        await _db.SaveChangesAsync();
+
+        // hidden field 改ざんを模して IncidentId に別インシデントの Id を入れた ViewModel を作る
+        var vm = new MeasureFormViewModel
+        {
+            Id = measure.Id,
+            IncidentId = otherIncident.Id,
+            ConcurrencyToken = measure.ConcurrencyToken
+        };
+        // バリデーション失敗経路に入れるためエラーを人為的に追加する
+        _controller.ModelState.AddModelError("Description", "対策内容を入力してください");
+
+        // 編集 POST を実行する
+        var result = await _controller.Edit(measure.Id, vm);
+
+        // フォーム再描画(ViewResult)になること
+        var view = Assert.IsType<ViewResult>(result);
+        // ViewBag.Incident(= ViewData["Incident"])に積まれたインシデントを取り出す
+        var shownIncident = Assert.IsType<Incident>(view.ViewData["Incident"]);
+        // 対策自身の親インシデントが使われていること(改ざん値ではない)
+        Assert.Equal(measure.IncidentId, shownIncident.Id);
+        // 改ざんで指した別インシデントは表示されないこと
+        Assert.NotEqual(otherIncident.Id, shownIncident.Id);
     }
 
     [Fact]
@@ -307,7 +355,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         measure.Status = MeasureStatus.Completed;
         await _db.SaveChangesAsync();
 
-        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        var vm = new ReviewViewModel
         {
             Id = measure.Id,
             ConcurrencyToken = measure.ConcurrencyToken,
@@ -333,7 +381,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 再発フラグ・評価値が書き込まれないこと(KPI 汚染の回帰防止)
         var measure = await SeedMeasureAsync("内科病棟");
 
-        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        var vm = new ReviewViewModel
         {
             Id = measure.Id,
             ConcurrencyToken = measure.ConcurrencyToken,
