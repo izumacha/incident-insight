@@ -12,6 +12,8 @@ using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 // リバースプロキシの転送ヘッダ復元(ForwardedHeaders / ForwardedHeadersOptions)
 using Microsoft.AspNetCore.HttpOverrides;
+// セキュリティ関連 HTTP ヘッダー(X-Frame-Options 等)を全レスポンスへ付与するミドルウェア
+using IncidentInsight.Web.Middleware;
 // ASP.NET Core Identity(認証・ユーザー管理)
 using Microsoft.AspNetCore.Identity;
 // EF Core(UseSqlite / UseSqlServer / UseNpgsql 等)
@@ -273,6 +275,11 @@ if (!app.Environment.IsDevelopment())
             "Host-header spoofing, especially behind a reverse proxy (issue #64).");
     }
 }
+
+// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)を
+// 静的ファイルを含む全レスポンスに付与する。認証・ルーティングより前に置き、
+// 例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする。
+app.UseMiddleware<SecurityHeadersMiddleware>();
 
 // 静的ファイル(wwwroot)配信を有効化
 app.UseStaticFiles();
