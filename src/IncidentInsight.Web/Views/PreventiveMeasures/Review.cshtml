@@ -64,12 +64,14 @@
                             <div class="text-center">
                                 <div class="form-check">
                                     @* 現在値と一致する値だけ checked *@
+                                    @* id は明示式 @(i) で連結する（rating@i と書くと Razor がメールアドレスと誤認し文字どおり "rating@i" を出力して全ラジオの id が重複する） *@
                                     <input class="form-check-input" type="radio"
                                            asp-for="EffectivenessRating"
-                                           id="rating@i" value="@i"
+                                           id="rating@(i)" value="@i"
                                            checked="@(Model.EffectivenessRating == i)" />
                                 </div>
-                                <label for="rating@i" class="d-block text-center cursor-pointer">
+                                @* for も同じく明示式 @(i) で対応するラジオの id を指す（重複 id だと全ラベルが値1のラジオを選んでしまう） *@
+                                <label for="rating@(i)" class="d-block text-center cursor-pointer">
                                     @* 星（塗りつぶし＋白抜き）で視覚的に段階を表現 *@
                                     <span class="fs-3">@(new string('★', i) + new string('☆', 5 - i))</span>
                                     <div class="small text-muted">

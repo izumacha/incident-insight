@@ -554,9 +554,10 @@
                             @for (int i = 1; i <= 5; i++)
                             {
                                 <div class="form-check">
+                                    @* id/for は明示式 @(i) で連結する（rating@i と書くと Razor がメールアドレスと誤認し文字どおり "rating@i" を出力して全ラジオの id が重複し、どのラベルを押しても値1が選ばれてしまう） *@
                                     <input class="form-check-input" type="radio" name="effectivenessRating"
-                                           id="rating@i" value="@i" @(i == 3 ? "checked" : "") />
-                                    <label class="form-check-label" for="rating@i">@i</label>
+                                           id="rating@(i)" value="@i" @(i == 3 ? "checked" : "") />
+                                    <label class="form-check-label" for="rating@(i)">@i</label>
                                 </div>
                             }
                         </div>
