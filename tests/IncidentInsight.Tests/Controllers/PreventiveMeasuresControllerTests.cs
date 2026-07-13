@@ -118,6 +118,52 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Edit_Post_InvalidModel_UsesOwnIncidentForViewBag_IgnoringClientIncidentId()
+    {
+        // 編集 POST のバリデーション失敗時、再描画用の ViewBag.Incident には
+        // クライアント送信の vm.IncidentId ではなく、認可済みの measure.Incident が
+        // 使われること(改ざんされた IncidentId で他インシデントの情報を覗けない)
+        // 対象の対策を1件シードする
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 攻撃者が指したい「別のインシデント」をシードする(別部署想定)
+        var otherIncident = new Incident
+        {
+            Department = "外科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level3a,
+            Description = "他部署の機微情報",
+            ReporterName = "別部署担当",
+            OccurredAt = DateTime.Now
+        };
+        // 別インシデントを DB に登録する
+        _db.Incidents.Add(otherIncident);
+        // 保存を確定して Id を採番させる
+        await _db.SaveChangesAsync();
+
+        // hidden field 改ざんを模して IncidentId に別インシデントの Id を入れた ViewModel を作る
+        var vm = new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+        {
+            Id = measure.Id,
+            IncidentId = otherIncident.Id,
+            ConcurrencyToken = measure.ConcurrencyToken
+        };
+        // バリデーション失敗経路に入れるためエラーを人為的に追加する
+        _controller.ModelState.AddModelError("Description", "対策内容を入力してください");
+
+        // 編集 POST を実行する
+        var result = await _controller.Edit(measure.Id, vm);
+
+        // フォーム再描画(ViewResult)になること
+        var view = Assert.IsType<ViewResult>(result);
+        // ViewBag.Incident(= ViewData["Incident"])に積まれたインシデントを取り出す
+        var shownIncident = Assert.IsType<Incident>(view.ViewData["Incident"]);
+        // 対策自身の親インシデントが使われていること(改ざん値ではない)
+        Assert.Equal(measure.IncidentId, shownIncident.Id);
+        // 改ざんで指した別インシデントは表示されないこと
+        Assert.NotEqual(otherIncident.Id, shownIncident.Id);
+    }
+
+    [Fact]
     public async Task UpdateStatus_RevertFromCompleted_ClearsCompletedAt()
     {
         // 完了 → 進行中へ差し戻したとき、CompletedAt が null にクリアされること
