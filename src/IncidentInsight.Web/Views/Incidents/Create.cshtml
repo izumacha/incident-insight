@@ -12,6 +12,91 @@
     var measureRows = (Model.Measures != null && Model.Measures.Count > 0)
         ? Model.Measures
         : new List<IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel> { new() };
+    @* 対策の実施期限の既定値。日数はコントローラの定数（唯一の源）を参照し、二重定義を避ける *@
+    var defaultDueDate = today.AddDays(IncidentInsight.Web.Controllers.IncidentsController.DefaultMeasureDueDays);
+    @* JS が行テンプレートを複製するときに実際の添字へ置き換える仮の添字文字列（Razor と JS で共有） *@
+    const string MeasureIndexSentinel = "__INDEX__";
+
+    @* 対策行1件分のマークアップを描画するローカル関数。
+       サーバー描画の @for ループと、JS「対策を追加」用の <template> の両方がこの関数を使うことで、
+       行マークアップの二重管理（コピーのズレ）を防ぐ唯一の源になっている。
+       index: name 属性の添字（数値文字列、テンプレートでは仮の MeasureIndexSentinel）
+       displayNumber: 見出し「対策 N」の人間向け連番（追加・削除後は JS の reindexMeasures が振り直す）
+       m: 復元する入力値を持つ ViewModel（テンプレートでは既定値だけの新規インスタンス）
+       deletable: 削除ボタンを表示するか（1行目は最低1件必須のため削除不可）
+       ※ <option> がタグヘルパー扱いになるため async Task 必須（MVC1006） *@
+    async Task RenderMeasureRowAsync(string index, int displayNumber, IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel m, bool deletable)
+    {
+        @* 実施期限に「ユーザーが実際に送信した文字列」(ModelState の AttemptedValue)が残っていれば最優先で使う。
+           解析不能な日付を既定値で上書き表示すると、隣に出るエラーの原因が見えなくなるため *@
+        var attemptedDueDate = ViewContext.ViewData.ModelState[$"Measures[{index}].DueDate"]?.AttemptedValue;
+        @* 表示する実施期限: 送信文字列 → バインド済みの値 → 既定値（今日+既定日数）の順で決める *@
+        var dueDateValue = attemptedDueDate
+            ?? (m.DueDate != default ? m.DueDate : defaultDueDate).ToString("yyyy-MM-dd");
+        @* 対策行の外枠（name の添字 Measures[index] がモデルバインドの行番号になる） *@
+        <div class="measure-row border rounded-3 p-3 mb-3 bg-light">
+            <div class="d-flex justify-content-between align-items-center mb-2">
+                @* 行タイトル（人間向けの連番） *@
+                <h6 class="mb-0">対策 @displayNumber</h6>
+                @* 2行目以降にだけ削除ボタンを付ける（1行目は最低1件必須のため削除不可） *@
+                @if (deletable)
+                {
+                    <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="removeMeasureRow(this)">
+                        <i class="bi bi-trash"></i>
+                    </button>
+                }
+            </div>
+            <div class="row g-2">
+                <div class="col-12">
+                    @* 対策内容（必須）。textarea の中身に投稿済みの値を復元する *@
+                    <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
+                    <textarea name="Measures[@(index)].Description" class="form-control form-control-sm" rows="2"
+                              placeholder="具体的な再発防止策（5W1Hで記載）">@m.Description</textarea>
+                </div>
+                <div class="col-md-3">
+                    @* 対策種別（短期 or 長期）。投稿済みの選択値に selected を付けて復元する *@
+                    <label class="form-label small">対策種別</label>
+                    <select name="Measures[@(index)].MeasureType" class="form-select form-select-sm">
+                        <option value="ShortTerm" selected="@(m.MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.ShortTerm)">短期対策（即時〜1ヶ月）</option>
+                        <option value="LongTerm" selected="@(m.MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">長期対策（仕組み改善）</option>
+                    </select>
+                </div>
+                <div class="col-md-3">
+                    @* 担当者（必須）。投稿済みの値を value で復元する *@
+                    <label class="form-label small">担当者 <span class="text-danger">*</span></label>
+                    <input name="Measures[@(index)].ResponsiblePerson" class="form-control form-control-sm"
+                           value="@m.ResponsiblePerson" />
+                </div>
+                <div class="col-md-3">
+                    @* 担当部署（必須）。投稿済みの値を value で復元する *@
+                    <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
+                    <input name="Measures[@(index)].ResponsibleDepartment" class="form-control form-control-sm"
+                           value="@m.ResponsibleDepartment" />
+                </div>
+                <div class="col-md-2">
+                    @* 実施期限（初期値は既定日数後。解析不能な送信値は空欄のまま再表示される） *@
+                    <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
+                    <input type="date" name="Measures[@(index)].DueDate" class="form-control form-control-sm"
+                           value="@dueDateValue" />
+                </div>
+                <div class="col-md-1">
+                    @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
+                    <label class="form-label small">優先度</label>
+                    <select name="Measures[@(index)].Priority" class="form-select form-select-sm">
+                        <option value="1" selected="@(m.Priority == 1)">高</option>
+                        <option value="2" selected="@(m.Priority == 2)">中</option>
+                        <option value="3" selected="@(m.Priority == 3)">低</option>
+                    </select>
+                </div>
+                <div class="col-12">
+                    @* 立案根拠メモ（任意）。textarea の中身に投稿済みの値を復元する *@
+                    <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                    <textarea name="Measures[@(index)].AnalysisNote" class="form-control form-control-sm" rows="1"
+                              placeholder="なぜこの対策を選んだか、根本原因との対応を記入">@m.AnalysisNote</textarea>
+                </div>
+            </div>
+        </div>
+    }
 }
 
 @* ページヘッダ：見出しと一覧画面に戻るボタンを横並びに配置 *@
@@ -222,78 +307,24 @@
                         「誰が」「何を」「いつまでに」を明確にし、短期対策と長期対策の両方を検討しましょう。
                     </div>
                     @* 対策行の入れ物（JS で動的に追加／削除される） *@
-                    @* data-default-due-date: JS で新規行を追加するときの実施期限初期値(IClock 経由の今日+30日) *@
-                    <div id="measuresContainer" data-default-due-date="@today.AddDays(30).ToString("yyyy-MM-dd")">
+                    <div id="measuresContainer">
                         @* 対策行を Model の内容から描画する。バリデーション失敗後の POST-back でも
                            入力済みの全行（値付き）が復元されるよう、固定の空行1件ではなくループで出力する *@
                         @for (var j = 0; j < measureRows.Count; j++)
                         {
-                            @* j 行目の対策行（name の添字 Measures[j] がモデルバインドの行番号になる） *@
-                            <div class="measure-row border rounded-3 p-3 mb-3 bg-light" data-index="@j">
-                                <div class="d-flex justify-content-between align-items-center mb-2">
-                                    @* 行タイトル（人間向けの連番なので添字+1を表示） *@
-                                    <h6 class="mb-0">対策 @(j + 1)</h6>
-                                    @* 2行目以降にはJS追加行と同じ削除ボタンを付ける（1行目は最低1件必須のため削除不可） *@
-                                    @if (j > 0)
-                                    {
-                                        <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="this.closest('.measure-row').remove()">
-                                            <i class="bi bi-trash"></i>
-                                        </button>
-                                    }
-                                </div>
-                                <div class="row g-2">
-                                    <div class="col-12">
-                                        @* 対策内容（必須）。textarea の中身に投稿済みの値を復元する *@
-                                        <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
-                                        <textarea name="Measures[@(j)].Description" class="form-control form-control-sm" rows="2"
-                                                  placeholder="具体的な再発防止策（5W1Hで記載）">@measureRows[j].Description</textarea>
-                                    </div>
-                                    <div class="col-md-3">
-                                        @* 対策種別（短期 or 長期）。投稿済みの選択値に selected を付けて復元する *@
-                                        <label class="form-label small">対策種別</label>
-                                        <select name="Measures[@(j)].MeasureType" class="form-select form-select-sm">
-                                            <option value="ShortTerm" selected="@(measureRows[j].MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.ShortTerm)">短期対策（即時〜1ヶ月）</option>
-                                            <option value="LongTerm" selected="@(measureRows[j].MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">長期対策（仕組み改善）</option>
-                                        </select>
-                                    </div>
-                                    <div class="col-md-3">
-                                        @* 担当者（必須）。投稿済みの値を value で復元する *@
-                                        <label class="form-label small">担当者 <span class="text-danger">*</span></label>
-                                        <input name="Measures[@(j)].ResponsiblePerson" class="form-control form-control-sm"
-                                               value="@measureRows[j].ResponsiblePerson" />
-                                    </div>
-                                    <div class="col-md-3">
-                                        @* 担当部署（必須）。投稿済みの値を value で復元する *@
-                                        <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
-                                        <input name="Measures[@(j)].ResponsibleDepartment" class="form-control form-control-sm"
-                                               value="@measureRows[j].ResponsibleDepartment" />
-                                    </div>
-                                    <div class="col-md-2">
-                                        @* 実施期限（初期値は30日後） *@
-                                        <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
-                                        @* バリデーション失敗後の再描画では投稿済み値を維持し、未入力(default)なら今日+30日を初期値とする *@
-                                        <input type="date" name="Measures[@(j)].DueDate" class="form-control form-control-sm"
-                                               value="@((measureRows[j].DueDate != default ? measureRows[j].DueDate : today.AddDays(30)).ToString("yyyy-MM-dd"))" />
-                                    </div>
-                                    <div class="col-md-1">
-                                        @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
-                                        <label class="form-label small">優先度</label>
-                                        <select name="Measures[@(j)].Priority" class="form-select form-select-sm">
-                                            <option value="1" selected="@(measureRows[j].Priority == 1)">高</option>
-                                            <option value="2" selected="@(measureRows[j].Priority == 2)">中</option>
-                                            <option value="3" selected="@(measureRows[j].Priority == 3)">低</option>
-                                        </select>
-                                    </div>
-                                    <div class="col-12">
-                                        @* 立案根拠メモ（任意）。textarea の中身に投稿済みの値を復元する *@
-                                        <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
-                                        <textarea name="Measures[@(j)].AnalysisNote" class="form-control form-control-sm" rows="1"
-                                                  placeholder="なぜこの対策を選んだか、根本原因との対応を記入">@measureRows[j].AnalysisNote</textarea>
-                                    </div>
-                                </div>
-                            </div>
+                            @* j 行目の対策行を共通のローカル関数で描画（1行目は最低1件必須のため削除不可） *@
+                            await RenderMeasureRowAsync(j.ToString(), j + 1, measureRows[j], deletable: j > 0);
                         }
                     </div>
+
+                    @* JS「対策を追加」用の行テンプレート。中身は上のループと同じ RenderMeasureRowAsync が
+                       既定値で1回だけ描画する（行マークアップの唯一の源）。name の添字は仮の
+                       MeasureIndexSentinel で出力し、JS が複製時に実際の添字へ置換する。
+                       <template> の中身は描画も送信もされない不活性な DOM なので仮の添字でも安全。
+                       見出し番号は仮に 0 を渡すが、追加直後に reindexMeasures が正しい連番へ振り直す *@
+                    <template id="measure-row-template">
+                        @{ await RenderMeasureRowAsync(MeasureIndexSentinel, 0, new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel(), deletable: true); }
+                    </template>
 
                     @* 対策行を追加するボタン（JS の addMeasureRow を呼ぶ） *@
                     <button type="button" class="btn btn-outline-success btn-sm mb-4" onclick="addMeasureRow()">
@@ -342,81 +373,49 @@ document.addEventListener('DOMContentLoaded', function() {
     if (tab) goToTab(tab.id);
 });
 
-// 送信直前：削除で生じた添字の抜けを 0,1,2... に詰め直す
+// 対策行の name 添字（Measures[i]）と見出し「対策 N」を、画面上の並び順どおりに振り直す。
+// 送信直前（form の onsubmit）・行追加後・行削除後の3か所から呼ばれる共通関数
 function reindexMeasures() {
-    // 対策行を順に走査
+    // 対策行を画面上の順に走査
     document.querySelectorAll('#measuresContainer .measure-row').forEach((row, i) => {
-        // 各要素の name 属性の添字部分を i に置換
+        // 各要素の name 属性の添字部分を i に置換（モデルバインドは 0 始まりの連番を要求する）
         row.querySelectorAll('[name]').forEach(el => {
             el.name = el.name.replace(/Measures\[\d+\]/, `Measures[${i}]`);
         });
+        // 行の見出し要素を取得
+        const header = row.querySelector('h6');
+        // 見出しの連番も並び順に合わせて振り直す（削除しても欠番・重複が出ないようにする）
+        if (header) header.textContent = `対策 ${i + 1}`;
     });
 }
 
-// 追加する対策行の次のインデックス。サーバー側で描画済みの行数（Measures[0..N-1]）の
-// 続きから採番することで、POST-back 後に行を追加しても name の添字が重複しないようにする
-let measureCount = @measureRows.Count;
-// 「対策を追加」ボタンから呼ばれる関数：対策行を複製して末尾に追加
+// 削除ボタンから呼ばれる関数：行を取り除き、残った行の添字と見出しを詰め直す
+function removeMeasureRow(button) {
+    // ボタンを含む対策行を DOM から削除
+    button.closest('.measure-row').remove();
+    // 添字と見出し「対策 N」を先頭から振り直す
+    reindexMeasures();
+}
+
+// 「対策を追加」ボタンから呼ばれる関数：サーバー描画の <template>（Razor ループと同一マークアップの
+// 唯一の源）を複製して末尾に追加する。JS 側にマークアップの写しを持たないため、二重管理のズレが起きない
 function addMeasureRow() {
     // 追加先コンテナ
     const container = document.getElementById('measuresContainer');
-    // 今回の新規インデックス
-    const idx = measureCount++;
-    // 実施期限の初期値: サーバ側 IClock(JST)で計算した今日+30日を data-default-due-date から取得する。
-    // ブラウザの new Date() はクライアントのタイムゾーン依存で IClock(JST) と日付がずれる恐れがあるため使わない。
-    const dateStr = container.dataset.defaultDueDate;
-
-    // 新しい対策行の DOM を構築
-    const div = document.createElement('div');
-    div.className = 'measure-row border rounded-3 p-3 mb-3 bg-light';
-    // innerHTML で一気に差し込み（削除ボタン付き）
-    div.innerHTML = `
-        <div class="d-flex justify-content-between align-items-center mb-2">
-            <h6 class="mb-0">対策 ${idx + 1}</h6>
-            <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="this.closest('.measure-row').remove()">
-                <i class="bi bi-trash"></i>
-            </button>
-        </div>
-        <div class="row g-2">
-            <div class="col-12">
-                <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
-                <textarea name="Measures[${idx}].Description" class="form-control form-control-sm" rows="2"></textarea>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label small">対策種別</label>
-                <select name="Measures[${idx}].MeasureType" class="form-select form-select-sm">
-                    <option value="ShortTerm">短期対策</option>
-                    <option value="LongTerm">長期対策</option>
-                </select>
-            </div>
-            <div class="col-md-3">
-                <label class="form-label small">担当者</label>
-                <input name="Measures[${idx}].ResponsiblePerson" class="form-control form-control-sm" />
-            </div>
-            <div class="col-md-3">
-                <label class="form-label small">担当部署</label>
-                <input name="Measures[${idx}].ResponsibleDepartment" class="form-control form-control-sm" />
-            </div>
-            <div class="col-md-2">
-                <label class="form-label small">実施期限</label>
-                <input type="date" name="Measures[${idx}].DueDate" class="form-control form-control-sm" value="${dateStr}" />
-            </div>
-            <div class="col-md-1">
-                <label class="form-label small">優先度</label>
-                <select name="Measures[${idx}].Priority" class="form-select form-select-sm">
-                    <option value="1">高</option>
-                    <option value="2" selected>中</option>
-                    <option value="3">低</option>
-                </select>
-            </div>
-            <div class="col-12">
-                <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
-                <textarea name="Measures[${idx}].AnalysisNote" class="form-control form-control-sm" rows="1"
-                          placeholder="なぜこの対策を選んだか、根本原因との対応を記入"></textarea>
-            </div>
-        </div>`;
-    // コンテナに追加
-    container.appendChild(div);
+    // Razor が既定値で描画した行テンプレート
+    const template = document.getElementById('measure-row-template');
+    // テンプレートの中身（対策行1件分の div）を複製する
+    const row = template.content.firstElementChild.cloneNode(true);
+    // 新しい行の添字 = 現在の行数（reindexMeasures が常に 0..n-1 に詰めるので行数がそのまま次の添字になる）
+    const index = container.querySelectorAll('.measure-row').length;
+    // name 属性の仮の添字プレースホルダを実際の添字に置換する
+    row.querySelectorAll('[name]').forEach(el => {
+        el.name = el.name.replace('@MeasureIndexSentinel', index);
+    });
+    // 複製した行をコンテナ末尾に追加
+    container.appendChild(row);
+    // 見出し「対策 N」をテンプレートの仮番号から正しい連番へ振り直す
+    reindexMeasures();
 }
 </script>
 }

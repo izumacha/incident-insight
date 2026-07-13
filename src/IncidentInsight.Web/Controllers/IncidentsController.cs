@@ -42,8 +42,9 @@ public class IncidentsController : Controller
     private readonly ILogger<IncidentsController> _logger;
     // 一覧の 1 ページあたりの件数
     private const int PageSize = 20;
-    // Create 登録画面で対策の実施期限の初期値として使う日数（今日から30日後）
-    private const int DefaultMeasureDueDays = 30;
+    // Create 登録画面で対策の実施期限の初期値として使う日数（今日から30日後）。
+    // Views/Incidents/Create.cshtml も既定値の唯一の源としてこの定数を参照するため public にしている
+    public const int DefaultMeasureDueDays = 30;
 
     // コンストラクタ: DI で依存を受け取る
     public IncidentsController(
