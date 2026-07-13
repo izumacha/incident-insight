@@ -3,6 +3,7 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
@@ -87,7 +88,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var result = await _controller.Edit(measure.Id);
 
         var view = Assert.IsType<ViewResult>(result);
-        var vm = Assert.IsType<IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel>(view.Model);
+        var vm = Assert.IsType<MeasureFormViewModel>(view.Model);
         Assert.Equal("根本原因はダブルチェック未実施", vm.AnalysisNote);
     }
 
@@ -96,7 +97,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     {
         // 編集 POST で立案根拠メモが保存されること(保存漏れ回帰防止)
         var measure = await SeedMeasureAsync("内科病棟");
-        var vm = new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+        var vm = new MeasureFormViewModel
         {
             Id = measure.Id,
             IncidentId = measure.IncidentId,
@@ -133,7 +134,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Severity = IncidentSeverity.Level3a,
             Description = "他部署の機微情報",
             ReporterName = "別部署担当",
-            OccurredAt = DateTime.Now
+            // 発生日時は固定日付(TestFixtures.Today)にして実行日時に依存しない決定論的テストにする
+            OccurredAt = TestFixtures.Today
         };
         // 別インシデントを DB に登録する
         _db.Incidents.Add(otherIncident);
@@ -141,7 +143,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         await _db.SaveChangesAsync();
 
         // hidden field 改ざんを模して IncidentId に別インシデントの Id を入れた ViewModel を作る
-        var vm = new IncidentInsight.Web.Models.ViewModels.MeasureFormViewModel
+        var vm = new MeasureFormViewModel
         {
             Id = measure.Id,
             IncidentId = otherIncident.Id,
@@ -353,7 +355,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         measure.Status = MeasureStatus.Completed;
         await _db.SaveChangesAsync();
 
-        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        var vm = new ReviewViewModel
         {
             Id = measure.Id,
             ConcurrencyToken = measure.ConcurrencyToken,
@@ -379,7 +381,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 再発フラグ・評価値が書き込まれないこと(KPI 汚染の回帰防止)
         var measure = await SeedMeasureAsync("内科病棟");
 
-        var vm = new IncidentInsight.Web.Models.ViewModels.ReviewViewModel
+        var vm = new ReviewViewModel
         {
             Id = measure.Id,
             ConcurrencyToken = measure.ConcurrencyToken,

@@ -173,6 +173,7 @@ public class IncidentsControllerTests : IDisposable
         var model = Assert.IsType<IncidentCreateEditViewModel>(viewResult.Model);
         // Measures が null ではなく空リストになっていること
         Assert.NotNull(model.Measures);
+        // 補正結果が空リスト(0件)であり、勝手な空行が追加されていないこと
         Assert.Empty(model.Measures);
     }
 
