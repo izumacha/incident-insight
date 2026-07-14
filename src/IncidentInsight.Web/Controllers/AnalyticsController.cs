@@ -51,6 +51,10 @@ public class AnalyticsController : Controller
             .Where(i => i.OccurredAt >= firstMonthStart);
         // 部署指定があればさらに絞り込む
         if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
+        // 開始日指定があればさらに絞り込む(他エンドポイントと同様、既定の直近12ヶ月窓をさらに狭める)
+        if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
+        // 終了日指定があればさらに絞り込む(その日を含める)
+        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
 
         // 年月ごとに SQL 側でグループ化して件数を取得
         var groups = await query

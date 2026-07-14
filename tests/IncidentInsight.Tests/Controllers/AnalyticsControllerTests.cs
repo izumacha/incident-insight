@@ -83,6 +83,23 @@ public class AnalyticsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task MonthlyTrend_DateFrom_ExcludesIncidentBeforeCutoff()
+    {
+        // 同じ日の午前(古い方)と午後(新しい方)に発生したインシデントを用意する(月境界のフレーク回避)
+        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today.AddHours(3)));
+        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today.AddHours(15)));
+        await _db.SaveChangesAsync();
+
+        // dateFrom を当日正午にして、午前発生分だけを除外する
+        var result = await _controller.MonthlyTrend(DateTime.Today.AddHours(12), null, null);
+        using var doc = ToJsonDocument(result);
+
+        var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
+        // dateFrom 以降の午後発生分 1 件だけが今月のカウントに含まれることを確認する
+        Assert.Equal(1, data[^1].GetInt32());
+    }
+
+    [Fact]
     public async Task ByDepartment_ReturnsGroupedCounts()
     {
         _db.Incidents.AddRange(
