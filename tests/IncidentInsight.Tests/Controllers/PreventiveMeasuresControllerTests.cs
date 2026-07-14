@@ -236,6 +236,22 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_Success_SetsTempDataSuccess()
+    {
+        // 保存が成功した場合、他のミューテーション系アクションと同じく
+        // TempData["Success"] が設定されること(以前は成功時に何もトーストが出ない欠落があった)
+        var measure = await SeedMeasureAsync("内科病棟");
+
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.InProgress, measure.ConcurrencyToken);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        Assert.NotNull(_controller.TempData["Success"]);
+        // 衝突時の警告メッセージとは別物であること(誤って両方立ってしまう回帰の検出用)
+        Assert.False(_controller.TempData.ContainsKey("Warning"));
+    }
+
+    [Fact]
     public async Task Delete_Staff_OtherDepartment_ReturnsForbid()
     {
         var measure = await SeedMeasureAsync("外来");
