@@ -1,6 +1,7 @@
 using System.Reflection;
 using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Controllers;
+using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Authorization;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -108,5 +109,27 @@ public class AuthorizationAttributeTests
         var attr = method.GetCustomAttribute<AuthorizeAttribute>(inherit: true);
         Assert.NotNull(attr);
         Assert.Equal(Policies.CanDeleteIncident, attr!.Policy);
+    }
+
+    // Details.cshtml のインラインフォームは IncidentDetailViewModel のネストプロパティ
+    // (NewMeasure / NewCauseAnalysis)経由で描画されるため、フィールド名は
+    // 「NewMeasure.Description」のように prefix 付きで POST される。受け側アクションの
+    // Bind(Prefix) がビューモデルのプロパティ名と一致していないと、バインダが空 prefix に
+    // フォールバックして IncidentId が 0 のまま常に 404 になる。その契約をここで固定化する。
+    [Theory]
+    [InlineData(typeof(IncidentMeasuresController), nameof(IncidentMeasuresController.AddMeasure),
+        nameof(IncidentDetailViewModel.NewMeasure))]
+    [InlineData(typeof(CauseAnalysesController), nameof(CauseAnalysesController.AddCauseAnalysis),
+        nameof(IncidentDetailViewModel.NewCauseAnalysis))]
+    public void InlineDetailFormAction_BindsWithViewModelPropertyPrefix(
+        Type controllerType, string actionName, string expectedPrefix)
+    {
+        var parameter = controllerType
+            .GetMethod(actionName)!
+            .GetParameters().Single();
+
+        var bind = parameter.GetCustomAttribute<Microsoft.AspNetCore.Mvc.BindAttribute>(inherit: false);
+        Assert.NotNull(bind);
+        Assert.Equal(expectedPrefix, bind!.Prefix);
     }
 }
