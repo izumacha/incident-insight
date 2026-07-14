@@ -492,7 +492,18 @@ public class PreventiveMeasuresController : Controller
 
         // 削除対象に追加して保存(監査ログへも自動で記録される)
         _db.PreventiveMeasures.Remove(measure);
-        await _db.SaveChangesAsync();
+        try
+        {
+            // DB に反映(この時点で他ユーザーの更新と衝突していれば例外に分岐)
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // 衝突発生: ログを残し、ユーザーに再読み込みを促す
+            _logger.LogWarning(ex, "Concurrency conflict deleting PreventiveMeasure {MeasureId}", id);
+            TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。画面を更新してから再度操作してください。";
+            return RedirectToAction(nameof(Index));
+        }
         TempData["Success"] = "再発防止策を削除しました。";
         return RedirectToAction(nameof(Index));
     }

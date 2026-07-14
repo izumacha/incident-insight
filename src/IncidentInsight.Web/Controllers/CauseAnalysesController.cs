@@ -232,7 +232,18 @@ public class CauseAnalysesController : Controller
         var incidentId = analysis.IncidentId;
         // 削除マークして DB に反映
         _db.CauseAnalyses.Remove(analysis);
-        await _db.SaveChangesAsync();
+        try
+        {
+            // DB に反映(この時点で他ユーザーの更新と衝突していれば例外に分岐)
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // 衝突発生: ログを残し、ユーザーに再読み込みを促す
+            _logger.LogWarning(ex, "Concurrency conflict deleting CauseAnalysis {AnalysisId}", id);
+            TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。画面を更新してから再度操作してください。";
+            return RedirectToAction("Details", "Incidents", new { id = incidentId });
+        }
         // 成功通知
         TempData["Success"] = "原因分析を削除しました。";
         // 詳細画面へ戻す
