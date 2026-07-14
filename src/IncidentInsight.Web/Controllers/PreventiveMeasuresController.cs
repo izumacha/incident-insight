@@ -456,8 +456,11 @@ public class PreventiveMeasuresController : Controller
             // 衝突: ログと警告だけ出して一覧画面に戻る(リダイレクト)
             _logger.LogWarning(ex, "Concurrency conflict changing status of PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、ステータス変更は保存されませんでした。画面を更新してから再度操作してください。";
+            return RedirectToAction(nameof(Index));
         }
 
+        // 成功メッセージを表示して一覧へ戻る(他のミューテーション系アクションと同じ TempData["Success"] 規約)
+        TempData["Success"] = "ステータスを更新しました。";
         return RedirectToAction(nameof(Index));
     }
 
