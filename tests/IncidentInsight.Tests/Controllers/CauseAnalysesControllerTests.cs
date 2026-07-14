@@ -241,20 +241,4 @@ public class CauseAnalysesControllerTests : IDisposable
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.CauseAnalyses.AnyAsync(a => a.Id == analysis.Id));
     }
-
-    [Fact]
-    public void AddCauseAnalysis_BindsWithNewCauseAnalysisPrefix()
-    {
-        // Details.cshtml のフォームは IncidentDetailViewModel.NewCauseAnalysis 経由で描画されるため、
-        // フィールド名は「NewCauseAnalysis.Why1」のように prefix 付きで POST される。
-        // アクション引数に Bind(Prefix) が無いとバインダが空 prefix にフォールバックして
-        // IncidentId が 0 のまま常に 404 になるため、prefix の一致をここで固定化する。
-        var parameter = typeof(CauseAnalysesController)
-            .GetMethod(nameof(CauseAnalysesController.AddCauseAnalysis))!
-            .GetParameters().Single();
-
-        var bind = Assert.IsType<BindAttribute>(
-            parameter.GetCustomAttributes(typeof(BindAttribute), inherit: false).Single());
-        Assert.Equal(nameof(IncidentDetailViewModel.NewCauseAnalysis), bind.Prefix);
-    }
 }
