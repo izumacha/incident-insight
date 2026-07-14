@@ -58,9 +58,14 @@ public class IncidentMeasuresController : Controller
 
     // POST /Incidents/AddMeasure
     // 詳細画面から再発防止策を追加する
+    // 注: 詳細画面のフォームは IncidentDetailViewModel.NewMeasure 経由で描画されるため、
+    //     フィールド名は「NewMeasure.Description」のように prefix 付きで POST される。
+    //     Bind(Prefix) を指定しないとバインダが空 prefix にフォールバックして
+    //     IncidentId が 0 のままになり、常に 404 になる。
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> AddMeasure(MeasureFormViewModel vm)
+    public async Task<IActionResult> AddMeasure(
+        [Bind(Prefix = nameof(IncidentDetailViewModel.NewMeasure))] MeasureFormViewModel vm)
     {
         // 親インシデントを取得
         var incident = await _db.Incidents.FindAsync(vm.IncidentId);

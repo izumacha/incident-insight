@@ -159,9 +159,14 @@ public class CauseAnalysesController : Controller
 
     // POST /Incidents/AddCauseAnalysis
     // 詳細画面から原因分析を追加する
+    // 注: 詳細画面のフォームは IncidentDetailViewModel.NewCauseAnalysis 経由で描画されるため、
+    //     フィールド名は「NewCauseAnalysis.Why1」のように prefix 付きで POST される。
+    //     Bind(Prefix) を指定しないとバインダが空 prefix にフォールバックして
+    //     IncidentId が 0 のままになり、常に 404 になる。
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> AddCauseAnalysis(CauseAnalysisFormViewModel vm)
+    public async Task<IActionResult> AddCauseAnalysis(
+        [Bind(Prefix = nameof(IncidentDetailViewModel.NewCauseAnalysis))] CauseAnalysisFormViewModel vm)
     {
         // 親インシデントを取得
         var incident = await _db.Incidents.FindAsync(vm.IncidentId);
@@ -172,7 +177,8 @@ public class CauseAnalysesController : Controller
             return Forbid();
 
         // ドロップダウン選択肢はバリデーション対象外
-        ModelState.Remove("CauseCategoryOptions");
+        // (prefix バインドのため ModelState 上のキーも「NewCauseAnalysis.」付きになる)
+        ModelState.Remove($"{nameof(IncidentDetailViewModel.NewCauseAnalysis)}.{nameof(vm.CauseCategoryOptions)}");
         // 選択された原因カテゴリが実在しない場合は入力不備として扱い、存在しない外部キーによる
         // INSERT 失敗(未捕捉の DbUpdateException = HTTP 500)を未然に防ぐ
         if (vm.CauseCategoryId > 0

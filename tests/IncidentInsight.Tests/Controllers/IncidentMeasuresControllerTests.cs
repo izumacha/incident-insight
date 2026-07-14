@@ -238,4 +238,20 @@ public class IncidentMeasuresControllerTests : IDisposable
         Assert.Null(updated.RecurrenceObserved);
         Assert.Null(updated.EffectivenessReviewedAt);
     }
+
+    [Fact]
+    public void AddMeasure_BindsWithNewMeasurePrefix()
+    {
+        // Details.cshtml のフォームは IncidentDetailViewModel.NewMeasure 経由で描画されるため、
+        // フィールド名は「NewMeasure.Description」のように prefix 付きで POST される。
+        // アクション引数に Bind(Prefix) が無いとバインダが空 prefix にフォールバックして
+        // IncidentId が 0 のまま常に 404 になるため、prefix の一致をここで固定化する。
+        var parameter = typeof(IncidentMeasuresController)
+            .GetMethod(nameof(IncidentMeasuresController.AddMeasure))!
+            .GetParameters().Single();
+
+        var bind = Assert.IsType<BindAttribute>(
+            parameter.GetCustomAttributes(typeof(BindAttribute), inherit: false).Single());
+        Assert.Equal(nameof(IncidentDetailViewModel.NewMeasure), bind.Prefix);
+    }
 }
