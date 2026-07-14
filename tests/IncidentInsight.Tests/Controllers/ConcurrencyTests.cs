@@ -159,6 +159,73 @@ public class ConcurrencyTests : IDisposable
     }
 
     [Fact]
+    public async Task IncidentsDelete_OnConcurrencyConflict_SetsWarningAndRedirectsToDetails()
+    {
+        // 削除中に他ユーザーの更新と衝突した場合、未処理例外にせず詳細画面へ警告付きで戻す。
+        var incident = await SeedIncidentAsync();
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        _db.ThrowOnNextSave = true;
+        var result = await controller.Delete(incident.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(IncidentsController.Details), redirect.ActionName);
+        Assert.Equal(incident.Id, redirect.RouteValues!["id"]);
+        Assert.NotNull(controller.TempData["Warning"]);
+        Assert.Contains("他のユーザ", controller.TempData["Warning"]!.ToString());
+        // 例外で中断しても DB からは削除されていないこと(ロールバック相当)を確認
+        Assert.True(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
+    }
+
+    [Fact]
+    public async Task PreventiveMeasuresDelete_OnConcurrencyConflict_SetsWarningAndRedirectsToIndex()
+    {
+        // 唯一の対策にならないよう sibling を1件追加してから削除を試みる
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id);
+        await SeedMeasureAsync(incident.Id);
+        var controller = new PreventiveMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<PreventiveMeasuresController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        _db.ThrowOnNextSave = true;
+        var result = await controller.Delete(measure.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
+        Assert.NotNull(controller.TempData["Warning"]);
+        Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+    }
+
+    [Fact]
+    public async Task CauseAnalysesDeleteCauseAnalysis_OnConcurrencyConflict_SetsWarningAndRedirectsToDetails()
+    {
+        var incident = await SeedIncidentAsync();
+        var category = new CauseCategory { Name = "テスト分類", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        var analysis = new CauseAnalysis
+        {
+            IncidentId = incident.Id,
+            CauseCategoryId = category.Id,
+            Why1 = "削除対象"
+        };
+        _db.CauseAnalyses.Add(analysis);
+        await _db.SaveChangesAsync();
+        var controller = new CauseAnalysesController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<CauseAnalysesController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        _db.ThrowOnNextSave = true;
+        var result = await controller.DeleteCauseAnalysis(analysis.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Equal(incident.Id, redirect.RouteValues!["id"]);
+        Assert.NotNull(controller.TempData["Warning"]);
+        Assert.True(await _db.CauseAnalyses.AnyAsync(a => a.Id == analysis.Id));
+    }
+
+    [Fact]
     public async Task IncidentsEdit_WhenTokenMatches_SavesAndRedirectsToDetails()
     {
         // Baseline happy-path check: without forcing a conflict, Edit should succeed.

@@ -557,7 +557,18 @@ public class IncidentsController : Controller
 
         // 削除マークを付けて DB へ反映(子エンティティも監査対象になる)
         _db.Incidents.Remove(incident);
-        await _db.SaveChangesAsync();
+        try
+        {
+            // DB に反映(この時点で他ユーザーの更新と衝突していれば例外に分岐)
+            await _db.SaveChangesAsync();
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // 衝突発生: ログを残し、ユーザーに再読み込みを促す
+            _logger.LogWarning(ex, "Concurrency conflict deleting Incident {IncidentId}", id);
+            TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。最新の内容を確認してから再度お試しください。";
+            return RedirectToAction(nameof(Details), new { id });
+        }
         // 成功通知
         TempData["Success"] = "インシデントを削除しました。";
         // 一覧へリダイレクト
