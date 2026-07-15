@@ -524,4 +524,70 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Null(updated.RecurrenceObserved);
         Assert.Null(updated.EffectivenessReviewedAt);
     }
+
+    // MaxKanbanRows 件を超えない範囲では、絞り込み後の対策が全件そのまま返り、
+    // Truncated フラグが立たず、TotalCount も返却件数と一致することを確認する
+    [Fact]
+    public async Task Index_WithinLimit_ReturnsAllMeasuresAndIsNotTruncated()
+    {
+        // 少数(3件)を投入する。上限(1000件)には遠く及ばない
+        for (var i = 0; i < 3; i++)
+        {
+            await SeedMeasureAsync($"内科病棟{i}");
+        }
+
+        var result = await _controller.Index(null, null, null, null, null);
+
+        Assert.IsType<ViewResult>(result);
+        Assert.Equal(3, _controller.ViewBag.TotalCount);
+        Assert.False((bool)_controller.ViewBag.Truncated);
+    }
+
+    // MaxKanbanRows 件を超える対策が絞り込みに一致する場合、取得件数自体は上限で
+    // 打ち切られるが、TotalCount は上限適用前の真の総数を反映し、Truncated が
+    // true になることを確認する(§8 一覧取得の上限の回帰防止)
+    [Fact]
+    public async Task Index_ExceedsMaxKanbanRows_TruncatesRowsButReportsTrueTotalCount()
+    {
+        // MaxKanbanRows をわずかに超える件数を1回の SaveChangesAsync でまとめて投入する
+        // (SeedMeasureAsync を件数分呼ぶと保存が都度発生し遅くなるため、ここだけ直接構築する)
+        const int seedCount = PreventiveMeasuresController.MaxKanbanRows + 5;
+        for (var i = 0; i < seedCount; i++)
+        {
+            var incident = new Incident
+            {
+                Department = "内科病棟",
+                IncidentType = IncidentTypeKind.Fall,
+                Severity = IncidentSeverity.Level2,
+                Description = "上限検証用",
+                ReporterName = "担当",
+                OccurredAt = DateTime.Now
+            };
+            incident.PreventiveMeasures.Add(new PreventiveMeasure
+            {
+                Incident = incident,
+                Description = $"対策{i}",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当A",
+                ResponsibleDepartment = "内科病棟",
+                DueDate = DateTime.Today.AddDays(30),
+                Priority = 2
+            });
+            _db.Incidents.Add(incident);
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null, null, null, null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // TotalCount は上限を超えた真の総数(全件)を反映する
+        Assert.Equal(seedCount, _controller.ViewBag.TotalCount);
+        // 上限を超えたため Truncated は true
+        Assert.True((bool)_controller.ViewBag.Truncated);
+        // 実際にレーンへ振り分けられた対策の合計は上限(MaxKanbanRows)で打ち切られている
+        var plannedCount = ((List<PreventiveMeasure>)_controller.ViewBag.Planned).Count;
+        var inProgressCount = ((List<PreventiveMeasure>)_controller.ViewBag.InProgress).Count;
+        var completedCount = ((List<PreventiveMeasure>)_controller.ViewBag.Completed).Count;
+        Assert.Equal(PreventiveMeasuresController.MaxKanbanRows, plannedCount + inProgressCount + completedCount);
+    }
 }
