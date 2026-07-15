@@ -39,6 +39,15 @@ public class PreventiveMeasuresController : Controller
     private readonly IClock _clock;
     // ログ出力用(並行編集衝突などの警告を記録)
     private readonly ILogger<PreventiveMeasuresController> _logger;
+    // カンバン画面で1回に取得する対策の上限件数。
+    // このビューは IncidentsController/AuditLogsController と異なりページングではなく
+    // 計画中/進行中/完了の3レーン+統計値を1画面にまとめて表示する構造のため、
+    // Skip/Take によるページ分割は3レーンの内訳や KPI を壊してしまう。そのため
+    // ここでは「絞り込み条件で対象を絞ってもらう」運用を前提に、単純な上限(§8: 一覧取得は
+    // 必ず上限を持たせる)としてこの定数を設ける。上限を超えた場合は Truncated フラグで
+    // ビューに通知し、KPI が全件ではなく上限分のみを反映していることを利用者に明示する。
+    // Views/PreventiveMeasures/Index.cshtml が案内文中の件数表示にも参照するため public にしている
+    public const int MaxKanbanRows = 1000;
 
     // コンストラクタ: DI で依存を受け取る
     public PreventiveMeasuresController(
@@ -80,8 +89,13 @@ public class PreventiveMeasuresController : Controller
         if (dateTo.HasValue)
             query = query.Where(m => m.DueDate < dateTo.Value.Date.AddDays(1));
 
-        // 期限日の昇順で取得
-        var measures = await query.OrderBy(m => m.DueDate).ToListAsync();
+        // 絞り込み後・上限適用前の総件数(KPI の「全対策数」と、上限に達したかどうかの判定に使う)
+        var totalMatchingCount = await query.CountAsync();
+        // 期限日の昇順で取得。MaxKanbanRows で上限を設け、際限のない取得を防ぐ(§8/§9)
+        var measures = await query.OrderBy(m => m.DueDate).Take(MaxKanbanRows).ToListAsync();
+        // 上限に達して切り詰められたかどうか(true の場合、以下で算出する期限超過数・
+        // 再発確認数・完了率は上限分のみを反映し全件の値ではなくなる)
+        var truncated = totalMatchingCount > MaxKanbanRows;
 
         // カンバン3レーン分に分割(計画中/進行中/完了)
         var planned = measures.Where(m => m.Status == MeasureStatus.Planned).OrderBy(m => m.DueDate).ToList();
@@ -98,10 +112,15 @@ public class PreventiveMeasuresController : Controller
         ViewBag.FilterResponsibleDepartment = responsibleDepartment;
         ViewBag.DateFrom = dateFrom;
         ViewBag.DateTo = dateTo;
+        // 上限に達し切り詰められたかどうか。true ならビューで注意書きを表示する
+        ViewBag.Truncated = truncated;
 
         // Stats
-        // 統計値(総数・期限超過数・完了率・失敗件数)を計算してビューに渡す
-        ViewBag.TotalCount = measures.Count;
+        // 統計値(総数・期限超過数・完了率・失敗件数)を計算してビューに渡す。
+        // 全対策数だけは Take 前の totalMatchingCount(全件)を使い、上限に達しても
+        // 正しい総数を表示する。他の KPI は上限適用後の measures から算出するため、
+        // truncated が true の間は近似値になる(上の Truncated フラグで利用者に明示する)
+        ViewBag.TotalCount = totalMatchingCount;
         // IsOverdueOn に _clock.Today を渡して期限超過数を計算する(DateTime.Today を直接使わない)
         ViewBag.OverdueCount = measures.Count(m => m.IsOverdueOn(_clock.Today));
         ViewBag.CompletionRate = measures.Count == 0 ? 0

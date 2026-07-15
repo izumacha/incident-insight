@@ -23,6 +23,17 @@
     </div>
 </div>
 
+@* 上限件数に達した場合の注意書き(絞り込み条件で対象を絞ってもらう案内。
+   完了率・期限超過・再発確認の3 KPI は上限適用後のデータからの近似値になる旨も明示する) *@
+@if (ViewBag.Truncated == true)
+{
+    <div class="alert alert-warning" role="alert">
+        <i class="bi bi-exclamation-triangle me-2"></i>
+        表示件数の上限（@(IncidentInsight.Web.Controllers.PreventiveMeasuresController.MaxKanbanRows)件）に達したため、一部の対策のみ表示しています。
+        「完了率」「期限超過」「再発確認」は表示中の対策のみの集計値です。絞り込み条件を指定して対象を絞ってください。
+    </div>
+}
+
 @* 統計バー：全件・完了率・期限超過・再発確認の4枚(KPI カードと統一感のあるデザイン) *@
 <div class="row g-3 mb-4">
     <div class="col-md-3">
