@@ -18,6 +18,11 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 // EF Core 拡張を使う
 using Microsoft.EntityFrameworkCore;
+// トランザクションの分離レベル(IsolationLevel.Serializable)を指定するために使う
+using System.Data;
+// プロバイダ非依存の DB 例外基底型(Serializable分離レベルでの直列化エラーを
+// SQLite/SQL Server/PostgreSQL のいずれでも同じ型で捕捉するために使う)
+using System.Data.Common;
 
 // このコントローラの名前空間
 namespace IncidentInsight.Web.Controllers;
@@ -465,24 +470,63 @@ public class PreventiveMeasuresController : Controller
         // 業務ルール: インシデントは再発防止策が最低1件ないと登録できない
         // (IncidentsController.Create の HasAtLeastOneValidMeasure と同じ不変条件)。
         // 削除でこの不変条件が崩れないよう、削除対象を除いた残り件数を数えて確認する。
-        var remainingMeasureCount = await _db.PreventiveMeasures
-            .CountAsync(m => m.IncidentId == measure.IncidentId && m.Id != measure.Id);
-        if (remainingMeasureCount == 0)
+        //
+        // 「残数を数える」→「削除する」の2ステップは、既定の分離レベルのままだと
+        // 同一インシデントの兄弟対策を同時に削除する2つのリクエストの間で
+        // TOCTOU(check-then-act)競合状態になり得る: ちょうど2件の対策があるとき
+        // 両リクエストが同時に「自分以外の残数=1」を見て通過し、両方が成功すると
+        // 対策0件になり不変条件が破れる。Serializable 分離レベルのトランザクションで
+        // 包むことで、SQLite(単一ライタロックで後続を直列化)・SQL Server/PostgreSQL
+        // (直列化エラーで後続をコミット時に検知)のいずれでも、2つ目のリクエストが
+        // 古い(削除前の)残数を見たまま削除を確定させることを防ぐ。
+        await using var transaction = await _db.Database.BeginTransactionAsync(IsolationLevel.Serializable);
+
+        // Serializable の直列化エラーは PostgreSQL の仕様上コミット時点に限らず
+        // トランザクション中の任意のステートメント(この下の CountAsync 含む)で
+        // 発生しうる。SaveChangesAsync 経由の失敗も、行の ConcurrencyToken 不一致
+        // (DbUpdateConcurrencyException、下のヘルパーが内部で処理し false を返す)
+        // とは別に、直列化エラー由来の素の DbUpdateException として飛んでくる
+        // ことがある。そのためコミット時だけでなく、残数確認〜削除〜コミットの
+        // 一連の処理全体を1つの try で囲み、どのステートメントで直列化エラーが
+        // 起きても同じ「安全側に倒す」経路に落とす。
+        try
         {
-            // 残り0件になる削除は拒否し、理由を警告トーストで伝えて一覧へ戻す
-            TempData["Warning"] = "この対策はインシデントに残る唯一の再発防止策のため削除できません。先に別の対策を追加してから削除してください。";
+            var remainingMeasureCount = await _db.PreventiveMeasures
+                .CountAsync(m => m.IncidentId == measure.IncidentId && m.Id != measure.Id);
+            if (remainingMeasureCount == 0)
+            {
+                // 残り0件になる削除は拒否し、理由を警告トーストで伝えて一覧へ戻す
+                TempData["Warning"] = "この対策はインシデントに残る唯一の再発防止策のため削除できません。先に別の対策を追加してから削除してください。";
+                return RedirectToAction(nameof(Index));
+            }
+
+            // 削除対象に追加して保存(監査ログへも自動で記録される)
+            _db.PreventiveMeasures.Remove(measure);
+            // 保存試行(ConcurrencyToken 不一致による衝突時はログを残し、
+            // ユーザーに再読み込みを促す共通処理。直列化エラーはここでは
+            // 捕捉されずこの try 全体の catch まで伝播する)
+            if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
+                    _db, _logger, "Concurrency conflict deleting PreventiveMeasure {MeasureId}", id))
+            {
+                TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。画面を更新してから再度操作してください。";
+                return RedirectToAction(nameof(Index));
+            }
+
+            // コミット時点でも Serializable の直列化エラーが起きうる
+            // (SQL Server/PostgreSQL: 同時実行の兄弟削除と衝突した場合)
+            await transaction.CommitAsync();
+        }
+        catch (Exception ex) when (ex is DbException or DbUpdateException)
+        {
+            // プロバイダ固有の例外型に依存しない共通基底型(DbException)、および
+            // SaveChangesAsync がそれをラップして投げる DbUpdateException の
+            // いずれで捕捉しても、安全側(削除を確定させない)に倒す。
+            // ロールバックは transaction の Dispose(await using)時に自動で行われる。
+            _logger.LogWarning(ex, "Serialization conflict deleting PreventiveMeasure {MeasureId}", id);
+            TempData["Warning"] = "他のユーザが同時に操作したため、削除できませんでした。画面を更新してから再度操作してください。";
             return RedirectToAction(nameof(Index));
         }
 
-        // 削除対象に追加して保存(監査ログへも自動で記録される)
-        _db.PreventiveMeasures.Remove(measure);
-        // 保存試行(衝突時はログを残し、ユーザーに再読み込みを促す共通処理)
-        if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
-                _db, _logger, "Concurrency conflict deleting PreventiveMeasure {MeasureId}", id))
-        {
-            TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。画面を更新してから再度操作してください。";
-            return RedirectToAction(nameof(Index));
-        }
         TempData["Success"] = "再発防止策を削除しました。";
         return RedirectToAction(nameof(Index));
     }

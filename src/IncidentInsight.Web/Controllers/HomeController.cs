@@ -58,10 +58,17 @@ public class HomeController : Controller
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
 
         // Period window for KPIs and trend chart
-        // 期間指定(week/month/quarter/year)から集計開始日を算出
+        // 期間指定(week/month/quarter/year)から集計開始日を算出。
+        // week は KPI とトレンドチャート(下の weekStart = today.AddDays(-6))を
+        // 同じ「直近7暦日(today-6〜today)」窓に揃える。month/quarter/year は
+        // チャート側の窓を意図的にKPI期間より広く取る設計(下のコメント参照)だが、
+        // week だけは "直近7日間" というコメント通りの同一窓であるべきで、
+        // 以前は today.AddDays(-7) で実質8暦日分を数えており、境界日(today-7)の
+        // インシデントが KPI 合計には含まれるのに折れ線グラフには表示されない
+        // (グラフはtoday-6以降しか集計しない)という不整合があった。
         var periodStart = period switch
         {
-            PeriodWeek    => today.AddDays(-7),
+            PeriodWeek    => today.AddDays(-6),
             PeriodMonth   => today.AddMonths(-1),
             PeriodQuarter => today.AddMonths(-3),
             _             => today.AddYears(-1)    // PeriodYear が既定

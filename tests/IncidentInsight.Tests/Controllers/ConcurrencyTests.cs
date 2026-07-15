@@ -7,6 +7,8 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -23,6 +25,12 @@ public class ConcurrencyTests : IDisposable
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            // InMemory プロバイダはトランザクションをサポートしないため警告が出るが、
+            // テスト用途ではトランザクション整合性を検証しないので例外扱いにせず無視する。
+            // 本番の SQLite/SQL Server/PostgreSQL では BeginTransactionAsync は正常に動作する
+            // (PreventiveMeasuresController.Delete が TOCTOU 対策で Serializable
+            // トランザクションを使うため必要)。
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         _db = new ThrowingDbContext(options);
     }
@@ -32,6 +40,10 @@ public class ConcurrencyTests : IDisposable
     private sealed class ThrowingDbContext : ApplicationDbContext
     {
         public bool ThrowOnNextSave { get; set; }
+        // Serializable分離レベルでの直列化エラーは、行のConcurrencyToken不一致とは別に、
+        // ConcurrencyExceptionではないただのDbUpdateExceptionとしてSaveChangesAsyncから
+        // 飛んでくることがある(PostgreSQL/SQL Serverの実際の直列化エラーを模す)。
+        public bool ThrowSerializationConflictOnNextSave { get; set; }
 
         public ThrowingDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
 
@@ -41,6 +53,12 @@ public class ConcurrencyTests : IDisposable
             {
                 ThrowOnNextSave = false;
                 throw new DbUpdateConcurrencyException("simulated concurrency conflict");
+            }
+            if (ThrowSerializationConflictOnNextSave)
+            {
+                ThrowSerializationConflictOnNextSave = false;
+                // DbUpdateConcurrencyExceptionのサブタイプではない、素のDbUpdateExceptionとして投げる
+                throw new DbUpdateException("simulated serialization conflict");
             }
             return base.SaveChangesAsync(cancellationToken);
         }
@@ -194,6 +212,31 @@ public class ConcurrencyTests : IDisposable
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
         Assert.NotNull(controller.TempData["Warning"]);
+        Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
+    }
+
+    [Fact]
+    public async Task PreventiveMeasuresDelete_OnSerializationConflict_SetsWarningAndRedirectsToIndex()
+    {
+        // 回帰テスト(/code-review 指摘対応): TOCTOU対策のSerializableトランザクションは
+        // 元々コミット時点のDbExceptionしか捕捉しておらず、SaveChangesAsync自体が
+        // (ConcurrencyToken不一致とは別の)直列化エラー由来のDbUpdateExceptionを
+        // 投げるケースを捕捉できていなかった。SQLiteでは実際に競合状態を再現しても
+        // このパスには到達しない(単一ライタロックでブロックされるため)ため、この
+        // ThrowingDbContextで直接シミュレートして検証する。
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id);
+        await SeedMeasureAsync(incident.Id);
+        var controller = new PreventiveMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<PreventiveMeasuresController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        _db.ThrowSerializationConflictOnNextSave = true;
+        var result = await controller.Delete(measure.Id);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
+        Assert.NotNull(controller.TempData["Warning"]);
+        // 例外時は削除が確定していないこと
         Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
     }
 

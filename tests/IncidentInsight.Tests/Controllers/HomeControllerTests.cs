@@ -90,6 +90,32 @@ public class HomeControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_PeriodWeek_KpiWindowMatchesChartWindow()
+    {
+        // 回帰テスト: 以前は KPI(TotalIncidents)の集計開始日が today.AddDays(-7) で
+        // 実質8暦日分(today-7〜today)を数えていたが、直下の折れ線グラフ(MonthlyCounts)は
+        // today.AddDays(-6)で7暦日分(today-6〜today)しか集計しておらず、
+        // ちょうど境界のtoday-7に発生したインシデントはKPI合計には含まれるのに
+        // グラフの7本のバーには1件も現れないという不整合があった。
+        // 修正後は両方とも同じ7暦日窓(today-6〜today)を使うため、today-7のインシデントは
+        // KPIからも除外され、グラフの日数(7)と整合する。
+        _db.Incidents.AddRange(
+            MakeIncident(occurredAt: DateTime.Today.AddDays(-7)),  // 窓の外(境界日の1日前)
+            MakeIncident(occurredAt: DateTime.Today.AddDays(-6))   // 窓の中(境界日)
+        );
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index("week") as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // today-7 のインシデントは除外され、today-6 の1件だけがKPIに数えられる
+        Assert.Equal(1, vm!.TotalIncidents);
+        // グラフ側も同じ1件だけを today-6 の日に計上している
+        Assert.Equal(7, vm.MonthlyCounts.Count);
+        Assert.Equal(1, vm.MonthlyCounts.Sum(c => c.Count));
+    }
+
+    [Fact]
     public async Task Index_OverdueMeasures_CountsOnlyNotCompleted()
     {
         var incident = MakeIncident();
