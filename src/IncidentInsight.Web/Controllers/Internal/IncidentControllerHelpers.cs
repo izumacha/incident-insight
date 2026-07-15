@@ -8,8 +8,10 @@ using Microsoft.AspNetCore.Authorization;
 using System.Security.Claims;
 // SelectListItem / SelectListGroup(<select> 用)
 using Microsoft.AspNetCore.Mvc.Rendering;
-// EF Core 拡張(Include / ToListAsync)
+// EF Core 拡張(Include / ToListAsync / DbUpdateConcurrencyException)
 using Microsoft.EntityFrameworkCore;
+// ILogger を使う(同時編集衝突のログ出力)
+using Microsoft.Extensions.Logging;
 
 // 共通ヘルパ用の名前空間(Controllers/Internal に隔離して内部利用扱いにする)
 namespace IncidentInsight.Web.Controllers.Internal;
@@ -102,5 +104,37 @@ internal static class IncidentControllerHelpers
         if (value == null || value.Length <= FreeTextMaxLength) return null;
         // 上限超過なら呼び出し側がそのまま BadRequest に渡せるメッセージを返す
         return $"{fieldLabel}は{FreeTextMaxLength}文字以内で入力してください。";
+    }
+
+    /// <summary>
+    /// 楽観的排他制御の保存試行を共通化するヘルパー。CauseAnalysesController /
+    /// IncidentMeasuresController / IncidentsController / PreventiveMeasuresController の
+    /// 各アクションで重複していた「SaveChangesAsync → DbUpdateConcurrencyException 捕捉 →
+    /// ログ出力」の定型処理をここに集約する(CLAUDE.md §6 DRY)。
+    /// クライアントの編集前トークンを OriginalValue にピンする行(1 行で完結し呼び出し側の
+    /// エンティティ型ごとに異なるため、ここには含めない)は呼び出し側で事前に行っておくこと。
+    /// 戻り値が false のとき、呼び出し側は TempData["Warning"] とリダイレクト先(アクションごとに
+    /// 異なる)を決めて処理を続ける。
+    /// </summary>
+    public static async Task<bool> TrySaveChangesHandlingConcurrencyAsync(
+        ApplicationDbContext db,
+        ILogger logger,
+        string conflictLogMessage,
+        params object[] logArgs)
+    {
+        try
+        {
+            // 保存試行。事前にピンした OriginalValue と DB の現在値が食い違えば例外が飛ぶ
+            await db.SaveChangesAsync();
+            // 成功: 呼び出し側は通常どおり成功メッセージ・リダイレクトへ進んでよい
+            return true;
+        }
+        catch (DbUpdateConcurrencyException ex)
+        {
+            // 衝突発生: ログを残す(呼び出し側ごとに異なるメッセージ/引数をそのまま使う)
+            logger.LogWarning(ex, conflictLogMessage, logArgs);
+            // 失敗を呼び出し側へ伝える(TempData["Warning"] とリダイレクトは呼び出し側の責務)
+            return false;
+        }
     }
 }
