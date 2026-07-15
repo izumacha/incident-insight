@@ -7,6 +7,8 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -23,6 +25,12 @@ public class ConcurrencyTests : IDisposable
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            // InMemory プロバイダはトランザクションをサポートしないため警告が出るが、
+            // テスト用途ではトランザクション整合性を検証しないので例外扱いにせず無視する。
+            // 本番の SQLite/SQL Server/PostgreSQL では BeginTransactionAsync は正常に動作する
+            // (PreventiveMeasuresController.Delete が TOCTOU 対策で Serializable
+            // トランザクションを使うため必要)。
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         _db = new ThrowingDbContext(options);
     }

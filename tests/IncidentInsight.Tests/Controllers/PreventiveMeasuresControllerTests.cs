@@ -7,6 +7,8 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
+using Microsoft.EntityFrameworkCore.Diagnostics;
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -20,6 +22,11 @@ public class PreventiveMeasuresControllerTests : IDisposable
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
+            // InMemory プロバイダはトランザクションをサポートしないため警告が出るが、
+            // テスト用途ではトランザクション整合性を検証しないので例外扱いにせず無視する。
+            // 本番の SQLite/SQL Server/PostgreSQL では BeginTransactionAsync は正常に動作する
+            // (Delete が TOCTOU 対策で Serializable トランザクションを使うため必要)。
+            .ConfigureWarnings(w => w.Ignore(InMemoryEventId.TransactionIgnoredWarning))
             .Options;
         _db = new ApplicationDbContext(options);
         _controller = new PreventiveMeasuresController(
@@ -329,6 +336,106 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 残りの2件は削除されずに残っていること
         Assert.Equal(2, await _db.PreventiveMeasures.CountAsync(m => m.IncidentId == measure.IncidentId));
         Assert.NotNull(_controller.TempData["Success"]);
+    }
+
+    [Fact]
+    public async Task Delete_ConcurrentRequestsOnLastTwoMeasures_NeverLeavesZeroMeasures()
+    {
+        // TOCTOU競合状態の回帰テスト: 対策がちょうど2件のインシデントに対して、
+        // 別々の対策を同時に削除する2つのリクエストが来ても、両方成功して
+        // 「対策0件」という不変条件違反の状態にならないことを検証する。
+        //
+        // InMemory プロバイダはトランザクションを実装しない(=このテストクラスの
+        // 共有 _db では競合状態自体が起きない)ため、実際にファイルロックで
+        // 排他制御される一時ファイルの SQLite を使い、2つの独立した DbContext
+        // (=2つの同時 HTTP リクエストを模す)から本物の並行実行を発生させる。
+        var dbPath = Path.Combine(Path.GetTempPath(), $"incident-insight-toctou-{Guid.NewGuid():N}.db");
+        var connectionString = $"Data Source={dbPath}";
+        try
+        {
+            int incidentId;
+            int measureAId;
+            int measureBId;
+            // マイグレーション経由ではなく EnsureCreated で素早くスキーマだけ作る
+            // (このテストは並行実行時の行ロック挙動だけを見るため、既存マイグレーション
+            // 履歴とのプロバイダ間差異は問題にならない)
+            await using (var setupDb = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options))
+            {
+                await setupDb.Database.EnsureCreatedAsync();
+                var incident = new Incident
+                {
+                    Department = "内科病棟",
+                    IncidentType = IncidentTypeKind.Fall,
+                    Severity = IncidentSeverity.Level2,
+                    Description = "テスト",
+                    ReporterName = "担当",
+                    OccurredAt = DateTime.Now
+                };
+                var measureA = new PreventiveMeasure
+                {
+                    Incident = incident,
+                    Description = "対策A",
+                    MeasureType = MeasureTypeKind.ShortTerm,
+                    ResponsiblePerson = "担当A",
+                    ResponsibleDepartment = "内科病棟",
+                    DueDate = DateTime.Today.AddDays(30),
+                    Priority = 2
+                };
+                var measureB = new PreventiveMeasure
+                {
+                    Incident = incident,
+                    Description = "対策B",
+                    MeasureType = MeasureTypeKind.ShortTerm,
+                    ResponsiblePerson = "担当B",
+                    ResponsibleDepartment = "内科病棟",
+                    DueDate = DateTime.Today.AddDays(30),
+                    Priority = 2
+                };
+                incident.PreventiveMeasures.Add(measureA);
+                incident.PreventiveMeasures.Add(measureB);
+                setupDb.Incidents.Add(incident);
+                await setupDb.SaveChangesAsync();
+                incidentId = incident.Id;
+                measureAId = measureA.Id;
+                measureBId = measureB.Id;
+            }
+
+            // それぞれ別の DbContext・別の Controller インスタンスで、
+            // 別スレッド(Task.Run)から本物の並行実行として Delete を呼ぶ
+            Task<IActionResult> RunDeleteOnOwnThreadAsync(int measureId) => Task.Run(async () =>
+            {
+                await using var db = new ApplicationDbContext(
+                    new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options);
+                var controller = new PreventiveMeasuresController(
+                    db,
+                    UserContextHelper.BuildAuthService(),
+                    new SystemClock(),
+                    NullLogger<PreventiveMeasuresController>.Instance);
+                UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+                return await controller.Delete(measureId);
+            });
+
+            var taskA = RunDeleteOnOwnThreadAsync(measureAId);
+            var taskB = RunDeleteOnOwnThreadAsync(measureBId);
+            await Task.WhenAll(taskA, taskB);
+
+            // 検証: 両方が成功して対策0件になってはならない
+            // (どちらか一方が成功しもう一方は「最後の1件」または「同時実行の衝突」で
+            // 拒否されるか、まれに両方とも衝突で拒否される。いずれにせよ最低1件は残る)
+            await using var verifyDb = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options);
+            var remaining = await verifyDb.PreventiveMeasures.CountAsync(m => m.IncidentId == incidentId);
+            Assert.True(remaining >= 1, "同時削除リクエストによって対策が0件になってはならない(HasAtLeastOneValidMeasure不変条件)");
+        }
+        finally
+        {
+            // 一時DBファイルの後始末(SQLiteはWAL/SHMの補助ファイルも作りうるため一括削除)
+            foreach (var path in new[] { dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal" })
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
     }
 
     [Fact]
