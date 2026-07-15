@@ -137,15 +137,10 @@ public class IncidentMeasuresController : Controller
         // 同時編集検知用のトークンをクライアント値でセット
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
-        try
+        // DB へ反映を試行(衝突時はログを残してユーザーに再読み込みを促す共通処理)
+        if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
+                _db, _logger, "Concurrency conflict completing PreventiveMeasure {MeasureId}", id))
         {
-            // DB へ反映
-            await _db.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            // 衝突: ログを残してユーザーに再読み込みを促す
-            _logger.LogWarning(ex, "Concurrency conflict completing PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、完了登録は保存されませんでした。最新の状態を読み直してから再度操作してください。";
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }
@@ -205,15 +200,10 @@ public class IncidentMeasuresController : Controller
         // 同時編集検知トークンを設定
         _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
-        try
+        // DB へ反映を試行(衝突時はログを残してユーザーに再読み込みを促す共通処理)
+        if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
+                _db, _logger, "Concurrency conflict rating PreventiveMeasure {MeasureId}", id))
         {
-            // DB へ反映
-            await _db.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            // 衝突: ログを残してユーザーに再読み込みを促す
-            _logger.LogWarning(ex, "Concurrency conflict rating PreventiveMeasure {MeasureId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、有効性評価は保存されませんでした。最新の状態を読み直してから再度登録してください。";
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }

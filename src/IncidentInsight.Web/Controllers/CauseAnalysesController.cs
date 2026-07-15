@@ -139,15 +139,10 @@ public class CauseAnalysesController : Controller
         // 同時編集検知: クライアント保持トークンを OriginalValue にセット
         _db.Entry(analysis).Property(nameof(CauseAnalysis.ConcurrencyToken)).OriginalValue = vm.ConcurrencyToken;
 
-        try
+        // DB 反映を試行(衝突時はログを残してユーザーに再読み込みを促す共通処理)
+        if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
+                _db, _logger, "Concurrency conflict updating CauseAnalysis {AnalysisId}", id))
         {
-            // DB 反映
-            await _db.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            // 衝突発生: ログを残してユーザーに再読み込みを促す
-            _logger.LogWarning(ex, "Concurrency conflict updating CauseAnalysis {AnalysisId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、変更は保存されませんでした。最新の内容を読み直してから再度編集してください。";
             return RedirectToAction(nameof(EditCauseAnalysis), new { id });
         }
@@ -238,15 +233,10 @@ public class CauseAnalysesController : Controller
         var incidentId = analysis.IncidentId;
         // 削除マークして DB に反映
         _db.CauseAnalyses.Remove(analysis);
-        try
+        // 保存試行(この時点で他ユーザーの更新と衝突していれば共通処理がログを残す)
+        if (!await IncidentControllerHelpers.TrySaveChangesHandlingConcurrencyAsync(
+                _db, _logger, "Concurrency conflict deleting CauseAnalysis {AnalysisId}", id))
         {
-            // DB に反映(この時点で他ユーザーの更新と衝突していれば例外に分岐)
-            await _db.SaveChangesAsync();
-        }
-        catch (DbUpdateConcurrencyException ex)
-        {
-            // 衝突発生: ログを残し、ユーザーに再読み込みを促す
-            _logger.LogWarning(ex, "Concurrency conflict deleting CauseAnalysis {AnalysisId}", id);
             TempData["Warning"] = "他のユーザが先に更新したため、削除できませんでした。画面を更新してから再度操作してください。";
             return RedirectToAction("Details", "Incidents", new { id = incidentId });
         }
