@@ -142,6 +142,8 @@
                     <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id"
                           method="post" class="d-inline ms-2">
                         @Html.AntiForgeryToken()
+                        @* 楽観ロックトークンを隠しフィールドで送信(送らないと Complete 側で Guid.Empty がピンされ常に衝突扱いになる) *@
+                        <input type="hidden" name="concurrencyToken" value="@m.ConcurrencyToken" />
                         <button type="submit" class="btn btn-sm btn-outline-success py-0">完了報告</button>
                     </form>
                 </li>
