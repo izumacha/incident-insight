@@ -2,6 +2,10 @@
 using IncidentInsight.Web.Data;
 // Incident エンティティを使う
 using IncidentInsight.Web.Models;
+// ViewModel(IncidentDetailViewModel / MeasureFormViewModel / CauseAnalysisFormViewModel)を使う
+using IncidentInsight.Web.Models.ViewModels;
+// 時刻源(IClock)・再発検知サービス(IRecurrenceService)を使う
+using IncidentInsight.Web.Services;
 // 認可サービスのインタフェース
 using Microsoft.AspNetCore.Authorization;
 // ClaimsPrincipal を扱う
@@ -136,5 +140,65 @@ internal static class IncidentControllerHelpers
             // 失敗を呼び出し側へ伝える(TempData["Warning"] とリダイレクトは呼び出し側の責務)
             return false;
         }
+    }
+
+    /// <summary>
+    /// インシデント詳細画面(Details)用の <see cref="IncidentDetailViewModel"/> を組み立てる。
+    /// <see cref="Controllers.IncidentsController.Details"/> の GET 本来の呼び出しに加え、
+    /// AddMeasure/AddCauseAnalysis がバリデーション失敗時に(別コントローラから)同じ詳細画面を
+    /// 入力済みの値を保持したまま再描画するためにも使う(CLAUDE.md §6 DRY)。
+    ///
+    /// AddMeasure/AddCauseAnalysis は成功時は Details へリダイレクトするが、失敗時に同じ
+    /// redirect を使うと入力済みの値が失われる。TempData(既定はクッキーに乗る
+    /// CookieTempDataProvider)へ入力値そのものを退避する方式は、自由記述欄(なぜなぜ分析・
+    /// 対策内容等、PHI を含みうる)をクライアント側のクッキーへ丸ごと載せてしまう上、Cookie の
+    /// 実質的なサイズ上限(多くのブラウザで 4KB 程度)を超える恐れもあるため採用しない。代わりに
+    /// 呼び出し側がこのメソッドで Details と同じ ViewModel をサーバー側だけで組み立て直し、
+    /// <c>newMeasureOverride</c>/<c>newCauseAnalysisOverride</c> にバリデーション失敗した入力値を
+    /// 渡すことで、それを保持したまま Details ビューをそのまま再描画できる(データはクライアントを
+    /// 経由しない)。両パラメータを省略した場合は通常の GET と同じ空の ViewModel になる。
+    ///
+    /// 呼び出し側は事前に認可チェック(CanView/CanEditIncident)を済ませておくこと(ここでは行わない)。
+    /// </summary>
+    /// <returns>インシデントが存在しなければ null(呼び出し側は 404 として扱う)。</returns>
+    public static async Task<IncidentDetailViewModel?> BuildIncidentDetailViewModelAsync(
+        ApplicationDbContext db,
+        IRecurrenceService recurrence,
+        IClock clock,
+        int incidentId,
+        MeasureFormViewModel? newMeasureOverride = null,
+        CauseAnalysisFormViewModel? newCauseAnalysisOverride = null)
+    {
+        // 原因分析 → カテゴリ → 親カテゴリまで、および対策一覧を eager-load で取得
+        // (IncidentsController.Details と同じクエリ)
+        var incident = await db.Incidents
+            .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory).ThenInclude(cc => cc!.Parent)
+            .Include(i => i.PreventiveMeasures)
+            .FirstOrDefaultAsync(i => i.Id == incidentId);
+        // レコードが無ければ呼び出し側で 404 にできるよう null を返す
+        if (incident == null) return null;
+
+        // 再発検出(HomeController と同じマッチングルールを共有するサービスに委譲)。
+        // 類似インシデント一覧を取得(期間無制限)
+        var similar = await recurrence.FindRecurrencesForIncidentAsync(incident, db.Incidents);
+        // 原因カテゴリのドロップダウン選択肢(親カテゴリでグルーピング)
+        var causeOptions = await BuildCauseCategoryOptionsAsync(db);
+
+        // 画面用 ViewModel を組み立てる。NewCauseAnalysis/NewMeasure は override が渡されて
+        // いればそれを使い(バリデーション失敗した入力値の保持)、無ければ通常どおり空にする
+        return new IncidentDetailViewModel
+        {
+            Incident = incident,
+            SimilarIncidents = similar,
+            CauseCategoryOptions = causeOptions,
+            NewCauseAnalysis = newCauseAnalysisOverride ?? new CauseAnalysisFormViewModel { IncidentId = incidentId },
+            // DueDate を IClock で既定の日数後に初期化する(IncidentsController.Details と同じ規約)
+            NewMeasure = newMeasureOverride
+                ?? new MeasureFormViewModel
+                {
+                    IncidentId = incidentId,
+                    DueDate = clock.Today.AddDays(Controllers.IncidentsController.DefaultMeasureDueDays)
+                }
+        };
     }
 }

@@ -302,9 +302,15 @@ public class PreventiveMeasuresController : Controller
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
         // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / EF Core は保存時に DataAnnotations を自動検証しない)。
+        // 検証失敗時は、このアクションの他の失敗経路(同時編集衝突など)と同じく
+        // TempData["Warning"] + リダイレクトで通知する(生の BadRequest はカンバン画面の
+        // コンテキストを失わせ、無装飾のプレーンテキストのみが表示されてしまうため)。
         var completionNoteError = IncidentControllerHelpers.ValidateFreeTextLength(completionNote, "完了報告内容");
         if (completionNoteError != null)
-            return BadRequest(completionNoteError);
+        {
+            TempData["Warning"] = completionNoteError;
+            return RedirectToAction(nameof(Index));
+        }
 
         // ステータス・完了日時・報告メモを更新
         measure.Status = MeasureStatus.Completed;

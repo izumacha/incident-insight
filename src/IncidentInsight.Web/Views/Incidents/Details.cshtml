@@ -19,12 +19,16 @@
         <span class="badge bg-@incident.SeverityColor ms-2">@incident.SeverityLabel</span>
     </h2>
     <div>
-        @* 編集画面への遷移 *@
-        <a asp-action="Edit" asp-route-id="@incident.Id" class="btn btn-outline-secondary me-2">
+        @* 編集画面への遷移。asp-controller を明示する: このビューは IncidentsController.Details の
+           GET だけでなく、IncidentMeasuresController.AddMeasure/CauseAnalysesController.AddCauseAnalysis
+           がバリデーション失敗時に再描画する経路からも使われるため、asp-controller を省略すると
+           それらのコントローラが暗黙のリンク先として解決されてしまい、存在しないアクションを
+           指してしまう *@
+        <a asp-controller="Incidents" asp-action="Edit" asp-route-id="@incident.Id" class="btn btn-outline-secondary me-2">
             <i class="bi bi-pencil me-1"></i>編集
         </a>
-        @* 一覧画面への遷移 *@
-        <a asp-action="Index" class="btn btn-outline-primary">
+        @* 一覧画面への遷移(上と同じ理由で asp-controller を明示する) *@
+        <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
             <i class="bi bi-list me-1"></i>一覧へ
         </a>
     </div>
@@ -49,7 +53,8 @@
                     @* 発生日・重症度・概要の冒頭を要約表示 *@
                     @sim.OccurredAt.ToString("yyyy/MM/dd") — @sim.SeverityLabel —
                     @(sim.Description.Length > 50 ? sim.Description[..50] + "…" : sim.Description)
-                    <a asp-action="Details" asp-route-id="@sim.Id" class="ms-1">詳細</a>
+                    @* asp-controller を明示する(上の編集/一覧リンクと同じ理由) *@
+                    <a asp-controller="Incidents" asp-action="Details" asp-route-id="@sim.Id" class="ms-1">詳細</a>
                 </li>
             }
         </ul>

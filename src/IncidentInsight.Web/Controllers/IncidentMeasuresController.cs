@@ -10,7 +10,7 @@ using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
 // 認可ポリシー名
 using IncidentInsight.Web.Authorization;
-// 時刻源サービス
+// 時刻源サービス・再発検知サービス(IRecurrenceService)
 using IncidentInsight.Web.Services;
 // IAuthorizationService
 using Microsoft.AspNetCore.Authorization;
@@ -40,6 +40,9 @@ public class IncidentMeasuresController : Controller
     private readonly IAuthorizationService _auth;
     // 時刻源(テスト差し替え可能)
     private readonly IClock _clock;
+    // 再発検知サービス(AddMeasure がバリデーション失敗時に Details ビューモデルを
+    // 組み立て直す際、IncidentsController.Details と同じ内容にするために必要)
+    private readonly IRecurrenceService _recurrence;
     // ログ出力用(同時編集衝突などの警告)
     private readonly ILogger<IncidentMeasuresController> _logger;
 
@@ -48,11 +51,13 @@ public class IncidentMeasuresController : Controller
         ApplicationDbContext db,
         IAuthorizationService auth,
         IClock clock,
+        IRecurrenceService recurrence,
         ILogger<IncidentMeasuresController> logger)
     {
         _db = db;
         _auth = auth;
         _clock = clock;
+        _recurrence = recurrence;
         _logger = logger;
     }
 
@@ -95,14 +100,23 @@ public class IncidentMeasuresController : Controller
             await _db.SaveChangesAsync();
             // 成功通知
             TempData["Success"] = "再発防止策を追加しました。";
+            // 詳細画面へ戻す
+            return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
         }
-        else
-        {
-            // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する
-            TempData["Warning"] = "入力内容に不備があります。再発防止策フォームの項目を確認してください。";
-        }
-        // 詳細画面へ戻す
-        return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
+
+        // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する。
+        // このアクションは成功時は Details へリダイレクトするが、失敗時に同じ redirect を
+        // 使うと入力済みの値が失われてしまう。TempData(既定はクッキーに乗る
+        // CookieTempDataProvider)へ入力値そのものを退避する方式は、自由記述欄
+        // (なぜなぜ分析・対策内容等、PHI を含みうる)をクライアント側のクッキーへ丸ごと
+        // 載せてしまう上、Cookie の実質的なサイズ上限(多くのブラウザで 4KB 程度)を
+        // 超える恐れもあるため採用しない。代わりに Details と同じ ViewModel をこの場で
+        // サーバー側だけで組み立て、入力済みの値を保持したまま Details ビューをそのまま
+        // 再描画する(データはクライアントを経由しない)。
+        TempData["Warning"] = "入力内容に不備があります。再発防止策フォームの項目を確認してください。";
+        var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
+            _db, _recurrence, _clock, vm.IncidentId, newMeasureOverride: vm);
+        return View("~/Views/Incidents/Details.cshtml", detailVm);
     }
 
     // POST /Incidents/CompleteMeasure/5
@@ -125,9 +139,15 @@ public class IncidentMeasuresController : Controller
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
         // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / PreventiveMeasuresController.Complete と同じ理由)。
+        // 検証失敗時は、このアクションの他の失敗経路(同時編集衝突など)と同じく
+        // TempData["Warning"] + Details へのリダイレクトで通知する(生の BadRequest は
+        // 詳細画面のモーダル/コンテキストを失わせてしまうため)。
         var completionNoteError = IncidentControllerHelpers.ValidateFreeTextLength(completionNote, "完了報告内容");
         if (completionNoteError != null)
-            return BadRequest(completionNoteError);
+        {
+            TempData["Warning"] = completionNoteError;
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // ステータスを完了へ、完了日時と完了コメントをセット
         measure.Status = MeasureStatus.Completed;
@@ -176,9 +196,15 @@ public class IncidentMeasuresController : Controller
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
         // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / ReviewViewModel.EffectivenessNote と同じ理由)。
+        // 検証失敗時は、このアクションの他の失敗経路(ライフサイクル逸脱・同時編集衝突など)と
+        // 同じく TempData["Warning"] + Details へのリダイレクトで通知する(生の BadRequest は
+        // 詳細画面のモーダル/コンテキストを失わせてしまうため)。
         var effectivenessNoteError = IncidentControllerHelpers.ValidateFreeTextLength(effectivenessNote, "有効性評価コメント");
         if (effectivenessNoteError != null)
-            return BadRequest(effectivenessNoteError);
+        {
+            TempData["Warning"] = effectivenessNoteError;
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // ライフサイクル(Planned → InProgress → Completed → 有効性評価)を強制する。
         // 完了していない対策は「実施していない」ため有効性評価の対象外。ここで拒否しないと、

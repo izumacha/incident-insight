@@ -28,6 +28,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             _db,
             UserContextHelper.BuildAuthService(),
             new SystemClock(),
+            new RecurrenceService(new SystemClock()),
             NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -97,6 +98,42 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task AddMeasure_ValidationFailure_ReturnsDetailsViewWithPreservedInput()
+    {
+        // このアクションは成功時は Details へリダイレクトするが、バリデーション失敗時は
+        // 入力済みの値を失わないよう Details ビューをそのまま再描画する(回帰防止:
+        // 以前は失敗時も無条件でリダイレクトしており、Details の GET が
+        // NewMeasure を空の ViewModel で再初期化するため入力内容がすべて失われていた)。
+        var incident = await SeedIncidentAsync();
+
+        var vm = new MeasureFormViewModel
+        {
+            IncidentId = incident.Id,
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "田中太郎",
+            ResponsibleDepartment = "内科病棟",
+            DueDate = DateTime.Today.AddDays(30),
+            Priority = 2
+            // Description(必須)を意図的に未設定のままにし、実際の POST で [Required] により
+            // 発生する ModelState エラーを手動で再現する(モデルバインディングを経ないため)
+        };
+        _controller.ModelState.AddModelError(nameof(MeasureFormViewModel.Description), "対策内容を入力してください");
+
+        var result = await _controller.AddMeasure(vm);
+
+        // 保存されていないこと(バリデーション失敗のため)
+        Assert.Empty(_db.PreventiveMeasures);
+        // Details ビューがそのまま返り、入力済みの値(Description 以外)が保持されていること
+        var view = Assert.IsType<ViewResult>(result);
+        Assert.Equal("~/Views/Incidents/Details.cshtml", view.ViewName);
+        var detailVm = Assert.IsType<IncidentDetailViewModel>(view.Model);
+        Assert.Equal(incident.Id, detailVm.Incident.Id);
+        Assert.Equal("田中太郎", detailVm.NewMeasure.ResponsiblePerson);
+        Assert.Equal("内科病棟", detailVm.NewMeasure.ResponsibleDepartment);
+        Assert.Equal(incident.Id, detailVm.NewMeasure.IncidentId);
+    }
+
+    [Fact]
     public async Task AddMeasure_Staff_OtherDepartment_ReturnsForbid()
     {
         var incident = await SeedIncidentAsync("外来");
@@ -144,17 +181,23 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task CompleteMeasure_NoteTooLong_ReturnsBadRequest_AndDoesNotPersist()
+    public async Task CompleteMeasure_NoteTooLong_RedirectsWithWarning_AndDoesNotPersist()
     {
         // この経路は ViewModel を介さず生の文字列を受け取るため、他の自由記述欄
-        // (Description/AnalysisNote 等)と同じ500文字上限がここで検証されることを確認する
+        // (Description/AnalysisNote 等)と同じ500文字上限がここで検証されることを確認する。
+        // 他の失敗経路(同時編集衝突など)と同じく、生の BadRequest ではなく
+        // TempData["Warning"] + Details へのリダイレクトで通知されることを確認する。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
         var tooLongNote = new string('あ', 501);
 
         var result = await _controller.CompleteMeasure(measure.Id, tooLongNote, measure.ConcurrencyToken);
 
-        Assert.IsType<BadRequestObjectResult>(result);
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Equal(incident.Id, redirect.RouteValues!["id"]);
+        Assert.Contains("500文字以内", _controller.TempData["Warning"] as string);
         var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Equal(MeasureStatus.Planned, unchanged.Status);
         Assert.Null(unchanged.CompletionNote);
@@ -173,17 +216,23 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task RateMeasure_NoteTooLong_ReturnsBadRequest_AndDoesNotPersist()
+    public async Task RateMeasure_NoteTooLong_RedirectsWithWarning_AndDoesNotPersist()
     {
         // この経路は ViewModel を介さず生の文字列を受け取るため、他の自由記述欄と同じ
-        // 500文字上限がここで検証されることを確認する
+        // 500文字上限がここで検証されることを確認する。他の失敗経路(ライフサイクル逸脱・
+        // 同時編集衝突など)と同じく、生の BadRequest ではなく TempData["Warning"] +
+        // Details へのリダイレクトで通知されることを確認する。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
         var tooLongNote = new string('あ', 501);
 
         var result = await _controller.RateMeasure(measure.Id, 3, tooLongNote, false, measure.ConcurrencyToken);
 
-        Assert.IsType<BadRequestObjectResult>(result);
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Equal(incident.Id, redirect.RouteValues!["id"]);
+        Assert.Contains("500文字以内", _controller.TempData["Warning"] as string);
         var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Null(unchanged.EffectivenessRating);
         Assert.Null(unchanged.EffectivenessNote);

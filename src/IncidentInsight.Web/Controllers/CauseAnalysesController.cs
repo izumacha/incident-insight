@@ -8,7 +8,7 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.ViewModels;
 // 認可ポリシー名
 using IncidentInsight.Web.Authorization;
-// 時刻源サービス
+// 時刻源サービス・再発検知サービス(IRecurrenceService)
 using IncidentInsight.Web.Services;
 // IAuthorizationService
 using Microsoft.AspNetCore.Authorization;
@@ -37,6 +37,9 @@ public class CauseAnalysesController : Controller
     private readonly IAuthorizationService _auth;
     // 時刻源(テスト差し替え可能)
     private readonly IClock _clock;
+    // 再発検知サービス(AddCauseAnalysis がバリデーション失敗時に Details ビューモデルを
+    // 組み立て直す際、IncidentsController.Details と同じ内容にするために必要)
+    private readonly IRecurrenceService _recurrence;
     // ログ出力用(同時編集衝突などの警告)
     private readonly ILogger<CauseAnalysesController> _logger;
 
@@ -45,11 +48,13 @@ public class CauseAnalysesController : Controller
         ApplicationDbContext db,
         IAuthorizationService auth,
         IClock clock,
+        IRecurrenceService recurrence,
         ILogger<CauseAnalysesController> logger)
     {
         _db = db;
         _auth = auth;
         _clock = clock;
+        _recurrence = recurrence;
         _logger = logger;
     }
 
@@ -203,14 +208,23 @@ public class CauseAnalysesController : Controller
             await _db.SaveChangesAsync();
             // 成功通知
             TempData["Success"] = "原因分析を追加しました。";
+            // 詳細画面へ戻す
+            return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
         }
-        else
-        {
-            // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する
-            TempData["Warning"] = "入力内容に不備があります。原因分析フォームの項目を確認してください。";
-        }
-        // 詳細画面へ戻す
-        return RedirectToAction("Details", "Incidents", new { id = vm.IncidentId });
+
+        // バリデーション失敗: 黙って飲み込まずユーザーに入力不備を通知する。
+        // このアクションは成功時は Details へリダイレクトするが、失敗時に同じ redirect を
+        // 使うと入力済みの値が失われてしまう。TempData(既定はクッキーに乗る
+        // CookieTempDataProvider)へ入力値そのものを退避する方式は、自由記述欄
+        // (なぜなぜ分析の各項目等、PHI を含みうる)をクライアント側のクッキーへ丸ごと
+        // 載せてしまう上、Cookie の実質的なサイズ上限(多くのブラウザで 4KB 程度)を
+        // 超える恐れもあるため採用しない(IncidentMeasuresController.AddMeasure と同じ理由)。
+        // 代わりに Details と同じ ViewModel をこの場でサーバー側だけで組み立て、入力済みの
+        // 値を保持したまま Details ビューをそのまま再描画する(データはクライアントを経由しない)。
+        TempData["Warning"] = "入力内容に不備があります。原因分析フォームの項目を確認してください。";
+        var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
+            _db, _recurrence, _clock, vm.IncidentId, newCauseAnalysisOverride: vm);
+        return View("~/Views/Incidents/Details.cshtml", detailVm);
     }
 
     // POST /Incidents/DeleteCauseAnalysis/5
