@@ -155,6 +155,47 @@ public class HomeControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_OverdueMeasureList_IsCappedButKpiCountReflectsFullTotal()
+    {
+        // 回帰テスト: 以前は「期限超過の対策一覧」パネル用のクエリに上限がなく、
+        // 画面には Take(5) で 5 件しか出さないにもかかわらず DB からは期限超過対策を
+        // 全件フェッチしていた(§8 一覧取得は必ず上限を持たせる、に反する無制限取得)。
+        // ここでは HomeController.OverdueAlertLimit(5) を超える件数の期限超過対策を用意し、
+        // (1) OverdueMeasureList が上限件数までしか含まれないこと、
+        // (2) KPI の OverdueMeasures(件数)は上限に関わらず全件を正しく数えていること、
+        // の両方を確認する。
+        const int overdueAlertLimit = 5; // HomeController.OverdueAlertLimit と同じ値(private のためテスト側で明示)
+        const int overdueCountInDb = overdueAlertLimit + 3; // 上限より多く用意する
+
+        var incident = MakeIncident();
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        for (int i = 0; i < overdueCountInDb; i++)
+        {
+            _db.PreventiveMeasures.Add(new PreventiveMeasure
+            {
+                IncidentId = incident.Id,
+                Description = $"対策{i}",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当者",
+                ResponsibleDepartment = "内科",
+                Status = MeasureStatus.Planned,
+                DueDate = DateTime.Today.AddDays(-1 - i) // すべて期限超過、期限日はバラける
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // KPI の総数は上限を超えても正確に全件(overdueCountInDb)を反映する
+        Assert.Equal(overdueCountInDb, vm!.OverdueMeasures);
+        // 一覧パネルは OverdueAlertLimit 件までしか返さない(DB 側で切り捨て済み)
+        Assert.Equal(overdueAlertLimit, vm.OverdueMeasureList.Count);
+    }
+
+    [Fact]
     public async Task Index_RecurrenceDetection_AlertsForSameDeptTypeCategory()
     {
         var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
