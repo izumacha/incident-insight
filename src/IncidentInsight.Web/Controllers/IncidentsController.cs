@@ -297,6 +297,15 @@ public class IncidentsController : Controller
             return View(vm);
         }
 
+        // ここに到達する時点では HasAtLeastOneValidMeasure(vm.Measures) が true であることが
+        // 保証されている(false なら直前の ModelState.IsValid チェックで return 済み)ため、
+        // 実行時には vm.Measures は null にならない。ただしその保証は
+        // HasAtLeastOneValidMeasure 側の実装に暗黙に依存しており、コンパイラの null 許容参照型
+        // 解析はメソッド境界をまたいでこの関係を追えず CS8604 を報告する。将来
+        // HasAtLeastOneValidMeasure の実装が変わってこの前提が崩れても NullReferenceException で
+        // 落ちないよう、ここで明示的に空リストへフォールバックしておく(§9 失敗しても安全側に倒す)。
+        vm.Measures ??= new List<MeasureFormViewModel>();
+
         // Incident と関連エンティティを単一トランザクションで保存する。
         // トランザクションがないと、Incident は保存されたが対策がまだ保存されていない
         // 中間状態が生じ、「最低1件の対策が必要」という業務ルールが DB 上で破れる。
