@@ -165,34 +165,16 @@ public class IncidentsController : Controller
     // 詳細画面。原因分析・対策・類似インシデントを併せて表示
     public async Task<IActionResult> Details(int id)
     {
-        // 原因分析 → カテゴリ → 親カテゴリまで、および対策一覧を eager-load で取得
-        var incident = await _db.Incidents
-            .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory).ThenInclude(cc => cc!.Parent)
-            .Include(i => i.PreventiveMeasures)
-            .FirstOrDefaultAsync(i => i.Id == id);
+        // 画面用 ViewModel の組み立ては IncidentMeasuresController.AddMeasure /
+        // CauseAnalysesController.AddCauseAnalysis がバリデーション失敗時にこの画面を
+        // 再描画する場合とも共有するヘルパーに集約する(CLAUDE.md §6 DRY)。
+        // NewCauseAnalysis/NewMeasure は override 未指定のため通常どおり空の ViewModel になる。
+        var vm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(_db, _recurrence, _clock, id);
 
         // レコードが無ければ 404
-        if (incident == null) return NotFound();
+        if (vm == null) return NotFound();
         // 閲覧権限がなければ 403
-        if (!await IsAuthorizedFor(incident, Policies.CanViewIncident)) return Forbid();
-
-        // 再発検出はサービスに集約(HomeController と同じマッチングルールを共有)。
-        // 類似インシデント一覧を取得(期間無制限)
-        var similar = await _recurrence.FindRecurrencesForIncidentAsync(incident, _db.Incidents);
-
-        // 原因カテゴリのドロップダウン選択肢(親カテゴリでグルーピング)
-        var causeOptions = await BuildCauseCategoryOptions();
-
-        // 画面用 ViewModel を組み立てる
-        var vm = new IncidentDetailViewModel
-        {
-            Incident = incident,
-            SimilarIncidents = similar,
-            CauseCategoryOptions = causeOptions,
-            NewCauseAnalysis = new CauseAnalysisFormViewModel { IncidentId = id },
-            // DueDate を IClock で 30 日後に初期化（ViewModel のデフォルト値を IClock 規約で削除したため、ここで補完する）
-            NewMeasure = new MeasureFormViewModel { IncidentId = id, DueDate = _clock.Today.AddDays(DefaultMeasureDueDays) }
-        };
+        if (!await IsAuthorizedFor(vm.Incident, Policies.CanViewIncident)) return Forbid();
 
         // 詳細ビューを描画
         return View(vm);

@@ -29,6 +29,7 @@ public class CauseAnalysesControllerTests : IDisposable
             _db,
             UserContextHelper.BuildAuthService(),
             new SystemClock(),
+            new RecurrenceService(new SystemClock()),
             NullLogger<CauseAnalysesController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -108,10 +109,10 @@ public class CauseAnalysesControllerTests : IDisposable
 
         var result = await _controller.AddCauseAnalysis(vm);
 
-        // 未捕捉の 500(DbUpdateException)ではなく、入力不備として詳細画面へ戻ること
-        var redirect = Assert.IsType<RedirectToActionResult>(result);
-        Assert.Equal("Details", redirect.ActionName);
-        Assert.Equal("Incidents", redirect.ControllerName);
+        // 未捕捉の 500(DbUpdateException)ではなく、入力不備として詳細画面がそのまま
+        // 再描画されること(入力済みの値を保持したまま。回帰防止)
+        var view = Assert.IsType<ViewResult>(result);
+        Assert.Equal("~/Views/Incidents/Details.cshtml", view.ViewName);
         // ModelState にエラーが積まれ、保存されていないこと
         Assert.False(_controller.ModelState.IsValid);
         Assert.True(_controller.ModelState.ContainsKey(nameof(vm.CauseCategoryId)));

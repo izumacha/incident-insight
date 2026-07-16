@@ -135,7 +135,7 @@ public class ConcurrencyTests : IDisposable
         // 引き続きインシデント詳細画面("Details" on "Incidents" controller)。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new IncidentMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<IncidentMeasuresController>.Instance);
+        var controller = new IncidentMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock()), NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
@@ -254,7 +254,7 @@ public class ConcurrencyTests : IDisposable
         };
         _db.CauseAnalyses.Add(analysis);
         await _db.SaveChangesAsync();
-        var controller = new CauseAnalysesController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), NullLogger<CauseAnalysesController>.Instance);
+        var controller = new CauseAnalysesController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock()), NullLogger<CauseAnalysesController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
