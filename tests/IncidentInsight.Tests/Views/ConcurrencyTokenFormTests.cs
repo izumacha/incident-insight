@@ -19,6 +19,12 @@ public class ConcurrencyTokenFormTests
         "UpdateStatus",    // PreventiveMeasuresController.UpdateStatus
     };
 
+    // 素の hidden input が出力する name 属性のリテラル(コントローラ引数 concurrencyToken と対応)
+    private const string TokenFieldNameLiteral = "name=\"concurrencyToken\"";
+
+    // CSRF + 楽観ロックトークンをセット出力する共通部品(Views/Shared/_ConcurrencyTokenFields.cshtml)の参照
+    private const string TokenPartialReference = "<partial name=\"_ConcurrencyTokenFields\"";
+
     // <form ...> ... </form> のブロック全体を(改行を跨いで)抜き出す正規表現
     private static readonly Regex FormBlockRegex =
         new(@"<form\b(?<attrs>[^>]*)>(?<body>.*?)</form>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
@@ -69,9 +75,9 @@ public class ConcurrencyTokenFormTests
             .FirstOrDefault(m => m.Groups["attrs"].Value.Contains("asp-action=\"Complete\"", StringComparison.Ordinal));
         // フォーム自体が存在すること
         Assert.NotNull(completeForm);
-        // 実トークン(モデルの ConcurrencyToken)を hidden field で送信していること
-        // (ループ変数名や属性順のリファクタで壊れないよう、名前と値の対応だけを正規表現で固定する)
-        Assert.Matches(@"name=""concurrencyToken""\s+value=""@\w+\.ConcurrencyToken""", completeForm!.Value);
+        // 共通部品(_ConcurrencyTokenFields)経由で実トークン(モデルの ConcurrencyToken)を送信していること
+        // (ループ変数名のリファクタで壊れないよう、部品参照とモデル束縛の対応だけを正規表現で固定する)
+        Assert.Matches(@"<partial\s+name=""_ConcurrencyTokenFields""\s+model=""\w+\.ConcurrencyToken""", completeForm!.Value);
     }
 
     // 開きタグの属性がトークン必須アクション宛てかどうかを判定する
@@ -90,10 +96,13 @@ public class ConcurrencyTokenFormTests
     // フォーム本体が concurrencyToken の入力欄を持つかを判定する
     private static bool HasConcurrencyTokenField(string formBlock)
     {
-        // 素の name 記法(name="concurrencyToken"。大文字始まりの name="ConcurrencyToken" も
-        // モデルバインドは大文字小文字非依存なので許容)と、Tag Helper の asp-for 記法
-        // (asp-for="ConcurrencyToken"。実行時に name="ConcurrencyToken" を出力する)の両方を受け付ける
-        return formBlock.Contains("name=\"concurrencyToken\"", StringComparison.OrdinalIgnoreCase) ||
+        // 次の 3 記法を受け付ける:
+        // (1) 共通部品 <partial name="_ConcurrencyTokenFields" model="…" />(推奨。CSRF とセットで出力)
+        // (2) 素の name 記法(name="concurrencyToken"。大文字始まりの name="ConcurrencyToken" も
+        //     モデルバインドは大文字小文字非依存なので許容)
+        // (3) Tag Helper の asp-for 記法(asp-for="ConcurrencyToken"。実行時に name="ConcurrencyToken" を出力)
+        return formBlock.Contains(TokenPartialReference, StringComparison.Ordinal) ||
+               formBlock.Contains(TokenFieldNameLiteral, StringComparison.OrdinalIgnoreCase) ||
                formBlock.Contains("asp-for=\"ConcurrencyToken\"", StringComparison.Ordinal);
     }
 
