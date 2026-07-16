@@ -32,6 +32,17 @@ public class HomeController : Controller
     private const string PeriodQuarter = "quarter"; // 直近 3 か月
     private const string PeriodYear    = "year";    // 直近 1 年（既定値）
 
+    // ダッシュボードの「期限超過の対策一覧」アラートパネルに列挙する最大件数。
+    // このパネルは全件を見せる画面ではなく代表例を数件示すだけの用途で、Views/Home/Index.cshtml
+    // 側にも「カンバン全件表示へ」という導線がある(全件は PreventiveMeasuresController.Index の
+    // MaxKanbanRows で上限管理済み)。以前はここで上限を付けずに期限超過対策を全件 DB から取得し、
+    // View 側で Take(5) して表示件数だけ絞っていたため、期限超過対策が積み上がるほど
+    // ダッシュボード(ログイン後の着地ページ)読み込みが重くなる無制限取得だった(§8/§9)。
+    // View の Take(5) と重複していた「5」をここへ一本化し、クエリ自体を上限付きにする。
+    // PreventiveMeasuresController.MaxKanbanRows と同様、テストと View 双方から参照できるよう public にする
+    // (単一の参照元にするための§6要件。private だとテスト側で値を再度ハードコードする必要が出てしまう)。
+    public const int OverdueAlertLimit = 5;
+
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
     // 再発検出ロジックのサービス
@@ -108,11 +119,16 @@ public class HomeController : Controller
             .Take(5)
             .ToListAsync();
 
-        // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)。判定は OverdueOn に委譲
+        // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)。判定は OverdueOn に委譲。
+        // アラートパネルには代表例(OverdueAlertLimit件)だけ見せれば十分なため、ここで Take して
+        // 上限を超える分は DB 側で切り捨てる(§8 一覧取得は必ず上限を持たせる)。
+        // KPI の「期限超過対策」件数(OverdueMeasures)は上のCountAsyncで別途正確に数えているため、
+        // ここで件数を絞っても KPI 表示の正確さには影響しない。
         var overdueMeasureList = await measures
             .Include(m => m.Incident)
             .Where(PreventiveMeasure.OverdueOn(today))
             .OrderBy(m => m.DueDate)
+            .Take(OverdueAlertLimit)
             .ToListAsync();
 
         // Trend chart is aggregated SQL-side (GroupBy → Year/Month or Date) so the

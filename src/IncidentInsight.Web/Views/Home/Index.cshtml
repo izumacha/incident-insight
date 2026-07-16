@@ -127,8 +127,8 @@
     <div class="alert alert-danger alert-dismissible fade show shadow-sm" role="alert">
         <h6 class="alert-heading"><i class="bi bi-exclamation-triangle-fill me-2"></i>期限超過の対策が @Model.OverdueMeasures 件あります</h6>
         <ul class="mb-0 mt-2">
-            @* 期限超過の対策を最大 5 件まで列挙 *@
-            @foreach (var m in Model.OverdueMeasureList.Take(5))
+            @* OverdueMeasureList はコントローラ側で既に代表件数まで絞り込み済み(HomeController.OverdueAlertLimit) *@
+            @foreach (var m in Model.OverdueMeasureList)
             {
                 @* Date 同士の差分を Days で取ることで時刻部分の切り捨て誤差を防ぐ *@
                 var daysOverdue = (today.Date - m.DueDate.Date).Days;
@@ -297,7 +297,7 @@
             </div>
         </div>
     </div>
-    @* 期限超過対策の一覧(最大5件) *@
+    @* 期限超過対策の一覧(最大 @(IncidentInsight.Web.Controllers.HomeController.OverdueAlertLimit) 件) *@
     <div class="col-xl-6">
         <div class="card border-0 shadow-sm">
             <div class="card-header bg-white border-0 pb-0">
@@ -314,11 +314,11 @@
                 }
                 else
                 {
-                    @* テーブルで 5 件まで列挙 *@
+                    @* OverdueMeasureList はコントローラ側で既に代表件数まで絞り込み済み(HomeController.OverdueAlertLimit) *@
                     <div class="table-responsive">
                         <table class="table table-sm mb-0">
                             <tbody>
-                                @foreach (var m in Model.OverdueMeasureList.Take(5))
+                                @foreach (var m in Model.OverdueMeasureList)
                                 {
                                     @* Date 同士の差分を Days で取ることで時刻部分の切り捨て誤差を防ぐ *@
                                     var days = (today.Date - m.DueDate.Date).Days;
