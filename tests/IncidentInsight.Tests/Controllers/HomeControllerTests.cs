@@ -164,8 +164,7 @@ public class HomeControllerTests : IDisposable
         // (1) OverdueMeasureList が上限件数までしか含まれないこと、
         // (2) KPI の OverdueMeasures(件数)は上限に関わらず全件を正しく数えていること、
         // の両方を確認する。
-        const int overdueAlertLimit = 5; // HomeController.OverdueAlertLimit と同じ値(private のためテスト側で明示)
-        const int overdueCountInDb = overdueAlertLimit + 3; // 上限より多く用意する
+        const int overdueCountInDb = HomeController.OverdueAlertLimit + 3; // 上限(public 定数を直接参照)より多く用意する
 
         var incident = MakeIncident();
         _db.Incidents.Add(incident);
@@ -192,7 +191,7 @@ public class HomeControllerTests : IDisposable
         // KPI の総数は上限を超えても正確に全件(overdueCountInDb)を反映する
         Assert.Equal(overdueCountInDb, vm!.OverdueMeasures);
         // 一覧パネルは OverdueAlertLimit 件までしか返さない(DB 側で切り捨て済み)
-        Assert.Equal(overdueAlertLimit, vm.OverdueMeasureList.Count);
+        Assert.Equal(HomeController.OverdueAlertLimit, vm.OverdueMeasureList.Count);
     }
 
     [Fact]

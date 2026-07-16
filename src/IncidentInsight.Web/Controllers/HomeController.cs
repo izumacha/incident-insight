@@ -39,7 +39,9 @@ public class HomeController : Controller
     // View 側で Take(5) して表示件数だけ絞っていたため、期限超過対策が積み上がるほど
     // ダッシュボード(ログイン後の着地ページ)読み込みが重くなる無制限取得だった(§8/§9)。
     // View の Take(5) と重複していた「5」をここへ一本化し、クエリ自体を上限付きにする。
-    private const int OverdueAlertLimit = 5;
+    // PreventiveMeasuresController.MaxKanbanRows と同様、テストと View 双方から参照できるよう public にする
+    // (単一の参照元にするための§6要件。private だとテスト側で値を再度ハードコードする必要が出てしまう)。
+    public const int OverdueAlertLimit = 5;
 
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
