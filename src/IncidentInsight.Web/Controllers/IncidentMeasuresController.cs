@@ -139,9 +139,15 @@ public class IncidentMeasuresController : Controller
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
         // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / PreventiveMeasuresController.Complete と同じ理由)。
+        // 検証失敗時は、このアクションの他の失敗経路(同時編集衝突など)と同じく
+        // TempData["Warning"] + Details へのリダイレクトで通知する(生の BadRequest は
+        // 詳細画面のモーダル/コンテキストを失わせてしまうため)。
         var completionNoteError = IncidentControllerHelpers.ValidateFreeTextLength(completionNote, "完了報告内容");
         if (completionNoteError != null)
-            return BadRequest(completionNoteError);
+        {
+            TempData["Warning"] = completionNoteError;
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // ステータスを完了へ、完了日時と完了コメントをセット
         measure.Status = MeasureStatus.Completed;
@@ -190,9 +196,15 @@ public class IncidentMeasuresController : Controller
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
         // 他の自由記述欄(Description/AnalysisNote 等)と同じ上限を検証する
         // (§9 入力は信用しない / ReviewViewModel.EffectivenessNote と同じ理由)。
+        // 検証失敗時は、このアクションの他の失敗経路(ライフサイクル逸脱・同時編集衝突など)と
+        // 同じく TempData["Warning"] + Details へのリダイレクトで通知する(生の BadRequest は
+        // 詳細画面のモーダル/コンテキストを失わせてしまうため)。
         var effectivenessNoteError = IncidentControllerHelpers.ValidateFreeTextLength(effectivenessNote, "有効性評価コメント");
         if (effectivenessNoteError != null)
-            return BadRequest(effectivenessNoteError);
+        {
+            TempData["Warning"] = effectivenessNoteError;
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // ライフサイクル(Planned → InProgress → Completed → 有効性評価)を強制する。
         // 完了していない対策は「実施していない」ため有効性評価の対象外。ここで拒否しないと、

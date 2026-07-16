@@ -455,16 +455,20 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task Complete_NoteTooLong_ReturnsBadRequest_AndDoesNotPersist()
+    public async Task Complete_NoteTooLong_RedirectsWithWarning_AndDoesNotPersist()
     {
         // この経路は ViewModel を介さず生の文字列を受け取るため、他の自由記述欄
-        // (Description/AnalysisNote 等)と同じ500文字上限がここで検証されることを確認する
+        // (Description/AnalysisNote 等)と同じ500文字上限がここで検証されることを確認する。
+        // 他の失敗経路(同時編集衝突など)と同じく、生の BadRequest ではなく
+        // TempData["Warning"] + Index へのリダイレクトで通知されることを確認する。
         var measure = await SeedMeasureAsync("内科病棟");
         var tooLongNote = new string('あ', 501);
 
         var result = await _controller.Complete(measure.Id, tooLongNote, measure.ConcurrencyToken);
 
-        Assert.IsType<BadRequestObjectResult>(result);
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.Contains("500文字以内", _controller.TempData["Warning"] as string);
         var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Equal(MeasureStatus.Planned, unchanged.Status);
         Assert.Null(unchanged.CompletionNote);
