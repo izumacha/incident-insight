@@ -1,0 +1,11 @@
+@* 楽観ロック付き POST フォーム用の共通 hidden field 部品。
+   モデルとして対象エンティティの ConcurrencyToken(Guid)を受け取り、
+   CSRF トークンと concurrencyToken を必ずセットで出力する。
+   個々のフォームに手書きで並べるとトークン送信を忘れやすく、忘れると
+   コントローラ側で Guid.Empty がピンされ楽観ロック検査が 100% 失敗する
+   (ダッシュボードの「完了報告」で実際に発生した回帰)ため、この部品に一元化する。 *@
+@model System.Guid
+@* CSRF 対策のアンチフォージェリトークンを出力する *@
+@Html.AntiForgeryToken()
+@* 楽観ロックトークンを隠しフィールドで送信する(名前はコントローラの引数 concurrencyToken と一致) *@
+<input type="hidden" name="concurrencyToken" value="@Model" />

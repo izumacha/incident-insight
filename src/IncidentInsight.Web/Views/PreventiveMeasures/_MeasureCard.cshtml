@@ -79,9 +79,8 @@
             @if (m.Status != IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="Complete" asp-route-id="@m.Id" method="post" class="d-inline">
-                    @Html.AntiForgeryToken()
-                    @* 楽観ロックトークンを隠しフィールドで送信 *@
-                    <input type="hidden" name="concurrencyToken" value="@m.ConcurrencyToken" />
+                    @* CSRF トークン + 楽観ロックトークンを共通部品でセット送信する *@
+                    <partial name="_ConcurrencyTokenFields" model="m.ConcurrencyToken" />
                     <button type="submit" class="btn btn-success btn-sm py-0">
                         <i class="bi bi-check2 me-1"></i>完了
                     </button>
@@ -99,11 +98,10 @@
             @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Planned)
             {
                 <form asp-controller="PreventiveMeasures" asp-action="UpdateStatus" asp-route-id="@m.Id" method="post" class="d-inline">
-                    @Html.AntiForgeryToken()
+                    @* CSRF トークン + 楽観ロックトークンを共通部品でセット送信する *@
+                    <partial name="_ConcurrencyTokenFields" model="m.ConcurrencyToken" />
                     @* 遷移先ステータスを固定値で送信 *@
                     <input type="hidden" name="status" value="InProgress" />
-                    @* 楽観ロックトークン *@
-                    <input type="hidden" name="concurrencyToken" value="@m.ConcurrencyToken" />
                     <button type="submit" class="btn btn-primary btn-sm py-0">
                         <i class="bi bi-play me-1"></i>着手
                     </button>
