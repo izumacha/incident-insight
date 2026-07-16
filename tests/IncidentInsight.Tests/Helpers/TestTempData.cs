@@ -7,6 +7,16 @@ namespace IncidentInsight.Tests.Helpers;
 /// </summary>
 public class TestTempData : Dictionary<string, object?>, ITempDataDictionary
 {
+    // Dictionary<TKey,TValue>'s inherited indexer throws KeyNotFoundException on a missing
+    // key, but the real ASP.NET Core TempDataDictionary's indexer getter never throws (it's
+    // backed by TryGetValue and returns null for a missing key). Shadow it here so this test
+    // double matches the real ITempDataDictionary contract that production code relies on.
+    public new object? this[string key]
+    {
+        get => TryGetValue(key, out var v) ? v : null;
+        set => base[key] = value;
+    }
+
     public void Keep() { }
     public void Keep(string key) { }
     public void Load() { }
