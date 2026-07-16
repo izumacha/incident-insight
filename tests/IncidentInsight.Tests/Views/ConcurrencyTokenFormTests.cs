@@ -43,8 +43,8 @@ public class ConcurrencyTokenFormTests
                 var attrs = form.Groups["attrs"].Value;
                 // トークン必須アクションへ POST するフォームだけを対象にする
                 if (!TargetsTokenRequiredAction(attrs)) continue;
-                // フォーム内に concurrencyToken の入力欄があるか検査する
-                if (form.Value.Contains("name=\"concurrencyToken\"", StringComparison.Ordinal)) continue;
+                // フォーム内に concurrencyToken の入力欄があるか検査する(素の name 記法と asp-for 記法の両対応)
+                if (HasConcurrencyTokenField(form.Value)) continue;
                 // 欠落を違反として記録する(ファイルとフォーム冒頭 80 文字で位置を特定できるようにする)
                 var head = Regex.Replace(form.Value, @"\s+", " ");
                 violations.Add($"{Path.GetFileName(file)}: {head[..Math.Min(80, head.Length)]}");
@@ -69,17 +69,32 @@ public class ConcurrencyTokenFormTests
             .FirstOrDefault(m => m.Groups["attrs"].Value.Contains("asp-action=\"Complete\"", StringComparison.Ordinal));
         // フォーム自体が存在すること
         Assert.NotNull(completeForm);
-        // 実トークン(@m.ConcurrencyToken)を hidden field で送信していること
-        Assert.Contains("name=\"concurrencyToken\" value=\"@m.ConcurrencyToken\"", completeForm!.Value);
+        // 実トークン(モデルの ConcurrencyToken)を hidden field で送信していること
+        // (ループ変数名や属性順のリファクタで壊れないよう、名前と値の対応だけを正規表現で固定する)
+        Assert.Matches(@"name=""concurrencyToken""\s+value=""@\w+\.ConcurrencyToken""", completeForm!.Value);
     }
 
     // 開きタグの属性がトークン必須アクション宛てかどうかを判定する
     private static bool TargetsTokenRequiredAction(string attrs)
     {
-        // asp-action="X" 形式(Tag Helper)と action="/…/X/…" 形式(素の HTML + JS 差し替え)の両方を見る
+        // asp-action="X"(Tag Helper) / action="/…/X/…"(素の HTML + JS 差し替え) /
+        // action="@Url.Action("X", …)"(Razor ヘルパー) の 3 形式を見る。
+        // いずれにも当たらない書き方(単引用符・formaction 等)は検査対象外になるため、
+        // トークン必須アクションへの新しいフォームは上記いずれかの形式で書くこと。
         return TokenRequiredActions.Any(action =>
             attrs.Contains($"asp-action=\"{action}\"", StringComparison.Ordinal) ||
-            Regex.IsMatch(attrs, $@"\baction=""[^""]*/{action}(/|"")"));
+            Regex.IsMatch(attrs, $@"\baction=""[^""]*/{action}(/|"")") ||
+            attrs.Contains($"Url.Action(\"{action}\"", StringComparison.Ordinal));
+    }
+
+    // フォーム本体が concurrencyToken の入力欄を持つかを判定する
+    private static bool HasConcurrencyTokenField(string formBlock)
+    {
+        // 素の name 記法(name="concurrencyToken"。大文字始まりの name="ConcurrencyToken" も
+        // モデルバインドは大文字小文字非依存なので許容)と、Tag Helper の asp-for 記法
+        // (asp-for="ConcurrencyToken"。実行時に name="ConcurrencyToken" を出力する)の両方を受け付ける
+        return formBlock.Contains("name=\"concurrencyToken\"", StringComparison.OrdinalIgnoreCase) ||
+               formBlock.Contains("asp-for=\"ConcurrencyToken\"", StringComparison.Ordinal);
     }
 
     // テスト実行ディレクトリから上へ辿り src/IncidentInsight.Web/Views を見つける
