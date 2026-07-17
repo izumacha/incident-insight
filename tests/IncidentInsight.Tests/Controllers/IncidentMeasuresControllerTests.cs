@@ -174,6 +174,32 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task CompleteMeasure_AlreadyCompleted_RedirectsWithWarning_AndDoesNotOverwrite()
+    {
+        // すでに完了済みの対策への再完了 POST(古いタブからの再送信など)は fail-closed で
+        // 拒否され、元の CompletedAt / CompletionNote が黙って上書きされないことを確認する。
+        // 上書きを許すと有効性評価日時が完了日時より前になる等、KPI の時系列整合性が壊れる。
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
+        // 元の完了日時・完了メモを設定しておく
+        var originalCompletedAt = new DateTime(2026, 6, 1, 10, 0, 0);
+        measure.CompletedAt = originalCompletedAt;
+        measure.CompletionNote = "最初の完了メモ";
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.CompleteMeasure(measure.Id, "2回目の完了メモ", measure.ConcurrencyToken);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Contains("すでに完了", _controller.TempData["Warning"] as string);
+        // 元の完了情報が保持されていること
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(originalCompletedAt, unchanged.CompletedAt);
+        Assert.Equal("最初の完了メモ", unchanged.CompletionNote);
+    }
+
+    [Fact]
     public async Task CompleteMeasure_NotFound_ReturnsNotFound()
     {
         var result = await _controller.CompleteMeasure(99999, null, Guid.NewGuid());
@@ -204,15 +230,24 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task RateMeasure_OutOfRange_ReturnsBadRequest()
+    public async Task RateMeasure_OutOfRange_RedirectsWithWarning_AndDoesNotPersist()
     {
         // 認可チェックが評価値の範囲検証より先に行われる設計のため、
-        // 未認可扱い(403)ではなく検証エラー(400)を確認するには実在の対策をシードする必要がある
+        // 未認可扱い(403)ではなく検証エラーを確認するには実在の対策をシードする必要がある。
+        // 検証失敗は他の失敗経路と同じく TempData["Warning"] + Details へのリダイレクトで
+        // 通知される(生の BadRequest はモーダル/コンテキストを失わせてしまうため)
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
         var result = await _controller.RateMeasure(measure.Id, 0, null, false, measure.ConcurrencyToken);
-        Assert.IsType<BadRequestObjectResult>(result);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Contains("1〜5", _controller.TempData["Warning"] as string);
+        // 範囲外の評価値が保存されていないこと
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Null(unchanged.EffectivenessRating);
     }
 
     [Fact]
