@@ -84,6 +84,38 @@ public class CauseAnalysisFormViewModelTests
     }
 
     [Fact]
+    public void IsSavable_RequiresBothCategoryAndWhy1()
+    {
+        // 保存可能条件は「原因分類の選択 + なぜ1 の入力」の両方が揃うこと
+        // 両方揃っている場合は保存可能
+        Assert.True(new CauseAnalysisFormViewModel { CauseCategoryId = 1, Why1 = "なぜ1" }.IsSavable);
+        // 原因分類だけでは保存不可
+        Assert.False(new CauseAnalysisFormViewModel { CauseCategoryId = 1, Why1 = "" }.IsSavable);
+        // なぜ1 だけでは保存不可
+        Assert.False(new CauseAnalysisFormViewModel { CauseCategoryId = 0, Why1 = "なぜ1" }.IsSavable);
+        // 空白のみの なぜ1 は未入力扱い
+        Assert.False(new CauseAnalysisFormViewModel { CauseCategoryId = 1, Why1 = "   " }.IsSavable);
+    }
+
+    [Fact]
+    public void HasAnyInput_DetectsEveryField()
+    {
+        // すべて空(既定値)なら「入力なし」= 分析なしの正常系
+        Assert.False(new CauseAnalysisFormViewModel { Why1 = "" }.HasAnyInput);
+        // どのフィールドに入力があっても「入力あり」と判定されること。
+        // ここで検知漏れがあると、部分入力が無言破棄されるバグが再発する(回帰防止)
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", CauseCategoryId = 1 }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", Why2 = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", Why3 = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", Why4 = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", Why5 = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", RootCauseSummary = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", AnalystName = "x" }.HasAnyInput);
+        Assert.True(new CauseAnalysisFormViewModel { Why1 = "", AdditionalNotes = "x" }.HasAnyInput);
+    }
+
+    [Fact]
     public void CauseCategoryId_Positive_PassesValidation()
     {
         // 正の ID が選択されていれば CauseCategoryId の検証は通る

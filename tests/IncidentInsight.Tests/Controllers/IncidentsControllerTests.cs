@@ -228,7 +228,8 @@ public class IncidentsControllerTests : IDisposable
         var viewResult = Assert.IsType<ViewResult>(result);
         Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
-        Assert.True(_controller.ModelState.ContainsKey("CauseAnalysis.CauseCategoryId"));
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.CauseCategoryId)}"));
         Assert.Empty(_db.Incidents);
         Assert.Empty(_db.CauseAnalyses);
     }
@@ -251,7 +252,8 @@ public class IncidentsControllerTests : IDisposable
         var viewResult = Assert.IsType<ViewResult>(result);
         Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
-        Assert.True(_controller.ModelState.ContainsKey("CauseAnalysis.Why1"));
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.Why1)}"));
         Assert.Empty(_db.Incidents);
         Assert.Empty(_db.CauseAnalyses);
     }
@@ -271,7 +273,8 @@ public class IncidentsControllerTests : IDisposable
         var viewResult = Assert.IsType<ViewResult>(result);
         Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
-        Assert.True(_controller.ModelState.ContainsKey("CauseAnalysis.CauseCategoryId"));
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.CauseCategoryId)}"));
         // インシデント・原因分析ともに保存されていないこと
         Assert.Empty(_db.Incidents);
         Assert.Empty(_db.CauseAnalyses);

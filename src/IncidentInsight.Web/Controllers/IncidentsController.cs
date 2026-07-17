@@ -260,29 +260,20 @@ public class IncidentsController : Controller
         // 原因分析は CauseCategoryId と Why1 が揃ったときだけ保存する仕様のため、
         // ここで検知しないと、なぜ1〜5 を書き込んだのに原因分類を選び忘れただけで
         // 「登録しました」の成功トーストとともに分析テキストが無言で全破棄されてしまう
-        // (利用者が気づけないデータ消失)。どちらかが欠けた部分入力は再描画して完成を促す。
-        var analysisIsSavable = vm.CauseAnalysis.CauseCategoryId > 0
-            && !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1);
-        // 分析タブのいずれかの欄に入力があるか(すべて空なら「分析なし」の正常系)
-        var analysisHasAnyInput = vm.CauseAnalysis.CauseCategoryId > 0
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why2)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why3)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why4)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why5)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.RootCauseSummary)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.AnalystName)
-            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.AdditionalNotes);
-        // 部分入力を検知したら、欠けている側の項目にエラーを付けて再入力を促す
-        if (analysisHasAnyInput && !analysisIsSavable)
+        // (利用者が気づけないデータ消失)。判定条件は ViewModel の計算プロパティに一元化。
+        // エラーキーはフォームのフィールド名(CauseAnalysis.〜)に合わせる。文字列直書きだと
+        // プロパティ改名時に黙ってエラー表示が外れるため nameof で組み立てる(§6)
+        if (vm.CauseAnalysis.HasAnyInput && !vm.CauseAnalysis.IsSavable)
         {
             // 原因分類が未選択ならその旨を通知
             if (vm.CauseAnalysis.CauseCategoryId <= 0)
-                ModelState.AddModelError("CauseAnalysis.CauseCategoryId",
+                ModelState.AddModelError(
+                    $"{nameof(vm.CauseAnalysis)}.{nameof(vm.CauseAnalysis.CauseCategoryId)}",
                     "原因分析を登録するには原因分類を選択してください（分析を登録しない場合は分析欄をすべて空にしてください）。");
             // なぜ1 が未入力ならその旨を通知
             if (string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1))
-                ModelState.AddModelError("CauseAnalysis.Why1",
+                ModelState.AddModelError(
+                    $"{nameof(vm.CauseAnalysis)}.{nameof(vm.CauseAnalysis.Why1)}",
                     "原因分析を登録するにはなぜ1を入力してください（分析を登録しない場合は分析欄をすべて空にしてください）。");
         }
 
@@ -291,12 +282,13 @@ public class IncidentsController : Controller
         // 明示確認しないと、存在しない CauseCategoryId が来たとき下の INSERT が失敗し、
         // トランザクション全体が未捕捉の DbUpdateException(=HTTP 500)になって入力が全消失する。
         // 事前に検証してフォームを再描画する(§9 入力は信用しない / fail-closed)。
-        if (vm.CauseAnalysis.CauseCategoryId > 0
-            && !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1)
+        if (vm.CauseAnalysis.IsSavable
             && !await IncidentControllerHelpers.CauseCategoryExistsAsync(_db, vm.CauseAnalysis.CauseCategoryId))
         {
-            // 存在しないカテゴリが選ばれた場合は入力不備として扱う
-            ModelState.AddModelError("CauseAnalysis.CauseCategoryId", "選択された原因カテゴリが存在しません。");
+            // 存在しないカテゴリが選ばれた場合は入力不備として扱う(キーは nameof で組み立てる)
+            ModelState.AddModelError(
+                $"{nameof(vm.CauseAnalysis)}.{nameof(vm.CauseAnalysis.CauseCategoryId)}",
+                "選択された原因カテゴリが存在しません。");
         }
 
         // バリデーション NG なら入力値を残してフォームを再描画
@@ -345,8 +337,9 @@ public class IncidentsController : Controller
         await _db.SaveChangesAsync();
 
         // Save cause analysis
-        // カテゴリが選択され Why1 が入力されていれば原因分析を保存
-        if (vm.CauseAnalysis.CauseCategoryId > 0 && !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1))
+        // 保存可能な組(原因分類 + なぜ1)が揃っていれば原因分析を保存
+        // (判定は ViewModel の IsSavable に一元化。部分入力は上の検証で弾かれここには到達しない)
+        if (vm.CauseAnalysis.IsSavable)
         {
             // 入力値から CauseAnalysis を組み立てる
             var analysis = new CauseAnalysis
