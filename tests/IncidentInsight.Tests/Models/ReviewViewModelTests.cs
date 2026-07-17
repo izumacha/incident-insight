@@ -58,4 +58,37 @@ public class ReviewViewModelTests
         // EffectivenessNote が失敗リストに含まれることを確認する
         Assert.Contains(nameof(ReviewViewModel.EffectivenessNote), failedFields);
     }
+
+    [Fact]
+    public void RecurrenceObserved_Null_FailsValidation()
+    {
+        // 再発の有無を選択しないまま送信されたケース(bool? の既定値は null)を想定する。
+        // 非nullable boolだった頃はここが常にfalseで埋まり[Required]が無意味だったため、
+        // 明示的にnullを検証してRequiredが実効化されていることを確認する。
+        var vm = CreateValidForm();
+        vm.RecurrenceObserved = null;
+        var results = new List<ValidationResult>();
+        var ctx = new ValidationContext(vm);
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 未選択なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        var failedFields = results.SelectMany(r => r.MemberNames).ToList();
+        Assert.Contains(nameof(ReviewViewModel.RecurrenceObserved), failedFields);
+    }
+
+    [Fact]
+    public void RecurrenceObserved_ExplicitFalse_PassesValidation()
+    {
+        // 「再発なし」を明示的に選択した場合はfalseが入り、バリデーションを通過すること
+        // (nullとfalseを区別できることの回帰確認)
+        var vm = CreateValidForm();
+        vm.RecurrenceObserved = false;
+        var results = new List<ValidationResult>();
+        var ctx = new ValidationContext(vm);
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        Assert.True(isValid);
+        Assert.DoesNotContain(results, r => r.MemberNames.Contains(nameof(ReviewViewModel.RecurrenceObserved)));
+    }
 }

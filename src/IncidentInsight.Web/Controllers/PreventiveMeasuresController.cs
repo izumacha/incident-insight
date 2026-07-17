@@ -355,7 +355,10 @@ public class PreventiveMeasuresController : Controller
             ConcurrencyToken = measure.ConcurrencyToken,
             EffectivenessRating = measure.EffectivenessRating ?? 3,
             EffectivenessNote = measure.EffectivenessNote,
-            RecurrenceObserved = measure.RecurrenceObserved ?? false
+            // 初回レビュー時は null のまま渡し、どちらのラジオも未選択の状態でフォームを開かせる。
+            // ここで false にフォールバックすると、選択せず送信しても「再発なし」が暗黙に
+            // 確定してしまい [Required] が機能しなくなる。
+            RecurrenceObserved = measure.RecurrenceObserved
         };
         return View(vm);
     }
@@ -408,8 +411,8 @@ public class PreventiveMeasuresController : Controller
             return RedirectToAction(nameof(Review), new { id });
         }
 
-        // 再発ありなら警告、なしなら成功メッセージを表示
-        if (vm.RecurrenceObserved)
+        // 再発ありなら警告、なしなら成功メッセージを表示(ModelState検証済みでnullではない)
+        if (vm.RecurrenceObserved == true)
             TempData["Warning"] = "再発が確認されました。根本原因の再分析と追加対策を検討してください。";
         else
             TempData["Success"] = "有効性評価を記録しました。";

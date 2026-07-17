@@ -276,8 +276,10 @@ public class ReviewViewModel
     [Display(Name = "有効性評価コメント")]
     public string? EffectivenessNote { get; set; }
 
-    // 対策後の再発有無(必須)
-    [Required]
+    // 対策後の再発有無(必須)。非nullable boolだと既定値falseが常に入り [Required] が
+    // 何も検証しない死んだ属性になる(未選択でも「再発なし」を暗黙に確定してしまう)ため、
+    // 未選択状態を表現できる bool? にして [Required] を実効化する。
+    [Required(ErrorMessage = "再発の有無を選択してください")]
     [Display(Name = "対策実施後に再発を確認したか")]
-    public bool RecurrenceObserved { get; set; }
+    public bool? RecurrenceObserved { get; set; }
 }
