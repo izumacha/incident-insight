@@ -30,7 +30,7 @@ dotnet test
 
 # 単一テストクラス / メソッド
 dotnet test --filter "FullyQualifiedName~IncidentsControllerTests"
-dotnet test --filter "FullyQualifiedName=IncidentInsight.Tests.Controllers.IncidentsControllerTests.Create_RequiresAtLeastOneMeasure"
+dotnet test --filter "FullyQualifiedName=IncidentInsight.Tests.Controllers.IncidentsControllerTests.Create_Post_WithoutMeasures_ReturnsCreateView_AndDoesNotSaveIncident"
 
 # モデル変更後の EF Core マイグレーション追加（起動時 Database.Migrate() で自動適用）
 # 注: コミット済みマイグレーションは既定プロバイダ(SQLite)向け。SQL Server / PostgreSQL 本番に
