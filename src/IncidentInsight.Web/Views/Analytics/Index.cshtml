@@ -224,8 +224,10 @@ loadChart('/Analytics/ByDepartment', (d) => {
 // By Severity
 // 重症度別の棒グラフ
 loadChart('/Analytics/BySeverity', (d) => {
-    // 重症度に対応した色配列
-    const severityColors = ['#6c757d','#0dcaf0','#0d6efd','#ffc107','#fd7e14','#dc3545','#212529'];
+    // 重症度に対応した色配列。BySeverity は enum 定義順で全重症度を返すため、
+    // 同じ順序で EnumLabels(色の一元管理元)からバッジと同じ配色を生成する。
+    // ここに16進値を直書きすると EnumLabels とズレたときに気づけない(§6)。
+    const severityColors = [@Html.Raw(string.Join(",", IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities.Select(s => $"'{IncidentInsight.Web.Models.Enums.EnumLabels.Hex(IncidentInsight.Web.Models.Enums.EnumLabels.Color(s))}'")))];
     new Chart(document.getElementById('severityChart'), {
         type: 'bar',
         data: {
