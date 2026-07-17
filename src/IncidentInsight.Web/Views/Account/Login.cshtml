@@ -97,12 +97,19 @@
                     <p class="text-muted small mb-2 text-center">
                         <i class="bi bi-info-circle me-1"></i>デモアカウント (開発環境のみ表示)
                     </p>
+                    @* パスワードは表示しない: 実際の値は user-secrets の SeedAccounts 設定で
+                       各開発者が決める(IdentitySeeder)ため、ここに固定値を書くと (a) 実際には
+                       ログインできない誤った値になり、5 回失敗でロックアウトを誘発する、
+                       (b) 認証情報をリポジトリにコミットしない方針(§9)にも反する *@
                     <table class="table table-sm table-borderless small text-muted mb-0">
                         <tbody>
-                            <tr><td class="ps-0">管理者</td><td><code>admin@hospital.local</code></td><td><code>Admin1234</code></td></tr>
-                            <tr><td class="ps-0">リスク管理</td><td><code>riskmanager@hospital.local</code></td><td><code>Risk1234</code></td></tr>
+                            <tr><td class="ps-0">管理者</td><td><code>admin@hospital.local</code></td></tr>
+                            <tr><td class="ps-0">リスク管理</td><td><code>riskmanager@hospital.local</code></td></tr>
                         </tbody>
                     </table>
+                    <p class="text-muted small mb-0 text-center">
+                        パスワードは user-secrets の <code>SeedAccounts</code> 設定値(CLAUDE.md §2 参照)
+                    </p>
                 </div>
             }
         </div>
@@ -112,6 +119,10 @@
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
         integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
         crossorigin="anonymous"></script>
+@* jQuery(ローカル配信)。このページは Layout = null で _Layout を経由しないため、
+   _ValidationScriptsPartial(jquery.validate)より前にここで明示的に読み込む。
+   読み込まないと「jQuery is not defined」でクライアント検証が動かない *@
+<script src="~/lib/jquery/dist/jquery.min.js"></script>
 @* クライアントサイドバリデーション用スクリプト *@
 <partial name="_ValidationScriptsPartial" />
 </body>
