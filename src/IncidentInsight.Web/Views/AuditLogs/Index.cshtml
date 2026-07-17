@@ -26,15 +26,18 @@
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue;
 }
 <div class="card border-0 shadow-sm mb-3">
-    @* クリックで折りたたみ開閉するヘッダ *@
-    <div class="card-header bg-white" role="button" data-bs-toggle="collapse" data-bs-target="#auditFilterPanel">
+    @* クリックで折りたたみ開閉するヘッダ。div+role="button" だとキーボードで
+       フォーカス・操作できない(§7)ため、ネイティブにフォーカス可能な <a href> を使う *@
+    <a class="card-header bg-white d-block text-decoration-none text-body" href="#auditFilterPanel"
+       data-bs-toggle="collapse" role="button"
+       aria-expanded="@(anyFilter ? "true" : "false")" aria-controls="auditFilterPanel">
         <i class="bi bi-funnel me-2"></i>絞り込み
         @* フィルター適用中バッジ *@
         @if (anyFilter)
         {
             <span class="badge bg-primary ms-2">フィルター適用中</span>
         }
-    </div>
+    </a>
     @* フィルター適用中は初期表示で開いておく *@
     <div class="collapse @(anyFilter ? "show" : "")" id="auditFilterPanel">
         <div class="card-body">

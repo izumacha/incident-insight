@@ -107,10 +107,12 @@
                     </button>
                 </form>
             }
-            @* 親インシデントへ移動するアイコンリンク（右寄せ） *@
+            @* 親インシデントへ移動するアイコンリンク（右寄せ）。
+               アイコンのみなのでスクリーンリーダー向けに aria-label を付ける(§7) *@
             <a asp-controller="Incidents" asp-action="Details" asp-route-id="@m.IncidentId"
-               class="btn btn-outline-secondary btn-sm py-0 ms-auto">
-                <i class="bi bi-link-45deg"></i>
+               class="btn btn-outline-secondary btn-sm py-0 ms-auto"
+               aria-label="関連インシデントの詳細を開く">
+                <i class="bi bi-link-45deg" aria-hidden="true"></i>
             </a>
         </div>
     </div>
