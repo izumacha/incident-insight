@@ -477,6 +477,10 @@ public class PreventiveMeasuresController : Controller
 
     // POST /PreventiveMeasures/Delete/5
     // 対策の削除(管理者/リスクマネージャー限定)
+    // 現時点でこのアクションへ POST する View は存在しない(カンバンからの削除導線は未実装)が、
+    // IncidentsController.Delete / CauseAnalysesController.DeleteCauseAnalysis と同じ
+    // 楽観ロック契約(concurrencyToken の round-trip)を保ち、将来 UI を配線する際に
+    // 契約を意識しなくて済むようにするため、他の2つと合わせて修正している。
     [HttpPost]
     [ValidateAntiForgeryToken]
     [Authorize(Policy = Policies.CanDeleteIncident)]

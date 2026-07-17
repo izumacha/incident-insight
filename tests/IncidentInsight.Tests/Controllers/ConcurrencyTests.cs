@@ -332,10 +332,14 @@ public class ConcurrencyTests : IDisposable
                 // 「画面表示時点」のトークンとして控えておく(この後 DB 側だけ更新する)
                 staleToken = incident.ConcurrencyToken;
 
-                // 別ユーザーが先に編集した状況を模して、DB側のトークンだけを回転させる
-                // (AuditSaveChangesInterceptor が Modified 時にトークンを回転させる実装と
-                // 同じ結果になるよう、Description 変更を保存してトークンを更新する)
+                // 別ユーザーが先に編集した状況を模して、DB側のトークンだけを回転させる。
+                // AuditSaveChangesInterceptor は本番では Modified 時にトークンを自動回転
+                // させるが、このインターセプターは Program.cs の DI 経由でのみ
+                // ApplicationDbContext に登録されるため、テストが直接 `new
+                // ApplicationDbContext(options)` するこの経路には付いていない。
+                // そのため、ここでは直接 ConcurrencyToken を書き換えて衝突状態を作る。
                 incident.Description = "他ユーザーによる更新後";
+                incident.ConcurrencyToken = Guid.NewGuid();
                 await setupDb.SaveChangesAsync();
                 Assert.NotEqual(staleToken, incident.ConcurrencyToken);
             }
