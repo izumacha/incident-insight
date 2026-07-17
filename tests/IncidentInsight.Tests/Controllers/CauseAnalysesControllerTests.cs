@@ -113,9 +113,12 @@ public class CauseAnalysesControllerTests : IDisposable
         // 再描画されること(入力済みの値を保持したまま。回帰防止)
         var view = Assert.IsType<ViewResult>(result);
         Assert.Equal("~/Views/Incidents/Details.cshtml", view.ViewName);
-        // ModelState にエラーが積まれ、保存されていないこと
+        // ModelState にエラーが積まれ、保存されていないこと。
+        // エラーキーは prefix バインドに合わせて「NewCauseAnalysis.」付き
+        // (再描画した Details フォームの select にエラーを紐づけるため)
         Assert.False(_controller.ModelState.IsValid);
-        Assert.True(_controller.ModelState.ContainsKey(nameof(vm.CauseCategoryId)));
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentDetailViewModel.NewCauseAnalysis)}.{nameof(vm.CauseCategoryId)}"));
         Assert.Empty(_db.CauseAnalyses);
     }
 

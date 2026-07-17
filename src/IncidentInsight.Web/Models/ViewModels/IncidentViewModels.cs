@@ -145,8 +145,11 @@ public class CauseAnalysisFormViewModel
     // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
     public Guid ConcurrencyToken { get; set; }
 
-    // 原因分類。必須で画面から選択する
-    [Required(ErrorMessage = "原因分類を選択してください")]
+    // 原因分類。必須で画面から選択する。
+    // 注: 非 null 型の int に [Required] を付けても検証は常に成功する(int は null になり得ない)ため、
+    //     未選択(=0)を弾く目的では機能しない。[Range] で 1 以上を要求することで、
+    //     CauseCategoryId=0 のまま INSERT され FK 違反(未捕捉 DbUpdateException = HTTP 500)になる事故を防ぐ。
+    [Range(1, int.MaxValue, ErrorMessage = "原因分類を選択してください")]
     [Display(Name = "原因分類")]
     public int CauseCategoryId { get; set; }
 
@@ -195,6 +198,35 @@ public class CauseAnalysisFormViewModel
 
     // 原因分類ドロップダウンの選択肢
     public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+
+    /// <summary>
+    /// 保存に必要な最小の組(原因分類の選択 + なぜ1 の入力)が揃っているか。
+    /// IncidentsController.Create は分析タブを任意入力として扱うため、この条件を
+    /// 満たすときだけ CauseAnalysis を保存する。判定をコントローラに直書きすると
+    /// 複数箇所で定義がずれていくため、ViewModel 側に一元化する(§6 DRY)。
+    /// </summary>
+    // 原因分類が選択され、かつ なぜ1 が入力されていれば保存可能
+    public bool IsSavable =>
+        CauseCategoryId > 0 && !string.IsNullOrWhiteSpace(Why1);
+
+    /// <summary>
+    /// 分析タブのいずれかの欄に入力があるか(すべて空なら「分析なし」の正常系)。
+    /// IsSavable が false なのに true の場合は「部分入力」であり、黙って破棄すると
+    /// 利用者が気づかないデータ消失になるため、Create はこの組み合わせを入力不備として扱う。
+    /// フィールドを追加したら必ずここにも足すこと(足し忘れると新フィールドの入力が
+    /// 「入力なし」扱いになり、無言破棄バグが再発する)。
+    /// </summary>
+    // いずれかの入力欄に値があるかを判定する
+    public bool HasAnyInput =>
+        CauseCategoryId > 0
+        || !string.IsNullOrWhiteSpace(Why1)
+        || !string.IsNullOrWhiteSpace(Why2)
+        || !string.IsNullOrWhiteSpace(Why3)
+        || !string.IsNullOrWhiteSpace(Why4)
+        || !string.IsNullOrWhiteSpace(Why5)
+        || !string.IsNullOrWhiteSpace(RootCauseSummary)
+        || !string.IsNullOrWhiteSpace(AnalystName)
+        || !string.IsNullOrWhiteSpace(AdditionalNotes);
 }
 
 // 再発防止策フォーム用のモデル

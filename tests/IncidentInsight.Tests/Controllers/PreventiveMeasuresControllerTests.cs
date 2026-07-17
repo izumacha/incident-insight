@@ -223,10 +223,12 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateStatus_UndefinedEnumValue_ReturnsBadRequest_AndDoesNotPersist()
+    public async Task UpdateStatus_UndefinedEnumValue_RedirectsWithWarning_AndDoesNotPersist()
     {
-        // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら 400 で拒否し
-        // DB のステータスが書き換わらない(fail-closed)ことを検証する
+        // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら拒否し
+        // DB のステータスが書き換わらない(fail-closed)ことを検証する。
+        // 拒否は他の失敗経路と同じく TempData["Warning"] + 一覧へのリダイレクトで通知される
+        // (生の BadRequest はカンバン画面のコンテキストを失わせてしまうため)
         var measure = await SeedMeasureAsync("内科病棟");
         // 事前状態は既定の Planned(計画中)
         Assert.Equal(MeasureStatus.Planned, measure.Status);
@@ -235,8 +237,10 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var result = await _controller.UpdateStatus(
             measure.Id, (MeasureStatus)99, measure.ConcurrencyToken);
 
-        // 400 BadRequest が返ること
-        Assert.IsType<BadRequestObjectResult>(result);
+        // 警告付きで一覧へリダイレクトされること
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.Contains("不正なステータス値", _controller.TempData["Warning"] as string);
         // DB のステータスは Planned のまま変化していないこと(不正値が永続化されない)
         var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Equal(MeasureStatus.Planned, saved.Status);
@@ -434,11 +438,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
         }
         finally
         {
-            // 一時DBファイルの後始末(SQLiteはWAL/SHMの補助ファイルも作りうるため一括削除)
-            foreach (var path in new[] { dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal" })
-            {
-                if (File.Exists(path)) File.Delete(path);
-            }
+            // 一時DBファイルの後始末(共通ヘルパーで WAL/SHM 等の補助ファイルも一括削除)
+            SqliteTestFiles.Cleanup(dbPath);
         }
     }
 
@@ -476,6 +477,30 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Equal(MeasureStatus.Planned, unchanged.Status);
         Assert.Null(unchanged.CompletionNote);
+    }
+
+    [Fact]
+    public async Task Complete_AlreadyCompleted_RedirectsWithWarning_AndDoesNotOverwrite()
+    {
+        // すでに完了済みの対策への再完了 POST(古いタブからの再送信など)は fail-closed で
+        // 拒否され、元の CompletedAt / CompletionNote が黙って上書きされないことを確認する。
+        // 上書きを許すと有効性評価日時が完了日時より前になる等、KPI の時系列整合性が壊れる。
+        var measure = await SeedMeasureAsync("内科病棟");
+        var originalCompletedAt = new DateTime(2026, 6, 1, 10, 0, 0);
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = originalCompletedAt;
+        measure.CompletionNote = "最初の完了メモ";
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Complete(measure.Id, "2回目の完了メモ", measure.ConcurrencyToken);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.Contains("すでに完了", _controller.TempData["Warning"] as string);
+        // 元の完了情報が保持されていること
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(originalCompletedAt, unchanged.CompletedAt);
+        Assert.Equal("最初の完了メモ", unchanged.CompletionNote);
     }
 
     [Fact]

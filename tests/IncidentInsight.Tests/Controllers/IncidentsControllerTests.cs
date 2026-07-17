@@ -212,6 +212,53 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_PartialAnalysis_MissingCategory_ReturnsView_AndDoesNotSave()
+    {
+        // なぜ1〜のテキストを書いたのに原因分類だけ選び忘れた「部分入力」のフォーム。
+        // 以前はこの場合、インシデントだけ保存され成功トーストの裏で分析テキストが
+        // 無言で全破棄されていた(利用者が気づけないデータ消失)。修正後は入力不備として
+        // フォームを再描画し、入力を完成させるよう促すことを確認する(回帰防止)。
+        var vm = ValidViewModel();
+        vm.CauseAnalysis.CauseCategoryId = 0;   // 原因分類は未選択のまま
+        vm.CauseAnalysis.Why1 = "確認を怠った"; // 分析テキストだけ入力されている
+
+        var result = await _controller.Create(vm);
+
+        // Create ビューが再描画され、何も保存されていないこと
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.CauseCategoryId)}"));
+        Assert.Empty(_db.Incidents);
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
+    public async Task Create_Post_PartialAnalysis_MissingWhy1_ReturnsView_AndDoesNotSave()
+    {
+        // 原因分類は選んだのに なぜ1 が未入力の「部分入力」も同様に入力不備として扱う
+        var category = new CauseCategory { Name = "確認不足" };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        var vm = ValidViewModel();
+        vm.CauseAnalysis.CauseCategoryId = category.Id; // 原因分類は選択済み
+        vm.CauseAnalysis.Why1 = "";                     // なぜ1 は未入力
+
+        var result = await _controller.Create(vm);
+
+        // Create ビューが再描画され、何も保存されていないこと
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.Why1)}"));
+        Assert.Empty(_db.Incidents);
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
     public async Task Create_Post_NonExistentCauseCategory_ReturnsView_AndDoesNotSave()
     {
         var vm = ValidViewModel();
@@ -226,7 +273,8 @@ public class IncidentsControllerTests : IDisposable
         var viewResult = Assert.IsType<ViewResult>(result);
         Assert.Null(viewResult.ViewName);
         Assert.False(_controller.ModelState.IsValid);
-        Assert.True(_controller.ModelState.ContainsKey("CauseAnalysis.CauseCategoryId"));
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.CauseCategoryId)}"));
         // インシデント・原因分析ともに保存されていないこと
         Assert.Empty(_db.Incidents);
         Assert.Empty(_db.CauseAnalyses);

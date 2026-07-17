@@ -148,9 +148,11 @@
                             <form asp-controller="CauseAnalyses" asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
                                 @* CSRF トークン + 楽観ロックトークンを共通部品でセット送信する *@
                                 <partial name="_ConcurrencyTokenFields" model="analysis.ConcurrencyToken" />
+                                @* アイコンのみのボタンなのでスクリーンリーダー向けに aria-label を付ける(§7) *@
                                 <button type="submit" class="btn btn-outline-danger btn-sm py-0"
+                                        aria-label="この原因分析を削除"
                                         onclick="return confirm('この原因分析を削除しますか？')">
-                                    <i class="bi bi-trash"></i>
+                                    <i class="bi bi-trash" aria-hidden="true"></i>
                                 </button>
                             </form>
                         </div>
@@ -443,10 +445,14 @@
                             <input type="date" asp-for="NewMeasure.DueDate" class="form-control form-control-sm" />
                         </div>
                         <div class="col-md-1">
-                            <label class="form-label small">優先度</label>
+                            <label class="form-label small" asp-for="NewMeasure.Priority">優先度</label>
+                            @* selected は書かない: asp-for がモデル値(初期値 2=中)に一致する option へ
+                               selected を付与する。直書きすると検証失敗の再描画時にユーザーの選択
+                               (例: 高)と直書きの「中」の両方が selected になり、後者が勝って
+                               選択値が黙って書き換わってしまう *@
                             <select asp-for="NewMeasure.Priority" class="form-select form-select-sm">
                                 <option value="1">高</option>
-                                <option value="2" selected>中</option>
+                                <option value="2">中</option>
                                 <option value="3">低</option>
                             </select>
                         </div>
@@ -518,14 +524,19 @@
                 <h5 class="modal-title"><i class="bi bi-check-circle me-2 text-success"></i>対策完了報告</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            @* 送信先 URL と concurrencyToken は JS で動的に差し替える *@
-            <form id="completeForm" action="/Incidents/CompleteMeasure/0" method="post">
+            @* 送信先 URL は Url.Action で固定生成する(ルート直書きだとリバースプロキシ配下の
+               サブパス配備時に PathBase が付かず 404 になる)。対象の対策 ID はルート
+               {id?} が省略可能なことを利用して hidden フィールドで送り、JS は URL を
+               組み立てず入力値の差し替えだけを行う *@
+            <form id="completeForm" action="@Url.Action("CompleteMeasure", "IncidentMeasures")" method="post">
                 @Html.AntiForgeryToken()
+                @* 対象の対策 ID(モーダルを開いたときに JS がセットする) *@
+                <input type="hidden" name="id" value="" />
                 @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
-                    <label class="form-label">完了報告内容（任意）</label>
-                    <textarea name="completionNote" class="form-control" rows="3"
+                    <label class="form-label" for="completionNote">完了報告内容（任意）</label>
+                    <textarea name="completionNote" id="completionNote" class="form-control" rows="3"
                               placeholder="実施した内容・結果を記入してください"></textarea>
                     <div class="mt-2 small text-muted">
                         <i class="bi bi-info-circle me-1"></i>完了後は有効性評価を忘れずに行ってください。
@@ -548,8 +559,11 @@
                 <h5 class="modal-title"><i class="bi bi-star me-2 text-warning"></i>有効性評価</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            <form id="rateForm" action="/Incidents/RateMeasure/0" method="post">
+            @* 送信先 URL・対策 ID の渡し方は completeForm と同じ方式 *@
+            <form id="rateForm" action="@Url.Action("RateMeasure", "IncidentMeasures")" method="post">
                 @Html.AntiForgeryToken()
+                @* 対象の対策 ID(モーダルを開いたときに JS がセットする) *@
+                <input type="hidden" name="id" value="" />
                 @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
@@ -587,8 +601,8 @@
                         </div>
                     </div>
                     <div class="mb-3">
-                        <label class="form-label">評価コメント（任意）</label>
-                        <textarea name="effectivenessNote" class="form-control" rows="2"
+                        <label class="form-label" for="effectivenessNote">評価コメント（任意）</label>
+                        <textarea name="effectivenessNote" id="effectivenessNote" class="form-control" rows="2"
                                   placeholder="対策の効果や課題を記入"></textarea>
                     </div>
                 </div>
@@ -609,18 +623,20 @@
         const id = e.relatedTarget.dataset.measureId;
         // 同時編集検出トークン（古ければサーバー側で検出される）
         const token = e.relatedTarget.dataset.concurrencyToken || '';
-        // 送信先 URL を組み立てて上書き
+        // フォームの hidden フィールドに対策 ID とトークンを注入する。
+        // action URL はサーバー生成の固定値のまま触らない(JS で URL を組み立てると
+        // ルート形状の知識がクライアントに漏れ、PathBase 変更時に壊れやすくなるため)
         const form = document.getElementById('completeForm');
-        form.action = '/Incidents/CompleteMeasure/' + id;
+        form.querySelector('input[name="id"]').value = id;
         // 隠しフィールドへトークンを注入
         form.querySelector('input[name="concurrencyToken"]').value = token;
     });
-    // 評価モーダルも同様に action と token を差し替える
+    // 評価モーダルも同様に hidden フィールドを差し替える
     document.getElementById('rateModal').addEventListener('show.bs.modal', function(e) {
         const id = e.relatedTarget.dataset.measureId;
         const token = e.relatedTarget.dataset.concurrencyToken || '';
         const form = document.getElementById('rateForm');
-        form.action = '/Incidents/RateMeasure/' + id;
+        form.querySelector('input[name="id"]').value = id;
         form.querySelector('input[name="concurrencyToken"]').value = token;
     });
 </script>

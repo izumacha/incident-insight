@@ -337,8 +337,10 @@ using (var scope = app.Services.CreateScope())
     // シーダー専用のロガーを作成
     var seederLogger = scope.ServiceProvider.GetRequiredService<ILoggerFactory>()
         .CreateLogger("IdentitySeeder");
-    // ロール・開発用デモアカウントを投入(Development + SeedAccounts 設定がある場合のみ)
-    await IdentitySeeder.SeedAsync(roleManager, userManager, app.Configuration, seederLogger);
+    // ロール・開発用デモアカウントを投入(Development + SeedAccounts 設定がある場合のみ)。
+    // 環境判定はホスト確定済みの app.Environment を渡す(環境変数の直読みで判定がずれないように)
+    await IdentitySeeder.SeedAsync(
+        roleManager, userManager, app.Configuration, app.Environment.IsDevelopment(), seederLogger);
 }
 
 // アプリを起動(リクエスト待受開始)

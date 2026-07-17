@@ -312,6 +312,16 @@ public class PreventiveMeasuresController : Controller
             return RedirectToAction(nameof(Index));
         }
 
+        // すでに完了済みなら再完了を拒否する(fail-closed)。ここで拒否しないと、
+        // 古いタブからの再送信で CompletedAt / CompletionNote が黙って上書きされ、
+        // 有効性評価日時(EffectivenessReviewedAt)が完了日時より前になる等、
+        // KPI の時系列整合性が壊れてしまう(Review / UpdateStatus と同じライフサイクル強制)。
+        if (measure.Status == MeasureStatus.Completed)
+        {
+            TempData["Warning"] = "この対策はすでに完了しています。完了内容を修正する場合は、カンバンでステータスを一度差し戻してから再度完了してください。";
+            return RedirectToAction(nameof(Index));
+        }
+
         // ステータス・完了日時・報告メモを更新
         measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = _clock.Now;
@@ -436,9 +446,14 @@ public class PreventiveMeasuresController : Controller
         // 受け取った status が enum の定義値(Planned/InProgress/Completed)かを検証する。
         // ASP.NET のモデルバインドは未定義の整数(例: 99)もそのまま (MeasureStatus)99 として束縛してしまうため、
         // ここで弾かないと未定義値が DB に保存され、カンバンの振り分けやラベル表示が壊れる。
-        // 「不明なら拒否」(fail-closed)の原則で、定義外の値は 400 で拒否する。
+        // 「不明なら拒否」(fail-closed)の原則で拒否する。他の失敗経路と同じく
+        // TempData["Warning"] + リダイレクトで通知する(生の BadRequest はカンバン画面の
+        // コンテキストを失わせ、無装飾のプレーンテキストのみが表示されてしまうため)。
         if (!Enum.IsDefined(typeof(MeasureStatus), status))
-            return BadRequest("不正なステータス値です。");
+        {
+            TempData["Warning"] = "不正なステータス値です。";
+            return RedirectToAction(nameof(Index));
+        }
 
         // ステータスを更新。完了に遷移した場合は完了日時を記録し、
         // 完了から差し戻した場合は完了日時をクリアする(古い完了日が残らないように)

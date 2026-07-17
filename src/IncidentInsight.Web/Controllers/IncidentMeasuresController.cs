@@ -116,6 +116,9 @@ public class IncidentMeasuresController : Controller
         TempData["Warning"] = "入力内容に不備があります。再発防止策フォームの項目を確認してください。";
         var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
             _db, _recurrence, _clock, vm.IncidentId, newMeasureOverride: vm);
+        // 冒頭の FindAsync 成功後に別ユーザーがインシデントを削除した場合は null が返る。
+        // null のまま Details ビューへ渡すと NullReferenceException(HTTP 500)になるため 404 を返す
+        if (detailVm == null) return NotFound();
         return View("~/Views/Incidents/Details.cshtml", detailVm);
     }
 
@@ -146,6 +149,16 @@ public class IncidentMeasuresController : Controller
         if (completionNoteError != null)
         {
             TempData["Warning"] = completionNoteError;
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
+
+        // すでに完了済みなら再完了を拒否する(fail-closed)。ここで拒否しないと、
+        // 古いタブからの再送信で CompletedAt / CompletionNote が黙って上書きされ、
+        // 有効性評価日時(EffectivenessReviewedAt)が完了日時より前になる等、
+        // KPI の時系列整合性が壊れてしまう(RateMeasure / UpdateStatus と同じライフサイクル強制)。
+        if (measure.Status == MeasureStatus.Completed)
+        {
+            TempData["Warning"] = "この対策はすでに完了しています。完了内容を修正する場合は、カンバンでステータスを一度差し戻してから再度完了してください。";
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }
 
@@ -188,9 +201,13 @@ public class IncidentMeasuresController : Controller
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, measure.Incident, Policies.CanEditIncident))
             return Forbid();
 
-        // 評価値の範囲チェック
+        // 評価値の範囲チェック。他の失敗経路と同じく TempData["Warning"] + Details への
+        // リダイレクトで通知する(生の BadRequest は詳細画面のモーダル/コンテキストを失わせてしまうため)
         if (effectivenessRating < 1 || effectivenessRating > 5)
-            return BadRequest("有効性評価は1〜5の値を指定してください。");
+        {
+            TempData["Warning"] = "有効性評価は1〜5の値を指定してください。";
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // 再発の有無が未選択(null)なら拒否する。bool で受けて false をデフォルトにすると、
         // フォームでどちらのラジオも選択せず送信した場合に「再発なし」が暗黙に確定してしまい、

@@ -80,9 +80,29 @@ public static class EnumLabels
         ["Deleted"] = "danger"
     };
 
+    // Bootstrap カラー名 → 16進カラーコードの変換表。
+    // Chart.js のように CSS クラス(badge bg-warning 等)を使えない描画で、
+    // バッジと同じ配色を再現するために使う(Bootstrap 5.3 の既定テーマ色)。
+    private static readonly Dictionary<string, string> BootstrapHexMap = new()
+    {
+        ["primary"] = "#0d6efd",
+        ["secondary"] = "#6c757d",
+        ["success"] = "#198754",
+        ["danger"] = "#dc3545",
+        ["warning"] = "#ffc107",
+        ["info"] = "#0dcaf0",
+        ["dark"] = "#212529"
+    };
+
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();
+
+    // Bootstrap カラー名を16進カラーコードに変換。
+    // 見つからなければグレー(secondary)へフォールバックする。フォールバック値も
+    // 変換表から引くことで、secondary の色を変えたときにここだけ古い色が残るのを防ぐ(§6)
+    public static string Hex(string bootstrapColorName) =>
+        BootstrapHexMap.TryGetValue(bootstrapColorName, out var hex) ? hex : BootstrapHexMap["secondary"];
 
     // 重症度を Bootstrap カラー名に変換(見つからなければグレー)
     public static string Color(IncidentSeverity v) =>

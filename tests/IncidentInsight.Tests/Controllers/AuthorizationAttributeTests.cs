@@ -27,12 +27,39 @@ public class AuthorizationAttributeTests
     }
 
     [Fact]
-    public void AccountController_HasNoClassLevelAuthorizeAttribute()
+    public void AccountController_HasClassLevelAuthorizeAttribute()
     {
-        // AccountController must not require auth at class level — otherwise login
-        // would be unreachable. Anonymous endpoints are opted in per-action below.
+        // AccountController もクラス既定は [Authorize](fail-closed)。ログイン画面が
+        // 到達不能になることはない: Login / AccessDenied はアクション単位の
+        // [AllowAnonymous](下のテストで担保)がクラス属性より優先されるため。
+        // クラス属性を外すと、将来アクションを追加したときに認可の付け忘れで
+        // 匿名公開されてしまうリスクがあるので、既定拒否をここで固定する。
         var attr = typeof(AccountController).GetCustomAttribute<AuthorizeAttribute>(inherit: false);
-        Assert.Null(attr);
+        Assert.NotNull(attr);
+    }
+
+    [Fact]
+    public void AccountController_LoginPost_IsAllowAnonymous()
+    {
+        // クラス既定 [Authorize] の下でログイン POST が到達可能であることを担保する
+        var method = typeof(AccountController)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .First(m => m.Name == nameof(AccountController.Login)
+                && m.GetParameters().Length == 2);
+
+        Assert.NotNull(method.GetCustomAttribute<AllowAnonymousAttribute>(inherit: false));
+    }
+
+    [Fact]
+    public void AccountController_Logout_IsAllowAnonymous()
+    {
+        // Logout はクラス既定 [Authorize] の例外として [AllowAnonymous] を維持する。
+        // 認証必須にすると、クッキー失効後のログアウト操作がログイン画面へ challenge され、
+        // ログイン成功直後に POST 専用の /Account/Logout へ GET され 405 になるため。
+        var method = typeof(AccountController).GetMethod(nameof(AccountController.Logout));
+
+        Assert.NotNull(method);
+        Assert.NotNull(method!.GetCustomAttribute<AllowAnonymousAttribute>(inherit: false));
     }
 
     [Fact]

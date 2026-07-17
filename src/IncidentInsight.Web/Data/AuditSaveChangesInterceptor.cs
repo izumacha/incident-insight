@@ -24,6 +24,8 @@ using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.ChangeTracking;
 // インターセプタ関連の型
 using Microsoft.EntityFrameworkCore.Diagnostics;
+// トランザクション型(IDbContextTransaction)を使う
+using Microsoft.EntityFrameworkCore.Storage;
 // IOptions(設定オブジェクトの DI)を使う
 using Microsoft.Extensions.Options;
 
@@ -69,21 +71,41 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // 将来的に登録方式が変わってもスレッド安全になるよう ConcurrentDictionary<> を使う(issue #67)。
     private readonly ConcurrentDictionary<DbContext, List<PendingAudit>> _pending = new();
 
+    // インターセプタ自身が開始したトランザクション(DbContext ごと)。
+    // 業務変更(1 度目の SaveChanges)と監査ログ(2 度目の SaveChanges)は別々の
+    // SaveChanges で書かれるため、そのままでは別トランザクションでコミットされ、
+    // 「業務変更はコミット済みなのに監査行の INSERT だけ失敗した」という監査欠落
+    // (規制対応の監査証跡としては許容できない)が起こりうる。呼び出し側が既に
+    // トランザクションを張っていない場合に限り、ここで自前のトランザクションを開始し、
+    // 監査行の書き込みまで完了した時点でコミットすることで両者を原子的にする。
+    private readonly ConcurrentDictionary<DbContext, IDbContextTransaction> _ownedTransactions = new();
+
+    // 監査行フラッシュ(2 度目の SaveChanges)を実行中のコンテキスト集合。
+    // フラッシュの SaveChanges も SavingChanges フックへ再入するため、下の
+    // 「残留トランザクションの事前掃除」が、正当に開いている自前トランザクションを
+    // 誤って巻き戻さないよう、フラッシュ中はスキップする目印として使う
+    private readonly ConcurrentDictionary<DbContext, byte> _flushing = new();
+
     // [Sensitive] 属性の検索結果をキャッシュ(プロパティ毎にリフレクションを毎回走らせないため)
     // キーは (CLR Type, プロパティ名)。null は属性なしを表す。
     private static readonly Dictionary<(Type, string), Mask?> _sensitiveCache = new();
     // キャッシュアクセスのロック(複数 SaveChanges が並行してもよいように)
     private static readonly object _cacheLock = new();
 
-    // コンストラクタ: DI で IClock / HttpContextAccessor / AuditOptions を受け取る。
-    // AuditOptions は省略可能(テストでは渡さなくても動く)
+    // ロールバック失敗などの異常を記録するロガー(テストでは省略可能)
+    private readonly ILogger<AuditSaveChangesInterceptor>? _logger;
+
+    // コンストラクタ: DI で IClock / HttpContextAccessor / AuditOptions / ロガーを受け取る。
+    // AuditOptions とロガーは省略可能(テストでは渡さなくても動く)
     public AuditSaveChangesInterceptor(
         IClock clock,
         IHttpContextAccessor? httpContextAccessor = null,
-        IOptions<AuditOptions>? auditOptions = null)
+        IOptions<AuditOptions>? auditOptions = null,
+        ILogger<AuditSaveChangesInterceptor>? logger = null)
     {
         _httpContextAccessor = httpContextAccessor;
         _clock = clock;
+        _logger = logger;
         // null の場合は規定値の AuditOptions を使う(salt が空のテスト用)
         _auditOptions = auditOptions?.Value ?? new AuditOptions();
         // HMAC 鍵を一度だけバイト列に変換してキャッシュする
@@ -97,21 +119,65 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         InterceptionResult<int> result)
     {
         // DbContext があれば対象エントリをキャプチャしてトークンも更新
-        if (eventData.Context is not null) CaptureAndBumpTokens(eventData.Context);
+        if (eventData.Context is not null)
+        {
+            // 前回の SaveChanges が Failed/Canceled フックを経ずに中断した場合に備え、
+            // 残留した自前トランザクションを先に破棄する(残したまま新しい保存を始めると、
+            // 成功トーストの裏でスコープ破棄時に丸ごとロールバックされる無言のデータ消失になる)。
+            // ただし監査行フラッシュの再入時は、正当に開いている自前トランザクションなので触らない
+            if (!_flushing.ContainsKey(eventData.Context)) RollbackOwnedTransaction(eventData.Context);
+            // 監査対象の変更をスナップショット化する
+            CaptureAndBumpTokens(eventData.Context);
+            // 監査対象がある場合、業務変更+監査行を1トランザクションに束ねる準備をする
+            if (ShouldBeginOwnedTransaction(eventData.Context))
+            {
+                // 自前トランザクションを開始して記録する(コミットは監査行の書き込み後)
+                _ownedTransactions[eventData.Context] = eventData.Context.Database.BeginTransaction();
+            }
+        }
         // 基底処理へ委譲
         return base.SavingChanges(eventData, result);
     }
 
     // 非同期版 SaveChanges の直前フック
-    public override ValueTask<InterceptionResult<int>> SavingChangesAsync(
+    public override async ValueTask<InterceptionResult<int>> SavingChangesAsync(
         DbContextEventData eventData,
         InterceptionResult<int> result,
         CancellationToken cancellationToken = default)
     {
         // DbContext があれば対象エントリをキャプチャしてトークンも更新
-        if (eventData.Context is not null) CaptureAndBumpTokens(eventData.Context);
+        if (eventData.Context is not null)
+        {
+            // 前回の SaveChanges が中断した場合に残留した自前トランザクションを先に破棄する
+            // (同期版と同じ理由。監査行フラッシュの再入時はスキップ)
+            if (!_flushing.ContainsKey(eventData.Context)) await RollbackOwnedTransactionAsync(eventData.Context);
+            // 監査対象の変更をスナップショット化する
+            CaptureAndBumpTokens(eventData.Context);
+            // 監査対象がある場合、業務変更+監査行を1トランザクションに束ねる準備をする
+            if (ShouldBeginOwnedTransaction(eventData.Context))
+            {
+                // 自前トランザクションを非同期で開始して記録する
+                _ownedTransactions[eventData.Context] =
+                    await eventData.Context.Database.BeginTransactionAsync(cancellationToken);
+            }
+        }
         // 基底処理へ委譲
-        return base.SavingChangesAsync(eventData, result, cancellationToken);
+        return await base.SavingChangesAsync(eventData, result, cancellationToken);
+    }
+
+    // 自前トランザクションを開始すべきかを判定する。
+    // (a) 監査対象の変更が 1 件以上あり、(b) リレーショナル DB で(InMemory テストは
+    //     トランザクション未対応のため従来どおり 2 回の SaveChanges)、
+    // (c) 呼び出し側が既にトランザクションを張っていない(例: IncidentsController.Create は
+    //     自前のトランザクションで括っているので二重に開始しない)場合のみ true。
+    private bool ShouldBeginOwnedTransaction(DbContext context)
+    {
+        // 監査対象の変更が無ければトランザクションで束ねる必要は無い
+        if (!_pending.TryGetValue(context, out var captured) || captured.Count == 0) return false;
+        // InMemory 等の非リレーショナルプロバイダではトランザクションを使わない
+        if (!context.Database.IsRelational()) return false;
+        // 呼び出し側のトランザクションが既にあればそれに任せる
+        return context.Database.CurrentTransaction is null;
     }
 
     // 同期版 SaveChanges の直後フック: 監査ログを書き込む
@@ -138,21 +204,141 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // 同期版: SaveChanges が失敗したときのフック
     public override void SaveChangesFailed(DbContextErrorEventData eventData)
     {
-        // 失敗した場合は保留エントリを破棄(ゴミを残さない)
-        if (eventData.Context is not null) _pending.TryRemove(eventData.Context, out _);
+        // 失敗した場合は保留エントリを破棄し、自前トランザクションもロールバック
+        if (eventData.Context is not null)
+        {
+            // 保留中の監査エントリを破棄(ゴミを残さない)
+            _pending.TryRemove(eventData.Context, out _);
+            // 自前トランザクションが開いていれば巻き戻して破棄する
+            RollbackOwnedTransaction(eventData.Context);
+        }
         // 基底処理へ委譲
         base.SaveChangesFailed(eventData);
     }
 
     // 非同期版: SaveChanges が失敗したときのフック
-    public override Task SaveChangesFailedAsync(
+    public override async Task SaveChangesFailedAsync(
         DbContextErrorEventData eventData,
         CancellationToken cancellationToken = default)
     {
-        // 失敗時も保留エントリをクリア
-        if (eventData.Context is not null) _pending.TryRemove(eventData.Context, out _);
+        // 失敗時も保留エントリをクリアし、自前トランザクションをロールバック
+        if (eventData.Context is not null)
+        {
+            // 保留中の監査エントリを破棄
+            _pending.TryRemove(eventData.Context, out _);
+            // 自前トランザクションが開いていれば非同期で巻き戻して破棄する
+            await RollbackOwnedTransactionAsync(eventData.Context);
+        }
         // 基底処理へ委譲
-        return base.SaveChangesFailedAsync(eventData, cancellationToken);
+        await base.SaveChangesFailedAsync(eventData, cancellationToken);
+    }
+
+    // 同期版: SaveChanges がキャンセルされたときのフック。
+    // キャンセル時は Failed フックが呼ばれないため、ここで後始末しないと
+    // 自前トランザクションが開いたまま残留してしまう(Failed と同じ後始末を行う)
+    public override void SaveChangesCanceled(DbContextEventData eventData)
+    {
+        // キャンセル時も保留エントリをクリアし、自前トランザクションをロールバック
+        if (eventData.Context is not null)
+        {
+            // 保留中の監査エントリを破棄
+            _pending.TryRemove(eventData.Context, out _);
+            // 自前トランザクションが開いていれば巻き戻して破棄する
+            RollbackOwnedTransaction(eventData.Context);
+        }
+        // 基底処理へ委譲
+        base.SaveChangesCanceled(eventData);
+    }
+
+    // 非同期版: SaveChanges がキャンセルされたときのフック
+    public override async Task SaveChangesCanceledAsync(
+        DbContextEventData eventData,
+        CancellationToken cancellationToken = default)
+    {
+        // キャンセル時も保留エントリをクリアし、自前トランザクションをロールバック
+        if (eventData.Context is not null)
+        {
+            // 保留中の監査エントリを破棄
+            _pending.TryRemove(eventData.Context, out _);
+            // 自前トランザクションが開いていれば非同期で巻き戻して破棄する
+            await RollbackOwnedTransactionAsync(eventData.Context);
+        }
+        // 基底処理へ委譲
+        await base.SaveChangesCanceledAsync(eventData, cancellationToken);
+    }
+
+    // 自前トランザクションをコミットして破棄する(無ければ何もしない)
+    private void CommitOwnedTransaction(DbContext context)
+    {
+        // このコンテキスト用の自前トランザクションを取り出す(2 重コミット防止のため先に除去)
+        if (!_ownedTransactions.TryRemove(context, out var transaction)) return;
+        // using で確実に破棄しつつコミットする
+        using (transaction)
+        {
+            // 業務変更 + 監査行をまとめて確定する
+            transaction.Commit();
+        }
+    }
+
+    // 非同期版: 自前トランザクションをコミットして破棄する(無ければ何もしない)。
+    // 非同期の SaveChangesAsync 経路で同期 Commit を呼ぶと、SQL Server / PostgreSQL では
+    // スレッドプールをブロックするネットワーク I/O になる(sync-over-async)ため分離する
+    private async Task CommitOwnedTransactionAsync(DbContext context)
+    {
+        // このコンテキスト用の自前トランザクションを取り出す(2 重コミット防止のため先に除去)
+        if (!_ownedTransactions.TryRemove(context, out var transaction)) return;
+        // await using で確実に破棄しつつ非同期でコミットする
+        await using (transaction)
+        {
+            // 業務変更 + 監査行をまとめて確定する
+            await transaction.CommitAsync();
+        }
+    }
+
+    // 自前トランザクションをロールバックして破棄する(無ければ何もしない)
+    private void RollbackOwnedTransaction(DbContext context)
+    {
+        // このコンテキスト用の自前トランザクションを取り出す(2 重ロールバック防止のため先に除去)
+        if (!_ownedTransactions.TryRemove(context, out var transaction)) return;
+        // using で確実に破棄しつつロールバックする
+        using (transaction)
+        {
+            try
+            {
+                // 業務変更 + 監査行をまとめて巻き戻す
+                transaction.Rollback();
+            }
+            catch (Exception ex)
+            {
+                // このメソッドは SaveChanges 失敗の例外処理中に呼ばれる。接続断などで
+                // Rollback 自体が失敗しても、未コミットのトランザクションは破棄時に
+                // DB 側で自動的に巻き戻るため整合性は保たれる。ここで再スローすると
+                // 元の失敗例外(呼び出し元が捕捉すべき本来の原因)が握り潰されてしまうため
+                // 再スローはせず、追跡できるようログにだけ残して元の例外を伝播させる(§6)
+                _logger?.LogWarning(ex, "監査トランザクションのロールバックに失敗しました(トランザクションは破棄時に自動的に巻き戻ります)");
+            }
+        }
+    }
+
+    // 非同期版: 自前トランザクションをロールバックして破棄する(無ければ何もしない)
+    private async Task RollbackOwnedTransactionAsync(DbContext context)
+    {
+        // このコンテキスト用の自前トランザクションを取り出す(2 重ロールバック防止のため先に除去)
+        if (!_ownedTransactions.TryRemove(context, out var transaction)) return;
+        // await using で確実に破棄しつつ非同期でロールバックする
+        await using (transaction)
+        {
+            try
+            {
+                // 業務変更 + 監査行をまとめて巻き戻す
+                await transaction.RollbackAsync();
+            }
+            catch (Exception ex)
+            {
+                // 同期版と同じ理由で再スローせず、ログにだけ残して元の例外を伝播させる(§6)
+                _logger?.LogWarning(ex, "監査トランザクションのロールバックに失敗しました(トランザクションは破棄時に自動的に巻き戻ります)");
+            }
+        }
     }
 
     // 変更追跡から監査対象エントリを取り出し、ConcurrencyToken を更新してスナップショットを取る
@@ -169,9 +355,13 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         // この SaveChanges 呼び出しで書き込むべき監査エントリを溜めるリスト
         var captured = new List<PendingAudit>();
 
-        // 変更追跡中のエントリから監査対象(Added/Modified/Deleted)だけ取り出す
+        // 変更追跡中のエントリから監査対象(Added/Modified/Deleted)だけ取り出す。
+        // 型名は実行時型(GetType())ではなく EF のメタデータ(Metadata.ClrType)から取る。
+        // 実行時型だと、将来 EF の遅延読み込みプロキシ等を有効化した場合に
+        // 「IncidentProxy」のような派生型名になり、監査が黙って全部スキップされてしまう
+        // (監査証跡の fail-open)ため、プロキシの影響を受けないメタデータ側を使う。
         var entries = context.ChangeTracker.Entries()
-            .Where(e => AuditedEntities.Contains(e.Entity.GetType().Name)
+            .Where(e => AuditedEntities.Contains(e.Metadata.ClrType.Name)
                         && (e.State == EntityState.Added
                             || e.State == EntityState.Modified
                             || e.State == EntityState.Deleted))
@@ -197,7 +387,8 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
             captured.Add(new PendingAudit(
                 Entry: entry,
                 State: entry.State,
-                EntityName: entry.Entity.GetType().Name,
+                // 型名はプロキシの影響を受けない EF メタデータから取る(上のフィルタと同じ理由)
+                EntityName: entry.Metadata.ClrType.Name,
                 // Modified/Deleted の ID は確定済み、Added は 0 (SavedChanges で再読込)
                 PrekeyIfKnown: entry.State == EntityState.Added ? null : GetPrimaryKey(entry),
                 ChangedAt: now,
@@ -209,24 +400,69 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
         _pending[context] = captured;
     }
 
-    // 同期版: 保留中の監査エントリを実際に DB へ書き込む
+    // 同期版: 保留中の監査エントリを実際に DB へ書き込み、自前トランザクションを確定する
     private void FlushAuditLogs(DbContext context)
     {
-        // 書き込む必要が無ければ終了
-        if (!BuildAuditLogs(context)) return;
-        // AuditLog 自身は監査対象外なので、2 度目の SaveChanges で再帰的に
-        // 監査レコードが増えることはない(_pending は既にクリア済み)。
-        // 2 度目の SaveChanges で監査ログを DB へ保存
-        context.SaveChanges();
+        // フラッシュ中の目印を立てる(SavingChanges 再入時の事前掃除をスキップさせるため)
+        _flushing[context] = 1;
+        try
+        {
+            // 書き込む監査エントリがある場合のみ 2 度目の SaveChanges を行う。
+            // AuditLog 自身は監査対象外なので、2 度目の SaveChanges で再帰的に
+            // 監査レコードが増えることはない(_pending は既にクリア済み)。
+            // なお 2 度目の SaveChanges から再入するフック(監査エントリなし)は
+            // この if に入らないため、コミットは業務変更側の呼び出しだけが行う。
+            if (BuildAuditLogs(context))
+            {
+                // 2 度目の SaveChanges で監査ログを DB へ保存
+                context.SaveChanges();
+                // 業務変更 + 監査行が両方書けたのでまとめてコミット(自前開始時のみ)
+                CommitOwnedTransaction(context);
+            }
+        }
+        catch
+        {
+            // 監査行の書き込みに失敗した場合は業務変更ごと巻き戻す
+            // (監査証跡の無い業務変更を残さない = fail-closed)
+            RollbackOwnedTransaction(context);
+            // 失敗自体は握り潰さず呼び出し元へ伝える
+            throw;
+        }
+        finally
+        {
+            // フラッシュ完了(成功・失敗いずれでも)で目印を下ろす
+            _flushing.TryRemove(context, out _);
+        }
     }
 
-    // 非同期版: 保留中の監査エントリを DB へ書き込む
+    // 非同期版: 保留中の監査エントリを DB へ書き込み、自前トランザクションを確定する
     private async Task FlushAuditLogsAsync(DbContext context, CancellationToken cancellationToken)
     {
-        // 書き込み対象がなければ終了
-        if (!BuildAuditLogs(context)) return;
-        // 非同期で DB に保存
-        await context.SaveChangesAsync(cancellationToken);
+        // フラッシュ中の目印を立てる(SavingChanges 再入時の事前掃除をスキップさせるため)
+        _flushing[context] = 1;
+        try
+        {
+            // 書き込む監査エントリがある場合のみ 2 度目の SaveChanges を行う(同期版と同じ理由)
+            if (BuildAuditLogs(context))
+            {
+                // 非同期で監査ログを DB に保存
+                await context.SaveChangesAsync(cancellationToken);
+                // 業務変更 + 監査行が両方書けたのでまとめて非同期コミット(自前開始時のみ)
+                await CommitOwnedTransactionAsync(context);
+            }
+        }
+        catch
+        {
+            // 監査行の書き込みに失敗した場合は業務変更ごと巻き戻す(fail-closed)
+            await RollbackOwnedTransactionAsync(context);
+            // 失敗自体は握り潰さず呼び出し元へ伝える
+            throw;
+        }
+        finally
+        {
+            // フラッシュ完了(成功・失敗いずれでも)で目印を下ろす
+            _flushing.TryRemove(context, out _);
+        }
     }
 
     /// <summary>
@@ -305,8 +541,9 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
             // 主キー列は監査ログ本体で別枠に持つので除外
             if (prop.Metadata.IsPrimaryKey()) continue;
 
-            // このプロパティに [Sensitive] が付いていれば Mask 種別を取得(無ければ null)
-            var mask = LookupSensitiveMask(entry.Entity.GetType(), prop.Metadata.Name);
+            // このプロパティに [Sensitive] が付いていれば Mask 種別を取得(無ければ null)。
+            // 型はプロキシの影響を受けない EF メタデータから取る(キャッシュキーの安定化)
+            var mask = LookupSensitiveMask(entry.Metadata.ClrType, prop.Metadata.Name);
 
             // 状態ごとに「new のみ」「old のみ」「old/new 両方」を切り替え
             switch (entry.State)

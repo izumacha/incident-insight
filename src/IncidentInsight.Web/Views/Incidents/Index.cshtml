@@ -26,15 +26,18 @@
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue || Model.CauseCategoryId.HasValue;
 }
 <div class="card border-0 shadow-sm mb-3">
-    @* クリックで折りたたみを開閉するヘッダ *@
-    <div class="card-header bg-white" role="button" data-bs-toggle="collapse" data-bs-target="#filterPanel">
+    @* クリックで折りたたみを開閉するヘッダ。div+role="button" だとキーボードで
+       フォーカス・操作できない(§7)ため、ネイティブにフォーカス可能な <a href> を使う *@
+    <a class="card-header bg-white d-block text-decoration-none text-body" href="#filterPanel"
+       data-bs-toggle="collapse" role="button"
+       aria-expanded="@(anyFilter ? "true" : "false")" aria-controls="filterPanel">
         <i class="bi bi-funnel me-2"></i>絞り込み
         @* フィルター適用中の目印バッジ *@
         @if (anyFilter)
         {
             <span class="badge bg-primary ms-2">フィルター適用中</span>
         }
-    </div>
+    </a>
     @* フィルター適用中は初期表示で開いておく *@
     <div class="collapse @(anyFilter ? "show" : "")" id="filterPanel">
         <div class="card-body">
@@ -42,13 +45,15 @@
             <form method="get" asp-action="Index">
                 <div class="row g-2">
                     <div class="col-md-3">
-                        @* キーワード検索（内容・報告者を対象） *@
+                        @* キーワード検索（内容・報告者を対象）。placeholder はスクリーンリーダーの
+                           ラベルとして不十分なため aria-label を併記する(§7) *@
                         <input type="text" name="search" class="form-control form-control-sm"
+                               aria-label="キーワード検索（内容・報告者）"
                                placeholder="キーワード検索（内容・報告者）" value="@Model.Search" />
                     </div>
                     <div class="col-md-2">
                         @* 部署フィルター *@
-                        <select name="department" class="form-select form-select-sm">
+                        <select name="department" class="form-select form-select-sm" aria-label="部署で絞り込み">
                             <option value="">部署（全て）</option>
                             @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
                             {
@@ -59,7 +64,7 @@
                     </div>
                     <div class="col-md-2">
                         @* 種別フィルター *@
-                        <select name="incidentType" class="form-select form-select-sm">
+                        <select name="incidentType" class="form-select form-select-sm" aria-label="種別で絞り込み">
                             <option value="">種別（全て）</option>
                             @foreach (var t in IncidentInsight.Web.Models.Enums.IncidentTypeMapping.AllInDisplayOrder)
                             {
@@ -69,7 +74,7 @@
                     </div>
                     <div class="col-md-2">
                         @* 重症度フィルター *@
-                        <select name="severity" class="form-select form-select-sm">
+                        <select name="severity" class="form-select form-select-sm" aria-label="重症度で絞り込み">
                             <option value="">重症度（全て）</option>
                             @foreach (var s in IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities)
                             {
@@ -79,7 +84,7 @@
                     </div>
                     <div class="col-md-2">
                         @* 原因分類フィルター（末端カテゴリのみを選択肢化済み） *@
-                        <select name="causeCategoryId" class="form-select form-select-sm">
+                        <select name="causeCategoryId" class="form-select form-select-sm" aria-label="原因分類で絞り込み">
                             <option value="">原因分類（全て）</option>
                             @foreach (var opt in Model.CauseCategoryOptions)
                             {

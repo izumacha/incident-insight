@@ -359,7 +359,10 @@
         @Html.Raw(System.Text.Json.JsonSerializer.Serialize(new {
             monthlyData = Model.MonthlyCounts.Select(m => new { m.Label, m.Count }),
             primaryColor = "#1a6dbf",
-            primaryColorRgba = "rgba(26,109,191,0.10)"
+            primaryColorRgba = "rgba(26,109,191,0.10)",
+            // ドリルダウン先の一覧 URL。JS 側でルートを直書きすると PathBase 付き配備
+            // (リバースプロキシのサブパス)で 404 になるため、サーバー側で生成して渡す
+            incidentsUrl = Url.Action("Index", "Incidents")
         }))
     </script>
     @* TypeScript からコンパイルされた dashboard.js を読み込む *@

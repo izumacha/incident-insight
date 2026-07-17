@@ -8,8 +8,10 @@
 @* ページヘッダ：見出しと詳細へ戻るボタン *@
 <div class="d-flex justify-content-between align-items-center mb-3">
     <h2 class="mb-0"><i class="bi bi-pencil-square me-2 text-secondary"></i>なぜなぜ分析の編集</h2>
-    @* 親インシデントの詳細画面に戻る *@
-    <a asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
+    @* 親インシデントの詳細画面に戻る。このビューは CauseAnalysesController から描画されるため、
+       asp-controller を明示しないと存在しない CauseAnalyses/Details へのリンク解決に失敗し
+       リンク切れ(空 href)になる *@
+    <a asp-controller="Incidents" asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
         <i class="bi bi-arrow-left me-1"></i>詳細へ
     </a>
 </div>
@@ -103,8 +105,8 @@
                 </div>
 
                 <div class="col-12 d-flex justify-content-between">
-                    @* キャンセル（詳細画面に戻る） *@
-                    <a asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
+                    @* キャンセル（詳細画面に戻る）。ヘッダの「詳細へ」と同じ理由で asp-controller を明示する *@
+                    <a asp-controller="Incidents" asp-action="Details" asp-route-id="@Model.IncidentId" class="btn btn-outline-secondary">
                         <i class="bi bi-x-circle me-1"></i>キャンセル
                     </a>
                     @* 更新ボタン *@

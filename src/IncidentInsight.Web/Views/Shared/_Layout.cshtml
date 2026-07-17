@@ -128,13 +128,13 @@
                             @* ログインユーザー名とロールバッジ *@
                             <span class="navbar-text small text-white">
                                 <i class="bi bi-person-circle me-1"></i>@User.Identity.Name
-                                @* 管理者バッジ *@
-                                @if (User.IsInRole("Admin"))
+                                @* 管理者バッジ(ロール名はマジック文字列でなく AppRoles 定数で参照) *@
+                                @if (User.IsInRole(AppRoles.Admin))
                                 {
                                     <span class="badge bg-warning text-dark ms-1">Admin</span>
                                 }
                                 @* リスクマネージャーバッジ *@
-                                else if (User.IsInRole("RiskManager"))
+                                else if (User.IsInRole(AppRoles.RiskManager))
                                 {
                                     <span class="badge bg-info text-dark ms-1">Risk Mgr</span>
                                 }

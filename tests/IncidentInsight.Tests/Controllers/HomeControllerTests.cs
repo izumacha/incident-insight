@@ -14,6 +14,10 @@ public class HomeControllerTests : IDisposable
 {
     private readonly ApplicationDbContext _db;
     private readonly HomeController _controller;
+    // コントローラと同じ時刻源をシードデータでも使う。SystemClock は JST を返すため、
+    // シード側だけ _clock.Today(ホストのローカル日付。CI の UTC コンテナでは JST と
+    // 1 日ずれうる)を使うと、日付境界をまたぐ時間帯にテストが不安定になる。
+    private readonly IClock _clock = new SystemClock();
 
     public HomeControllerTests()
     {
@@ -21,7 +25,7 @@ public class HomeControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new HomeController(_db, new RecurrenceService(new SystemClock()), new SystemClock());
+        _controller = new HomeController(_db, new RecurrenceService(_clock), _clock);
         // Existing tests assume a privileged viewer; Staff-scope tests build their own.
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -41,8 +45,8 @@ public class HomeControllerTests : IDisposable
         Severity = severity,
         Description = "テスト",
         ReporterName = "テスト太郎",
-        OccurredAt = occurredAt ?? DateTime.Now,
-        ReportedAt = DateTime.Now
+        OccurredAt = occurredAt ?? _clock.Now,
+        ReportedAt = _clock.Now
     };
 
     [Fact]
@@ -61,9 +65,9 @@ public class HomeControllerTests : IDisposable
     public async Task Index_PeriodYear_CountsAllYearIncidents()
     {
         _db.Incidents.AddRange(
-            MakeIncident(occurredAt: DateTime.Today.AddMonths(-6)),
-            MakeIncident(occurredAt: DateTime.Today.AddMonths(-11)),
-            MakeIncident(occurredAt: DateTime.Today.AddYears(-2))  // 期間外
+            MakeIncident(occurredAt: _clock.Today.AddMonths(-6)),
+            MakeIncident(occurredAt: _clock.Today.AddMonths(-11)),
+            MakeIncident(occurredAt: _clock.Today.AddYears(-2))  // 期間外
         );
         await _db.SaveChangesAsync();
 
@@ -78,8 +82,8 @@ public class HomeControllerTests : IDisposable
     public async Task Index_PeriodMonth_CountsLastMonthOnly()
     {
         _db.Incidents.AddRange(
-            MakeIncident(occurredAt: DateTime.Today.AddDays(-15)),  // 期間内
-            MakeIncident(occurredAt: DateTime.Today.AddMonths(-3))  // 期間外
+            MakeIncident(occurredAt: _clock.Today.AddDays(-15)),  // 期間内
+            MakeIncident(occurredAt: _clock.Today.AddMonths(-3))  // 期間外
         );
         await _db.SaveChangesAsync();
 
@@ -100,8 +104,8 @@ public class HomeControllerTests : IDisposable
         // 修正後は両方とも同じ7暦日窓(today-6〜today)を使うため、today-7のインシデントは
         // KPIからも除外され、グラフの日数(7)と整合する。
         _db.Incidents.AddRange(
-            MakeIncident(occurredAt: DateTime.Today.AddDays(-7)),  // 窓の外(境界日の1日前)
-            MakeIncident(occurredAt: DateTime.Today.AddDays(-6))   // 窓の中(境界日)
+            MakeIncident(occurredAt: _clock.Today.AddDays(-7)),  // 窓の外(境界日の1日前)
+            MakeIncident(occurredAt: _clock.Today.AddDays(-6))   // 窓の中(境界日)
         );
         await _db.SaveChangesAsync();
 
@@ -131,7 +135,7 @@ public class HomeControllerTests : IDisposable
                 ResponsiblePerson = "担当A",
                 ResponsibleDepartment = "内科",
                 Status = MeasureStatus.Planned,
-                DueDate = DateTime.Today.AddDays(-5)  // overdue
+                DueDate = _clock.Today.AddDays(-5)  // overdue
             },
             new PreventiveMeasure
             {
@@ -141,7 +145,7 @@ public class HomeControllerTests : IDisposable
                 ResponsiblePerson = "担当B",
                 ResponsibleDepartment = "内科",
                 Status = MeasureStatus.Completed,
-                DueDate = DateTime.Today.AddDays(-10)  // completed は除外
+                DueDate = _clock.Today.AddDays(-10)  // completed は除外
             }
         );
         await _db.SaveChangesAsync();
@@ -180,7 +184,7 @@ public class HomeControllerTests : IDisposable
                 ResponsiblePerson = "担当者",
                 ResponsibleDepartment = "内科",
                 Status = MeasureStatus.Planned,
-                DueDate = DateTime.Today.AddDays(-1 - i) // すべて期限超過、期限日はバラける
+                DueDate = _clock.Today.AddDays(-1 - i) // すべて期限超過、期限日はバラける
             });
         }
         await _db.SaveChangesAsync();
@@ -201,8 +205,8 @@ public class HomeControllerTests : IDisposable
         _db.CauseCategories.Add(category);
         await _db.SaveChangesAsync();
 
-        var inc1 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: DateTime.Today.AddDays(-10));
-        var inc2 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: DateTime.Today.AddDays(-20));
+        var inc1 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: _clock.Today.AddDays(-10));
+        var inc2 = MakeIncident(dept: "外科病棟", type: IncidentTypeKind.Medication, occurredAt: _clock.Today.AddDays(-20));
         _db.Incidents.AddRange(inc1, inc2);
         await _db.SaveChangesAsync();
 

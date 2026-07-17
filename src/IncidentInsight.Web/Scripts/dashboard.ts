@@ -18,6 +18,8 @@ interface DashboardData {
   primaryColor: string;
   // 折れ線の塗りつぶし色 (半透明)
   primaryColorRgba: string;
+  // ドリルダウン先のインシデント一覧 URL (PathBase 対応のためサーバー側で生成)
+  incidentsUrl: string;
 }
 
 // 即時実行関数で他ファイル/グローバルとの名前衝突を防ぐ
@@ -106,14 +108,19 @@ interface DashboardData {
           const y = monthMatch[1];
           // 月部分 (1〜12、ゼロ埋めして 2 桁化)
           const m = monthMatch[2].padStart(2, '0');
-          // 月を数値に変換 (翌月計算用)
+          // 月を数値に変換 (月末日計算用)
           const monthNum = parseInt(m, 10);
-          // 翌月 (12 月の場合は翌年 1 月)
-          const nextM = ((monthNum % 12) + 1).toString().padStart(2, '0');
-          // 翌年 (12 月のみ年が増える)
-          const nextY = monthNum === 12 ? (parseInt(y, 10) + 1).toString() : y;
-          // インシデント一覧へ期間絞り込みつきで遷移
-          window.location.href = `/Incidents?dateFrom=${y}-${m}-01&dateTo=${nextY}-${nextM}-01`;
+          // 当月の末日を求める (Date の月は 0 始まりのため、翌月インデックス + 日 0 = 当月末日)
+          const lastDay = new Date(parseInt(y, 10), monthNum, 0)
+            .getDate()
+            .toString()
+            .padStart(2, '0');
+          // インシデント一覧へ期間絞り込みつきで遷移。
+          // dateTo はサーバー側で「その日を含む」扱いのため、以前のように翌月 1 日を渡すと
+          // 翌月初日の件数まで混ざり、チャートの月別件数と一覧件数が食い違ってしまう。
+          // 当月末日を渡してチャートと同じ範囲に揃える。
+          // URL はサーバー生成 (incidentsUrl) を使い、PathBase 付き配備でも壊れないようにする。
+          window.location.href = `${data.incidentsUrl}?dateFrom=${y}-${m}-01&dateTo=${y}-${m}-${lastDay}`;
         }
       },
     },

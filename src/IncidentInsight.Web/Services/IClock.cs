@@ -34,16 +34,39 @@ public interface IClock
 }
 
 /// <summary>
-/// 既定の実装。サーバの OS ロケールが JST に設定されている前提で
-/// <see cref="DateTime.Now"/> / <see cref="DateTime.Today"/> を返す。
+/// 既定の実装。OS のタイムゾーン設定に依存せず、UTC から JST へ明示変換して返す。
+/// 以前は <see cref="DateTime.Now"/> をそのまま返しており「OS が JST 設定である」ことが
+/// 暗黙の前提だったが、Linux コンテナ / クラウド(既定 UTC)へ配備すると全タイムスタンプが
+/// 9 時間ずれる(Issue #31 と同種のバグ)ため、TimeZoneInfo で常に JST へ変換する。
 /// </summary>
-// 実運用向けの既定実装。OS の時刻をそのまま使う
+// 実運用向けの既定実装。UTC を基準に JST へ変換して返す
 public sealed class SystemClock : IClock
 {
-    // OS のローカル時刻(運用では JST 設定)を返す
-    public DateTime Now => DateTime.Now;
-    // OS のローカル日付(0:00:00)を返す
-    public DateTime Today => DateTime.Today;
+    // JST のタイムゾーン情報(プロセス起動時に一度だけ解決してキャッシュ)
+    private static readonly TimeZoneInfo JstZone = ResolveJstZone();
+
+    // JST のタイムゾーンを OS 非依存に解決する。
+    // IANA ID("Asia/Tokyo")は Linux / macOS / ICU 有効な Windows で使え、
+    // 見つからない環境(ICU 無効の Windows 等)では Windows ID("Tokyo Standard Time")へ
+    // フォールバックする(§10 プラットフォーム差を 1 か所に閉じ込める)。
+    private static TimeZoneInfo ResolveJstZone()
+    {
+        try
+        {
+            // まず IANA 形式のタイムゾーン ID で検索する
+            return TimeZoneInfo.FindSystemTimeZoneById("Asia/Tokyo");
+        }
+        catch (TimeZoneNotFoundException)
+        {
+            // IANA ID が無い環境では Windows 形式の ID で再検索する
+            return TimeZoneInfo.FindSystemTimeZoneById("Tokyo Standard Time");
+        }
+    }
+
+    // UTC の現在時刻を JST へ変換して返す(OS のタイムゾーン設定に依存しない)
+    public DateTime Now => TimeZoneInfo.ConvertTimeFromUtc(DateTime.UtcNow, JstZone);
+    // JST の今日の日付(0:00:00)を返す
+    public DateTime Today => Now.Date;
     // OS の UTC 時刻を返す
     public DateTime UtcNow => DateTime.UtcNow;
 }
