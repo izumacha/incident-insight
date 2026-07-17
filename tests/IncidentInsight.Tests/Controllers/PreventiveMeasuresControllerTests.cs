@@ -438,11 +438,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
         }
         finally
         {
-            // 一時DBファイルの後始末(SQLiteはWAL/SHMの補助ファイルも作りうるため一括削除)
-            foreach (var path in new[] { dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal" })
-            {
-                if (File.Exists(path)) File.Delete(path);
-            }
+            // 一時DBファイルの後始末(共通ヘルパーで WAL/SHM 等の補助ファイルも一括削除)
+            SqliteTestFiles.Cleanup(dbPath);
         }
     }
 

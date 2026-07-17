@@ -524,12 +524,14 @@
                 <h5 class="modal-title"><i class="bi bi-check-circle me-2 text-success"></i>対策完了報告</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            @* 送信先 URL と concurrencyToken は JS で動的に差し替える。
-               URL はルート直書きではなく Url.Action で生成する(リバースプロキシ配下の
-               サブパス配備時に PathBase が付かず 404 になるのを防ぐ) *@
-            <form id="completeForm" action="@Url.Action("CompleteMeasure", "IncidentMeasures")" method="post"
-                  data-action-base="@Url.Action("CompleteMeasure", "IncidentMeasures")">
+            @* 送信先 URL は Url.Action で固定生成する(ルート直書きだとリバースプロキシ配下の
+               サブパス配備時に PathBase が付かず 404 になる)。対象の対策 ID はルート
+               {id?} が省略可能なことを利用して hidden フィールドで送り、JS は URL を
+               組み立てず入力値の差し替えだけを行う *@
+            <form id="completeForm" action="@Url.Action("CompleteMeasure", "IncidentMeasures")" method="post">
                 @Html.AntiForgeryToken()
+                @* 対象の対策 ID(モーダルを開いたときに JS がセットする) *@
+                <input type="hidden" name="id" value="" />
                 @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
@@ -557,10 +559,11 @@
                 <h5 class="modal-title"><i class="bi bi-star me-2 text-warning"></i>有効性評価</h5>
                 <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
             </div>
-            @* 送信先 URL はルート直書きではなく Url.Action で生成する(completeForm と同じ理由) *@
-            <form id="rateForm" action="@Url.Action("RateMeasure", "IncidentMeasures")" method="post"
-                  data-action-base="@Url.Action("RateMeasure", "IncidentMeasures")">
+            @* 送信先 URL・対策 ID の渡し方は completeForm と同じ方式 *@
+            <form id="rateForm" action="@Url.Action("RateMeasure", "IncidentMeasures")" method="post">
                 @Html.AntiForgeryToken()
+                @* 対象の対策 ID(モーダルを開いたときに JS がセットする) *@
+                <input type="hidden" name="id" value="" />
                 @* 楽観ロック用の同時編集検出トークン *@
                 <input type="hidden" name="concurrencyToken" value="" />
                 <div class="modal-body">
@@ -620,19 +623,20 @@
         const id = e.relatedTarget.dataset.measureId;
         // 同時編集検出トークン（古ければサーバー側で検出される）
         const token = e.relatedTarget.dataset.concurrencyToken || '';
-        // 送信先 URL を組み立てて上書き(ベース URL はサーバー生成の data-action-base を使い、
-        // PathBase 付き配備でも正しいパスになるようにする)
+        // フォームの hidden フィールドに対策 ID とトークンを注入する。
+        // action URL はサーバー生成の固定値のまま触らない(JS で URL を組み立てると
+        // ルート形状の知識がクライアントに漏れ、PathBase 変更時に壊れやすくなるため)
         const form = document.getElementById('completeForm');
-        form.action = form.dataset.actionBase + '/' + id;
+        form.querySelector('input[name="id"]').value = id;
         // 隠しフィールドへトークンを注入
         form.querySelector('input[name="concurrencyToken"]').value = token;
     });
-    // 評価モーダルも同様に action と token を差し替える
+    // 評価モーダルも同様に hidden フィールドを差し替える
     document.getElementById('rateModal').addEventListener('show.bs.modal', function(e) {
         const id = e.relatedTarget.dataset.measureId;
         const token = e.relatedTarget.dataset.concurrencyToken || '';
         const form = document.getElementById('rateForm');
-        form.action = form.dataset.actionBase + '/' + id;
+        form.querySelector('input[name="id"]').value = id;
         form.querySelector('input[name="concurrencyToken"]').value = token;
     });
 </script>

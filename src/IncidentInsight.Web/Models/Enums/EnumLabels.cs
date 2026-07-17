@@ -98,9 +98,11 @@ public static class EnumLabels
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();
 
-    // Bootstrap カラー名を16進カラーコードに変換(見つからなければグレー)
+    // Bootstrap カラー名を16進カラーコードに変換。
+    // 見つからなければグレー(secondary)へフォールバックする。フォールバック値も
+    // 変換表から引くことで、secondary の色を変えたときにここだけ古い色が残るのを防ぐ(§6)
     public static string Hex(string bootstrapColorName) =>
-        BootstrapHexMap.TryGetValue(bootstrapColorName, out var hex) ? hex : "#6c757d";
+        BootstrapHexMap.TryGetValue(bootstrapColorName, out var hex) ? hex : BootstrapHexMap["secondary"];
 
     // 重症度を Bootstrap カラー名に変換(見つからなければグレー)
     public static string Color(IncidentSeverity v) =>

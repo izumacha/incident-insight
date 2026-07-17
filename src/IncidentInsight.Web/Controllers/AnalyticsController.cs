@@ -205,12 +205,20 @@ public class AnalyticsController : Controller
         var overdue = counts?.Overdue ?? 0;
         var completed = counts?.Completed ?? 0;
 
-        // ラベル・件数・色をひとまとめにして JSON 返却(Chart.js の Doughnut 用)
+        // ラベル・件数・色をひとまとめにして JSON 返却(Chart.js の Doughnut 用)。
+        // 色は16進値を直書きせず EnumLabels.Hex(色の一元管理元)から引く(§6。
+        // 計画中=warning / 進行中=primary / 期限超過=danger / 完了=success)
         return Json(new
         {
             labels = new[] { "計画中", "進行中", "期限超過", "完了" },
             data = new[] { planned, inProgress, overdue, completed },
-            colors = new[] { "#ffc107", "#0d6efd", "#dc3545", "#198754" }
+            colors = new[]
+            {
+                Models.Enums.EnumLabels.Hex("warning"),
+                Models.Enums.EnumLabels.Hex("primary"),
+                Models.Enums.EnumLabels.Hex("danger"),
+                Models.Enums.EnumLabels.Hex("success")
+            }
         });
     }
 

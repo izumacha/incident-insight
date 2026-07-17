@@ -158,7 +158,7 @@ public class IncidentMeasuresController : Controller
         // KPI の時系列整合性が壊れてしまう(RateMeasure / UpdateStatus と同じライフサイクル強制)。
         if (measure.Status == MeasureStatus.Completed)
         {
-            TempData["Warning"] = "この対策はすでに完了しています。完了内容を変更する場合は対策の編集から行ってください。";
+            TempData["Warning"] = "この対策はすでに完了しています。完了内容を修正する場合は、カンバンでステータスを一度差し戻してから再度完了してください。";
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }
 
