@@ -528,7 +528,7 @@ public class IncidentsController : Controller
     [HttpPost]
     [ValidateAntiForgeryToken]
     [Authorize(Policy = Policies.CanDeleteIncident)]
-    public async Task<IActionResult> Delete(int id)
+    public async Task<IActionResult> Delete(int id, Guid concurrencyToken)
     {
         // 子(CauseAnalysis / PreventiveMeasure)を Include して ChangeTracker に載せておく。
         // OnDelete(Cascade) は DB 側でも子行を消すが、それだけだと AuditSaveChangesInterceptor が
@@ -541,6 +541,11 @@ public class IncidentsController : Controller
         if (incident == null) return NotFound();
         // 削除権限がなければ 403(部署スコープも考慮)
         if (!await IsAuthorizedFor(incident, Policies.CanDeleteIncident)) return Forbid();
+
+        // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を
+        // 気づかず削除してしまわないよう、クライアントが保持していた表示時点の
+        // トークンを DB の現在値と突き合わせる)
+        _db.Entry(incident).Property(nameof(Incident.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
         // 削除マークを付けて DB へ反映(子エンティティも監査対象になる)
         _db.Incidents.Remove(incident);

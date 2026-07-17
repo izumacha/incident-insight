@@ -231,7 +231,7 @@ public class CauseAnalysesController : Controller
     // 原因分析の削除
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> DeleteCauseAnalysis(int id)
+    public async Task<IActionResult> DeleteCauseAnalysis(int id, Guid concurrencyToken)
     {
         // 対象の分析を親インシデントとともに取得
         var analysis = await _db.CauseAnalyses
@@ -242,6 +242,11 @@ public class CauseAnalysesController : Controller
         // 親インシデントへの編集権限がなければ 403
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, analysis.Incident, Policies.CanEditIncident))
             return Forbid();
+
+        // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を
+        // 気づかず削除してしまわないよう、クライアントが保持していた表示時点の
+        // トークンを DB の現在値と突き合わせる)
+        _db.Entry(analysis).Property(nameof(CauseAnalysis.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
         // リダイレクト先のインシデント ID を先に控える
         var incidentId = analysis.IncidentId;
