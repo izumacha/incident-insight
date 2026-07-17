@@ -264,7 +264,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var measure = await SeedMeasureAsync("外来");
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));
@@ -273,7 +273,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     [Fact]
     public async Task Delete_NotFound_ReturnsNotFound()
     {
-        var result = await _controller.Delete(99999);
+        var result = await _controller.Delete(99999, Guid.NewGuid());
         Assert.IsType<NotFoundResult>(result);
     }
 
@@ -283,7 +283,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 削除後も対策が1件残るよう sibling を1件追加しておく(0件になる削除は別途拒否ケースで検証)
         var measure = await SeedMeasureAsync("内科病棟", siblingMeasureCount: 1);
 
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -299,7 +299,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var measure = await SeedMeasureAsync("外来", siblingMeasureCount: 1);
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.RiskManager());
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -313,7 +313,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 不正状態(HasAtLeastOneValidMeasure 不変条件違反)が生まれるため拒否されるべき
         var measure = await SeedMeasureAsync("内科病棟");
 
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -328,7 +328,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 対策が2件以上残っている場合は、1件削除しても不変条件を満たすため成功する
         var measure = await SeedMeasureAsync("内科病棟", siblingMeasureCount: 2);
 
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -356,6 +356,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
             int incidentId;
             int measureAId;
             int measureBId;
+            Guid measureAToken;
+            Guid measureBToken;
             // マイグレーション経由ではなく EnsureCreated で素早くスキーマだけ作る
             // (このテストは並行実行時の行ロック挙動だけを見るため、既存マイグレーション
             // 履歴とのプロバイダ間差異は問題にならない)
@@ -399,11 +401,13 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 incidentId = incident.Id;
                 measureAId = measureA.Id;
                 measureBId = measureB.Id;
+                measureAToken = measureA.ConcurrencyToken;
+                measureBToken = measureB.ConcurrencyToken;
             }
 
             // それぞれ別の DbContext・別の Controller インスタンスで、
             // 別スレッド(Task.Run)から本物の並行実行として Delete を呼ぶ
-            Task<IActionResult> RunDeleteOnOwnThreadAsync(int measureId) => Task.Run(async () =>
+            Task<IActionResult> RunDeleteOnOwnThreadAsync(int measureId, Guid concurrencyToken) => Task.Run(async () =>
             {
                 await using var db = new ApplicationDbContext(
                     new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options);
@@ -413,11 +417,11 @@ public class PreventiveMeasuresControllerTests : IDisposable
                     new SystemClock(),
                     NullLogger<PreventiveMeasuresController>.Instance);
                 UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
-                return await controller.Delete(measureId);
+                return await controller.Delete(measureId, concurrencyToken);
             });
 
-            var taskA = RunDeleteOnOwnThreadAsync(measureAId);
-            var taskB = RunDeleteOnOwnThreadAsync(measureBId);
+            var taskA = RunDeleteOnOwnThreadAsync(measureAId, measureAToken);
+            var taskB = RunDeleteOnOwnThreadAsync(measureBId, measureBToken);
             await Task.WhenAll(taskA, taskB);
 
             // 検証: 両方が成功して対策0件になってはならない
@@ -448,7 +452,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             responsibleDepartment: "内科病棟");
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
-        var result = await _controller.Delete(measure.Id);
+        var result = await _controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.PreventiveMeasures.AnyAsync(m => m.Id == measure.Id));

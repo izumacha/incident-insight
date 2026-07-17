@@ -146,7 +146,8 @@
                             </a>
                             @* 削除はフォーム送信（CSRF トークン必須） *@
                             <form asp-controller="CauseAnalyses" asp-action="DeleteCauseAnalysis" asp-route-id="@analysis.Id" method="post" class="d-inline">
-                                @Html.AntiForgeryToken()
+                                @* CSRF トークン + 楽観ロックトークンを共通部品でセット送信する *@
+                                <partial name="_ConcurrencyTokenFields" model="analysis.ConcurrencyToken" />
                                 <button type="submit" class="btn btn-outline-danger btn-sm py-0"
                                         onclick="return confirm('この原因分析を削除しますか？')">
                                     <i class="bi bi-trash"></i>

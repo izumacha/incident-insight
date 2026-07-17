@@ -13,10 +13,12 @@ public class ConcurrencyTokenFormTests
     // トークンの round-trip が必須な POST アクション名の一覧(コントローラの Guid concurrencyToken 引数と対応)
     private static readonly string[] TokenRequiredActions =
     {
-        "Complete",        // PreventiveMeasuresController.Complete
-        "CompleteMeasure", // IncidentMeasuresController.CompleteMeasure
-        "RateMeasure",     // IncidentMeasuresController.RateMeasure
-        "UpdateStatus",    // PreventiveMeasuresController.UpdateStatus
+        "Complete",             // PreventiveMeasuresController.Complete
+        "CompleteMeasure",      // IncidentMeasuresController.CompleteMeasure
+        "RateMeasure",          // IncidentMeasuresController.RateMeasure
+        "UpdateStatus",         // PreventiveMeasuresController.UpdateStatus
+        "Delete",               // IncidentsController.Delete / PreventiveMeasuresController.Delete
+        "DeleteCauseAnalysis",  // CauseAnalysesController.DeleteCauseAnalysis
     };
 
     // 素の hidden input が出力する name 属性のリテラル(コントローラ引数 concurrencyToken と対応)

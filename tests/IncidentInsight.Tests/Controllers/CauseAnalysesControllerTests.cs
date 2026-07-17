@@ -215,7 +215,7 @@ public class CauseAnalysesControllerTests : IDisposable
         _db.CauseAnalyses.Add(analysis);
         await _db.SaveChangesAsync();
 
-        var result = await _controller.DeleteCauseAnalysis(analysis.Id);
+        var result = await _controller.DeleteCauseAnalysis(analysis.Id, analysis.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal("Details", redirect.ActionName);
@@ -237,7 +237,7 @@ public class CauseAnalysesControllerTests : IDisposable
         await _db.SaveChangesAsync();
         UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
 
-        var result = await _controller.DeleteCauseAnalysis(analysis.Id);
+        var result = await _controller.DeleteCauseAnalysis(analysis.Id, analysis.ConcurrencyToken);
 
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.CauseAnalyses.AnyAsync(a => a.Id == analysis.Id));

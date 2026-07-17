@@ -766,7 +766,7 @@ public class IncidentsControllerTests : IDisposable
         await _db.SaveChangesAsync();
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.Staff("内科病棟"));
-        var result = await _controller.Delete(incident.Id);
+        var result = await _controller.Delete(incident.Id, incident.ConcurrencyToken);
 
         Assert.IsType<ForbidResult>(result);
         Assert.True(await _db.Incidents.AnyAsync(i => i.Id == incident.Id));
@@ -775,7 +775,7 @@ public class IncidentsControllerTests : IDisposable
     [Fact]
     public async Task Delete_NotFound_ReturnsNotFound()
     {
-        var result = await _controller.Delete(99999);
+        var result = await _controller.Delete(99999, Guid.NewGuid());
         Assert.IsType<NotFoundResult>(result);
     }
 
@@ -794,7 +794,7 @@ public class IncidentsControllerTests : IDisposable
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
 
-        var result = await _controller.Delete(incident.Id);
+        var result = await _controller.Delete(incident.Id, incident.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(IncidentsController.Index), redirect.ActionName);
@@ -819,7 +819,7 @@ public class IncidentsControllerTests : IDisposable
         await _db.SaveChangesAsync();
 
         UserContextHelper.AttachUser(_controller, UserContextHelper.RiskManager());
-        var result = await _controller.Delete(incident.Id);
+        var result = await _controller.Delete(incident.Id, incident.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(IncidentsController.Index), redirect.ActionName);

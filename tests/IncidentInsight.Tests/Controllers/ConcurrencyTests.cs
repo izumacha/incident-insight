@@ -185,7 +185,7 @@ public class ConcurrencyTests : IDisposable
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
-        var result = await controller.Delete(incident.Id);
+        var result = await controller.Delete(incident.Id, incident.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(IncidentsController.Details), redirect.ActionName);
@@ -207,7 +207,7 @@ public class ConcurrencyTests : IDisposable
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
-        var result = await controller.Delete(measure.Id);
+        var result = await controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -231,7 +231,7 @@ public class ConcurrencyTests : IDisposable
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowSerializationConflictOnNextSave = true;
-        var result = await controller.Delete(measure.Id);
+        var result = await controller.Delete(measure.Id, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(PreventiveMeasuresController.Index), redirect.ActionName);
@@ -258,7 +258,7 @@ public class ConcurrencyTests : IDisposable
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
-        var result = await controller.DeleteCauseAnalysis(analysis.Id);
+        var result = await controller.DeleteCauseAnalysis(analysis.Id, analysis.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal("Details", redirect.ActionName);
@@ -292,5 +292,79 @@ public class ConcurrencyTests : IDisposable
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(nameof(IncidentsController.Details), redirect.ActionName);
+    }
+
+    [Fact]
+    public async Task IncidentsDelete_WithStaleClientToken_RejectsAndPreservesIncident()
+    {
+        // 回帰テスト: Delete は元々 concurrencyToken を受け取らず、DB から取得した
+        // 最新値をそのまま削除していたため、画面表示後に他ユーザーが更新した内容が
+        // あっても検知できなかった(ConcurrencyTests の他ケースは ThrowingDbContext で
+        // 例外を強制するだけで、実際の OriginalValue ピン留めまでは検証していない)。
+        // InMemory プロバイダは [ConcurrencyCheck] を実施しないため、ここでは本物の
+        // 楽観ロックが効く SQLite ファイル DB を使い、表示時点のトークンと DB の
+        // 現在値が食い違う場合に削除が拒否されることを直接検証する。
+        var dbPath = Path.Combine(Path.GetTempPath(), $"incident-insight-delete-concurrency-{Guid.NewGuid():N}.db");
+        var connectionString = $"Data Source={dbPath}";
+        try
+        {
+            int incidentId;
+            Guid staleToken;
+            // マイグレーション経由ではなく EnsureCreated で素早くスキーマだけ作る
+            // (このテストは ConcurrencyToken の突合せだけを見るため、既存マイグレーション
+            // 履歴とのプロバイダ間差異は問題にならない)
+            await using (var setupDb = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options))
+            {
+                await setupDb.Database.EnsureCreatedAsync();
+                var incident = new Incident
+                {
+                    Department = "内科病棟",
+                    IncidentType = IncidentTypeKind.Fall,
+                    Severity = IncidentSeverity.Level2,
+                    Description = "テスト",
+                    ReporterName = "担当",
+                    OccurredAt = DateTime.Now
+                };
+                setupDb.Incidents.Add(incident);
+                await setupDb.SaveChangesAsync();
+                incidentId = incident.Id;
+                // 「画面表示時点」のトークンとして控えておく(この後 DB 側だけ更新する)
+                staleToken = incident.ConcurrencyToken;
+
+                // 別ユーザーが先に編集した状況を模して、DB側のトークンだけを回転させる。
+                // AuditSaveChangesInterceptor は本番では Modified 時にトークンを自動回転
+                // させるが、このインターセプターは Program.cs の DI 経由でのみ
+                // ApplicationDbContext に登録されるため、テストが直接 `new
+                // ApplicationDbContext(options)` するこの経路には付いていない。
+                // そのため、ここでは直接 ConcurrencyToken を書き換えて衝突状態を作る。
+                incident.Description = "他ユーザーによる更新後";
+                incident.ConcurrencyToken = Guid.NewGuid();
+                await setupDb.SaveChangesAsync();
+                Assert.NotEqual(staleToken, incident.ConcurrencyToken);
+            }
+
+            await using var db = new ApplicationDbContext(
+                new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options);
+            var controller = new IncidentsController(db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+            UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+            // 画面表示時点の(今はもう古い)トークンで削除を試みる
+            var result = await controller.Delete(incidentId, staleToken);
+
+            var redirect = Assert.IsType<RedirectToActionResult>(result);
+            Assert.Equal(nameof(IncidentsController.Details), redirect.ActionName);
+            Assert.NotNull(controller.TempData["Warning"]);
+            // 拒否され、インシデントは削除されずに残っていること
+            Assert.True(await db.Incidents.AnyAsync(i => i.Id == incidentId));
+        }
+        finally
+        {
+            // 一時DBファイルの後始末(SQLiteはWAL/SHMの補助ファイルも作りうるため一括削除)
+            foreach (var path in new[] { dbPath, dbPath + "-wal", dbPath + "-shm", dbPath + "-journal" })
+            {
+                if (File.Exists(path)) File.Delete(path);
+            }
+        }
     }
 }

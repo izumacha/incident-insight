@@ -477,10 +477,14 @@ public class PreventiveMeasuresController : Controller
 
     // POST /PreventiveMeasures/Delete/5
     // 対策の削除(管理者/リスクマネージャー限定)
+    // 現時点でこのアクションへ POST する View は存在しない(カンバンからの削除導線は未実装)が、
+    // IncidentsController.Delete / CauseAnalysesController.DeleteCauseAnalysis と同じ
+    // 楽観ロック契約(concurrencyToken の round-trip)を保ち、将来 UI を配線する際に
+    // 契約を意識しなくて済むようにするため、他の2つと合わせて修正している。
     [HttpPost]
     [ValidateAntiForgeryToken]
     [Authorize(Policy = Policies.CanDeleteIncident)]
-    public async Task<IActionResult> Delete(int id)
+    public async Task<IActionResult> Delete(int id, Guid concurrencyToken)
     {
         // Incident を Include して部署スコープの認可判定(SameDepartmentHandler)に
         // 必要なナビゲーションを確実にロードする。
@@ -491,6 +495,11 @@ public class PreventiveMeasuresController : Controller
         if (measure == null) return NotFound();
         // 削除権限(部署一致/管理者系)の確認
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanDeleteIncident)) return Forbid();
+
+        // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を
+        // 気づかず削除してしまわないよう、クライアントが保持していた表示時点の
+        // トークンを DB の現在値と突き合わせる)
+        _db.Entry(measure).Property(nameof(PreventiveMeasure.ConcurrencyToken)).OriginalValue = concurrencyToken;
 
         // 業務ルール: インシデントは再発防止策が最低1件ないと登録できない
         // (IncidentsController.Create の HasAtLeastOneValidMeasure と同じ不変条件)。
