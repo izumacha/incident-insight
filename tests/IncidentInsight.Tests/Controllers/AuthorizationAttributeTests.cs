@@ -51,6 +51,18 @@ public class AuthorizationAttributeTests
     }
 
     [Fact]
+    public void AccountController_Logout_IsAllowAnonymous()
+    {
+        // Logout はクラス既定 [Authorize] の例外として [AllowAnonymous] を維持する。
+        // 認証必須にすると、クッキー失効後のログアウト操作がログイン画面へ challenge され、
+        // ログイン成功直後に POST 専用の /Account/Logout へ GET され 405 になるため。
+        var method = typeof(AccountController).GetMethod(nameof(AccountController.Logout));
+
+        Assert.NotNull(method);
+        Assert.NotNull(method!.GetCustomAttribute<AllowAnonymousAttribute>(inherit: false));
+    }
+
+    [Fact]
     public void AccountController_LoginGet_IsAllowAnonymous()
     {
         var method = typeof(AccountController)

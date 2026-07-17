@@ -76,8 +76,13 @@ public class AccountController : Controller
     }
 
     // POST /Account/Logout
-    // サインアウト後にログイン画面へ戻る
+    // サインアウト後にログイン画面へ戻る。
+    // [AllowAnonymous] にする理由: クラス既定 [Authorize] のままだと、認証クッキーが
+    // 失効した状態でログアウトボタンを押すとログイン画面へ challenge され、ログイン成功後に
+    // ReturnUrl=/Account/Logout へ GET リダイレクト → POST 専用のため 405 エラーになる。
+    // 匿名でのサインアウトは実質何もしない安全な操作(CSRF トークンでも保護済み)なので許可する。
     [HttpPost]
+    [AllowAnonymous]
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Logout()
     {

@@ -87,7 +87,7 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 
 ### コントローラ / 横断パターン
 
-- `AccountController` 以外は `[Authorize]`。`AccountController` は `Login` / `AccessDenied` が `[AllowAnonymous]`。
+- 全コントローラ(`AccountController` 含む)がクラス既定 `[Authorize]`(fail-closed)。`AccountController` は `Login` / `AccessDenied` / `Logout` のみアクション単位の `[AllowAnonymous]`(`Logout` はクッキー失効後の 405 デッドエンド防止)。
 - インシデントのライフサイクルは `/Incidents/...` 配下の**3 コントローラ**に分割:
   - `IncidentsController` — Index/Details/Create/Edit/Delete。Create は `HasAtLeastOneValidMeasure`（業務必須）を強制。`Edit` で親フォーム検証前にサブフォームキーを `ModelState.Remove` で除去。
   - `CauseAnalysesController` — `AddCauseAnalysis` / `EditCauseAnalysis` / `DeleteCauseAnalysis`。`[Route("Incidents/[action]/{id?}")]` で URL を維持し、`View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm)` を再利用。
