@@ -12,7 +12,11 @@ using Microsoft.AspNetCore.Mvc;
 // このコントローラの名前空間
 namespace IncidentInsight.Web.Controllers;
 
-// ログイン・ログアウト・アクセス拒否ページを司るコントローラ
+// ログイン・ログアウト・アクセス拒否ページを司るコントローラ。
+// クラス全体を [Authorize] とし、匿名で到達すべき Login / AccessDenied だけを
+// [AllowAnonymous] で個別に許可する(既定拒否 = fail-closed。アクションを追加したときに
+// 認可の付け忘れで匿名公開されてしまう事故を防ぐ)。
+[Authorize]
 public class AccountController : Controller
 {
     // サインイン操作用のマネージャー(パスワード検証・クッキー発行など)
