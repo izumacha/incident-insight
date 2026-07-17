@@ -174,7 +174,7 @@ public class IncidentMeasuresController : Controller
     // 再発防止策の有効性評価(1〜5 + 再発有無)を登録
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool recurrenceObserved, Guid concurrencyToken)
+    public async Task<IActionResult> RateMeasure(int id, int effectivenessRating, string? effectivenessNote, bool? recurrenceObserved, Guid concurrencyToken)
     {
         // 対象の対策を取得
         var measure = await _db.PreventiveMeasures
@@ -191,6 +191,16 @@ public class IncidentMeasuresController : Controller
         // 評価値の範囲チェック
         if (effectivenessRating < 1 || effectivenessRating > 5)
             return BadRequest("有効性評価は1〜5の値を指定してください。");
+
+        // 再発の有無が未選択(null)なら拒否する。bool で受けて false をデフォルトにすると、
+        // フォームでどちらのラジオも選択せず送信した場合に「再発なし」が暗黙に確定してしまい、
+        // PreventiveMeasuresController.Review(ReviewViewModel.RecurrenceObserved は bool? + [Required])
+        // と同じ抜け穴になる(医療インシデントの再発検知 KPI に影響しうるため fail-closed で拒否する)。
+        if (recurrenceObserved == null)
+        {
+            TempData["Warning"] = "再発の有無を選択してください。";
+            return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
+        }
 
         // 有効性評価コメントの長さを検証する。この経路は ViewModel を介さず生の文字列を
         // 直接受け取るため、共通ヘルパー(IncidentControllerHelpers.ValidateFreeTextLength)で
@@ -234,8 +244,8 @@ public class IncidentMeasuresController : Controller
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }
 
-        // 再発が確認された場合は警告、されていなければ成功通知
-        if (recurrenceObserved)
+        // 再発が確認された場合は警告、されていなければ成功通知(直前の null チェックで非 null 確定済み)
+        if (recurrenceObserved == true)
             TempData["Warning"] = "再発が確認されました。根本原因の再分析と追加対策を検討してください。";
         else
             TempData["Success"] = "有効性評価を登録しました。";

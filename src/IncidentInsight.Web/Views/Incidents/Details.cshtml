@@ -574,11 +574,14 @@
                         <label class="form-label fw-bold text-danger">対策実施後に再発を確認しましたか？ <span class="text-danger">*</span></label>
                         <div>
                             <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="noRecurrence" value="false" checked />
+                                @* デフォルトでいずれのラジオも選択しない(checked を付けない)。ここで
+                                   「再発なし」を既定選択にすると、レビュアーが一度も選ばず送信した場合に
+                                   誤って「再発なし」が確定してしまう(Review.cshtml と同じ理由で意図的に外す) *@
+                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="noRecurrence" value="false" required />
                                 <label class="form-check-label" for="noRecurrence">再発なし（対策有効）</label>
                             </div>
                             <div class="form-check form-check-inline">
-                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="yesRecurrence" value="true" />
+                                <input class="form-check-input" type="radio" name="recurrenceObserved" id="yesRecurrence" value="true" required />
                                 <label class="form-check-label text-danger" for="yesRecurrence">再発あり（追加対策必要）</label>
                             </div>
                         </div>
