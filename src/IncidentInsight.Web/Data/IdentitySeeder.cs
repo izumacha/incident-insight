@@ -17,18 +17,19 @@ namespace IncidentInsight.Web.Data;
 /// </summary>
 public static class IdentitySeeder
 {
-    // 起動時に呼ばれる本体メソッド: ロール生成 + (開発時のみ)デモユーザー作成
+    // 起動時に呼ばれる本体メソッド: ロール生成 + (開発時のみ)デモユーザー作成。
+    // isDevelopment はホスト確定済みの環境判定(app.Environment.IsDevelopment())を受け取る。
+    // 以前は ASPNETCORE_ENVIRONMENT を直接読んでいたが、DOTNET_ENVIRONMENT や
+    // --environment 指定で起動した場合にホストの環境判定と食い違い、
+    // 「アプリは Development として動くのにデモアカウントだけシードされない」
+    // (またはその逆)という不整合が起きるため、判定はホスト側に一本化する。
     public static async Task SeedAsync(
         RoleManager<IdentityRole> roleManager,
         UserManager<ApplicationUser> userManager,
         IConfiguration configuration,
+        bool isDevelopment,
         ILogger? logger = null)
     {
-        // 現在の環境名(Development / Production など)
-        var environment = Environment.GetEnvironmentVariable("ASPNETCORE_ENVIRONMENT");
-        // 開発環境かどうかのフラグ(大文字小文字を無視して比較)
-        var isDevelopment = string.Equals(environment, "Development", StringComparison.OrdinalIgnoreCase);
-
         // ロールを作成（全環境共通）
         // 定義された全ロールを順に処理
         foreach (var role in AppRoles.All)

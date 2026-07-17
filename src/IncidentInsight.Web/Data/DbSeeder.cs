@@ -83,6 +83,16 @@ public static class DbSeeder
 
         // 子カテゴリ名 → Id の辞書を作り、以降の分析レコード作成で使う
         var cats = db.CauseCategories.ToDictionary(c => c.Name, c => c.Id);
+
+        // サンプル分析が参照するカテゴリ名の一覧。運用中にカテゴリ名が変更・削除された
+        // 既存 DB(カテゴリはあるがインシデントを全削除した等)では辞書引きが
+        // KeyNotFoundException となり、シードは起動処理内で走るためアプリ自体が
+        // 起動不能になる。参照名が 1 つでも欠けていたらサンプル投入をスキップして
+        // 安全側に倒す(マスタ登録済み運用 DB にデモデータを混ぜないためにも妥当)。
+        var requiredCategoryNames = new[] { "確認不足", "思い込み・先入観", "申し送り漏れ", "手順不遵守" };
+        // 必要なカテゴリ名が欠けていればサンプルインシデントの投入を諦めて終了
+        if (requiredCategoryNames.Any(name => !cats.ContainsKey(name))) return;
+
         // 現在時刻(JST)をデモデータの基準時刻として取得
         var now = clock.Now;
 
