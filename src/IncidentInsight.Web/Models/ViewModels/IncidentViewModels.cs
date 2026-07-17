@@ -145,8 +145,11 @@ public class CauseAnalysisFormViewModel
     // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
     public Guid ConcurrencyToken { get; set; }
 
-    // 原因分類。必須で画面から選択する
-    [Required(ErrorMessage = "原因分類を選択してください")]
+    // 原因分類。必須で画面から選択する。
+    // 注: 非 null 型の int に [Required] を付けても検証は常に成功する(int は null になり得ない)ため、
+    //     未選択(=0)を弾く目的では機能しない。[Range] で 1 以上を要求することで、
+    //     CauseCategoryId=0 のまま INSERT され FK 違反(未捕捉 DbUpdateException = HTTP 500)になる事故を防ぐ。
+    [Range(1, int.MaxValue, ErrorMessage = "原因分類を選択してください")]
     [Display(Name = "原因分類")]
     public int CauseCategoryId { get; set; }
 

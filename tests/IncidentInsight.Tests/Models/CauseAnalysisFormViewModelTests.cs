@@ -59,4 +59,43 @@ public class CauseAnalysisFormViewModelTests
         // AdditionalNotes が失敗リストに含まれることを確認する
         Assert.Contains(nameof(CauseAnalysisFormViewModel.AdditionalNotes), failedFields);
     }
+
+    [Fact]
+    public void CauseCategoryId_Zero_FailsValidation()
+    {
+        // 原因分類が未選択(=0。select の未選択やフィールド未送信のバインド既定値)のフォーム。
+        // 非 null の int に対する [Required] は常に成功してしまう(int は null になり得ない)ため、
+        // [Range(1, ...)] が 0 を弾くことを固定する。ここで弾かないと FK=0 のまま INSERT され
+        // 未捕捉の DbUpdateException(HTTP 500)になる(回帰防止)。
+        var vm = CreateValidForm();
+        vm.CauseCategoryId = 0;
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 未選択なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // CauseCategoryId が失敗リストに含まれることを確認する
+        var failedFields = results.SelectMany(r => r.MemberNames).ToList();
+        Assert.Contains(nameof(CauseAnalysisFormViewModel.CauseCategoryId), failedFields);
+    }
+
+    [Fact]
+    public void CauseCategoryId_Positive_PassesValidation()
+    {
+        // 正の ID が選択されていれば CauseCategoryId の検証は通る
+        // (実在チェックはコントローラ側の CauseCategoryExistsAsync が担当する)
+        var vm = CreateValidForm();
+        vm.CauseCategoryId = 1;
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションを実行する
+        var isValid = Validator.TryValidateObject(vm, new ValidationContext(vm), results, true);
+
+        // 検証が成功することを確認する
+        Assert.True(isValid);
+    }
 }

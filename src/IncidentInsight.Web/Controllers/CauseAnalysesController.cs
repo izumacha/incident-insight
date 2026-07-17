@@ -184,7 +184,11 @@ public class CauseAnalysesController : Controller
         if (vm.CauseCategoryId > 0
             && !await IncidentControllerHelpers.CauseCategoryExistsAsync(_db, vm.CauseCategoryId))
         {
-            ModelState.AddModelError(nameof(vm.CauseCategoryId), "選択された原因カテゴリが存在しません。");
+            // prefix バインドのため、エラーキーも「NewCauseAnalysis.」付きにしないと
+            // 再描画した Details フォームの select にエラーが紐づかない
+            ModelState.AddModelError(
+                $"{nameof(IncidentDetailViewModel.NewCauseAnalysis)}.{nameof(vm.CauseCategoryId)}",
+                "選択された原因カテゴリが存在しません。");
         }
         // 入力が妥当なら保存
         if (ModelState.IsValid)
@@ -224,6 +228,9 @@ public class CauseAnalysesController : Controller
         TempData["Warning"] = "入力内容に不備があります。原因分析フォームの項目を確認してください。";
         var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
             _db, _recurrence, _clock, vm.IncidentId, newCauseAnalysisOverride: vm);
+        // 冒頭の FindAsync 成功後に別ユーザーがインシデントを削除した場合は null が返る。
+        // null のまま Details ビューへ渡すと NullReferenceException(HTTP 500)になるため 404 を返す
+        if (detailVm == null) return NotFound();
         return View("~/Views/Incidents/Details.cshtml", detailVm);
     }
 

@@ -256,6 +256,36 @@ public class IncidentsController : Controller
         if (!HasAtLeastOneValidMeasure(vm.Measures))
             ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
 
+        // 原因分析タブが「一部だけ」入力されている場合は入力不備として通知する。
+        // 原因分析は CauseCategoryId と Why1 が揃ったときだけ保存する仕様のため、
+        // ここで検知しないと、なぜ1〜5 を書き込んだのに原因分類を選び忘れただけで
+        // 「登録しました」の成功トーストとともに分析テキストが無言で全破棄されてしまう
+        // (利用者が気づけないデータ消失)。どちらかが欠けた部分入力は再描画して完成を促す。
+        var analysisIsSavable = vm.CauseAnalysis.CauseCategoryId > 0
+            && !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1);
+        // 分析タブのいずれかの欄に入力があるか(すべて空なら「分析なし」の正常系)
+        var analysisHasAnyInput = vm.CauseAnalysis.CauseCategoryId > 0
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why2)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why3)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why4)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why5)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.RootCauseSummary)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.AnalystName)
+            || !string.IsNullOrWhiteSpace(vm.CauseAnalysis.AdditionalNotes);
+        // 部分入力を検知したら、欠けている側の項目にエラーを付けて再入力を促す
+        if (analysisHasAnyInput && !analysisIsSavable)
+        {
+            // 原因分類が未選択ならその旨を通知
+            if (vm.CauseAnalysis.CauseCategoryId <= 0)
+                ModelState.AddModelError("CauseAnalysis.CauseCategoryId",
+                    "原因分析を登録するには原因分類を選択してください（分析を登録しない場合は分析欄をすべて空にしてください）。");
+            // なぜ1 が未入力ならその旨を通知
+            if (string.IsNullOrWhiteSpace(vm.CauseAnalysis.Why1))
+                ModelState.AddModelError("CauseAnalysis.Why1",
+                    "原因分析を登録するにはなぜ1を入力してください（分析を登録しない場合は分析欄をすべて空にしてください）。");
+        }
+
         // 原因分析を保存する場合のみ、選択された原因カテゴリが実在するか検証する。
         // CauseAnalysis.* の ModelState は上で一括除外しているため、ここで外部キーの存在を
         // 明示確認しないと、存在しない CauseCategoryId が来たとき下の INSERT が失敗し、
