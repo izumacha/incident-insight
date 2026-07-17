@@ -269,6 +269,28 @@ public class IncidentMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task RateMeasure_RecurrenceObservedNotSelected_RejectsWithoutPersisting()
+    {
+        // recurrenceObserved が null(フォームでどちらのラジオも選ばずに送信した状態を再現)の場合、
+        // false へ暗黙にフォールバックせず fail-closed で拒否し、何も保存しないことを確認する
+        // (Details.cshtml の noRecurrence ラジオに checked が誤って付いていた回帰の再発防止)
+        var incident = await SeedIncidentAsync();
+        var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
+
+        var result = await _controller.RateMeasure(measure.Id, 4, "未選択のまま送信", null, measure.ConcurrencyToken);
+
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        Assert.Equal("Incidents", redirect.ControllerName);
+        Assert.Equal(incident.Id, redirect.RouteValues!["id"]);
+        Assert.Contains("再発の有無を選択", _controller.TempData["Warning"] as string);
+        var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Null(unchanged.EffectivenessRating);
+        Assert.Null(unchanged.RecurrenceObserved);
+        Assert.Null(unchanged.EffectivenessReviewedAt);
+    }
+
+    [Fact]
     public async Task RateMeasure_NotCompleted_RejectsWithoutPersisting()
     {
         // 未完了(Planned)の対策への有効性評価は fail-closed で拒否され、
