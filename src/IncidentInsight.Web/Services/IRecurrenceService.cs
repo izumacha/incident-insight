@@ -17,6 +17,8 @@ public interface IRecurrenceService
     /// <summary>
     /// <paramref name="incident"/> と再発関係にあるインシデントを返す。
     /// 「同部署 × 同インシデント種別 × 原因分類の重なり」が判定ルール。
+    /// 候補クエリは <see cref="RecurrenceService.MaxAlertCandidateRows"/> 件（発生日の
+    /// 新しい順）で打ち切られる（<see cref="FindRecurrenceAlertsAsync"/> と同じ上限）。
     /// </summary>
     /// <param name="incident">対象インシデント。CauseAnalyses が事前にロードされていること。</param>
     /// <param name="scope">

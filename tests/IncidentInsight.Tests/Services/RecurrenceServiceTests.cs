@@ -194,6 +194,62 @@ public class RecurrenceServiceTests : IDisposable
     }
 
     /// <summary>
+    /// IncidentsController.Details（期間無制限）の候補クエリも FindRecurrenceAlertsAsync
+    /// （ダッシュボード）と同じ MaxAlertCandidateRows で打ち切られ、上限を超えた分は
+    /// 「発生日が最も古い候補」から切り捨てられることを検証する。上限が無いと、運用年数の
+    /// 長い病院でありふれた部署×種別の組み合わせの詳細ページを開くたびに該当インシデントの
+    /// ほぼ全件を CauseAnalyses ごとメモリへ読み込んでしまう(§8 一覧取得の上限)ための回帰テスト。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrencesForIncident_CapsCandidateFetch_DroppingOldestBeyondLimit()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(cat); // カテゴリを追加する
+        await _db.SaveChangesAsync(); // DB に保存する
+
+        // 対象インシデント(基準となるインシデント)
+        var target = MakeIncident("内科病棟", IncidentTypeKind.Medication, DateTime.Today);
+        target.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(target); // 対象インシデントを追加する
+
+        // 上限と同数(MaxAlertCandidateRows 件)の一致候補を敷き詰める
+        // (発生日: 1 日前から 1 日ずつ古くしていく)
+        for (var i = 0; i < RecurrenceService.MaxAlertCandidateRows; i++)
+        {
+            // 上限を埋めるための一致候補を 1 件作る
+            var filler = MakeIncident("内科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-1 - i));
+            // 同じ原因分類を紐づけて候補条件(部署・種別・原因分類の一致)を満たす
+            filler.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+            // 候補を DB に追加する
+            _db.Incidents.Add(filler);
+        }
+
+        // 最古の一致候補(5 年前)。上限打ち切りで最初に切り捨てられるべき 1 件
+        var oldest = MakeIncident("内科病棟", IncidentTypeKind.Medication, DateTime.Today.AddYears(-5));
+        // 同じ原因分類を紐づける(切り捨てが無ければ一致候補になる条件を満たす)
+        oldest.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(oldest); // 最古候補を追加する
+        await _db.SaveChangesAsync(); // まとめて DB に保存する
+
+        // サービスが CauseAnalyses を参照できるよう、対象インシデントを Include して再読込する
+        var loaded = await _db.Incidents
+            .AsNoTracking()
+            .Include(i => i.CauseAnalyses)
+            .FirstAsync(i => i.Id == target.Id);
+
+        // サービスを呼び出す(時間窓なし = 無制限。IncidentsController.Details と同じ呼び出し方)
+        var result = await _svc.FindRecurrencesForIncidentAsync(loaded, _db.Incidents);
+
+        // 上限件数(MaxAlertCandidateRows)ちょうどが返ること
+        Assert.Equal(RecurrenceService.MaxAlertCandidateRows, result.Count);
+        // 上限内の最も古い候補(1000 日前の filler)は含まれること
+        Assert.Contains(result, s => s.OccurredAt == DateTime.Today.AddDays(-RecurrenceService.MaxAlertCandidateRows));
+        // 上限打ち切りで最古の候補は除外されていること
+        Assert.DoesNotContain(result, s => s.Id == oldest.Id);
+    }
+
+    /// <summary>
     /// FindRecurrenceAlertsAsync が直近インシデントをグループ化して
     /// 再発アラートを 1 件生成することを検証する。
     /// アラートには CurrentIncident（最新）と SimilarIncidents（類似）が含まれる。
