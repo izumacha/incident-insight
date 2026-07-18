@@ -58,6 +58,21 @@ public class RecurrenceService : IRecurrenceService
             query = query.Where(o => o.OccurredAt >= since);
         }
 
+        // FindRecurrenceAlertsAsync（ダッシュボード）は同じ「同部署×同種別」候補に
+        // MaxAlertCandidateRows の上限を課しているが、こちら（IncidentsController.Details
+        // 経由、within が null なら期間無制限）には上限が無く、運用年数が長い病院で
+        // ありふれた部署×種別の組み合わせだと、詳細ページを開くたびに該当する
+        // インシデントのほぼ全件を CauseAnalyses ごとメモリへ読み込んでしまう
+        // （§8「一覧取得は必ず上限を持たせる」違反）。発生日の新しい順に同じ上限で
+        // 打ち切る。OccurredAt が同時刻の行は DB が並び順を保証しないため、Id の降順を
+        // 第2キーにして打ち切り境界を決定的にする（FindRecurrenceAlertsAsync と同じ対策）。
+        // 打ち切りの影響はダッシュボード側と同様「上限を超えた古い候補が漏れる」ことに
+        // 限定される（意図的なトレードオフ）
+        query = query
+            .OrderByDescending(o => o.OccurredAt)
+            .ThenByDescending(o => o.Id)
+            .Take(MaxAlertCandidateRows);
+
         // DB から候補をまとめて取得する
         var candidates = await query.ToListAsync(ct);
         // 候補の中から実際に原因分類が重なるものだけを抽出して返す
