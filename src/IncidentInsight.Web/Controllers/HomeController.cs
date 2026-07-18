@@ -26,11 +26,12 @@ namespace IncidentInsight.Web.Controllers;
 [Authorize]
 public class HomeController : Controller
 {
-    // 集計期間を識別する文字列定数（クエリパラメータと View のラベルで共用）
-    private const string PeriodWeek    = "week";    // 直近 7 日間
-    private const string PeriodMonth   = "month";   // 直近 1 か月
-    private const string PeriodQuarter = "quarter"; // 直近 3 か月
-    private const string PeriodYear    = "year";    // 直近 1 年（既定値）
+    // 集計期間を識別する文字列定数。正本は DashboardViewModel 側
+    // (チャート見出し等の派生値と同じ場所)に一元化し、ここでは別名で参照する
+    private const string PeriodWeek    = DashboardViewModel.PeriodWeek;    // 直近 7 日間
+    private const string PeriodMonth   = DashboardViewModel.PeriodMonth;   // 直近 1 か月
+    private const string PeriodQuarter = DashboardViewModel.PeriodQuarter; // 直近 3 か月
+    private const string PeriodYear    = DashboardViewModel.PeriodYear;    // 直近 1 年（既定値）
 
     // ダッシュボードの「期限超過の対策一覧」アラートパネルに列挙する最大件数。
     // このパネルは全件を見せる画面ではなく代表例を数件示すだけの用途で、Views/Home/Index.cshtml
@@ -135,16 +136,11 @@ public class HomeController : Controller
         // controller never materializes full-table incident rows just to count them.
         // トレンドチャート用の件数バケットを溜めるリスト
         var monthlyCounts = new List<MonthlyCount>();
-        // トレンドチャートの見出し(集計単位・期間と食い違わないよう、バケットを
-        // 組み立てるこのメソッド内で period に応じて設定する)
-        string trendChartTitle;
         // 週表示の場合は日別集計
         if (period == PeriodWeek)
         {
-            // 週表示は日別バケットなので見出しもそれに合わせる
-            trendChartTitle = "日別インシデント発生推移（直近7日間）";
-            // 過去 7 日間の範囲を作成
-            var weekStart = today.AddDays(-6);
+            // 過去 7 日間の範囲を作成(日数は見出しと共通の定数から導出し食い違いを防ぐ)
+            var weekStart = today.AddDays(-(DashboardViewModel.WeekDays - 1));
             var weekEnd = today.AddDays(1);
             // 日付ごとの件数を SQL 側でグループ化して取得
             var dailyGroups = await incidents
@@ -155,7 +151,7 @@ public class HomeController : Controller
             // 高速検索用に辞書化
             var byDay = dailyGroups.ToDictionary(g => g.Day, g => g.Count);
             // 7 日間を古い方から順にラベル付きで並べる(無い日は 0 件として埋める)
-            for (int i = 6; i >= 0; i--)
+            for (int i = DashboardViewModel.WeekDays - 1; i >= 0; i--)
             {
                 var day = today.AddDays(-i);
                 byDay.TryGetValue(day, out var count);
@@ -165,10 +161,9 @@ public class HomeController : Controller
         // それ以外の期間は月別集計
         else
         {
-            // 表示する月数(month=4, quarter=6, year=12)
-            int months = period switch { PeriodMonth => 4, PeriodQuarter => 6, _ => 12 };
-            // 月別バケットの見出しを実際の月数に合わせて組み立てる
-            trendChartTitle = $"月別インシデント発生推移（直近{months}ヶ月）";
+            // 表示する月数(month=4, quarter=6, year=12)。見出し(TrendChartTitle)と
+            // 同じマッピングを DashboardViewModel.MonthsFor に一元化して食い違いを防ぐ
+            int months = DashboardViewModel.MonthsFor(period);
             // 集計対象の最初の月の 1 日
             var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-(months - 1));
             // 年月ごとの件数を SQL 側でグループ化して取得
@@ -206,9 +201,7 @@ public class HomeController : Controller
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
             RecurrenceAlerts = recurrenceAlerts,
-            MonthlyCounts = monthlyCounts,
-            // チャート見出しはバケット構築時に period と整合させたものを渡す
-            TrendChartTitle = trendChartTitle
+            MonthlyCounts = monthlyCounts
         };
 
         // ダッシュボードビューへモデルを渡して描画

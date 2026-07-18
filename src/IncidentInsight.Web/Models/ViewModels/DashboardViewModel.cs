@@ -4,9 +4,29 @@ namespace IncidentInsight.Web.Models.ViewModels;
 // トップダッシュボード画面に渡すモデル(KPI・アラートなどをまとめる)
 public class DashboardViewModel
 {
+    // 集計期間を識別する文字列定数(クエリパラメータ・View のトグル・見出し導出で共用)。
+    // HomeController もこの定数を別名参照しており、ここが唯一の真実の源(§6)
+    public const string PeriodWeek    = "week";    // 直近 7 日間
+    public const string PeriodMonth   = "month";   // 直近 1 か月
+    public const string PeriodQuarter = "quarter"; // 直近 3 か月
+    public const string PeriodYear    = "year";    // 直近 1 年(既定値)
+
+    // 週表示のトレンドチャートで並べる日数。集計ループ(HomeController)と
+    // 見出し(TrendChartTitle)の双方がこの定数から導出され、食い違いを防ぐ
+    public const int WeekDays = 7;
+
     // Period filter ("week" | "month" | "quarter" | "year")
     // 集計期間(週/月/四半期/年)のフィルタ値
-    public string Period { get; set; } = "year";
+    public string Period { get; set; } = PeriodYear;
+
+    // 月別トレンドチャートで並べる月数(month=4, quarter=6, それ以外=12)。
+    // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う
+    public static int MonthsFor(string period) => period switch
+    {
+        PeriodMonth   => 4,  // 月表示: 直近 4 ヶ月
+        PeriodQuarter => 6,  // 四半期表示: 直近 6 ヶ月
+        _             => 12  // 年表示(既定): 直近 12 ヶ月
+    };
 
     // KPI
     // 累計インシデント数
@@ -41,10 +61,13 @@ public class DashboardViewModel
     // トレンドチャート用の件数バケット(期間 Period に応じて日別7件/月別4・6・12件)
     public List<MonthlyCount> MonthlyCounts { get; set; } = new();
 
-    // トレンドチャートの見出し。バケットの集計単位・件数は HomeController.Index が
-    // Period に応じて組み立てるため、見出しもそこで同時に設定する(見出しを View に
-    // 直書きすると、週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
-    public string TrendChartTitle { get; set; } = "";
+    // トレンドチャートの見出し。Period から導出する計算プロパティにすることで、
+    // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(WeekDays / MonthsFor)と
+    // 見出しの数字が常に一致することを保証する(見出しを View に直書きすると、
+    // 週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
+    public string TrendChartTitle => Period == PeriodWeek
+        ? $"日別インシデント発生推移（直近{WeekDays}日間）"
+        : $"月別インシデント発生推移（直近{MonthsFor(Period)}ヶ月）";
 
     // Failed measures: RecurrenceObserved = true
     // 対策後も再発が確認された件数(効果なし対策の数)
