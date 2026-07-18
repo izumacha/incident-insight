@@ -48,9 +48,13 @@ public class PreventiveMeasure
     public string ResponsiblePerson { get; set; } = "";
 
     // 対策を担当する部署。必須で最大100文字まで
+    // Incident.Department（static 辞書に縛られたドロップダウン値）とは異なり自由記述の
+    // <input> のため、誤って個人名や補足メモが混入する余地がある。他の自由記述列
+    // (Description/AnalysisNote)と同様に監査ログでは伏せる
     [Required(ErrorMessage = "担当部署を入力してください")]
     [MaxLength(100)]
     [Display(Name = "担当部署")]
+    [Sensitive(Mask.Redact)]
     public string ResponsibleDepartment { get; set; } = "";
 
     // 実施期限。必須。初期値はコントローラが IClock 経由で設定する(ここでは DateTime.Now を使わない)

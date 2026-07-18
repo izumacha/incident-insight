@@ -184,6 +184,33 @@ public class AuditSaveChangesInterceptorTests : IDisposable
     }
 
     [Fact]
+    public async Task Sensitive_Redact_HidesResponsibleDepartmentInChangesJson()
+    {
+        // ResponsibleDepartment は Incident.Department と異なり自由記述の <input> なので、
+        // 担当者名など個人情報が混入し得る。他の自由記述列と同様に監査ログでは伏せること
+        var incident = NewIncident();
+        var measure = new PreventiveMeasure
+        {
+            Description = "テスト対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "担当者",
+            ResponsibleDepartment = "内科病棟 田中太郎",
+            DueDate = DateTime.Today.AddDays(30),
+            Priority = 2
+        };
+        incident.PreventiveMeasures.Add(measure);
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        var log = await _db.AuditLogs.SingleAsync(a => a.EntityName == nameof(PreventiveMeasure));
+        // 平文の部署名・混入した個人名が含まれていないこと
+        Assert.DoesNotContain("内科病棟 田中太郎", log.ChangesJson);
+        Assert.DoesNotContain("田中太郎", log.ChangesJson);
+        // REDACTED プレースホルダで置換されていること
+        Assert.Contains("[REDACTED]", log.ChangesJson);
+    }
+
+    [Fact]
     public async Task Sensitive_Hash_ReporterName_ProducesShortHashPrefix()
     {
         // ReporterName は [Sensitive(Mask.Hash)] のためハッシュ表記(#xxxxxxxx)で記録される
