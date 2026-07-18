@@ -223,28 +223,24 @@
     }
 </div>
 
-@* ページネーション（総ページ数が2以上のときだけ表示） *@
-@if (Model.TotalPages > 1)
-{
-    <nav class="mt-3">
-        <ul class="pagination pagination-sm justify-content-center">
-            @* 1ページずつリンクを生成（現在ページだけ active） *@
-            @for (int i = 1; i <= Model.TotalPages; i++)
-            {
-                <li class="page-item @(i == Model.Page ? "active" : "")">
-                    @* ページ番号に加えて絞り込み条件を URL に引き継ぐ *@
-                    <a class="page-link" asp-action="Index"
-                       asp-route-page="@i"
-                       asp-route-search="@Model.Search"
-                       asp-route-department="@Model.Department"
-                       asp-route-incidentType="@Model.IncidentType"
-                       asp-route-severity="@Model.Severity"
-                       asp-route-dateFrom="@Model.DateFrom?.ToString("yyyy-MM-dd")"
-                       asp-route-dateTo="@Model.DateTo?.ToString("yyyy-MM-dd")"
-                       asp-route-causeCategoryId="@Model.CauseCategoryId"
-                       asp-route-sortBy="@Model.SortBy">@i</a>
-                </li>
-            }
-        </ul>
-    </nav>
+@* ページネーション（AuditLogs 一覧と共通の _Pager パーシャル。±窓 + 先頭/末尾ジャンプ付き） *@
+@{
+    @* ページャ部品へ渡すモデル（現在ページ・総ページ数・URL に引き継ぐ絞り込み条件） *@
+    var pager = new PagerViewModel
+    {
+        Page = Model.Page,
+        TotalPages = Model.TotalPages,
+        RouteValues = new Dictionary<string, string?>
+        {
+            ["search"] = Model.Search,
+            ["department"] = Model.Department,
+            ["incidentType"] = Model.IncidentType?.ToString(),
+            ["severity"] = Model.Severity?.ToString(),
+            ["dateFrom"] = Model.DateFrom?.ToString("yyyy-MM-dd"),
+            ["dateTo"] = Model.DateTo?.ToString("yyyy-MM-dd"),
+            ["causeCategoryId"] = Model.CauseCategoryId?.ToString(),
+            ["sortBy"] = Model.SortBy
+        }
+    };
 }
+<partial name="_Pager" model="pager" />

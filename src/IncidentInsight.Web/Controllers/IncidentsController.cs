@@ -191,10 +191,17 @@ public class IncidentsController : Controller
         {
             // 発生日時の初期値: 現在時刻(JST ベースの IClock 経由)
             OccurredAt = now,
-            // 対策リストの最初の行: 実施期限を30日後に設定する
+            // 種別・重症度の初期選択値(ViewModel を nullable 化したため GET 側で設定する)
+            IncidentType = IncidentTypeKind.Other,   // 種別の初期選択は「その他」
+            Severity = IncidentSeverity.Level0,      // 重症度の初期選択は「レベル0」
+            // 対策リストの最初の行: 実施期限を30日後・種別を短期対策に設定する
             Measures = new List<MeasureFormViewModel>
             {
-                new MeasureFormViewModel { DueDate = now.AddDays(DefaultMeasureDueDays) }
+                new MeasureFormViewModel
+                {
+                    DueDate = now.AddDays(DefaultMeasureDueDays),      // 期限の初期値: 30日後
+                    MeasureType = MeasureTypeKind.ShortTerm            // 種別の初期選択: 短期対策
+                }
             },
             CauseCategoryOptions = await BuildCauseCategoryOptions()
         };
@@ -322,10 +329,12 @@ public class IncidentsController : Controller
         // 入力値から新しい Incident を作成
         var incident = new Incident
         {
-            OccurredAt = vm.OccurredAt,
+            // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+            OccurredAt = vm.OccurredAt!.Value,
             Department = vm.Department,
-            IncidentType = vm.IncidentType,
-            Severity = vm.Severity,
+            // 種別・重症度も同様に IsValid 通過後は null にならない
+            IncidentType = vm.IncidentType!.Value,
+            Severity = vm.Severity!.Value,
             Description = vm.Description,
             ImmediateActions = vm.ImmediateActions,
             ReporterName = vm.ReporterName,
@@ -369,10 +378,12 @@ public class IncidentsController : Controller
             {
                 IncidentId = incident.Id,
                 Description = m.Description,
-                MeasureType = m.MeasureType,
+                MeasureType = m.MeasureType!.Value,
                 ResponsiblePerson = m.ResponsiblePerson,
                 ResponsibleDepartment = m.ResponsibleDepartment,
-                DueDate = m.DueDate,
+                // 保存対象行(Description 非空)は ModelState 検証が残っているため、
+                // IsValid 通過後は [Required] により null にならず .Value で取り出せる
+                DueDate = m.DueDate!.Value,
                 Priority = m.Priority,
                 AnalysisNote = m.AnalysisNote,
                 Status = MeasureStatus.Planned
@@ -519,10 +530,12 @@ public class IncidentsController : Controller
         }
 
         // 入力値を本体に反映
-        incident.OccurredAt = vm.OccurredAt;
+        // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+        incident.OccurredAt = vm.OccurredAt!.Value;
         incident.Department = vm.Department;
-        incident.IncidentType = vm.IncidentType;
-        incident.Severity = vm.Severity;
+        // 種別・重症度も IsValid 通過後は [Required] により null にならない
+        incident.IncidentType = vm.IncidentType!.Value;
+        incident.Severity = vm.Severity!.Value;
         incident.Description = vm.Description;
         incident.ImmediateActions = vm.ImmediateActions;
         incident.ReporterName = vm.ReporterName;

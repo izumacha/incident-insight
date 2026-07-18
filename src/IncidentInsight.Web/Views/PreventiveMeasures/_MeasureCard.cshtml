@@ -107,6 +107,24 @@
                     </button>
                 </form>
             }
+            @* 完了済みには「差し戻し」ボタンで進行中へ戻す遷移を提供する。
+               Complete / CompleteMeasure / UpdateStatus の再完了ガードが
+               「一度ステータスを差し戻してから再度完了してください」と案内するため、
+               その操作を実際に行える UI がここに無いと、完了報告の修正が
+               画面から一切できなくなってしまう(ガード文言と UI の整合) *@
+            @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
+            {
+                <form asp-controller="PreventiveMeasures" asp-action="UpdateStatus" asp-route-id="@m.Id" method="post" class="d-inline"
+                      onsubmit="return confirm('この対策を進行中へ差し戻しますか？\n完了日時と有効性評価の記録はクリアされます。')">
+                    @* CSRF トークン + 楽観ロックトークンを共通部品でセット送信する *@
+                    <partial name="_ConcurrencyTokenFields" model="m.ConcurrencyToken" />
+                    @* 遷移先ステータスを固定値で送信(完了日時・効果評価はサーバ側でクリアされる) *@
+                    <input type="hidden" name="status" value="InProgress" />
+                    <button type="submit" class="btn btn-outline-secondary btn-sm py-0">
+                        <i class="bi bi-arrow-counterclockwise me-1"></i>差し戻し
+                    </button>
+                </form>
+            }
             @* 親インシデントへ移動するアイコンリンク（右寄せ）。
                アイコンのみなのでスクリーンリーダー向けに aria-label を付ける(§7) *@
             <a asp-controller="Incidents" asp-action="Details" asp-route-id="@m.IncidentId"

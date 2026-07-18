@@ -75,12 +75,15 @@ public class IncidentCreateEditViewModel
     // hidden field でクライアントに渡して POST 時に戻ってきたものを OriginalValue に設定する。
     public Guid ConcurrencyToken { get; set; }
 
-    // 発生日時。必須。初期値は Get アクションで IClock.Now を代入する(ここでは default)。
+    // 発生日時。必須。初期値は Get アクションで IClock.Now を代入する(ここでは null)。
     // ViewModel の既定値に DateTime.Now を使うと IClock 規約違反になり、
     // テストで時刻制御ができなくなるため、コントローラ側で設定する方式に統一する。
+    // 型を nullable(DateTime?)にしているのは [Required] を実際に機能させるため:
+    // 非 nullable の DateTime だと未送信時に 0001-01-01 が黙って束縛され
+    // [Required] は「null かどうか」しか見ないため検証をすり抜けてしまう。
     [Required(ErrorMessage = "発生日時は必須です")]
     [Display(Name = "発生日時")]
-    public DateTime OccurredAt { get; set; }
+    public DateTime? OccurredAt { get; set; }
 
     // 発生部署。必須で最大100文字
     [Required(ErrorMessage = "部署は必須です")]
@@ -92,17 +95,23 @@ public class IncidentCreateEditViewModel
     // EnumDataType: モデルバインドは未定義の整数(例:99以外の未使用値)もそのまま
     // (IncidentTypeKind)値 として束縛してしまうため、Enum.IsDefined 相当の検証を追加し、
     // フォーム改ざんで未定義値が保存されるのを防ぐ(UpdateStatus の fail-closed 方針と同じ考え方)
+    // 型を nullable にしているのは OccurredAt / DueDate と同じ理由で [Required] を
+    // 実際に機能させるため: 非 nullable の enum だと未送信時に既定値(Other)が
+    // 黙って束縛され、種別を選ばないままの登録が検証をすり抜けてしまう。
+    // 画面の初期選択値は Create GET アクション側で設定する
     [Required(ErrorMessage = "インシデント種別は必須です")]
     [EnumDataType(typeof(IncidentTypeKind), ErrorMessage = "インシデント種別の値が不正です")]
     [Display(Name = "インシデント種別")]
-    public IncidentTypeKind IncidentType { get; set; } = IncidentTypeKind.Other;
+    public IncidentTypeKind? IncidentType { get; set; }
 
-    // 重症度。必須で初期値「レベル0」
-    // EnumDataType: IncidentType と同じ理由で未定義値の束縛を拒否する
+    // 重症度。必須(初期選択値は Create GET アクション側で「レベル0」を設定)
+    // EnumDataType: IncidentType と同じ理由で未定義値の束縛を拒否する。
+    // nullable なのも同じ理由: 非 nullable だと未送信時に Level0(影響なし)が
+    // 黙って束縛され、医療インシデントの重症度が誰も選んでいない値で保存されてしまう
     [Required(ErrorMessage = "重症度は必須です")]
     [EnumDataType(typeof(IncidentSeverity), ErrorMessage = "重症度の値が不正です")]
     [Display(Name = "重症度")]
-    public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
+    public IncidentSeverity? Severity { get; set; }
 
     // 状況・経緯の記述(必須)。他の自由記述欄(Why1-5/AnalysisNote等)と同じ500文字上限を
     // 明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、MaxLength を
@@ -248,11 +257,13 @@ public class MeasureFormViewModel
 
     // 対策種別(短期/長期、必須)
     // EnumDataType: フォーム改ざんで未定義の整数値が束縛されるのを拒否する
-    // (IncidentCreateEditViewModel.IncidentType/Severity と同じ理由)
+    // (IncidentCreateEditViewModel.IncidentType/Severity と同じ理由)。
+    // nullable なのは [Required] を機能させるため(非 nullable だと未送信時に
+    // ShortTerm が黙って束縛される)。初期選択値はフォームを組み立てる側で設定する
     [Required(ErrorMessage = "対策種別を選択してください")]
     [EnumDataType(typeof(MeasureTypeKind), ErrorMessage = "対策種別の値が不正です")]
     [Display(Name = "対策種別")]
-    public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
+    public MeasureTypeKind? MeasureType { get; set; }
 
     // 担当者(必須で最大100文字)
     [Required(ErrorMessage = "担当者を入力してください")]
@@ -268,9 +279,13 @@ public class MeasureFormViewModel
 
     // 実施期限(必須)。初期値はコントローラ側で IClock を使って設定する。
     // DateTime.Now.AddDays(30) をここに書くと IClock 規約違反になるため削除した。
+    // 型を nullable(DateTime?)にしているのは [Required] を実際に機能させるため:
+    // 非 nullable の DateTime だと未送信時に 0001-01-01 が黙って束縛され
+    // [Required] は「null かどうか」しか見ないため検証をすり抜け、
+    // 「期限超過 約74万日」の不正データが保存できてしまう。
     [Required(ErrorMessage = "実施期限を入力してください")]
     [Display(Name = "実施期限")]
-    public DateTime DueDate { get; set; }
+    public DateTime? DueDate { get; set; }
 
     // 優先度(1=高/2=中/3=低、初期値2)
     // EF Core は保存時に DataAnnotations を自動検証しないため、AddMeasure /

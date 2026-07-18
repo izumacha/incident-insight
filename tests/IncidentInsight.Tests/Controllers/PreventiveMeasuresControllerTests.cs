@@ -247,6 +247,43 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_RecompleteCompletedMeasure_RedirectsWithWarning_AndDoesNotRewriteCompletedAt()
+    {
+        // すでに完了済みの対策に「完了」を再指定しても拒否され、CompletedAt と
+        // 効果評価データが書き換わらないこと(fail-closed)を検証する。
+        // ここを素通しにすると、評価済みの対策で CompletedAt だけが現在時刻へ動き、
+        // EffectivenessReviewedAt < CompletedAt という時系列矛盾が生まれてしまう
+        // (Complete / CompleteMeasure が再完了を拒否しているのと同じライフサイクル強制)
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 「過去に完了し、その後に有効性評価済み」の状態を作る
+        var originalCompletedAt = DateTime.Now.AddDays(-30);
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = originalCompletedAt;
+        measure.EffectivenessRating = 4;
+        measure.EffectivenessNote = "十分な効果があった";
+        measure.RecurrenceObserved = false;
+        measure.EffectivenessReviewedAt = DateTime.Now.AddDays(-10);
+        await _db.SaveChangesAsync();
+
+        // 完了済みの対策へ「完了」を再指定する(古いタブからの再送信や改ざん POST を模す)
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.Completed, measure.ConcurrencyToken);
+
+        // 警告付きで一覧へリダイレクトされること
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.Contains("すでに完了しています", _controller.TempData["Warning"] as string);
+        // DB の完了日時・評価データが一切書き換わっていないこと
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(MeasureStatus.Completed, saved.Status);
+        Assert.Equal(originalCompletedAt, saved.CompletedAt);
+        Assert.Equal(4, saved.EffectivenessRating);
+        Assert.NotNull(saved.EffectivenessReviewedAt);
+        // 時系列の不変条件(完了日時 <= 評価日時)が保たれていること
+        Assert.True(saved.CompletedAt <= saved.EffectivenessReviewedAt);
+    }
+
+    [Fact]
     public async Task UpdateStatus_Success_SetsTempDataSuccess()
     {
         // 保存が成功した場合、他のミューテーション系アクションと同じく
