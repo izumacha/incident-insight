@@ -183,7 +183,8 @@ public class PreventiveMeasuresController : Controller
             MeasureType = vm.MeasureType,
             ResponsiblePerson = vm.ResponsiblePerson,
             ResponsibleDepartment = vm.ResponsibleDepartment,
-            DueDate = vm.DueDate,
+            // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+            DueDate = vm.DueDate!.Value,
             Priority = vm.Priority,
             // 立案根拠メモも保存する(詳細ページからの登録と挙動を揃える)
             AnalysisNote = vm.AnalysisNote,
@@ -260,7 +261,8 @@ public class PreventiveMeasuresController : Controller
         measure.MeasureType = vm.MeasureType;
         measure.ResponsiblePerson = vm.ResponsiblePerson;
         measure.ResponsibleDepartment = vm.ResponsibleDepartment;
-        measure.DueDate = vm.DueDate;
+        // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+        measure.DueDate = vm.DueDate!.Value;
         measure.Priority = vm.Priority;
         // 立案根拠メモも反映する(編集ビューに入力欄があるため保存漏れを防ぐ)
         measure.AnalysisNote = vm.AnalysisNote;
@@ -452,6 +454,17 @@ public class PreventiveMeasuresController : Controller
         if (!Enum.IsDefined(typeof(MeasureStatus), status))
         {
             TempData["Warning"] = "不正なステータス値です。";
+            return RedirectToAction(nameof(Index));
+        }
+
+        // すでに完了済みの対策への「完了」再指定は拒否する(fail-closed)。
+        // Complete / CompleteMeasure は再完了を拒否して KPI の時系列整合性
+        // (完了日時 CompletedAt <= 有効性評価日時 EffectivenessReviewedAt)を守っているが、
+        // この経路だけ素通しにすると CompletedAt が現在時刻で黙って上書きされ、
+        // 評価済みの対策で「評価日時が完了日時より前」という矛盾データが生まれてしまう。
+        if (measure.Status == MeasureStatus.Completed && status == MeasureStatus.Completed)
+        {
+            TempData["Warning"] = "この対策はすでに完了しています。完了日時を変更する場合は、一度ステータスを差し戻してから再度完了してください。";
             return RedirectToAction(nameof(Index));
         }
 
