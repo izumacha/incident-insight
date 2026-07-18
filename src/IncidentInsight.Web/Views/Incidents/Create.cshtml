@@ -58,7 +58,9 @@
                     @* 対策種別（短期 or 長期）。投稿済みの選択値に selected を付けて復元する *@
                     <label class="form-label small">対策種別</label>
                     <select name="Measures[@(index)].MeasureType" class="form-select form-select-sm">
-                        <option value="ShortTerm" selected="@(m.MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.ShortTerm)">短期対策（即時〜1ヶ月）</option>
+                        @* MeasureType は Required を機能させるため nullable。未設定(null)の行は
+                           既定の「短期対策」を選択表示する(LongTerm 以外はすべて短期扱い) *@
+                        <option value="ShortTerm" selected="@(m.MeasureType != IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">短期対策（即時〜1ヶ月）</option>
                         <option value="LongTerm" selected="@(m.MeasureType == IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">長期対策（仕組み改善）</option>
                     </select>
                 </div>

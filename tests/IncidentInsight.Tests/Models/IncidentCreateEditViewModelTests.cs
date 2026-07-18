@@ -48,6 +48,35 @@ public class IncidentCreateEditViewModelTests
         Assert.Contains(results, r => r.MemberNames.Contains(nameof(IncidentCreateEditViewModel.OccurredAt)));
     }
 
+    [Theory]
+    // 種別・重症度が未送信(null)のとき [Required] で検証エラーになることを確認する。
+    // 非 nullable の enum だと未送信時に既定値(Other / Level0)が黙って束縛され、
+    // 「誰も選んでいない重症度レベル0」の医療インシデントが保存できてしまうため、
+    // nullable 化 + Required で防いでいる(その回帰テスト)
+    [InlineData(nameof(IncidentCreateEditViewModel.IncidentType))]
+    [InlineData(nameof(IncidentCreateEditViewModel.Severity))]
+    public void EnumFields_Null_FailRequiredValidation(string member)
+    {
+        // 必須項目を満たした有効なフォームを作る
+        var vm = CreateValidForm();
+        // 対象の enum 項目を未送信(null)にする
+        if (member == nameof(IncidentCreateEditViewModel.IncidentType))
+            vm.IncidentType = null;   // 種別を未送信にする
+        else
+            vm.Severity = null;       // 重症度を未送信にする
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 未送信なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // 対象項目に対する Required エラーが含まれていることを確認する
+        Assert.Contains(results, r => r.MemberNames.Contains(member));
+    }
+
     [Fact]
     public void IncidentType_Defined_PassesValidation()
     {

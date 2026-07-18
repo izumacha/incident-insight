@@ -197,7 +197,9 @@ internal static class IncidentControllerHelpers
                 ?? new MeasureFormViewModel
                 {
                     IncidentId = incidentId,
-                    DueDate = clock.Today.AddDays(Controllers.IncidentsController.DefaultMeasureDueDays)
+                    DueDate = clock.Today.AddDays(Controllers.IncidentsController.DefaultMeasureDueDays),
+                    // 種別の初期選択(ViewModel を nullable 化したため組み立て側で設定する)
+                    MeasureType = Models.Enums.MeasureTypeKind.ShortTerm
                 }
         };
     }

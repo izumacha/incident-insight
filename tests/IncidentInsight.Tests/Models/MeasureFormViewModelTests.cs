@@ -20,6 +20,8 @@ public class MeasureFormViewModelTests
         ResponsiblePerson = "担当者",
         ResponsibleDepartment = "内科病棟",
         DueDate = DateTime.Today.AddDays(30),
+        // 対策種別は nullable + [Required] のため、有効フォームでは明示的に設定する
+        MeasureType = MeasureTypeKind.ShortTerm,
         Priority = priority
     };
 
@@ -118,6 +120,28 @@ public class MeasureFormViewModelTests
         Assert.False(isValid);
         // DueDate に対する Required エラーが含まれていることを確認する
         Assert.Contains(results, r => r.MemberNames.Contains(nameof(MeasureFormViewModel.DueDate)));
+    }
+
+    [Fact]
+    public void MeasureType_Null_FailsRequiredValidation()
+    {
+        // 対策種別が未送信(null)のとき [Required] で検証エラーになることを確認する。
+        // 非 nullable の enum だと未送信時に既定値 ShortTerm が黙って束縛され
+        // [Required] をすり抜けてしまうため、nullable 化 + Required で防いでいる(回帰テスト)
+        var vm = CreateValidForm(2);
+        // 対策種別を未送信(null)にする
+        vm.MeasureType = null;
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 未送信なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // MeasureType に対する Required エラーが含まれていることを確認する
+        Assert.Contains(results, r => r.MemberNames.Contains(nameof(MeasureFormViewModel.MeasureType)));
     }
 
     [Fact]

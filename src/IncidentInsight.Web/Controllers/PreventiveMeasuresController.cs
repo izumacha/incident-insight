@@ -150,7 +150,9 @@ public class PreventiveMeasuresController : Controller
         var vm = new MeasureFormViewModel
         {
             IncidentId = incidentId.Value,
-            DueDate = _clock.Today.AddDays(30)
+            DueDate = _clock.Today.AddDays(30),
+            // 種別の初期選択(ViewModel を nullable 化したため GET 側で設定する)
+            MeasureType = MeasureTypeKind.ShortTerm
         };
         return View(vm);
     }
@@ -180,7 +182,8 @@ public class PreventiveMeasuresController : Controller
         {
             IncidentId = vm.IncidentId,
             Description = vm.Description,
-            MeasureType = vm.MeasureType,
+            // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+            MeasureType = vm.MeasureType!.Value,
             ResponsiblePerson = vm.ResponsiblePerson,
             ResponsibleDepartment = vm.ResponsibleDepartment,
             // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
@@ -258,7 +261,8 @@ public class PreventiveMeasuresController : Controller
 
         // フォームの値をエンティティへ反映
         measure.Description = vm.Description;
-        measure.MeasureType = vm.MeasureType;
+        // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+        measure.MeasureType = vm.MeasureType!.Value;
         measure.ResponsiblePerson = vm.ResponsiblePerson;
         measure.ResponsibleDepartment = vm.ResponsibleDepartment;
         // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す

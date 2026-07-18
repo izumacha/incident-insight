@@ -88,7 +88,8 @@ public class IncidentMeasuresController : Controller
             {
                 IncidentId = vm.IncidentId,
                 Description = vm.Description,
-                MeasureType = vm.MeasureType,
+                // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+                MeasureType = vm.MeasureType!.Value,
                 ResponsiblePerson = vm.ResponsiblePerson,
                 ResponsibleDepartment = vm.ResponsibleDepartment,
                 // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
