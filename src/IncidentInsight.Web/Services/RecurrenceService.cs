@@ -19,8 +19,10 @@ public class RecurrenceService : IRecurrenceService
     // 対象にするため、運用年数が長くなると条件がテーブルの大部分に一致し、上限が無いと
     // ログイン直後のダッシュボード表示のたびに全件近くをメモリへ読み込んでしまう(§8 の
     // 「一覧取得は必ず上限を持たせる」違反)。新しい発生ほど再発アラートとしての価値が
-    // 高いため、発生日の新しい順に上限件数だけ取得する。上限を超えて切り捨てられるのは
-    // 最も古い候補のみで、アラートの実用性への影響は小さい。
+    // 高いため、発生日の新しい順に上限件数だけ取得する。直近ウィンドウ内の
+    // インシデントは打ち切り後に candidatePool へ必ず合流させるため、打ち切りの
+    // 影響は「パターンの相手が上限を超えた古い候補のみの場合、その類似・アラートを
+    // 逃す」ことに限定される(意図的なトレードオフ)。
     // (public にしているのはテストが上限値と同期した件数でシードするため)
     public const int MaxAlertCandidateRows = 1000;
 
@@ -95,7 +97,10 @@ public class RecurrenceService : IRecurrenceService
         // per-iteration queries into one. Final matching is done in-memory below.
         // 候補を1回のクエリでまとめて取得(あとはメモリ上で厳密にマッチング)。
         // 発生日の新しい順に MaxAlertCandidateRows 件で打ち切り、蓄積データが増えても
-        // ダッシュボード表示のたびに全期間のインシデントを読み込まないようにする
+        // ダッシュボード表示のたびに全期間のインシデントを読み込まないようにする。
+        // OccurredAt が同時刻の行は DB が並び順を保証しないため、Id の降順を第2キーに
+        // して打ち切り境界を決定的にする(IncidentsController.Index のページングと同じ対策。
+        // これが無いとリロードのたびに境界上の候補が入れ替わりアラートが点滅し得る)
         var candidates = recentCatIds.Count == 0
             ? new List<Incident>()
             : await scope
@@ -105,11 +110,26 @@ public class RecurrenceService : IRecurrenceService
                     && recentTypes.Contains(i.IncidentType)
                     && i.CauseAnalyses.Any(ca => recentCatIds.Contains(ca.CauseCategoryId)))
                 .OrderByDescending(i => i.OccurredAt)
+                .ThenByDescending(i => i.Id)
                 .Take(MaxAlertCandidateRows)
                 .ToListAsync(ct);
 
+        // 打ち切りで直近ウィンドウ内のインシデントまで候補から漏れると、
+        // (1) 同じパターンのアラートが重複生成される(後述の processed による抑止は
+        //     候補に載った類似インシデントにしか効かない)、
+        // (2) 直近同士のペアの再発を見逃す、
+        // という打ち切り前には起きなかった問題が生じる。recentList は既にメモリ上に
+        // あるため、候補と Id で重複排除しながら合流させて直近分の完全性を保証する。
+        // これにより打ち切りの影響は「上限を超えた古い候補が類似リストから漏れる
+        // (パターンの相手が古い候補のみの場合はそのアラートを逃す)」に限定される
+        var candidatePool = candidates
+            .Concat(recentList)
+            .GroupBy(i => i.Id)
+            .Select(g => g.First())
+            .ToList();
+
         // 候補を (部署, 種別) のキーでグルーピングして高速検索できるようにする
-        var candidatesByKey = candidates.ToLookup(i => (i.Department, i.IncidentType));
+        var candidatesByKey = candidatePool.ToLookup(i => (i.Department, i.IncidentType));
 
         // 結果の再発アラートを溜めるリスト
         var alerts = new List<RecurrenceAlert>();
