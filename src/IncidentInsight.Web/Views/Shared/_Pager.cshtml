@@ -1,0 +1,44 @@
+@* 一覧画面共通のページネーション部品(「現在ページ±窓 + 先頭/末尾ジャンプ」方式)。
+   窓幅やリンク生成ロジックは PagerViewModel に一元化しており、
+   利用側は Page / TotalPages / 引き継ぐ絞り込み条件(RouteValues)を渡すだけでよい。
+   コントローラは描画元ビューのルーティングコンテキストから解決される *@
+@model PagerViewModel
+
+@* 総ページ数が 1 以下ならページャ自体を表示しない *@
+@if (Model.TotalPages > 1)
+{
+    <nav class="mt-3">
+        <ul class="pagination pagination-sm justify-content-center">
+            @* 先頭ページへのジャンプ(窓から 1 ページ目が漏れているときだけ表示)。
+               記号だけのリンクなのでスクリーンリーダー向けに aria-label を付ける(§7) *@
+            @if (Model.First > 1)
+            {
+                <li class="page-item">
+                    <a class="page-link" asp-action="@Model.Action"
+                       asp-all-route-data="@Model.RouteValuesFor(1)"
+                       aria-label="最初のページへ">«</a>
+                </li>
+            }
+            @* 窓の範囲内のページ番号リンクを生成(現在ページだけ active) *@
+            @for (int i = Model.First; i <= Model.Last; i++)
+            {
+                <li class="page-item @(i == Model.Page ? "active" : "")">
+                    @* ページ番号に加えて絞り込み条件を URL に引き継ぐ。
+                       現在ページには支援技術向けに aria-current を付ける(§7) *@
+                    <a class="page-link" asp-action="@Model.Action"
+                       asp-all-route-data="@Model.RouteValuesFor(i)"
+                       aria-current="@(i == Model.Page ? "page" : null)">@i</a>
+                </li>
+            }
+            @* 末尾ページへのジャンプ(窓から最終ページが漏れているときだけ表示) *@
+            @if (Model.Last < Model.TotalPages)
+            {
+                <li class="page-item">
+                    <a class="page-link" asp-action="@Model.Action"
+                       asp-all-route-data="@Model.RouteValuesFor(Model.TotalPages)"
+                       aria-label="最後のページへ">»</a>
+                </li>
+            }
+        </ul>
+    </nav>
+}
