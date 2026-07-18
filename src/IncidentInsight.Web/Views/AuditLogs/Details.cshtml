@@ -82,7 +82,10 @@
         <div class="card-body pb-0">
             <div class="alert alert-warning py-2 small mb-3">
                 <i class="bi bi-shield-lock me-1"></i>
-                個人情報を含むフィールドは <code>[REDACTED]</code> またはハッシュ値（<code>sha256:...</code>）に変換されています。
+                @* ハッシュ表記は AuditSaveChangesInterceptor.ComputePseudonym の実際の出力形式
+                   (「#」+ 16進32桁の HMAC-SHA256 擬似匿名値)と一致させる。表記が実物と食い違うと
+                   監査担当者が「ハッシュ化されていない」と誤読したり、検索ツールが何も拾えなくなる *@
+                個人情報を含むフィールドは <code>[REDACTED]</code> またはハッシュ値（<code>#</code> + 16進32桁の HMAC-SHA256 擬似匿名値、例: <code>#a1b2c3...</code>）に変換されています。
             </div>
         </div>
         @* プロパティ単位で前後比較を表示 *@
