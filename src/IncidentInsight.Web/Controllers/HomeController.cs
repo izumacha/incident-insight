@@ -135,9 +135,14 @@ public class HomeController : Controller
         // controller never materializes full-table incident rows just to count them.
         // トレンドチャート用の件数バケットを溜めるリスト
         var monthlyCounts = new List<MonthlyCount>();
+        // トレンドチャートの見出し(集計単位・期間と食い違わないよう、バケットを
+        // 組み立てるこのメソッド内で period に応じて設定する)
+        string trendChartTitle;
         // 週表示の場合は日別集計
         if (period == PeriodWeek)
         {
+            // 週表示は日別バケットなので見出しもそれに合わせる
+            trendChartTitle = "日別インシデント発生推移（直近7日間）";
             // 過去 7 日間の範囲を作成
             var weekStart = today.AddDays(-6);
             var weekEnd = today.AddDays(1);
@@ -162,6 +167,8 @@ public class HomeController : Controller
         {
             // 表示する月数(month=4, quarter=6, year=12)
             int months = period switch { PeriodMonth => 4, PeriodQuarter => 6, _ => 12 };
+            // 月別バケットの見出しを実際の月数に合わせて組み立てる
+            trendChartTitle = $"月別インシデント発生推移（直近{months}ヶ月）";
             // 集計対象の最初の月の 1 日
             var firstMonthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-(months - 1));
             // 年月ごとの件数を SQL 側でグループ化して取得
@@ -199,7 +206,9 @@ public class HomeController : Controller
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
             RecurrenceAlerts = recurrenceAlerts,
-            MonthlyCounts = monthlyCounts
+            MonthlyCounts = monthlyCounts,
+            // チャート見出しはバケット構築時に period と整合させたものを渡す
+            TrendChartTitle = trendChartTitle
         };
 
         // ダッシュボードビューへモデルを渡して描画

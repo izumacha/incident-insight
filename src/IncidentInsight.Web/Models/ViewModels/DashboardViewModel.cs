@@ -37,9 +37,14 @@ public class DashboardViewModel
     // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)
     public List<RecurrenceAlert> RecurrenceAlerts { get; set; } = new();
 
-    // Monthly trend data for sparkline chart (last 12 months)
-    // 過去12ヶ月の月別件数(スパークライン用)
+    // Monthly trend data for sparkline chart (bucket window varies by Period)
+    // トレンドチャート用の件数バケット(期間 Period に応じて日別7件/月別4・6・12件)
     public List<MonthlyCount> MonthlyCounts { get; set; } = new();
+
+    // トレンドチャートの見出し。バケットの集計単位・件数は HomeController.Index が
+    // Period に応じて組み立てるため、見出しもそこで同時に設定する(見出しを View に
+    // 直書きすると、週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
+    public string TrendChartTitle { get; set; } = "";
 
     // Failed measures: RecurrenceObserved = true
     // 対策後も再発が確認された件数(効果なし対策の数)
