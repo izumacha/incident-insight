@@ -75,12 +75,15 @@ public class IncidentCreateEditViewModel
     // hidden field でクライアントに渡して POST 時に戻ってきたものを OriginalValue に設定する。
     public Guid ConcurrencyToken { get; set; }
 
-    // 発生日時。必須。初期値は Get アクションで IClock.Now を代入する(ここでは default)。
+    // 発生日時。必須。初期値は Get アクションで IClock.Now を代入する(ここでは null)。
     // ViewModel の既定値に DateTime.Now を使うと IClock 規約違反になり、
     // テストで時刻制御ができなくなるため、コントローラ側で設定する方式に統一する。
+    // 型を nullable(DateTime?)にしているのは [Required] を実際に機能させるため:
+    // 非 nullable の DateTime だと未送信時に 0001-01-01 が黙って束縛され
+    // [Required] は「null かどうか」しか見ないため検証をすり抜けてしまう。
     [Required(ErrorMessage = "発生日時は必須です")]
     [Display(Name = "発生日時")]
-    public DateTime OccurredAt { get; set; }
+    public DateTime? OccurredAt { get; set; }
 
     // 発生部署。必須で最大100文字
     [Required(ErrorMessage = "部署は必須です")]
@@ -268,9 +271,13 @@ public class MeasureFormViewModel
 
     // 実施期限(必須)。初期値はコントローラ側で IClock を使って設定する。
     // DateTime.Now.AddDays(30) をここに書くと IClock 規約違反になるため削除した。
+    // 型を nullable(DateTime?)にしているのは [Required] を実際に機能させるため:
+    // 非 nullable の DateTime だと未送信時に 0001-01-01 が黙って束縛され
+    // [Required] は「null かどうか」しか見ないため検証をすり抜け、
+    // 「期限超過 約74万日」の不正データが保存できてしまう。
     [Required(ErrorMessage = "実施期限を入力してください")]
     [Display(Name = "実施期限")]
-    public DateTime DueDate { get; set; }
+    public DateTime? DueDate { get; set; }
 
     // 優先度(1=高/2=中/3=低、初期値2)
     // EF Core は保存時に DataAnnotations を自動検証しないため、AddMeasure /

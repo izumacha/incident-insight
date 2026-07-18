@@ -98,6 +98,29 @@ public class MeasureFormViewModelTests
     }
 
     [Fact]
+    public void DueDate_Null_FailsRequiredValidation()
+    {
+        // 実施期限が未入力(null)のとき [Required] で検証エラーになることを確認する。
+        // DueDate を非 nullable の DateTime にすると、フィールド未送信時に 0001-01-01 が
+        // 黙って束縛され [Required] をすり抜けて「期限超過 約74万日」の不正データが
+        // 保存できてしまうため、nullable 化 + Required で防いでいる(その回帰テスト)
+        var vm = CreateValidForm(2);
+        // 実施期限を未入力(null)にする
+        vm.DueDate = null;
+        // バリデーション結果を受け取るリストを用意する
+        var results = new List<ValidationResult>();
+        // バリデーションコンテキストを作成する
+        var ctx = new ValidationContext(vm);
+        // バリデーションを実行し、成功/失敗フラグを受け取る
+        var isValid = Validator.TryValidateObject(vm, ctx, results, true);
+
+        // 未入力なのでバリデーションが失敗するはず
+        Assert.False(isValid);
+        // DueDate に対する Required エラーが含まれていることを確認する
+        Assert.Contains(results, r => r.MemberNames.Contains(nameof(MeasureFormViewModel.DueDate)));
+    }
+
+    [Fact]
     public void MeasureType_Undefined_FailsValidation()
     {
         // 未定義の整数値(フォーム改ざんを想定)を対策種別に割り当てる

@@ -91,7 +91,8 @@ public class IncidentMeasuresController : Controller
                 MeasureType = vm.MeasureType,
                 ResponsiblePerson = vm.ResponsiblePerson,
                 ResponsibleDepartment = vm.ResponsibleDepartment,
-                DueDate = vm.DueDate,
+                // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+                DueDate = vm.DueDate!.Value,
                 Priority = vm.Priority,
                 AnalysisNote = vm.AnalysisNote,
                 Status = MeasureStatus.Planned

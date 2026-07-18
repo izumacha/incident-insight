@@ -322,7 +322,8 @@ public class IncidentsController : Controller
         // 入力値から新しい Incident を作成
         var incident = new Incident
         {
-            OccurredAt = vm.OccurredAt,
+            // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+            OccurredAt = vm.OccurredAt!.Value,
             Department = vm.Department,
             IncidentType = vm.IncidentType,
             Severity = vm.Severity,
@@ -372,7 +373,9 @@ public class IncidentsController : Controller
                 MeasureType = m.MeasureType,
                 ResponsiblePerson = m.ResponsiblePerson,
                 ResponsibleDepartment = m.ResponsibleDepartment,
-                DueDate = m.DueDate,
+                // 保存対象行(Description 非空)は ModelState 検証が残っているため、
+                // IsValid 通過後は [Required] により null にならず .Value で取り出せる
+                DueDate = m.DueDate!.Value,
                 Priority = m.Priority,
                 AnalysisNote = m.AnalysisNote,
                 Status = MeasureStatus.Planned
@@ -519,7 +522,8 @@ public class IncidentsController : Controller
         }
 
         // 入力値を本体に反映
-        incident.OccurredAt = vm.OccurredAt;
+        // ModelState.IsValid 通過後は [Required] により null にならないため .Value で取り出す
+        incident.OccurredAt = vm.OccurredAt!.Value;
         incident.Department = vm.Department;
         incident.IncidentType = vm.IncidentType;
         incident.Severity = vm.Severity;

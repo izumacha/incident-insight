@@ -30,9 +30,10 @@
         @* 実施期限に「ユーザーが実際に送信した文字列」(ModelState の AttemptedValue)が残っていれば最優先で使う。
            解析不能な日付を既定値で上書き表示すると、隣に出るエラーの原因が見えなくなるため *@
         var attemptedDueDate = ViewContext.ViewData.ModelState[$"Measures[{index}].DueDate"]?.AttemptedValue;
-        @* 表示する実施期限: 送信文字列 → バインド済みの値 → 既定値（今日+既定日数）の順で決める *@
+        @* 表示する実施期限: 送信文字列 → バインド済みの値 → 既定値（今日+既定日数）の順で決める
+           （DueDate は Required を機能させるため nullable。未入力は null になるので ?? で既定値に落とす） *@
         var dueDateValue = attemptedDueDate
-            ?? (m.DueDate != default ? m.DueDate : defaultDueDate).ToString("yyyy-MM-dd");
+            ?? (m.DueDate ?? defaultDueDate).ToString("yyyy-MM-dd");
         @* 対策行の外枠（name の添字 Measures[index] がモデルバインドの行番号になる） *@
         <div class="measure-row border rounded-3 p-3 mb-3 bg-light">
             <div class="d-flex justify-content-between align-items-center mb-2">
