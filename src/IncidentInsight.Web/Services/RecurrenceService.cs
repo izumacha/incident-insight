@@ -14,6 +14,16 @@ public class RecurrenceService : IRecurrenceService
     // 時刻源(テストで差し替えるために注入で受け取る)
     private readonly IClock _clock;
 
+    // ダッシュボードの再発アラート候補として一度に読み込む過去インシデントの上限件数。
+    // 候補クエリは「最近90日に登場した部署×種別×原因分類」に一致する全期間のインシデントを
+    // 対象にするため、運用年数が長くなると条件がテーブルの大部分に一致し、上限が無いと
+    // ログイン直後のダッシュボード表示のたびに全件近くをメモリへ読み込んでしまう(§8 の
+    // 「一覧取得は必ず上限を持たせる」違反)。新しい発生ほど再発アラートとしての価値が
+    // 高いため、発生日の新しい順に上限件数だけ取得する。上限を超えて切り捨てられるのは
+    // 最も古い候補のみで、アラートの実用性への影響は小さい。
+    // (public にしているのはテストが上限値と同期した件数でシードするため)
+    public const int MaxAlertCandidateRows = 1000;
+
     // コンストラクタ: DI コンテナから IClock が渡ってくる
     public RecurrenceService(IClock clock) { _clock = clock; }
 
@@ -83,7 +93,9 @@ public class RecurrenceService : IRecurrenceService
 
         // Over-fetches slightly (superset of dept × type) but collapses the loop's
         // per-iteration queries into one. Final matching is done in-memory below.
-        // 候補を1回のクエリでまとめて取得(あとはメモリ上で厳密にマッチング)
+        // 候補を1回のクエリでまとめて取得(あとはメモリ上で厳密にマッチング)。
+        // 発生日の新しい順に MaxAlertCandidateRows 件で打ち切り、蓄積データが増えても
+        // ダッシュボード表示のたびに全期間のインシデントを読み込まないようにする
         var candidates = recentCatIds.Count == 0
             ? new List<Incident>()
             : await scope
@@ -92,6 +104,8 @@ public class RecurrenceService : IRecurrenceService
                 .Where(i => recentDepts.Contains(i.Department)
                     && recentTypes.Contains(i.IncidentType)
                     && i.CauseAnalyses.Any(ca => recentCatIds.Contains(ca.CauseCategoryId)))
+                .OrderByDescending(i => i.OccurredAt)
+                .Take(MaxAlertCandidateRows)
                 .ToListAsync(ct);
 
         // 候補を (部署, 種別) のキーでグルーピングして高速検索できるようにする

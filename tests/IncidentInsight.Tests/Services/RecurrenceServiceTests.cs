@@ -238,6 +238,56 @@ public class RecurrenceServiceTests : IDisposable
     }
 
     /// <summary>
+    /// ダッシュボードの再発アラート候補クエリが MaxAlertCandidateRows 件で打ち切られ、
+    /// 上限を超えた分は「発生日が最も古い候補」から切り捨てられることを検証する。
+    /// 上限が無いと、運用年数が長い環境でダッシュボード表示のたびに全期間の
+    /// インシデントをメモリへ読み込んでしまう(§8 一覧取得の上限)ための回帰テスト。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_CapsCandidateFetch_DroppingOldestBeyondLimit()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(cat); // カテゴリを追加する
+        await _db.SaveChangesAsync(); // DB に保存する
+
+        // 最新インシデント(10 日前: 直近 90 日以内 → アラートのトリガーになる)
+        var a = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 原因分析を紐づける(候補との一致条件を満たすため)
+        a.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(a); // 最新インシデントを追加する
+
+        // 上限と同数(MaxAlertCandidateRows 件)の「90 日窓の外・かつ最古候補より新しい」
+        // 一致候補を敷き詰める(発生日: 100 日前から 1 日ずつ古くしていく)
+        for (var i = 0; i < RecurrenceService.MaxAlertCandidateRows; i++)
+        {
+            // 上限を埋めるための一致候補を 1 件作る
+            var filler = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-100 - i));
+            // 同じ原因分類を紐づけて候補条件(部署・種別・原因分類の一致)を満たす
+            filler.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+            // 候補を DB に追加する
+            _db.Incidents.Add(filler);
+        }
+
+        // 最古の一致候補(5 年前)。上限打ち切りで最初に切り捨てられるべき 1 件
+        var oldest = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddYears(-5));
+        // 同じ原因分類を紐づける(切り捨てが無ければ一致候補になる条件を満たす)
+        oldest.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(oldest); // 最古候補を追加する
+        await _db.SaveChangesAsync(); // まとめて DB に保存する
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+
+        // アラートは最新インシデント a をトリガーに 1 件だけ生成されること
+        Assert.Single(alerts);
+        // 上限内の新しい候補(100 日前の filler)は類似リストに含まれること
+        Assert.Contains(alerts[0].SimilarIncidents, s => s.OccurredAt == DateTime.Today.AddDays(-100));
+        // 上限打ち切りで最古の候補は類似リストから除外されていること
+        Assert.DoesNotContain(alerts[0].SimilarIncidents, s => s.Id == oldest.Id);
+    }
+
+    /// <summary>
     /// 再発アラートの PatternDescription が、インシデント種別を英語の enum 名ではなく
     /// 日本語ラベル（例: "投薬ミス"）で表示することを検証する。
     /// 医療現場の日本語 UI に生の enum 名（"Medication" 等）が漏れる回帰を防ぐ。
