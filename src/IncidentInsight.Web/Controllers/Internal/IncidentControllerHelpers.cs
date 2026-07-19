@@ -174,6 +174,7 @@ internal static class IncidentControllerHelpers
         var incident = await db.Incidents
             .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory).ThenInclude(cc => cc!.Parent)
             .Include(i => i.PreventiveMeasures)
+            .AsNoTracking()
             .FirstOrDefaultAsync(i => i.Id == incidentId);
         // レコードが無ければ呼び出し側で 404 にできるよう null を返す
         if (incident == null) return null;

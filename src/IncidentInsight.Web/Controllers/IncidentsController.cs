@@ -71,7 +71,7 @@ public class IncidentsController : Controller
         var query = _db.Incidents
             .Include(i => i.PreventiveMeasures)
             .Include(i => i.CauseAnalyses)
-            .AsQueryable()
+            .AsNoTracking()
             .ScopedByUser(User);
 
         // フリーワード検索(状況または報告者名を部分一致)

@@ -70,7 +70,7 @@ public class PreventiveMeasuresController : Controller
         // Incident を同時取得し、ユーザー部署スコープで絞り込むベースクエリ
         var query = _db.PreventiveMeasures
             .Include(m => m.Incident)
-            .AsQueryable()
+            .AsNoTracking()
             .ScopedByUser(User);
 
         // ステータス指定があれば絞る
