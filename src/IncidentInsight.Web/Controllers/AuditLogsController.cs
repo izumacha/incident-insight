@@ -69,9 +69,15 @@ public class AuditLogsController : Controller
         // 操作種別で絞り込み(許可リストにあるときだけ採用)
         if (!string.IsNullOrEmpty(operation) && AllowedOperations.Contains(operation))
             query = query.Where(a => a.Operation == operation);
-        // 変更者(ユーザー名)で部分一致
+        // 変更者(ユーザー名)で部分一致(大文字小文字を区別しない)
+        // string.Contains は SQLite/SQL Server では大文字小文字を区別しない LIKE に翻訳されるが、
+        // Npgsql(PostgreSQL) は既定で大文字小文字を区別する比較に翻訳するため、ToUpper() 同士の
+        // 比較に統一してプロバイダ間で検索結果が変わらないようにする(DB プロバイダ非依存の原則)
         if (!string.IsNullOrWhiteSpace(changedBy))
-            query = query.Where(a => a.ChangedBy.Contains(changedBy));
+        {
+            var normalizedChangedBy = changedBy.ToUpper();
+            query = query.Where(a => a.ChangedBy.ToUpper().Contains(normalizedChangedBy));
+        }
         // 対象キー(エンティティの ID)で完全一致
         if (!string.IsNullOrWhiteSpace(entityKey))
             query = query.Where(a => a.EntityKey == entityKey);
