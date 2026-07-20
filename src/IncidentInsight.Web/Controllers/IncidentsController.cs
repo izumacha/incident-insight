@@ -74,9 +74,15 @@ public class IncidentsController : Controller
             .AsNoTracking()
             .ScopedByUser(User);
 
-        // フリーワード検索(状況または報告者名を部分一致)
+        // フリーワード検索(状況または報告者名を部分一致・大文字小文字を区別しない)
+        // string.Contains は SQLite/SQL Server では大文字小文字を区別しない LIKE に翻訳されるが、
+        // Npgsql(PostgreSQL) は既定で大文字小文字を区別する比較に翻訳するため、ToUpper() 同士の
+        // 比較に統一してプロバイダ間で検索結果が変わらないようにする(DB プロバイダ非依存の原則)
         if (!string.IsNullOrWhiteSpace(search))
-            query = query.Where(i => i.Description.Contains(search) || i.ReporterName.Contains(search));
+        {
+            var normalizedSearch = search.ToUpper();
+            query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
+        }
         // 部署で絞り込み
         if (!string.IsNullOrWhiteSpace(department))
             query = query.Where(i => i.Department == department);
