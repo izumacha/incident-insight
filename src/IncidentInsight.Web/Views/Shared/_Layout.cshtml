@@ -89,12 +89,21 @@
                             <i class="bi bi-check2-square me-1"></i>再発防止策
                         </a>
                     </li>
-                    <li class="nav-item">
-                        @* 分析画面へのリンク *@
-                        <a class="nav-link @navActive("Analytics")" asp-controller="Analytics" asp-action="Index">
-                            <i class="bi bi-bar-chart-line me-1"></i>分析・集計
-                        </a>
-                    </li>
+                    @* 分析画面へのリンクは管理者/リスクマネージャーのみ表示する。
+                       AnalyticsController は [Authorize(Policy = Policies.CanViewAnalytics)]
+                       (Admin/RiskManager 限定)のため、Staff にこのリンクを見せると
+                       クリックしても常に 403(AccessDenied へリダイレクト)になってしまう
+                       UI/コントローラ不整合になる。監査ログリンクと同じ非表示パターンで揃える。
+                       判定は DepartmentScope.HasFullAccess() に一元化されたものを再利用する(§6 DRY)。 *@
+                    @if (User.HasFullAccess())
+                    {
+                        <li class="nav-item">
+                            @* 分析画面へのリンク *@
+                            <a class="nav-link @navActive("Analytics")" asp-controller="Analytics" asp-action="Index">
+                                <i class="bi bi-bar-chart-line me-1"></i>分析・集計
+                            </a>
+                        </li>
+                    }
                     @* 監査ログへのリンクは管理者のみ表示(ロール名は AppRoles 定数で参照) *@
                     @if (User.IsInRole(AppRoles.Admin))
                     {
