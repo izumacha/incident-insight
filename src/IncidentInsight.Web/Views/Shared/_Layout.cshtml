@@ -93,8 +93,9 @@
                        AnalyticsController は [Authorize(Policy = Policies.CanViewAnalytics)]
                        (Admin/RiskManager 限定)のため、Staff にこのリンクを見せると
                        クリックしても常に 403(AccessDenied へリダイレクト)になってしまう
-                       UI/コントローラ不整合になる。監査ログリンクと同じ非表示パターンで揃える。 *@
-                    @if (User.IsInRole(AppRoles.Admin) || User.IsInRole(AppRoles.RiskManager))
+                       UI/コントローラ不整合になる。監査ログリンクと同じ非表示パターンで揃える。
+                       判定は DepartmentScope.HasFullAccess() に一元化されたものを再利用する(§6 DRY)。 *@
+                    @if (User.HasFullAccess())
                     {
                         <li class="nav-item">
                             @* 分析画面へのリンク *@

@@ -54,7 +54,15 @@ public static class DepartmentScope
         return query.Where(m => m.Incident.Department == dept);
     }
 
+    /// <summary>
+    /// 全件アクセス可能な役割(Admin / RiskManager)かどうかを判定する拡張メソッド。
+    /// クエリの部署スコープ絞り込み(本ファイル)だけでなく、Admin/RiskManager 限定の
+    /// コントローラ(AnalyticsController の CanViewAnalytics、IncidentsController.Delete の
+    /// CanDeleteIncident 等)へ誘導する View 側のリンク・ボタンの表示可否判定にも使う。
+    /// public extension method にしているのは、同じ判定を View 側で
+    /// <c>User.HasFullAccess()</c> として再利用し、判定ロジックの重複(§6 DRY)を避けるため。
+    /// </summary>
     // 全件アクセス可能な役割かどうかを判定するヘルパー
-    private static bool HasFullAccess(ClaimsPrincipal user)
+    public static bool HasFullAccess(this ClaimsPrincipal user)
         => user.IsInRole(AppRoles.Admin) || user.IsInRole(AppRoles.RiskManager);
 }
