@@ -186,7 +186,14 @@
         <i class="bi bi-x-circle-fill me-2"></i>
         有効性評価で<strong>再発が確認された対策が @Model.FailedMeasures 件</strong>あります。
         追加の根本原因分析と対策強化が必要です。
-        <a asp-controller="Analytics" asp-action="Index" class="alert-link ms-2">分析ページで確認</a>
+        @* 分析ページへのリンクは管理者/リスクマネージャーのみ表示する。AnalyticsController は
+           Admin/RiskManager 限定(Policies.CanViewAnalytics)のため、Staff にリンクを見せると
+           クリックしても常に 403 になる(_Layout.cshtml のナビリンクと同じ不整合)。
+           Staff にはアラート本文のみ見せ、リンクだけ省く。 *@
+        @if (User.IsInRole(AppRoles.Admin) || User.IsInRole(AppRoles.RiskManager))
+        {
+            <a asp-controller="Analytics" asp-action="Index" class="alert-link ms-2">分析ページで確認</a>
+        }
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
 }
