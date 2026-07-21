@@ -63,14 +63,11 @@ public class AccountController : Controller
         if (result.Succeeded)
             return RedirectToLocal(returnUrl);
 
-        // 連続失敗でロックアウトされた場合の案内
-        if (result.IsLockedOut)
-        {
-            ModelState.AddModelError(string.Empty, "アカウントがロックされています。しばらくしてから再試行してください。");
-            return View(vm);
-        }
-
-        // 認証失敗(メール or パスワード不一致)
+        // 連続失敗でロックアウトされた場合も、認証失敗時と全く同じ文言を返す。
+        // ロックアウト専用メッセージを出し分けると、攻撃者が候補メールアドレスに対し
+        // わざと5回連続で誤ったパスワードを送信し、レスポンス文言の違い(ロックアウト有無)を
+        // 観察するだけで、そのメールアドレスが登録済みアカウントかどうかを外部から
+        // 判別できてしまう(アカウント列挙)。文言を統一することでこの識別経路を塞ぐ。
         ModelState.AddModelError(string.Empty, "メールアドレスまたはパスワードが正しくありません。");
         return View(vm);
     }
