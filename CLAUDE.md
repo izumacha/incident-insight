@@ -146,6 +146,8 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 - デモ GIF: 「報告 → なぜなぜ分析 → 予防策 → 登録完了」の登録フロー 1 本（10MB 以下）。
 - 撮影データは `DbSeeder.Seed` のシード＋Development のデモアカウント（§2）を使う。デモアカウントのパスワードをスクショに写さない。
 
+---
+
 ## 4. 実装フロー（プランモード必須）
 
 コード変更を伴う作業に着手する前に、**必ず Claude Code のプランモード（Plan Mode）で計画を作成し、ユーザーの承認を得てから実装に移る**こと。
