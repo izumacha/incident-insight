@@ -78,8 +78,13 @@ public class PreventiveMeasure
     [Display(Name = "完了日")]
     public DateTime? CompletedAt { get; set; }
 
-    // 完了報告の内容(省略可)
-    // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
+    // 完了報告の内容(省略可、最大500文字)
+    // ViewModel を経由せず生の文字列を直接受け取る POST アクション(CompleteMeasure/
+    // PreventiveMeasuresController.Complete)が IncidentControllerHelpers.ValidateFreeTextLength
+    // で同じ500文字上限を手動検証済みのため実害は無いが、Description/AnalysisNote と同様に
+    // エンティティ側にも [MaxLength] を明示しておく(将来別経路で書き込む実装が追加された際の
+    // 検証漏れを防ぐ多層防御)。自由記述のため PHI 混入リスクあり。監査ログでは伏せる
+    [MaxLength(500)]
     [Display(Name = "完了報告内容")]
     [Sensitive(Mask.Redact)]
     public string? CompletionNote { get; set; }
@@ -90,8 +95,13 @@ public class PreventiveMeasure
     [Display(Name = "有効性評価(1〜5)")]
     public int? EffectivenessRating { get; set; }
 
-    // 有効性評価のコメント(省略可)
+    // 有効性評価のコメント(省略可、最大500文字)
+    // ViewModel を経由せず生の文字列を直接受け取る POST アクション(RateMeasure)が
+    // IncidentControllerHelpers.ValidateFreeTextLength で同じ500文字上限を手動検証済みのため
+    // 実害は無いが、Description/AnalysisNote と同様にエンティティ側にも [MaxLength] を
+    // 明示しておく(将来別経路で書き込む実装が追加された際の検証漏れを防ぐ多層防御)。
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
+    [MaxLength(500)]
     [Display(Name = "有効性評価コメント")]
     [Sensitive(Mask.Redact)]
     public string? EffectivenessNote { get; set; }
