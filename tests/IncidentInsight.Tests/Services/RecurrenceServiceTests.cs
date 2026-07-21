@@ -344,15 +344,70 @@ public class RecurrenceServiceTests : IDisposable
     }
 
     /// <summary>
-    /// 候補クエリの打ち切りで「直近 90 日ウィンドウ内のインシデント」が候補から
-    /// 漏れても、recentList との合流(candidatePool)によって同一パターンのアラートが
-    /// 重複生成されないことを検証する。合流が無いと、打ち切りで候補から漏れた直近
-    /// インシデントは先行アラートの SimilarIncidents に載らず processed にも入らないため、
-    /// 自分の番で 2 件目の同一パターンアラートを作ってしまう(打ち切り導入前には
-    /// 起きなかった回帰)。
+    /// FindRecurrenceAlertsAsync の recentList クエリ自体も MaxAlertCandidateRows で
+    /// 打ち切られ、上限を超えた分は「発生日が最も古いインシデント」から除外されることを
+    /// 検証する回帰テスト。/code-review ultra 指摘対応 (2026-07-21): 以前は candidates
+    /// クエリにしか上限が無く、直近 90 日以内のインシデント数がテーブルの大部分を占める
+    /// 環境ではダッシュボード表示のたびに recentList が実質全件近くを読み込んでいた
+    /// (§8 一覧取得の上限違反)。ここでは recentList を埋めるだけの無関係な部署の
+    /// フィラーを敷き詰め、パターンが一致する古いペア(x・partner)が recentList 自身の
+    /// 打ち切りで丸ごとアラート対象から外れる(候補クエリにすら到達しない)ことを確認する。
     /// </summary>
     [Fact]
-    public async Task FindRecurrenceAlerts_DoesNotDuplicateAlerts_WhenRecentIncidentEvictedFromCandidates()
+    public async Task FindRecurrenceAlerts_CapsRecentListFetch_DroppingOldestWithinWindowBeyondLimit()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(cat); // カテゴリを追加する
+        await _db.SaveChangesAsync(); // DB に保存する
+
+        // 90 日ウィンドウ内で最も古い 2 件(x と partner)。本来は同一パターンとして
+        // アラートを形成するはずだが、recentList 自身の打ち切りで除外されるべき対象
+        var x = MakeIncident("被害部署", IncidentTypeKind.Medication, DateTime.Today.AddDays(-89));
+        x.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(x); // 最古インシデント x を追加する
+
+        var partner = MakeIncident("被害部署", IncidentTypeKind.Medication, DateTime.Today.AddDays(-88));
+        partner.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
+        _db.Incidents.Add(partner); // x と同一パターンの相方 partner を追加する
+
+        // x・partner とは無関係な部署のフィラーを上限件数(MaxAlertCandidateRows)だけ
+        // 敷き詰め、recentList の「発生日新しい順」の枠を全て埋めて x・partner を
+        // 押し出す(発生日: 1 日前から 1 分ずつ古くする。原因分類は紐づけず、
+        // x・partner のパターンとは一致しないフィラーであることを明確にする)
+        for (var i = 0; i < RecurrenceService.MaxAlertCandidateRows; i++)
+        {
+            // recentList の枠を埋めるためだけのフィラー(部署を毎回変えて相互に非一致にする)
+            var filler = MakeIncident($"総務部署{i}", IncidentTypeKind.Other, DateTime.Today.AddDays(-1).AddMinutes(-i));
+            _db.Incidents.Add(filler); // フィラーを DB に追加する
+        }
+        await _db.SaveChangesAsync(); // まとめて DB に保存する
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+
+        // x は recentList 自身の打ち切りで除外されるため、候補クエリにすら到達せず
+        // (recentDepts に「被害部署」が含まれない)、x・partner のパターンからは
+        // アラートが 1 件も生成されないこと(打ち切りで漏れる意図的なトレードオフ)
+        Assert.DoesNotContain(alerts, alert => alert.CurrentIncident.Id == x.Id);
+        Assert.DoesNotContain(alerts, alert => alert.CurrentIncident.Id == partner.Id);
+        Assert.DoesNotContain(alerts, alert => alert.SimilarIncidents.Any(s => s.Id == x.Id || s.Id == partner.Id));
+    }
+
+    /// <summary>
+    /// candidates クエリの打ち切りで「直近 90 日ウィンドウ内のインシデント」が候補から
+    /// 漏れる場合でも、同一パターンのアラートが重複生成されないことを検証する。
+    /// /code-review ultra 指摘対応 (2026-07-21): recentList に上限を導入する前は、
+    /// candidates 側だけが打ち切られても recentList が無制限だったため、候補から
+    /// 漏れたインシデントを recentList との合流(candidatePool)で「救う」ことで
+    /// 重複アラートを防いでいた。recentList にも同じ上限を課した結果、この救済は
+    /// 「同一パターンの競合が上限を超える場合」には recentList 側でも打ち切られる
+    /// ため成立しなくなり、その古いインシデントはアラート集計から丸ごと除外される
+    /// ようになった(意図的なトレードオフ。§8)。この場合でも「重複した」アラートが
+    /// 生成されないことを確認する。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_DoesNotDuplicateAlerts_WhenOlderRecentIncidentEvictedFromBothLists()
     {
         // テスト用の原因分類カテゴリを作成して DB に保存する
         var cat = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
@@ -365,15 +420,16 @@ public class RecurrenceServiceTests : IDisposable
         a.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
         _db.Incidents.Add(a); // 最新インシデントを追加する
 
-        // 90 日ウィンドウ内だが「候補クエリの発生日新しい順 1000 件」からは押し出される
-        // 古めの直近インシデント b(80 日前)
+        // 90 日ウィンドウ内だが、同一パターンの競合が多いため recentList・candidates
+        // いずれの打ち切りでも押し出される古めの直近インシデント b(80 日前)
         var b = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-80));
         // 同じ原因分類を紐づける(a と同一パターンにする)
         b.CauseAnalyses.Add(new CauseAnalysis { CauseCategoryId = cat.Id, Why1 = "w" });
         _db.Incidents.Add(b); // 直近だが古めのインシデントを追加する
 
         // b より新しい一致候補を上限件数(MaxAlertCandidateRows)だけ敷き詰めて
-        // b を候補クエリの打ち切り圏外へ押し出す(発生日: 10 日前から 1 分ずつ古くする)
+        // b を recentList・candidates いずれの打ち切り圏外へも押し出す
+        // (発生日: 10 日前から 1 分ずつ古くする)
         for (var i = 0; i < RecurrenceService.MaxAlertCandidateRows; i++)
         {
             // 上限を埋めるための一致候補を 1 件作る(全て b より新しい発生日時)
@@ -389,13 +445,15 @@ public class RecurrenceServiceTests : IDisposable
         var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
 
         // 同一パターン(同部署・同種別・同原因分類)のアラートは 1 件に集約されること
-        // (b が候補から漏れて 2 件目のアラートを作る回帰が起きないこと)
+        // (b が打ち切りで漏れて 2 件目のアラートを作る回帰が起きないこと)
         Assert.Single(alerts);
         // アラートのトリガーは最新のインシデント a であること
         Assert.Equal(a.Id, alerts[0].CurrentIncident.Id);
-        // 打ち切りで候補から漏れたはずの b も、recentList との合流によって
-        // 類似リストに含まれる(= processed に入る)こと
-        Assert.Contains(alerts[0].SimilarIncidents, s => s.Id == b.Id);
+        // b は recentList 自身の打ち切りでも押し出されるようになったため、
+        // もはや「候補からの漏れを recentList が救う」動作は起きず、
+        // a の類似リストにも独自のアラートにも現れない(意図的なトレードオフ)
+        Assert.DoesNotContain(alerts[0].SimilarIncidents, s => s.Id == b.Id);
+        Assert.DoesNotContain(alerts, alert => alert.CurrentIncident.Id == b.Id);
     }
 
     /// <summary>

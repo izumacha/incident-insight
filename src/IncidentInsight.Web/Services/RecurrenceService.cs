@@ -19,10 +19,12 @@ public class RecurrenceService : IRecurrenceService
     // 対象にするため、運用年数が長くなると条件がテーブルの大部分に一致し、上限が無いと
     // ログイン直後のダッシュボード表示のたびに全件近くをメモリへ読み込んでしまう(§8 の
     // 「一覧取得は必ず上限を持たせる」違反)。新しい発生ほど再発アラートとしての価値が
-    // 高いため、発生日の新しい順に上限件数だけ取得する。直近ウィンドウ内の
-    // インシデントは打ち切り後に candidatePool へ必ず合流させるため、打ち切りの
-    // 影響は「パターンの相手が上限を超えた古い候補のみの場合、その類似・アラートを
-    // 逃す」ことに限定される(意図的なトレードオフ)。
+    // 高いため、発生日の新しい順に上限件数だけ取得する。/code-review ultra 指摘対応:
+    // 直近90日の recentList クエリ自体にも同じ上限を課す(以前はここだけ無制限で、
+    // 直近90日以内のインシデント数がテーブルの大部分を占める環境では実質上限が効いて
+    // いなかった)。recentList と candidates は Id で重複排除しながら candidatePool へ
+    // 合流させるため、打ち切りの影響は「パターンの相手が双方の上限を超えた古い
+    // インシデントのみの場合、その類似・アラートを逃す」ことに限定される(意図的なトレードオフ)。
     // (public にしているのはテストが上限値と同期した件数でシードするため)
     public const int MaxAlertCandidateRows = 1000;
 
@@ -88,12 +90,21 @@ public class RecurrenceService : IRecurrenceService
         // 集計対象の基準日(今日から recentWindow 分さかのぼった日)
         var since = _clock.Today - recentWindow;
 
-        // 最近発生したインシデントを新しい順に取得(原因分類も同時ロード)
+        // 最近発生したインシデントを新しい順に取得(原因分類も同時ロード)。
+        // /code-review ultra 指摘対応: 以前は上限が無く、下の candidates クエリと違って
+        // 運用年数が長い病院で直近 90 日以内のインシデント件数がテーブルの大部分に達すると、
+        // Admin/RiskManager がダッシュボードを開くたびに全件をメモリへ読み込んでいた
+        // (§8「一覧取得は必ず上限を持たせる」違反)。candidates クエリと同じ
+        // MaxAlertCandidateRows・同じ並び順(発生日の新しい順、同時刻は Id 降順で決定的に)
+        // で打ち切る。打ち切りの影響は「上限を超えた古いインシデントがアラート対象から
+        // 漏れる」ことに限定される(candidates 側と同じ意図的なトレードオフ)。
         var recentList = await scope
             .AsNoTracking()
             .Include(i => i.CauseAnalyses)
             .Where(i => i.OccurredAt >= since)
             .OrderByDescending(i => i.OccurredAt)
+            .ThenByDescending(i => i.Id)
+            .Take(MaxAlertCandidateRows)
             .ToListAsync(ct);
 
         // 1件もなければアラート生成処理は不要
@@ -133,10 +144,15 @@ public class RecurrenceService : IRecurrenceService
         // (1) 同じパターンのアラートが重複生成される(後述の processed による抑止は
         //     候補に載った類似インシデントにしか効かない)、
         // (2) 直近同士のペアの再発を見逃す、
-        // という打ち切り前には起きなかった問題が生じる。recentList は既にメモリ上に
-        // あるため、候補と Id で重複排除しながら合流させて直近分の完全性を保証する。
-        // これにより打ち切りの影響は「上限を超えた古い候補が類似リストから漏れる
-        // (パターンの相手が古い候補のみの場合はそのアラートを逃す)」に限定される
+        // という打ち切り前には起きなかった問題が生じる。recentList は candidates とは
+        // 独立に(部署・種別・原因分類の絞り込み無しで)発生日の新しい順に取得しているため、
+        // 同じ MaxAlertCandidateRows 件でも candidates とは異なるインシデント集合になり得る。
+        // recentList に残っている分については Id で重複排除しながら candidates と合流させ、
+        // 「recentList に載っている直近インシデントが候補側の打ち切りだけで漏れる」ことを防ぐ。
+        // /code-review ultra 指摘対応: recentList 自体にも上限を導入したため、この完全性保証は
+        // 「直近ウィンドウ全体」ではなく「recentList 自身の上限内」に限定される。打ち切りの
+        // 影響は「上限を超えた古いインシデントが recentList・候補いずれからも漏れる
+        // (パターンの相手が上限超過分のみの場合はそのアラートを逃す)」に限定される
         var candidatePool = candidates
             .Concat(recentList)
             .GroupBy(i => i.Id)
