@@ -115,6 +115,11 @@ public class IncidentsController : Controller
         query = sortBy switch
         {
             "severity" => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
+            // 「期限超過」の唯一の定義は PreventiveMeasure.OverdueOn(today)。ただし
+            // OrderByDescending の射影(式ツリー)内で外部の Expression を差し込めない
+            // (AnalyticsController.MeasureStatus の GroupBy と同じ制約)ため、OverdueOn と
+            // 同一条件 (Status != Completed && DueDate < today) をインライン展開する。
+            // 条件を変えるときは OverdueOn と両方を必ず一致させること。
             "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
                               .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < _clock.Today))
                               .ThenByDescending(i => i.Id),
