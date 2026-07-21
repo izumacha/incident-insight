@@ -302,6 +302,10 @@ public class AccountControllerTests
         Assert.False(_controller.ModelState.IsValid);
         // パスワード認証が 1 回だけ呼ばれたことを確認する
         Assert.Equal(1, _signInManager.PasswordSignInCallCount);
+        // アカウント列挙対策の要となる文言そのものを確認する(ロックアウト時と
+        // 1文字違わず同一でなければ、レスポンス文言の違いからメール登録有無が
+        // 外部から推測できてしまうため、この一致を回帰テストで固定する)
+        Assert.Equal(LoginFailureMessage, GetSingleModelStateError());
     }
 
     [Fact]
@@ -321,6 +325,21 @@ public class AccountControllerTests
         Assert.Same(vm, view.Model);
         // ロックアウト案内のモデルエラーで ModelState が無効になることを確認する
         Assert.False(_controller.ModelState.IsValid);
+        // ロックアウト時も認証失敗時と全く同じ文言であることを確認する(アカウント
+        // 列挙対策の回帰テスト。将来ここでロックアウト専用文言が復活しても検知できる)
+        Assert.Equal(LoginFailureMessage, GetSingleModelStateError());
+    }
+
+    // 認証失敗・ロックアウトの両方で外部に返す文言(アカウント列挙防止のため同一)
+    private const string LoginFailureMessage = "メールアドレスまたはパスワードが正しくありません。";
+
+    // ModelState(キー string.Empty)に積まれた唯一のエラーメッセージを取り出す
+    private string GetSingleModelStateError()
+    {
+        // string.Empty キーのエントリを取得する(AddModelError(string.Empty, ...) の宛先)
+        var entry = _controller.ModelState[string.Empty];
+        // エントリ自体とエラー1件の存在を前提に、その文言を返す
+        return Assert.Single(entry!.Errors).ErrorMessage;
     }
 
     // --- Login GET ---
