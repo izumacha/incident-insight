@@ -2,8 +2,12 @@
 using IncidentInsight.Web.Models;
 // ログイン画面の ViewModel を使う
 using IncidentInsight.Web.Models.ViewModels;
+// レート制限ポリシー名の定数(LoginRateLimitOptions.PolicyName)を使う
+using IncidentInsight.Web.Models.RateLimiting;
 // 認可属性(AllowAnonymous)を使う
 using Microsoft.AspNetCore.Authorization;
+// レート制限属性(EnableRateLimiting)を使う
+using Microsoft.AspNetCore.RateLimiting;
 // Identity の SignInManager / UserManager を使う
 using Microsoft.AspNetCore.Identity;
 // MVC のコントローラ基底などを使う
@@ -48,6 +52,9 @@ public class AccountController : Controller
     [HttpPost]
     [AllowAnonymous]
     [ValidateAntiForgeryToken]
+    // 同一 IP からのログイン試行を回数制限する(パスワードスプレー/ロックアウト DoS 対策)。
+    // 資格情報を検証するこの POST だけが攻撃対象のため、GET(画面表示)や Logout には付けない
+    [EnableRateLimiting(LoginRateLimitOptions.PolicyName)]
     public async Task<IActionResult> Login(LoginViewModel vm, string? returnUrl = null)
     {
         // エラー画面にも戻り先 URL を保持
