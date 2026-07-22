@@ -1,3 +1,5 @@
+// DataAnnotations 属性の手動再検証(Validator / ValidationContext / ValidationResult)を使う
+using System.ComponentModel.DataAnnotations;
 // 部署スコープ拡張メソッド(ScopedByUser)を使う
 using IncidentInsight.Web.Authorization;
 // 共通ヘルパ(原因カテゴリ一覧 / 認可判定)を使う
@@ -226,16 +228,50 @@ public class IncidentsController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> Create(IncidentCreateEditViewModel vm)
     {
-        // なぜなぜ分析サブフォーム由来の ModelState キーを除外する。
+        // なぜなぜ分析サブフォーム由来の ModelState キーをいったん除外する。
         // Why2–5 などの任意項目やドロップダウン選択肢(CauseCategoryOptions)が
-        // 未送信のときに残る不要な Required エラーを取り除く。原因分析は
-        // CauseCategoryId と Why1 が揃ったときだけ保存するため、ここで一括除外してよい。
+        // 未送信のときに残る不要な Required エラーを取り除くため。ただし一括除外だけだと
+        // 保存対象(IsSavable)の分析の MaxLength 違反まで一緒に破棄されてしまうので、
+        // 保存対象の場合は直後の再検証ブロックで本物の検証エラーを積み直す。
         foreach (var key in ModelState.Keys
             .Where(k => k.StartsWith("CauseAnalysis."))
             .ToList())
         {
             // 原因分析サブフォーム由来の各キーを ModelState から除去する
             ModelState.Remove(key);
+        }
+
+        // 保存対象になる原因分析(原因分類 + なぜ1 が揃っている)は、上の一括除外で消えた
+        // DataAnnotations 検証(Why1〜Why5 / RootCauseSummary / AdditionalNotes の500文字上限、
+        // AnalystName の100文字上限など)をここで再実行して ModelState に積み直す。
+        // これをしないと上限超過の文字列が検証をすり抜けて保存され(SQLite)、SQL Server /
+        // PostgreSQL では未捕捉の DbUpdateException(HTTP 500)になる(§9 入力は信用しない)。
+        // 検証水準は同じ ViewModel を素の model binding で検証する
+        // CauseAnalysesController.AddCauseAnalysis と揃える。
+        if (vm.CauseAnalysis.IsSavable)
+        {
+            // DataAnnotations 検証の結果(エラー一覧)を受け取る入れ物を用意する
+            var analysisValidationResults = new List<ValidationResult>();
+            // ViewModel に付与された属性([MaxLength] 等)を全プロパティに対して検証する
+            Validator.TryValidateObject(
+                vm.CauseAnalysis,
+                new ValidationContext(vm.CauseAnalysis),
+                analysisValidationResults,
+                validateAllProperties: true);
+            // 見つかった各エラーを Create ビューのフィールド名に合わせて ModelState に登録する
+            foreach (var validationResult in analysisValidationResults)
+            {
+                // エラーが指すプロパティ名ごとに処理する(プロパティ名が無い場合はサブフォーム全体に紐づける)
+                foreach (var memberName in validationResult.MemberNames.DefaultIfEmpty(string.Empty))
+                {
+                    // 「CauseAnalysis.プロパティ名」のキーでエラーを積む(nameof で改名に追従させる §6)
+                    ModelState.AddModelError(
+                        string.IsNullOrEmpty(memberName)
+                            ? nameof(vm.CauseAnalysis)
+                            : $"{nameof(vm.CauseAnalysis)}.{memberName}",
+                        validationResult.ErrorMessage ?? "入力値が不正です。");
+                }
+            }
         }
 
         // 対策サブフォームの ModelState は「行ごと」に整理する。
