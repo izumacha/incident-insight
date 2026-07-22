@@ -22,6 +22,8 @@ using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 // レート制限ミドルウェアの登録拡張(AddRateLimiter / UseRateLimiter)を使う
 using Microsoft.AspNetCore.RateLimiting;
+// IOptions(DI 経由の設定取得)を使う
+using Microsoft.Extensions.Options;
 // IPAddress(信頼するプロキシ IP の解析に使用)
 using System.Net;
 // レートリミッタ本体(RateLimitPartition / FixedWindowRateLimiterOptions)を使う
@@ -100,15 +102,26 @@ if (forwardedHeadersEnabled)
 // (b) 既知メールアドレスへ故意に失敗を繰り返すロックアウト DoS
 // を止められないため、送信元 IP 単位の固定ウィンドウ制限を多層防御として重ねる。
 // 回数・ウィンドウ長は設定(RateLimit:Login)から読み、未設定なら名前付き定数の既定値を使う。
-var loginRateLimit = builder.Configuration
-    .GetSection(LoginRateLimitOptions.SectionName)
-    .Get<LoginRateLimitOptions>() ?? new LoginRateLimitOptions();
-// 設定値が 0 以下(無効値)なら既定値へフォールバックする(壊れた設定でクラッシュや素通しにしない)
-if (loginRateLimit.PermitLimit <= 0)
-    loginRateLimit.PermitLimit = LoginRateLimitOptions.DefaultPermitLimit;
-// ウィンドウ長も同様に 0 以下は既定値へフォールバックする
-if (loginRateLimit.WindowSeconds <= 0)
-    loginRateLimit.WindowSeconds = LoginRateLimitOptions.DefaultWindowSeconds;
+// builder.Configuration をこの場で直読みせず Options として DI 登録するのは、
+// 統合テスト(WebApplicationFactory)の設定上書きが確実に反映される実行時解決に
+// するためと、他の設定クラス(AuditOptions 等)と同じ取得経路に揃えるため
+builder.Services.AddOptions<LoginRateLimitOptions>()
+    // RateLimit:Login セクションの値を束縛する
+    .Bind(builder.Configuration.GetSection(LoginRateLimitOptions.SectionName))
+    // 設定値が 0 以下(無効値)なら既定値へフォールバックする(制限の素通しにしない)。
+    // なお数値として解釈できない値(例: "abc")は束縛時に例外を投げて起動自体が
+    // 失敗する(fail-fast)。フォールバックの対象は「数値だが 0 以下」の場合のみ
+    .PostConfigure(options =>
+    {
+        // 許可回数が 0 以下なら既定値に戻す
+        if (options.PermitLimit <= 0)
+            options.PermitLimit = LoginRateLimitOptions.DefaultPermitLimit;
+        // ウィンドウ長が 0 以下なら既定値に戻す
+        if (options.WindowSeconds <= 0)
+            options.WindowSeconds = LoginRateLimitOptions.DefaultWindowSeconds;
+    })
+    // 起動時に束縛を実行し、壊れた設定(非数値等)をリクエスト処理前に検出する
+    .ValidateOnStart();
 
 // .NET 8 組み込みのレートリミッタを登録する(追加パッケージ不要)
 builder.Services.AddRateLimiter(options =>
@@ -133,9 +146,13 @@ builder.Services.AddRateLimiter(options =>
     {
         // クライアント IP を制限単位(パーティションキー)にする。リバースプロキシ配下では
         // 先に実行される UseForwardedHeaders が RemoteIpAddress を実クライアント IP に復元済み。
+        // IPv6 は /64 プレフィックスへ正規化して 1 バケツに束ねる(アドレス全体をキーにすると
+        // /64 内のアドレスを 1 リクエストごとに変えるだけで制限を回避できてしまうため)。
         // IP が取得できない場合は fail-closed: 素通しにせず、全員共通の 1 バケツで制限を受けさせる
-        var partitionKey = httpContext.Connection.RemoteIpAddress?.ToString()
-            ?? LoginRateLimitOptions.UnknownClientPartitionKey;
+        var partitionKey = ClientIpPartition.GetPartitionKey(httpContext.Connection.RemoteIpAddress);
+        // DI から実効設定(既定値フォールバック適用済み)を実行時に取り出す
+        var loginRateLimit = httpContext.RequestServices
+            .GetRequiredService<IOptions<LoginRateLimitOptions>>().Value;
         // IP ごとに固定ウィンドウ方式のリミッタを割り当てて返す
         return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ =>
             new FixedWindowRateLimiterOptions
@@ -417,3 +434,7 @@ using (var scope = app.Services.CreateScope())
 
 // アプリを起動(リクエスト待受開始)
 app.Run();
+
+// 統合テスト(WebApplicationFactory<Program>)からトップレベルステートメントの
+// エントリポイントを参照できるようにするための部分クラス宣言(実行時の挙動は変えない)
+public partial class Program;
