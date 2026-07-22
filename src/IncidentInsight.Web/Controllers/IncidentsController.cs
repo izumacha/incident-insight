@@ -98,10 +98,15 @@ public class IncidentsController : Controller
         if (dateFrom.HasValue)
             query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 発生日上限で絞り込み(当日を含める)
-        // 時刻成分を .Date で切り落としてから翌日 0 時より前までを対象にする。
-        // これで「その日いっぱいを含む」上限の意味が他コントローラ(Analytics/AuditLogs 等)と一致する。
+        // 「その日いっぱいを含む」排他的上限(翌日 0 時)は共通ヘルパで安全に計算する。
+        // 9999-12-31 のような極端な値でも AddDays(1) の桁あふれで 500 にならない(§9 fail-safe)
         if (dateTo.HasValue)
-            query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(i => i.OccurredAt < dateToExclusive);
+        }
         // 原因カテゴリで絞り込み(親カテゴリ指定時は子カテゴリも拾う)
         if (causeCategoryId.HasValue)
             query = query.Where(i => i.CauseAnalyses.Any(ca =>

@@ -1,5 +1,7 @@
 // 部署スコープ拡張メソッド
 using IncidentInsight.Web.Authorization;
+// 共通ヘルパ(日付上限フィルタの安全な排他的上限計算)を使う
+using IncidentInsight.Web.Controllers.Internal;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // モデル一式を使う
@@ -54,7 +56,14 @@ public class AnalyticsController : Controller
         // 開始日指定があればさらに絞り込む(他エンドポイントと同様、既定の直近12ヶ月窓をさらに狭める)
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があればさらに絞り込む(その日を含める)
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
+        // 排他的上限(翌日 0 時)は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
+        if (dateTo.HasValue)
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(i => i.OccurredAt < dateToExclusive);
+        }
 
         // 年月ごとに SQL 側でグループ化して件数を取得
         var groups = await query
@@ -95,8 +104,14 @@ public class AnalyticsController : Controller
         if (dateFrom.HasValue)
             query = query.Where(ca => ca.Incident.OccurredAt >= dateFrom.Value);
         // 終了日指定があれば「翌日 0 時より前」で絞る(その日を含める)
+        // 排他的上限は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
         if (dateTo.HasValue)
-            query = query.Where(ca => ca.Incident.OccurredAt < dateTo.Value.Date.AddDays(1));
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(ca => ca.Incident.OccurredAt < dateToExclusive);
+        }
 
         // 親カテゴリがあれば親名、なければ自分の名前でグループ化（サーバ側 GroupBy で集計）
         var grouped = await query
@@ -124,7 +139,14 @@ public class AnalyticsController : Controller
         // 開始日で絞り込み
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日で絞り込み(その日を含める)
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
+        // 排他的上限(翌日 0 時)は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
+        if (dateTo.HasValue)
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(i => i.OccurredAt < dateToExclusive);
+        }
 
         // 部署でグループ化し、件数の多い順に並べる
         var grouped = await query
@@ -152,7 +174,14 @@ public class AnalyticsController : Controller
         // 開始日指定があれば絞る
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があれば絞る(その日を含める)
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
+        // 排他的上限(翌日 0 時)は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
+        if (dateTo.HasValue)
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(i => i.OccurredAt < dateToExclusive);
+        }
 
         // 重症度でグループ化して件数を取得
         var grouped = await query
@@ -280,7 +309,14 @@ public class AnalyticsController : Controller
         // 開始日で絞り込み
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日で絞り込み(当日を含める)
-        if (dateTo.HasValue) query = query.Where(i => i.OccurredAt < dateTo.Value.Date.AddDays(1));
+        // 排他的上限(翌日 0 時)は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
+        if (dateTo.HasValue)
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
+            query = query.Where(i => i.OccurredAt < dateToExclusive);
+        }
 
         // インシデント種別でグループ化し、件数の多い順に並べる
         var grouped = await query

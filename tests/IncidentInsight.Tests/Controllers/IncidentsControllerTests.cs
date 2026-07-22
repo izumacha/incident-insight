@@ -640,6 +640,25 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_DateToMaxValueDate_DoesNotThrow_AndIncludesLastDay()
+    {
+        // 発生日が通常日と表現可能な最終日(9999-12-31)のインシデントを投入する
+        _db.Incidents.AddRange(
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.MaxValue.Date }
+        );
+        await _db.SaveChangesAsync();
+
+        // 以前は dateTo=9999-12-31 で Date.AddDays(1) が ArgumentOutOfRangeException(HTTP 500)
+        // を投げていた。修正後は例外なく処理され、最終日の発生分も含めて返ることを確認する
+        var result = await _controller.Index(null, null, null, null, null, DateTime.MaxValue.Date, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        // 2 件とも上限フィルタに含まれる(「その日いっぱいを含む」意味が保たれる)こと
+        Assert.Equal(2, vm!.TotalCount);
+    }
+
+    [Fact]
     public async Task Index_SeveritySort_PaginationUsesIdTieBreaker_NoOverlapOrGap()
     {
         // 重症度がすべて同値のインシデントを 25 件投入する(PageSize=20 の 2 ページに跨る)。

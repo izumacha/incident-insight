@@ -92,8 +92,14 @@ public class PreventiveMeasuresController : Controller
         if (dateFrom.HasValue)
             query = query.Where(m => m.DueDate >= dateFrom.Value);
         // 期限日の上限指定があれば絞る(当日を含める)
+        // 排他的上限(翌日 0 時)は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
         if (dateTo.HasValue)
-            query = query.Where(m => m.DueDate < dateTo.Value.Date.AddDays(1));
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の期限日だけに絞る
+            query = query.Where(m => m.DueDate < dateToExclusive);
+        }
 
         // 絞り込み後・上限適用前の総件数(KPI の「全対策数」と、上限に達したかどうかの判定に使う)
         var totalMatchingCount = await query.CountAsync();

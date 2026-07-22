@@ -2,6 +2,8 @@
 using System.Text.Json;
 // 認可ポリシー名定数
 using IncidentInsight.Web.Authorization;
+// 共通ヘルパ(日付上限フィルタの安全な排他的上限計算)を使う
+using IncidentInsight.Web.Controllers.Internal;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // AuditLog モデルを使う
@@ -85,8 +87,14 @@ public class AuditLogsController : Controller
         if (dateFrom.HasValue)
             query = query.Where(a => a.ChangedAt >= dateFrom.Value);
         // 期間上限で絞り込み(その日を含めるため翌日 0 時より前まで)
+        // 排他的上限は共通ヘルパで安全に計算する(9999-12-31 でも桁あふれで 500 にしない)
         if (dateTo.HasValue)
-            query = query.Where(a => a.ChangedAt < dateTo.Value.Date.AddDays(1));
+        {
+            // 排他的上限をクエリ式の外で計算しておく(式ツリー内にヘルパ呼び出しを持ち込まない)
+            var dateToExclusive = IncidentControllerHelpers.ToExclusiveUpperBound(dateTo.Value);
+            // 翌日 0 時(または DateTime.MaxValue)より前の変更日時だけに絞る
+            query = query.Where(a => a.ChangedAt < dateToExclusive);
+        }
 
         // 総件数を取得(ページング用)
         var total = await query.CountAsync();
