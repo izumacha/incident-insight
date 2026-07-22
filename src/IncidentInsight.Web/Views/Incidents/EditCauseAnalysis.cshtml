@@ -29,8 +29,13 @@
         @* 編集対象の ID を URL に付けて POST（CauseAnalysesController が担当） *@
         <form asp-controller="CauseAnalyses" asp-action="EditCauseAnalysis" asp-route-id="@Model.Id" method="post">
             @Html.AntiForgeryToken()
-            @* バリデーションエラー一覧 *@
-            <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
+            @* バリデーションエラーがあるときだけ赤い警告枠を描画する
+               (常時描画すると、エラーが無くても空の赤枠が表示されてしまう。Create.cshtml と同じ方式) *@
+            @if (!ViewData.ModelState.IsValid)
+            {
+                @* ModelState のエラー全件を一覧表示 *@
+                <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
+            }
 
             @* 分析 ID（主キー） *@
             <input type="hidden" asp-for="Id" />
