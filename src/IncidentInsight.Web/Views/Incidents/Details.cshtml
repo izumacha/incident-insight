@@ -9,6 +9,15 @@
     var incident = Model.Incident;
     @* 今日の日付を一度だけ取得してビュー内で使い回す *@
     var today = Clock.Today;
+    @* 原因分析サブフォーム(NewCauseAnalysis.〜)にバリデーションエラーがあるかを判定する。
+       AddCauseAnalysis の検証失敗でこのビューが再描画されたとき、折りたたみを開いた状態に
+       しないと入力欄もエラーも隠れたままになり、利用者が失敗に気づけないため。
+       プレフィックスは文字列直書きではなく nameof で組み立てる(プロパティ改名に追従させる §6) *@
+    var causeFormHasErrors = ViewData.ModelState.Keys
+        .Any(k => k.StartsWith($"{nameof(Model.NewCauseAnalysis)}.") && ViewData.ModelState[k]?.Errors.Count > 0);
+    @* 対策サブフォーム(NewMeasure.〜)にバリデーションエラーがあるかを同様に判定する *@
+    var measureFormHasErrors = ViewData.ModelState.Keys
+        .Any(k => k.StartsWith($"{nameof(Model.NewMeasure)}.") && ViewData.ModelState[k]?.Errors.Count > 0);
 }
 
 @* ページヘッダ：見出し＋重症度バッジ＋アクションボタン *@
@@ -104,8 +113,10 @@
 <div class="card border-0 shadow-sm mb-4">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">
         <h5 class="mb-0"><i class="bi bi-search me-2"></i>原因分析（なぜなぜ分析）</h5>
-        @* 折りたたみ追加フォームのトグル *@
-        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addCauseForm">
+        @* 折りたたみ追加フォームのトグル。検証失敗でフォームを開いた状態で再描画する場合が
+           あるため、展開状態を支援技術へ伝える aria-expanded をサーバ側で描画する(§7) *@
+        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addCauseForm"
+                aria-expanded="@(causeFormHasErrors ? "true" : "false")" aria-controls="addCauseForm">
             <i class="bi bi-plus-circle me-1"></i>原因分析を追加
         </button>
     </div>
@@ -218,8 +229,9 @@
             }
         }
 
-        @* 原因分析の追加フォーム（折りたたみ、ボタン押下で展開） *@
-        <div class="collapse" id="addCauseForm">
+        @* 原因分析の追加フォーム（折りたたみ、ボタン押下で展開）。
+           検証失敗の再描画時は "show" を付けて開いた状態にし、入力値とエラーを見せる *@
+        <div class="collapse @(causeFormHasErrors ? "show" : "")" id="addCauseForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">原因分析を追加</h6>
                 @* CauseAnalysesController が担当（URL は /Incidents/AddCauseAnalysis のまま） *@
@@ -236,38 +248,54 @@
                                     class="form-select form-select-sm">
                                 <option value="">-- 選択してください --</option>
                             </select>
+                            @* 原因分類の検証エラー(未選択など)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.CauseCategoryId" class="text-danger small"></span>
                         </div>
                         <div class="col-md-6">
                             <label class="form-label small">分析者</label>
                             <input asp-for="NewCauseAnalysis.AnalystName" class="form-control form-control-sm" placeholder="氏名" />
+                            @* 分析者名の検証エラー(文字数上限超過など)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.AnalystName" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             @* なぜ1：直接原因（必須） *@
                             <label class="form-label small">なぜ1（直接原因） <span class="text-danger">*</span></label>
                             <textarea asp-for="NewCauseAnalysis.Why1" class="form-control form-control-sm" rows="2"
                                       placeholder="何が起きたか、なぜそれが起きたか（直接原因）"></textarea>
+                            @* なぜ1 の検証エラー(必須未入力・文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.Why1" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">なぜ2</label>
                             <textarea asp-for="NewCauseAnalysis.Why2" class="form-control form-control-sm" rows="2" placeholder="なぜ1が起きた原因"></textarea>
+                            @* なぜ2 の検証エラー(文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.Why2" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">なぜ3</label>
                             <textarea asp-for="NewCauseAnalysis.Why3" class="form-control form-control-sm" rows="2"></textarea>
+                            @* なぜ3 の検証エラー(文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.Why3" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">なぜ4</label>
                             <textarea asp-for="NewCauseAnalysis.Why4" class="form-control form-control-sm" rows="2"></textarea>
+                            @* なぜ4 の検証エラー(文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.Why4" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">なぜ5（根本原因）</label>
                             <textarea asp-for="NewCauseAnalysis.Why5" class="form-control form-control-sm" rows="2"
                                       placeholder="これ以上掘り下げられない根本的な原因"></textarea>
+                            @* なぜ5 の検証エラー(文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.Why5" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <label class="form-label small">根本原因まとめ</label>
                             <input asp-for="NewCauseAnalysis.RootCauseSummary" class="form-control form-control-sm"
                                    placeholder="根本原因を一文で要約" />
+                            @* 根本原因まとめの検証エラー(文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewCauseAnalysis.RootCauseSummary" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <button type="submit" class="btn btn-primary btn-sm">追加</button>
@@ -295,8 +323,10 @@
                 }
             }
         </h5>
-        @* 追加フォームの折りたたみトグル *@
-        <button class="btn btn-outline-success btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMeasureForm">
+        @* 追加フォームの折りたたみトグル。検証失敗でフォームを開いた状態で再描画する場合が
+           あるため、展開状態を支援技術へ伝える aria-expanded をサーバ側で描画する(§7) *@
+        <button class="btn btn-outline-success btn-sm" type="button" data-bs-toggle="collapse" data-bs-target="#addMeasureForm"
+                aria-expanded="@(measureFormHasErrors ? "true" : "false")" aria-controls="addMeasureForm">
             <i class="bi bi-plus-circle me-1"></i>対策を追加
         </button>
     </div>
@@ -331,8 +361,9 @@
                                 <td style="max-width:200px">
                                     @* 対策内容は長すぎれば先頭 45 文字に省略 *@
                                     <div>@(m.Description.Length > 45 ? m.Description[..45] + "…" : m.Description)</div>
-                                    @* 完了メモがあれば小さく表示 *@
-                                    @if (!string.IsNullOrEmpty(m.CompletionNote))
+                                    @* 完了メモは「完了済み」の対策に限って小さく表示する
+                                       (差し戻し後に古い完了報告が未完了の行へ表示され続けないようにする) *@
+                                    @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !string.IsNullOrEmpty(m.CompletionNote))
                                     {
                                         <div class="text-muted x-small"><i class="bi bi-check2 me-1"></i>@(m.CompletionNote.Length > 30 ? m.CompletionNote[..30] + "…" : m.CompletionNote)</div>
                                     }
@@ -410,8 +441,9 @@
             </div>
         }
 
-        @* 対策追加のインラインフォーム（折りたたみ） *@
-        <div class="collapse" id="addMeasureForm">
+        @* 対策追加のインラインフォーム（折りたたみ）。
+           検証失敗の再描画時は "show" を付けて開いた状態にし、入力値とエラーを見せる *@
+        <div class="collapse @(measureFormHasErrors ? "show" : "")" id="addMeasureForm">
             <div class="border rounded-3 p-3 bg-white mt-3">
                 <h6 class="mb-3">再発防止策を追加</h6>
                 @* IncidentMeasuresController が担当（URL は /Incidents/AddMeasure のまま） *@
@@ -424,6 +456,8 @@
                             <label class="form-label small">対策内容 <span class="text-danger">*</span></label>
                             <textarea asp-for="NewMeasure.Description" class="form-control form-control-sm" rows="2"
                                       placeholder="具体的な再発防止策を記入（何を、誰が、いつまでに）"></textarea>
+                            @* 対策内容の検証エラー(必須未入力・文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.Description" class="text-danger small"></span>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label small">対策種別</label>
@@ -431,18 +465,26 @@
                                 <option value="ShortTerm">短期対策</option>
                                 <option value="LongTerm">長期対策</option>
                             </select>
+                            @* 対策種別の検証エラー(未定義値の送信など)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.MeasureType" class="text-danger small"></span>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label small">担当者 <span class="text-danger">*</span></label>
                             <input asp-for="NewMeasure.ResponsiblePerson" class="form-control form-control-sm" />
+                            @* 担当者の検証エラー(必須未入力・文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.ResponsiblePerson" class="text-danger small"></span>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
                             <input asp-for="NewMeasure.ResponsibleDepartment" class="form-control form-control-sm" />
+                            @* 担当部署の検証エラー(必須未入力・文字数上限超過)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.ResponsibleDepartment" class="text-danger small"></span>
                         </div>
                         <div class="col-md-2">
                             <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
                             <input type="date" asp-for="NewMeasure.DueDate" class="form-control form-control-sm" />
+                            @* 実施期限の検証エラー(必須未入力など)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.DueDate" class="text-danger small"></span>
                         </div>
                         <div class="col-md-1">
                             <label class="form-label small" asp-for="NewMeasure.Priority">優先度</label>
@@ -455,6 +497,8 @@
                                 <option value="2">中</option>
                                 <option value="3">低</option>
                             </select>
+                            @* 優先度の検証エラー(範囲外の値の送信など)をフィールド直下に表示する *@
+                            <span asp-validation-for="NewMeasure.Priority" class="text-danger small"></span>
                         </div>
                         <div class="col-12">
                             <button type="submit" class="btn btn-success btn-sm">追加</button>

@@ -48,6 +48,10 @@ public class PreventiveMeasuresController : Controller
     // ビューに通知し、KPI が全件ではなく上限分のみを反映していることを利用者に明示する。
     // Views/PreventiveMeasures/Index.cshtml が案内文中の件数表示にも参照するため public にしている
     public const int MaxKanbanRows = 1000;
+    // 担当部署フィルタのドロップダウンに表示する選択肢の上限件数。
+    // ResponsibleDepartment は自由記述のため理論上いくらでも異なる値が増えうる。
+    // 件数無制限の Distinct 取得はしない(§8 一覧取得は必ず上限を持たせる)。
+    private const int MaxDepartmentFilterOptions = 100;
 
     // コンストラクタ: DI で依存を受け取る
     public PreventiveMeasuresController(
@@ -118,6 +122,36 @@ public class PreventiveMeasuresController : Controller
         ViewBag.Planned = planned;
         ViewBag.InProgress = inProgress;
         ViewBag.Completed = completed;
+        // 担当部署フィルタのドロップダウン選択肢を、実際に保存されている対策の
+        // 担当部署(自由記述)から生成する。Incident.Departments(発生部署の許可リスト)を
+        // 選択肢に使うと、シードデータの「看護部/医療安全室/情報管理部」のような
+        // リスト外の担当部署が永遠にヒットしないフィルタになってしまうため。
+        // 現在の絞り込み条件には依存させず(条件を切り替えられるように)、
+        // 部署スコープ(Staff は自部署のインシデントの対策のみ)だけを適用する
+        var responsibleDepartmentOptions = await _db.PreventiveMeasures
+            .AsNoTracking()
+            .ScopedByUser(User)
+            // 担当部署の列だけを取り出す
+            .Select(m => m.ResponsibleDepartment)
+            // 重複を除いて一意な部署名にする
+            .Distinct()
+            // 五十音・アルファベット順で安定表示する
+            .OrderBy(d => d)
+            // 自由記述のため件数上限を設けて取得する(§8)
+            .Take(MaxDepartmentFilterOptions)
+            .ToListAsync();
+        // 適用中のフィルタ値が選択肢に含まれない場合(上限超過で切り捨てられた・
+        // 該当する対策が削除された等)は先頭に補完する。補完しないと、絞り込みが
+        // 効いているのに select は「全て」を表示して UI と実状態が食い違い、その
+        // フォームを再送信した時点でフィルタが利用者の意図なく無言で解除されてしまう
+        if (!string.IsNullOrEmpty(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment))
+        {
+            // 適用中の部署名を選択肢の先頭に追加する
+            responsibleDepartmentOptions.Insert(0, responsibleDepartment);
+        }
+        // ドロップダウン選択肢としてビューへ渡す
+        ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;
+
         // 画面に戻すフィルタ値も ViewBag に載せる
         ViewBag.FilterStatus = status;
         ViewBag.FilterResponsible = responsible;
@@ -496,6 +530,10 @@ public class PreventiveMeasuresController : Controller
         {
             // 完了以外へ差し戻し: 完了日時をクリアする(古い完了日が残らないように)
             measure.CompletedAt = null;
+            // 完了報告メモも「完了済みの対策」だけに存在してよいデータのためクリアする。
+            // 残すと、差し戻し後の未完了カードに古い完了報告が表示され続け、
+            // 再完了時の新しい報告と食い違う誤解を招く(CompletedAt と同じ理由)
+            measure.CompletionNote = null;
             // 効果評価は「完了済みの対策」だけに存在してよいデータ(Review/RateMeasure が
             // 未完了への書き込みを fail-closed で拒否している)。ここで差し戻したのに評価値を
             // 残すと、未完了の対策が再発/効果なし KPI に計上され実態と乖離するため、

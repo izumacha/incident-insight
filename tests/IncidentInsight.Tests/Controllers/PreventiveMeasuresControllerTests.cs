@@ -223,6 +223,32 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_RevertFromCompleted_ClearsCompletionNote()
+    {
+        // 完了報告メモ付きで完了済みの対策をカンバンで差し戻したとき、
+        // 完了報告メモ(CompletionNote)もクリアされること。残ると差し戻し後の
+        // 未完了カードに古い完了報告が表示され続け、再完了時の新しい報告と食い違う
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 完了済み + 完了報告メモありの状態を作る
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = DateTime.Now;
+        measure.CompletionNote = "手順書を改訂して周知済み";
+        await _db.SaveChangesAsync();
+
+        // カンバン上で完了から進行中へ差し戻す
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.InProgress, measure.ConcurrencyToken);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        // ステータスと完了日時が差し戻されていること
+        Assert.Equal(MeasureStatus.InProgress, saved.Status);
+        Assert.Null(saved.CompletedAt);
+        // 完了報告メモがクリアされていること(古い完了報告の残留防止)
+        Assert.Null(saved.CompletionNote);
+    }
+
+    [Fact]
     public async Task UpdateStatus_UndefinedEnumValue_RedirectsWithWarning_AndDoesNotPersist()
     {
         // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら拒否し
@@ -593,6 +619,76 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Null(updated!.EffectivenessRating);
         Assert.Null(updated.RecurrenceObserved);
         Assert.Null(updated.EffectivenessReviewedAt);
+    }
+
+    // 担当部署フィルタのドロップダウン選択肢が Incident.Departments(発生部署の許可リスト)
+    // ではなく、実際に保存されている対策の担当部署(自由記述)から重複なし・昇順で
+    // 生成されることを確認する(許可リスト外の担当部署が永遠にヒットしない回帰の防止)
+    [Fact]
+    public async Task Index_ResponsibleDepartmentOptions_BuiltFromMeasureFreeTextDepartments()
+    {
+        // Incident.Departments の許可リストに無い自由記述の担当部署を持つ対策を投入する
+        // (看護部を 2 件にして重複除去も同時に検証する)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "医療安全室");
+        await SeedMeasureAsync("外来", responsibleDepartment: "看護部");
+
+        // カンバン一覧を無条件で表示する
+        var result = await _controller.Index(null, null, null, null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // ドロップダウン選択肢が ViewBag に積まれていること
+        // (ViewBag は dynamic のため object へキャストして型を確定させてから検証する)
+        var options = Assert.IsType<List<string>>((object)_controller.ViewBag.ResponsibleDepartmentOptions);
+        // 重複が除去され 2 件になっていること
+        Assert.Equal(2, options.Count);
+        // 実データ由来の自由記述の担当部署が両方含まれていること
+        Assert.Contains("看護部", options);
+        Assert.Contains("医療安全室", options);
+        // 昇順で安定して並んでいること
+        Assert.Equal(options.OrderBy(d => d).ToList(), options);
+    }
+
+    // 適用中のフィルタ値が実データ由来の選択肢に含まれない場合(上限超過での切り捨てや
+    // 該当対策の削除後)でも、選択肢の先頭に補完されることを確認する。補完が無いと
+    // select が「全て」を表示して UI と実状態が食い違い、フォーム再送信でフィルタが
+    // 利用者の意図なく無言で解除されてしまう
+    [Fact]
+    public async Task Index_AppliedFilterValueMissingFromOptions_IsSupplemented()
+    {
+        // 「看護部」の対策だけを投入する(フィルタ対象の「医療安全室」は実データに存在しない)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+
+        // 実データに存在しない担当部署「医療安全室」で絞り込んで一覧を表示する
+        var result = await _controller.Index(null, null, "医療安全室", null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // 選択肢を ViewBag から取り出す(dynamic のため object へキャストして型を確定させる)
+        var options = Assert.IsType<List<string>>((object)_controller.ViewBag.ResponsibleDepartmentOptions);
+        // 適用中のフィルタ値が選択肢の先頭に補完されていること
+        Assert.Equal("医療安全室", options[0]);
+        // 実データ由来の選択肢も残っていること
+        Assert.Contains("看護部", options);
+    }
+
+    // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
+    // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
+    [Fact]
+    public async Task Index_FilterByFreeTextResponsibleDepartment_ReturnsMatchingOnly()
+    {
+        // 異なる担当部署の対策を 2 件投入する
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "医療安全室");
+
+        // 担当部署「看護部」で絞り込んで一覧を表示する
+        var result = await _controller.Index(null, null, "看護部", null, null);
+
+        // ビューの主モデル(絞り込み後の対策一覧)を取り出す
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        // 看護部の 1 件だけが返ること(完全一致フィルタの維持)
+        var matched = Assert.Single(measures);
+        Assert.Equal("看護部", matched.ResponsibleDepartment);
     }
 
     // MaxKanbanRows 件を超えない範囲では、絞り込み後の対策が全件そのまま返り、

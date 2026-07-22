@@ -47,8 +47,9 @@
             </div>
         </div>
 
-        @* 完了メモ（任意・長すぎれば50文字省略） *@
-        @if (!string.IsNullOrEmpty(m.CompletionNote))
+        @* 完了メモ（任意・長すぎれば50文字省略）。「完了済み」のカードに限って表示する
+           (差し戻し後に古い完了報告が未完了カードへ表示され続けないようにする) *@
+        @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !string.IsNullOrEmpty(m.CompletionNote))
         {
             <div class="text-muted x-small mt-1">
                 <i class="bi bi-check2 me-1 text-success"></i>@(m.CompletionNote.Length > 50 ? m.CompletionNote[..50] + "…" : m.CompletionNote)

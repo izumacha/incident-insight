@@ -311,6 +311,9 @@ public class IncidentsController : Controller
         // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
         EnforceKnownDepartment(vm);
 
+        // 発生日時が未来でないかをサーバ側で検証する(未来のインシデントは報告できない)
+        ValidateOccurredAtNotInFuture(vm);
+
         // 業務ルール: 再発防止策が1件も無ければ登録不可
         if (!HasAtLeastOneValidMeasure(vm.Measures))
             ModelState.AddModelError(nameof(vm.Measures), "再発防止策を1件以上入力してください。");
@@ -516,6 +519,43 @@ public class IncidentsController : Controller
         }
     }
 
+    // 発生日時(OccurredAt)が未来の日時でないかをサーバ側で検証する。
+    // ブラウザの datetime-local 入力は任意の未来日時を送信できるため、クライアント側の
+    // 入力だけに頼ると「まだ起きていないインシデント」が登録・編集できてしまう
+    // (§9 入力は信用しない)。時刻の比較は必ず注入された IClock を使う(JST / テスト差し替え可能)。
+    // なお ReportedAt(報告日時)はフォーム入力ではなく Create POST 内で _clock.Now を
+    // サーバ側で設定する値のため、未来日時の混入経路が無く、ここでの検証は不要。
+    // 「発生日時 ≤ 報告日時」の整合は Create ではこの組み合わせ(OccurredAt ≤ 現在時刻
+    // かつ ReportedAt = 現在時刻)により自動成立するが、Edit は ReportedAt を再設定
+    // しないため自動では成立しない。Edit POST 側で ValidateOccurredAtNotAfterReportedAt
+    // により別途検証する。
+    private void ValidateOccurredAtNotInFuture(IncidentCreateEditViewModel vm)
+    {
+        // 発生日時が入力済みで、かつ現在時刻(IClock)より後ならエラーを積む
+        // (未入力の null は [Required] 側が「発生日時は必須です」として検証する)
+        if (vm.OccurredAt.HasValue && vm.OccurredAt.Value > _clock.Now)
+        {
+            // 発生日時フィールドに紐づくエラーとして登録し、フォーム再描画時に表示させる
+            ModelState.AddModelError(nameof(vm.OccurredAt), "発生日時に未来の日時は指定できません。");
+        }
+    }
+
+    // 発生日時(OccurredAt)が報告日時(ReportedAt)より後にならないかを検証する(Edit 専用)。
+    // 発生は報告に必ず先行するという業務上の前提を守るための検証。Create ではサーバ側が
+    // ReportedAt = 現在時刻 を設定するため未来日時検証だけで自動成立するが、Edit は
+    // ReportedAt を再設定しないため、発生日時を報告日時より後へ書き換えると
+    // 「発生前に報告された」矛盾データが保存でき、詳細画面の経過時間表示
+    // (報告日時 - 発生日時)が負値になってしまう。
+    private void ValidateOccurredAtNotAfterReportedAt(IncidentCreateEditViewModel vm, Incident incident)
+    {
+        // 発生日時が入力済みで、かつ既存の報告日時より後ならエラーを積む
+        if (vm.OccurredAt.HasValue && vm.OccurredAt.Value > incident.ReportedAt)
+        {
+            // 発生日時フィールドに紐づくエラーとして登録し、フォーム再描画時に表示させる
+            ModelState.AddModelError(nameof(vm.OccurredAt), "発生日時に報告日時より後の日時は指定できません。");
+        }
+    }
+
     // GET /Incidents/Edit/5
     // 編集画面の初期表示
     public async Task<IActionResult> Edit(int id)
@@ -573,6 +613,12 @@ public class IncidentsController : Controller
 
         // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
         EnforceKnownDepartment(vm);
+
+        // 発生日時が未来でないかをサーバ側で検証する(Create と同じ業務ルールを編集でも守る)
+        ValidateOccurredAtNotInFuture(vm);
+
+        // 発生日時が既存の報告日時より後になっていないかを検証する(Edit 専用の整合検証)
+        ValidateOccurredAtNotAfterReportedAt(vm, incident);
 
         // バリデーション NG なら入力値を残してフォームを再描画
         if (!ModelState.IsValid)
