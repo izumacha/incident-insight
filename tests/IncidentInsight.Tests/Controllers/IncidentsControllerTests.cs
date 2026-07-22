@@ -436,6 +436,104 @@ public class IncidentsControllerTests : IDisposable
         Assert.Empty(_db.Incidents);
     }
 
+    // --- Create/Edit POST: future OccurredAt rejection ---
+
+    // 時刻を固定した IClock でコントローラを組み立てるヘルパー。
+    // 「未来の日時かどうか」の境界判定は実時刻(SystemClock)だとテスト実行時刻に依存して
+    // 不安定になるため、FixedClock で決定論的に検証する
+    private IncidentsController CreateControllerWithClock(IClock clock)
+    {
+        // 固定時刻のクロックを注入してコントローラを構築する
+        var controller = new IncidentsController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new RecurrenceService(clock),
+            clock,
+            NullLogger<IncidentsController>.Instance);
+        // 既定の Admin ユーザーと TempData を配線する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 構築したコントローラを返す
+        return controller;
+    }
+
+    [Fact]
+    public async Task Create_Post_FutureOccurredAt_ReturnsView_AndDoesNotSave()
+    {
+        // 「現在時刻」を固定日時に固定したコントローラを用意する
+        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        // 発生日時が現在時刻より 1 分未来のインシデントを送信する
+        var vm = ValidViewModel();
+        vm.OccurredAt = TestFixtures.Today.AddMinutes(1);
+
+        // Create POST を実行する
+        var result = await controller.Create(vm);
+
+        // 未来の発生日時は拒否され、フォームを再描画すること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効で、OccurredAt のキーにエラーが積まれていること
+        Assert.False(controller.ModelState.IsValid);
+        Assert.True(controller.ModelState.ContainsKey(nameof(vm.OccurredAt)));
+        // インシデントは保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Create_Post_OccurredAtEqualToNow_Saves()
+    {
+        // 「現在時刻」を固定日時に固定したコントローラを用意する
+        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        // 発生日時をちょうど現在時刻(境界値)にして送信する
+        var vm = ValidViewModel();
+        vm.OccurredAt = TestFixtures.Today;
+
+        // Create POST を実行する
+        var result = await controller.Create(vm);
+
+        // 現在時刻ちょうどは未来ではないため正常に保存され、詳細画面へリダイレクトすること
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Details", redirect.ActionName);
+        // インシデントが 1 件保存されていること
+        Assert.Single(_db.Incidents);
+    }
+
+    [Fact]
+    public async Task Edit_Post_FutureOccurredAt_ReturnsView_AndDoesNotSave()
+    {
+        // 編集対象のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = TestFixtures.Today
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // 「現在時刻」を固定日時に固定したコントローラを用意する
+        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        // 発生日時を未来(翌日)へ書き換えようとする編集フォームを作る
+        var vm = ValidViewModel();
+        vm.OccurredAt = TestFixtures.Today.AddDays(1);
+        vm.ConcurrencyToken = incident.ConcurrencyToken;
+
+        // Edit POST を実行する
+        var result = await controller.Edit(incident.Id, vm);
+
+        // 未来の発生日時は拒否され、フォームを再描画すること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効で、OccurredAt のキーにエラーが積まれていること
+        Assert.False(controller.ModelState.IsValid);
+        Assert.True(controller.ModelState.ContainsKey(nameof(vm.OccurredAt)));
+        // 発生日時が書き換わっていないこと
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal(TestFixtures.Today, reloaded!.OccurredAt);
+    }
+
     // --- Create POST: department scope enforcement for Staff (issue #63) ---
 
     [Fact]
