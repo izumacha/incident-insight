@@ -331,8 +331,9 @@
                                 <td style="max-width:200px">
                                     @* 対策内容は長すぎれば先頭 45 文字に省略 *@
                                     <div>@(m.Description.Length > 45 ? m.Description[..45] + "…" : m.Description)</div>
-                                    @* 完了メモがあれば小さく表示 *@
-                                    @if (!string.IsNullOrEmpty(m.CompletionNote))
+                                    @* 完了メモは「完了済み」の対策に限って小さく表示する
+                                       (差し戻し後に古い完了報告が未完了の行へ表示され続けないようにする) *@
+                                    @if (m.Status == IncidentInsight.Web.Models.Enums.MeasureStatus.Completed && !string.IsNullOrEmpty(m.CompletionNote))
                                     {
                                         <div class="text-muted x-small"><i class="bi bi-check2 me-1"></i>@(m.CompletionNote.Length > 30 ? m.CompletionNote[..30] + "…" : m.CompletionNote)</div>
                                     }

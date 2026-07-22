@@ -223,6 +223,32 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_RevertFromCompleted_ClearsCompletionNote()
+    {
+        // 完了報告メモ付きで完了済みの対策をカンバンで差し戻したとき、
+        // 完了報告メモ(CompletionNote)もクリアされること。残ると差し戻し後の
+        // 未完了カードに古い完了報告が表示され続け、再完了時の新しい報告と食い違う
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 完了済み + 完了報告メモありの状態を作る
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = DateTime.Now;
+        measure.CompletionNote = "手順書を改訂して周知済み";
+        await _db.SaveChangesAsync();
+
+        // カンバン上で完了から進行中へ差し戻す
+        var result = await _controller.UpdateStatus(
+            measure.Id, MeasureStatus.InProgress, measure.ConcurrencyToken);
+
+        Assert.IsType<RedirectToActionResult>(result);
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        // ステータスと完了日時が差し戻されていること
+        Assert.Equal(MeasureStatus.InProgress, saved.Status);
+        Assert.Null(saved.CompletedAt);
+        // 完了報告メモがクリアされていること(古い完了報告の残留防止)
+        Assert.Null(saved.CompletionNote);
+    }
+
+    [Fact]
     public async Task UpdateStatus_UndefinedEnumValue_RedirectsWithWarning_AndDoesNotPersist()
     {
         // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら拒否し

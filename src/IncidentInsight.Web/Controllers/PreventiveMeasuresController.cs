@@ -496,6 +496,10 @@ public class PreventiveMeasuresController : Controller
         {
             // 完了以外へ差し戻し: 完了日時をクリアする(古い完了日が残らないように)
             measure.CompletedAt = null;
+            // 完了報告メモも「完了済みの対策」だけに存在してよいデータのためクリアする。
+            // 残すと、差し戻し後の未完了カードに古い完了報告が表示され続け、
+            // 再完了時の新しい報告と食い違う誤解を招く(CompletedAt と同じ理由)
+            measure.CompletionNote = null;
             // 効果評価は「完了済みの対策」だけに存在してよいデータ(Review/RateMeasure が
             // 未完了への書き込みを fail-closed で拒否している)。ここで差し戻したのに評価値を
             // 残すと、未完了の対策が再発/効果なし KPI に計上され実態と乖離するため、
