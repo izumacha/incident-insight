@@ -621,6 +621,54 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Null(updated.EffectivenessReviewedAt);
     }
 
+    // 担当部署フィルタのドロップダウン選択肢が Incident.Departments(発生部署の許可リスト)
+    // ではなく、実際に保存されている対策の担当部署(自由記述)から重複なし・昇順で
+    // 生成されることを確認する(許可リスト外の担当部署が永遠にヒットしない回帰の防止)
+    [Fact]
+    public async Task Index_ResponsibleDepartmentOptions_BuiltFromMeasureFreeTextDepartments()
+    {
+        // Incident.Departments の許可リストに無い自由記述の担当部署を持つ対策を投入する
+        // (看護部を 2 件にして重複除去も同時に検証する)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "医療安全室");
+        await SeedMeasureAsync("外来", responsibleDepartment: "看護部");
+
+        // カンバン一覧を無条件で表示する
+        var result = await _controller.Index(null, null, null, null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // ドロップダウン選択肢が ViewBag に積まれていること
+        // (ViewBag は dynamic のため object へキャストして型を確定させてから検証する)
+        var options = Assert.IsType<List<string>>((object)_controller.ViewBag.ResponsibleDepartmentOptions);
+        // 重複が除去され 2 件になっていること
+        Assert.Equal(2, options.Count);
+        // 実データ由来の自由記述の担当部署が両方含まれていること
+        Assert.Contains("看護部", options);
+        Assert.Contains("医療安全室", options);
+        // 昇順で安定して並んでいること
+        Assert.Equal(options.OrderBy(d => d).ToList(), options);
+    }
+
+    // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
+    // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
+    [Fact]
+    public async Task Index_FilterByFreeTextResponsibleDepartment_ReturnsMatchingOnly()
+    {
+        // 異なる担当部署の対策を 2 件投入する
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "医療安全室");
+
+        // 担当部署「看護部」で絞り込んで一覧を表示する
+        var result = await _controller.Index(null, null, "看護部", null, null);
+
+        // ビューの主モデル(絞り込み後の対策一覧)を取り出す
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        // 看護部の 1 件だけが返ること(完全一致フィルタの維持)
+        var matched = Assert.Single(measures);
+        Assert.Equal("看護部", matched.ResponsibleDepartment);
+    }
+
     // MaxKanbanRows 件を超えない範囲では、絞り込み後の対策が全件そのまま返り、
     // Truncated フラグが立たず、TotalCount も返却件数と一致することを確認する
     [Fact]

@@ -48,6 +48,10 @@ public class PreventiveMeasuresController : Controller
     // ビューに通知し、KPI が全件ではなく上限分のみを反映していることを利用者に明示する。
     // Views/PreventiveMeasures/Index.cshtml が案内文中の件数表示にも参照するため public にしている
     public const int MaxKanbanRows = 1000;
+    // 担当部署フィルタのドロップダウンに表示する選択肢の上限件数。
+    // ResponsibleDepartment は自由記述のため理論上いくらでも異なる値が増えうる。
+    // 件数無制限の Distinct 取得はしない(§8 一覧取得は必ず上限を持たせる)。
+    private const int MaxDepartmentFilterOptions = 100;
 
     // コンストラクタ: DI で依存を受け取る
     public PreventiveMeasuresController(
@@ -118,6 +122,27 @@ public class PreventiveMeasuresController : Controller
         ViewBag.Planned = planned;
         ViewBag.InProgress = inProgress;
         ViewBag.Completed = completed;
+        // 担当部署フィルタのドロップダウン選択肢を、実際に保存されている対策の
+        // 担当部署(自由記述)から生成する。Incident.Departments(発生部署の許可リスト)を
+        // 選択肢に使うと、シードデータの「看護部/医療安全室/情報管理部」のような
+        // リスト外の担当部署が永遠にヒットしないフィルタになってしまうため。
+        // 現在の絞り込み条件には依存させず(条件を切り替えられるように)、
+        // 部署スコープ(Staff は自部署のインシデントの対策のみ)だけを適用する
+        var responsibleDepartmentOptions = await _db.PreventiveMeasures
+            .AsNoTracking()
+            .ScopedByUser(User)
+            // 担当部署の列だけを取り出す
+            .Select(m => m.ResponsibleDepartment)
+            // 重複を除いて一意な部署名にする
+            .Distinct()
+            // 五十音・アルファベット順で安定表示する
+            .OrderBy(d => d)
+            // 自由記述のため件数上限を設けて取得する(§8)
+            .Take(MaxDepartmentFilterOptions)
+            .ToListAsync();
+        // ドロップダウン選択肢としてビューへ渡す
+        ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;
+
         // 画面に戻すフィルタ値も ViewBag に載せる
         ViewBag.FilterStatus = status;
         ViewBag.FilterResponsible = responsible;

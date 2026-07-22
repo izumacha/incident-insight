@@ -93,10 +93,14 @@
                 </select>
             </div>
             <div class="col-md-2">
-                @* 担当部署選択 *@
+                @* 担当部署選択。選択肢は Incident.Departments(発生部署の許可リスト)ではなく、
+                   実際に保存されている対策の担当部署(自由記述)からコントローラが生成した
+                   一覧を使う。許可リスト由来だとリスト外の担当部署(例: 看護部)が
+                   絶対にヒットしないフィルタになってしまうため *@
                 <select name="responsibleDepartment" class="form-select form-select-sm">
                     <option value="">担当部署（全て）</option>
-                    @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                    @* コントローラが生成した実データ由来の担当部署一覧を選択肢として並べる *@
+                    @foreach (var d in (List<string>)ViewBag.ResponsibleDepartmentOptions)
                     {
                         <option value="@d" selected="@(ViewBag.FilterResponsibleDepartment == d)">@d</option>
                     }
