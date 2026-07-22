@@ -138,11 +138,9 @@
     @* 0件の場合の空表示 *@
     @if (!Model.Incidents.Any())
     {
-        @* フィルター適用中か判定（原因分類は除く旧来の判定） *@
-        var hasFilter = !string.IsNullOrEmpty(Model.Search) || !string.IsNullOrEmpty(Model.Department)
-                     || Model.IncidentType.HasValue || Model.Severity.HasValue
-                     || Model.DateFrom.HasValue || Model.DateTo.HasValue;
-        if (hasFilter)
+        @* フィルター適用中かどうかは冒頭で判定済みの anyFilter を再利用する(§6 DRY)。
+           条件を書き写すと原因分類のように判定漏れ(ドリフト)が起きるため一本化する *@
+        if (anyFilter)
         {
             @* フィルターを外せば結果が出る可能性を示すメッセージ *@
             <div class="card-body text-center py-5">

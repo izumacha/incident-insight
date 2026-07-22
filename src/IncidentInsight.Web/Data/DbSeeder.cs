@@ -8,11 +8,14 @@ using IncidentInsight.Web.Services;
 // この型の名前空間(置き場所)
 namespace IncidentInsight.Web.Data;
 
-// 起動時に初期データ(原因分類マスタ + デモインシデント群)を投入するシーダー
+// 起動時に初期データを投入するシーダー。
+// マスタデータ(原因分類)は全環境共通の Seed で、架空の患者シナリオ・報告者名を含む
+// デモインシデント群は Development 限定で呼ばれる SeedDemoData で投入する(責務を分離)
 public static class DbSeeder
 {
-    // 呼び出されるたびに実行される本体メソッド(データがあれば何もしない冪等処理)
-    public static void Seed(ApplicationDbContext db, IClock clock)
+    // マスタデータ(原因分類)を投入する本体メソッド(データがあれば何もしない冪等処理)。
+    // 本番を含む全環境で呼んでよい(デモインシデントはここでは投入しない)
+    public static void Seed(ApplicationDbContext db)
     {
         // ── 原因カテゴリ（親カテゴリ） ─────────────────────────────
         // 原因分類が1件もないときだけマスタを登録する(冪等化)
@@ -76,7 +79,13 @@ public static class DbSeeder
             db.CauseCategories.AddRange(subCategories);
             db.SaveChanges();
         }
+    }
 
+    // デモ用のサンプルインシデント・分析・対策を投入するメソッド(データがあれば何もしない冪等処理)。
+    // 架空とはいえ患者シナリオ・報告者名を含むため、呼び出し側(Program.cs)で
+    // Development 環境のときだけ呼ぶこと(本番 DB にデモデータを混ぜない)
+    public static void SeedDemoData(ApplicationDbContext db, IClock clock)
+    {
         // ── サンプルインシデント + 分析 + 対策 ───────────────────────
         // インシデントが既にあれば以降のサンプル投入はスキップ
         if (db.Incidents.Any()) return;

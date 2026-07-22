@@ -52,7 +52,7 @@ Dev パスワードポリシー: 8 文字以上・大文字・数字。Prod: 12 
 - `ApplicationDbContext` は `Database:Provider`（`sqlite` | `sqlserver` | `postgres`）で実行時プロバイダ切替。接続文字列は `ConnectionStrings:DefaultConnection`。`UseSqlite` / `UseSqlServer` / `UseNpgsql` を使い分け、移行はコード変更不要（設定のみ）。
 - `AuditSaveChangesInterceptor` を `DbContext` に登録（プロバイダ中立）。`Incident` / `CauseAnalysis` / `PreventiveMeasure` の Add/Modify/Delete ごとに `AuditLogs` 行を書き、Modified では `ConcurrencyToken` Guid を回転させる。
 - ASP.NET Core Identity を `ApplicationUser` ＋ 3 ロール（`AppRoles`: `Admin` / `RiskManager` / `Staff`）で構成。Cookie 認証は `/Account/Login` リダイレクト、8h スライディング、5 回失敗でロックアウト。
-- 起動時（スコープ内）: `db.Database.Migrate()` → `DbSeeder.Seed(db)`（冪等）→ `IdentitySeeder.SeedAsync(...)`（ロールは常時、デモ管理者/RM は Development かつ `SeedAccounts` パスワード有時のみ）。
+- 起動時（スコープ内）: `db.Database.Migrate()` → `DbSeeder.Seed(db)`（原因分類マスタ・冪等・全環境）→ `DbSeeder.SeedDemoData(db, clock)`（デモインシデント・Development のみ）→ `IdentitySeeder.SeedAsync(...)`（ロールは常時、デモ管理者/RM は Development かつ `SeedAccounts` パスワード有時のみ）。
 
 ### DB プロバイダ・マトリクス
 
@@ -144,7 +144,7 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
   3. `audit-log-list.png` — 監査ログ一覧（`/AuditLogs`）
   - 任意の追加候補: `dashboard-default.png` — ダッシュボード（KPI・再発アラート）
 - デモ GIF: 「報告 → なぜなぜ分析 → 予防策 → 登録完了」の登録フロー 1 本（10MB 以下）。
-- 撮影データは `DbSeeder.Seed` のシード＋Development のデモアカウント（§2）を使う。デモアカウントのパスワードをスクショに写さない。
+- 撮影データは `DbSeeder.SeedDemoData`（Development のみ投入されるデモインシデント）＋Development のデモアカウント（§2）を使う。デモアカウントのパスワードをスクショに写さない。
 
 ---
 

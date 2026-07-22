@@ -327,8 +327,15 @@ using (var scope = app.Services.CreateScope())
             "See CLAUDE.md for details.",
             ex);
     }
-    // 原因カテゴリ + サンプルインシデントを投入(冪等)
-    DbSeeder.Seed(db, scope.ServiceProvider.GetRequiredService<IClock>());
+    // 原因カテゴリ(マスタデータ)を投入(冪等・全環境共通)
+    DbSeeder.Seed(db);
+    // デモ用サンプルインシデントは Development のみ投入する
+    // (架空の患者シナリオ・報告者名を含むため、本番 DB に混ぜない)
+    if (app.Environment.IsDevelopment())
+    {
+        // 現在時刻(IClock)を渡し、デモデータの発生日・期限を相対日付で生成させる
+        DbSeeder.SeedDemoData(db, scope.ServiceProvider.GetRequiredService<IClock>());
+    }
 
     // ロール管理用マネージャーを取得
     var roleManager = scope.ServiceProvider.GetRequiredService<RoleManager<IdentityRole>>();
