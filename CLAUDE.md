@@ -144,7 +144,7 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
   3. `audit-log-list.png` — 監査ログ一覧（`/AuditLogs`）
   - 任意の追加候補: `dashboard-default.png` — ダッシュボード（KPI・再発アラート）
 - デモ GIF: 「報告 → なぜなぜ分析 → 予防策 → 登録完了」の登録フロー 1 本（10MB 以下）。
-- 撮影データは `DbSeeder.Seed` のシード＋Development のデモアカウント（§2）を使う。デモアカウントのパスワードをスクショに写さない。
+- 撮影データは `DbSeeder.SeedDemoData`（Development のみ投入されるデモインシデント）＋Development のデモアカウント（§2）を使う。デモアカウントのパスワードをスクショに写さない。
 
 ---
 
