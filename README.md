@@ -197,6 +197,7 @@ readinessProbe:
 - 認証クッキー / 対策トークン (`antiforgery`) は `SameSite=Strict`、本番は `Secure` 必須。
 - パスワードポリシーは本番では 12 文字以上・英大文字・英小文字・数字・記号が必須。
 - `SeedAccounts` のデモアカウント作成は Development 限定です（本番環境では自動的にスキップ）。
+- ログイン試行は送信元 IP 単位でレート制限されます（既定 10 回/60 秒。`RateLimit:Login:PermitLimit` / `RateLimit:Login:WindowSeconds` で調整可能）。IPv6 は /64 単位で集計します。**リバースプロキシ / NAT 配下では必ず `ForwardedHeaders`（`Enabled` + `KnownProxies`）を設定してください** — 未設定のままだと全クライアントがプロキシの 1 IP として扱われ、正規ユーザー全体が同じ制限枠を共有します（悪意の 1 端末が毎分の枠を使い切ると全員のログインが止まります）。同一 NAT 出口を多人数で共有する構成では `PermitLimit` の引き上げも検討してください。
 
 ### シークレット管理
 
