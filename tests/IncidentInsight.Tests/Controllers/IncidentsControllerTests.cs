@@ -304,6 +304,64 @@ public class IncidentsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Post_OverLimitWhy1_ReturnsCreateView_AndDoesNotSave()
+    {
+        // 実在する原因カテゴリを 1 件用意する(保存対象=IsSavable の分岐に入るため)
+        var category = new CauseCategory { Name = "確認不足" };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        // 妥当なインシデント入力に、上限(500文字)超のなぜ1 を持つ原因分析を付ける
+        var vm = ValidViewModel();
+        vm.CauseAnalysis.CauseCategoryId = category.Id;      // 原因分類は選択済み
+        vm.CauseAnalysis.Why1 = new string('あ', 501);       // 500文字上限を1文字超過
+
+        // Create POST を実行する
+        var result = await _controller.Create(vm);
+
+        // 以前は CauseAnalysis.* の一括除外で MaxLength 違反まで破棄され保存されてしまった。
+        // 修正後は Create ビューを再描画し、Why1 にモデルエラーが付くことを確認する(回帰防止)
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効で、Why1 のキーにエラーが積まれていること
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.Why1)}"));
+        // インシデント・原因分析ともに保存されていないこと
+        Assert.Empty(_db.Incidents);
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
+    public async Task Create_Post_OverLimitAnalystName_ReturnsCreateView_AndDoesNotSave()
+    {
+        // 実在する原因カテゴリを 1 件用意する(保存対象=IsSavable の分岐に入るため)
+        var category = new CauseCategory { Name = "手順" };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        // 妥当な分析入力に、上限(100文字)超の分析者名だけを混ぜる
+        var vm = ValidViewModel();
+        vm.CauseAnalysis.CauseCategoryId = category.Id;       // 原因分類は選択済み
+        vm.CauseAnalysis.Why1 = "確認を怠った";               // なぜ1 は正常
+        vm.CauseAnalysis.AnalystName = new string('あ', 101); // 100文字上限を1文字超過
+
+        // Create POST を実行する
+        var result = await _controller.Create(vm);
+
+        // Create ビューが再描画され、AnalystName にモデルエラーが付き、何も保存されないこと
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効で、AnalystName のキーにエラーが積まれていること
+        Assert.False(_controller.ModelState.IsValid);
+        Assert.True(_controller.ModelState.ContainsKey(
+            $"{nameof(IncidentCreateEditViewModel.CauseAnalysis)}.{nameof(CauseAnalysisFormViewModel.AnalystName)}"));
+        // インシデント・原因分析ともに保存されていないこと
+        Assert.Empty(_db.Incidents);
+        Assert.Empty(_db.CauseAnalyses);
+    }
+
+    [Fact]
     public async Task Create_Post_PersistedMeasureWithFieldError_KeepsError_AndDoesNotSave()
     {
         // 対策内容ありの行(=保存対象)を 1 件持つ妥当な ViewModel を用意する
@@ -579,6 +637,25 @@ public class IncidentsControllerTests : IDisposable
 
         Assert.Equal(1, vm!.TotalCount);
         Assert.Equal(IncidentSeverity.Level4, vm.Incidents[0].Severity);
+    }
+
+    [Fact]
+    public async Task Index_DateToMaxValueDate_DoesNotThrow_AndIncludesLastDay()
+    {
+        // 発生日が通常日と表現可能な最終日(9999-12-31)のインシデントを投入する
+        _db.Incidents.AddRange(
+            new Incident { Department = "ICU", IncidentType = IncidentTypeKind.Fall, Severity = IncidentSeverity.Level2, Description = "A", ReporterName = "A", OccurredAt = TestFixtures.Today },
+            new Incident { Department = "外来", IncidentType = IncidentTypeKind.Medication, Severity = IncidentSeverity.Level1, Description = "B", ReporterName = "B", OccurredAt = DateTime.MaxValue.Date }
+        );
+        await _db.SaveChangesAsync();
+
+        // 以前は dateTo=9999-12-31 で Date.AddDays(1) が ArgumentOutOfRangeException(HTTP 500)
+        // を投げていた。修正後は例外なく処理され、最終日の発生分も含めて返ることを確認する
+        var result = await _controller.Index(null, null, null, null, null, DateTime.MaxValue.Date, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        // 2 件とも上限フィルタに含まれる(「その日いっぱいを含む」意味が保たれる)こと
+        Assert.Equal(2, vm!.TotalCount);
     }
 
     [Fact]

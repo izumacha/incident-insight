@@ -111,6 +111,26 @@ internal static class IncidentControllerHelpers
     }
 
     /// <summary>
+    /// 日付上限フィルタ(dateTo)の「その日いっぱいを含む」排他的上限(翌日 0 時)を安全に計算する。
+    /// IncidentsController / PreventiveMeasuresController / AuditLogsController /
+    /// AnalyticsController の各一覧・集計が共通で使う(CLAUDE.md §6 DRY)。
+    /// dateTo に表現可能な最終日 9999-12-31(DateTime.MaxValue.Date)が指定されると、
+    /// 素朴な Date.AddDays(1) は ArgumentOutOfRangeException(未捕捉の HTTP 500)を投げる。
+    /// 極端な値はクラッシュさせずフォールバックする(§9 fail-safe)ため、その場合は
+    /// これ以上進めず DateTime.MaxValue を上限として返す(最終日全体を含む意味は変わらない)。
+    /// </summary>
+    public static DateTime ToExclusiveUpperBound(DateTime dateTo)
+    {
+        // 時刻成分を切り落として日付(その日の 0 時)だけにする
+        var date = dateTo.Date;
+        // 表現可能な最終日(9999-12-31)なら「翌日」が存在しないため、桁あふれさせず
+        // DateTime.MaxValue(9999-12-31 23:59:59.9999999)を排他的上限として返す
+        if (date >= DateTime.MaxValue.Date) return DateTime.MaxValue;
+        // 通常は翌日 0 時を返す(「< 翌日0時」でその日いっぱいを含む)
+        return date.AddDays(1);
+    }
+
+    /// <summary>
     /// 楽観的排他制御の保存試行を共通化するヘルパー。CauseAnalysesController /
     /// IncidentMeasuresController / IncidentsController / PreventiveMeasuresController の
     /// 各アクションで重複していた「SaveChangesAsync → DbUpdateConcurrencyException 捕捉 →

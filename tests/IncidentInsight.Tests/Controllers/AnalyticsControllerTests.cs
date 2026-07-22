@@ -246,6 +246,26 @@ public class AnalyticsControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task ByDepartment_DateToMaxValueDate_DoesNotThrow_AndIncludesLastDay()
+    {
+        // 発生日が表現可能な最終日(9999-12-31)のインシデントを投入する
+        _db.Incidents.Add(MakeIncident(dept: "ICU", occurredAt: DateTime.MaxValue.Date));
+        await _db.SaveChangesAsync();
+
+        // 以前は dateTo=9999-12-31 で Date.AddDays(1) が ArgumentOutOfRangeException(HTTP 500)
+        // を投げていた。修正後は例外なく処理され、最終日の発生分も含めて集計されることを確認する
+        var result = await _controller.ByDepartment(null, DateTime.MaxValue.Date);
+        using var doc = ToJsonDocument(result);
+
+        // 件数配列を取り出す
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        // 最終日の 1 件が上限フィルタに含まれること
+        Assert.Single(data);
+        Assert.Equal(1, data[0]);
+    }
+
+    [Fact]
     public async Task BySeverity_DateTo_IncludesSameDayAfternoonIncident()
     {
         var dateTo = new DateTime(2026, 4, 17);

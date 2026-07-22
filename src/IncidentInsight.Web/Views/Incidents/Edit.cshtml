@@ -22,8 +22,13 @@
             @Html.AntiForgeryToken()
             @* 同時編集検出用の楽観ロックトークンを隠しフィールドで送信 *@
             <input type="hidden" asp-for="ConcurrencyToken" />
-            @* バリデーションエラーがあれば一覧表示 *@
-            <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
+            @* バリデーションエラーがあるときだけ赤い警告枠を描画する
+               (常時描画すると、エラーが無くても空の赤枠が表示されてしまう。Create.cshtml と同じ方式) *@
+            @if (!ViewData.ModelState.IsValid)
+            {
+                @* ModelState のエラー全件を一覧表示 *@
+                <div asp-validation-summary="All" class="alert alert-danger small mb-3"></div>
+            }
             <div class="row g-3">
                 <div class="col-md-4">
                     @* 発生日時（必須） *@
