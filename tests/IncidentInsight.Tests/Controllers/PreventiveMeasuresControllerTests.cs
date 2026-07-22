@@ -649,6 +649,28 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Equal(options.OrderBy(d => d).ToList(), options);
     }
 
+    // 適用中のフィルタ値が実データ由来の選択肢に含まれない場合(上限超過での切り捨てや
+    // 該当対策の削除後)でも、選択肢の先頭に補完されることを確認する。補完が無いと
+    // select が「全て」を表示して UI と実状態が食い違い、フォーム再送信でフィルタが
+    // 利用者の意図なく無言で解除されてしまう
+    [Fact]
+    public async Task Index_AppliedFilterValueMissingFromOptions_IsSupplemented()
+    {
+        // 「看護部」の対策だけを投入する(フィルタ対象の「医療安全室」は実データに存在しない)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+
+        // 実データに存在しない担当部署「医療安全室」で絞り込んで一覧を表示する
+        var result = await _controller.Index(null, null, "医療安全室", null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // 選択肢を ViewBag から取り出す(dynamic のため object へキャストして型を確定させる)
+        var options = Assert.IsType<List<string>>((object)_controller.ViewBag.ResponsibleDepartmentOptions);
+        // 適用中のフィルタ値が選択肢の先頭に補完されていること
+        Assert.Equal("医療安全室", options[0]);
+        // 実データ由来の選択肢も残っていること
+        Assert.Contains("看護部", options);
+    }
+
     // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
     // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
     [Fact]

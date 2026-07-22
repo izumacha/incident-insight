@@ -534,6 +534,44 @@ public class IncidentsControllerTests : IDisposable
         Assert.Equal(TestFixtures.Today, reloaded!.OccurredAt);
     }
 
+    [Fact]
+    public async Task Edit_Post_OccurredAtAfterReportedAt_ReturnsView_AndDoesNotSave()
+    {
+        // 前日に発生し、前日のうちに報告済みのインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = TestFixtures.Today.AddDays(-1),
+            ReportedAt = TestFixtures.Today.AddDays(-1)
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // 「現在時刻」を固定日時に固定したコントローラを用意する
+        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        // 発生日時を「現在時刻以前だが報告日時より後」(=本日)へ書き換えようとする編集フォームを作る
+        var vm = ValidViewModel();
+        vm.OccurredAt = TestFixtures.Today;
+        vm.ConcurrencyToken = incident.ConcurrencyToken;
+
+        // Edit POST を実行する
+        var result = await controller.Edit(incident.Id, vm);
+
+        // 報告日時より後の発生日時は「発生前に報告された」矛盾になるため拒否され、フォームを再描画すること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効で、OccurredAt のキーにエラーが積まれていること
+        Assert.False(controller.ModelState.IsValid);
+        Assert.True(controller.ModelState.ContainsKey(nameof(vm.OccurredAt)));
+        // 発生日時が書き換わっていないこと
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal(TestFixtures.Today.AddDays(-1), reloaded!.OccurredAt);
+    }
+
     // --- Create POST: department scope enforcement for Staff (issue #63) ---
 
     [Fact]
