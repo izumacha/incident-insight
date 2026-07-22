@@ -83,6 +83,12 @@ public static class IdentitySeeder
             // 成功したら Admin ロールを割り当て
             if (result.Succeeded)
                 await userManager.AddToRoleAsync(admin, AppRoles.Admin);
+            else
+                // 失敗を黙って握り潰さず、Identity のエラー内容を警告ログに残す(§6 エラーを握り潰さない)。
+                // パスワード自体は秘密情報なのでログに含めない(§9)。
+                logger?.LogWarning(
+                    "デモ管理者アカウントの作成に失敗しました。パスワードポリシー等を確認してください。エラー: {Errors}",
+                    string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Description}")));
         }
 
         // リスクマネージャー設定があり、かつ未作成のときのみ作成
@@ -103,6 +109,12 @@ public static class IdentitySeeder
             // 成功したら RiskManager ロールを割り当て
             if (result.Succeeded)
                 await userManager.AddToRoleAsync(rm, AppRoles.RiskManager);
+            else
+                // 失敗を黙って握り潰さず、Identity のエラー内容を警告ログに残す(§6 エラーを握り潰さない)。
+                // パスワード自体は秘密情報なのでログに含めない(§9)。
+                logger?.LogWarning(
+                    "デモリスクマネージャーアカウントの作成に失敗しました。パスワードポリシー等を確認してください。エラー: {Errors}",
+                    string.Join("; ", result.Errors.Select(e => $"{e.Code}: {e.Description}")));
         }
     }
 }
