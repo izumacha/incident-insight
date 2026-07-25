@@ -6,6 +6,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // AuditOptions(監査ログ用設定)を使う
 using IncidentInsight.Web.Models.Auditing;
+// LoginRateLimitOptions(ログイン試行のレート制限設定)を使う
+using IncidentInsight.Web.Models.RateLimiting;
 // 時刻源 / 再発サービスを使う
 using IncidentInsight.Web.Services;
 // IAuthorizationHandler インタフェース
@@ -18,8 +20,14 @@ using IncidentInsight.Web.Middleware;
 using Microsoft.AspNetCore.Identity;
 // EF Core(UseSqlite / UseSqlServer / UseNpgsql 等)
 using Microsoft.EntityFrameworkCore;
+// レート制限ミドルウェアの登録拡張(AddRateLimiter / UseRateLimiter)を使う
+using Microsoft.AspNetCore.RateLimiting;
+// IOptions(DI 経由の設定取得)を使う
+using Microsoft.Extensions.Options;
 // IPAddress(信頼するプロキシ IP の解析に使用)
 using System.Net;
+// レートリミッタ本体(RateLimitPartition / FixedWindowRateLimiterOptions)を使う
+using System.Threading.RateLimiting;
 
 // WebApplication のビルダを作成(コマンドライン引数を受け取る)
 var builder = WebApplication.CreateBuilder(args);
@@ -87,6 +95,77 @@ if (forwardedHeadersEnabled)
         }
     });
 }
+
+// 匿名の POST /Account/Login への IP 単位レート制限(CLAUDE.md §9: 公開エンドポイント保護)。
+// Identity のアカウント単位ロックアウト(5 回失敗 → 15 分)だけでは、
+// (a) 多数アカウントへ少しずつ試すパスワードスプレー攻撃、
+// (b) 既知メールアドレスへ故意に失敗を繰り返すロックアウト DoS
+// を止められないため、送信元 IP 単位の固定ウィンドウ制限を多層防御として重ねる。
+// 回数・ウィンドウ長は設定(RateLimit:Login)から読み、未設定なら名前付き定数の既定値を使う。
+// builder.Configuration をこの場で直読みせず Options として DI 登録するのは、
+// 統合テスト(WebApplicationFactory)の設定上書きが確実に反映される実行時解決に
+// するためと、他の設定クラス(AuditOptions 等)と同じ取得経路に揃えるため
+builder.Services.AddOptions<LoginRateLimitOptions>()
+    // RateLimit:Login セクションの値を束縛する
+    .Bind(builder.Configuration.GetSection(LoginRateLimitOptions.SectionName))
+    // 設定値が 0 以下(無効値)なら既定値へフォールバックする(制限の素通しにしない)。
+    // なお数値として解釈できない値(例: "abc")は束縛時に例外を投げて起動自体が
+    // 失敗する(fail-fast)。フォールバックの対象は「数値だが 0 以下」の場合のみ
+    .PostConfigure(options =>
+    {
+        // 許可回数が 0 以下なら既定値に戻す
+        if (options.PermitLimit <= 0)
+            options.PermitLimit = LoginRateLimitOptions.DefaultPermitLimit;
+        // ウィンドウ長が 0 以下なら既定値に戻す
+        if (options.WindowSeconds <= 0)
+            options.WindowSeconds = LoginRateLimitOptions.DefaultWindowSeconds;
+    })
+    // 起動時に束縛を実行し、壊れた設定(非数値等)をリクエスト処理前に検出する
+    .ValidateOnStart();
+
+// .NET 8 組み込みのレートリミッタを登録する(追加パッケージ不要)
+builder.Services.AddRateLimiter(options =>
+{
+    // 制限超過時は 429 Too Many Requests を返す(既定の 503 より意図が正確)
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    // 拒否時の応答内容: ログインは JS を介さないフォーム POST のため、内部情報を含まない
+    // 最小の日本語プレーンテキストを返すのが最も単純で正しい。ミドルウェア段階では MVC の
+    // ビュー描画パイプライン外にあり、ログイン画面へのリダイレクトは制限中の再 GET → 再 POST
+    // を誘発するだけなので採用しない(ブラウザにはこのテキストがそのまま表示される)。
+    options.OnRejected = async (context, cancellationToken) =>
+    {
+        // 文字化けを防ぐため charset 付きでプレーンテキストを宣言する
+        context.HttpContext.Response.ContentType = "text/plain; charset=utf-8";
+        // ユーザーに安全な(内部詳細を含まない)案内文だけを書き出す
+        await context.HttpContext.Response.WriteAsync(
+            "ログイン試行回数が多すぎます。しばらく時間をおいてから再度お試しください。",
+            cancellationToken);
+    };
+    // ログイン専用の名前付きポリシー: 送信元 IP ごとに固定ウィンドウで試行回数を数える
+    options.AddPolicy(LoginRateLimitOptions.PolicyName, httpContext =>
+    {
+        // クライアント IP を制限単位(パーティションキー)にする。リバースプロキシ配下では
+        // 先に実行される UseForwardedHeaders が RemoteIpAddress を実クライアント IP に復元済み。
+        // IPv6 は /64 プレフィックスへ正規化して 1 バケツに束ねる(アドレス全体をキーにすると
+        // /64 内のアドレスを 1 リクエストごとに変えるだけで制限を回避できてしまうため)。
+        // IP が取得できない場合は fail-closed: 素通しにせず、全員共通の 1 バケツで制限を受けさせる
+        var partitionKey = ClientIpPartition.GetPartitionKey(httpContext.Connection.RemoteIpAddress);
+        // DI から実効設定(既定値フォールバック適用済み)を実行時に取り出す
+        var loginRateLimit = httpContext.RequestServices
+            .GetRequiredService<IOptions<LoginRateLimitOptions>>().Value;
+        // IP ごとに固定ウィンドウ方式のリミッタを割り当てて返す
+        return RateLimitPartition.GetFixedWindowLimiter(partitionKey, _ =>
+            new FixedWindowRateLimiterOptions
+            {
+                // 1 ウィンドウ内に許可する試行回数
+                PermitLimit = loginRateLimit.PermitLimit,
+                // ウィンドウ(時間枠)の長さ
+                Window = TimeSpan.FromSeconds(loginRateLimit.WindowSeconds),
+                // 待ち行列は作らず即時拒否する(接続を滞留させてリソースを消費させない)
+                QueueLimit = 0
+            });
+    });
+});
 
 // DbContext を DI 登録。Database:Provider 設定で SQLite / SQL Server / PostgreSQL を切り替える
 builder.Services.AddDbContext<ApplicationDbContext>((sp, options) =>
@@ -285,6 +364,9 @@ app.UseMiddleware<SecurityHeadersMiddleware>();
 app.UseStaticFiles();
 // ルーティング機能を有効化
 app.UseRouting();
+// レート制限を有効化。[EnableRateLimiting] が付いたエンドポイントを判定できるよう
+// ルーティングの後に置き、攻撃トラフィックを認証処理より手前で遮断するため認証の前に置く
+app.UseRateLimiter();
 // 認証(クッキーから ClaimsPrincipal を構築)を有効化
 app.UseAuthentication();
 // 認可(Policy / ロール評価)を有効化
@@ -352,3 +434,7 @@ using (var scope = app.Services.CreateScope())
 
 // アプリを起動(リクエスト待受開始)
 app.Run();
+
+// 統合テスト(WebApplicationFactory<Program>)からトップレベルステートメントの
+// エントリポイントを参照できるようにするための部分クラス宣言(実行時の挙動は変えない)
+public partial class Program;

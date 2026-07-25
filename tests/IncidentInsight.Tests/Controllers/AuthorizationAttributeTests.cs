@@ -1,8 +1,10 @@
 using System.Reflection;
 using IncidentInsight.Web.Authorization;
 using IncidentInsight.Web.Controllers;
+using IncidentInsight.Web.Models.RateLimiting;
 using IncidentInsight.Web.Models.ViewModels;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.RateLimiting;
 
 namespace IncidentInsight.Tests.Controllers;
 
@@ -72,6 +74,45 @@ public class AuthorizationAttributeTests
                 && m.GetParameters()[0].ParameterType == typeof(string));
 
         Assert.NotNull(method.GetCustomAttribute<AllowAnonymousAttribute>(inherit: false));
+    }
+
+    [Fact]
+    public void AccountController_LoginPost_HasLoginRateLimitPolicy()
+    {
+        // 匿名で叩ける資格情報検証エンドポイント(POST /Account/Login)には、
+        // パスワードスプレー/ロックアウト DoS 対策の IP 単位レート制限が必須(CLAUDE.md §9)。
+        // 属性が外れる回帰をここで検知する。ポリシー名は LoginRateLimitOptions.PolicyName
+        // を唯一の定数として Program.cs 側の登録と一致させる(§6 一元管理)。
+        var method = typeof(AccountController)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .First(m => m.Name == nameof(AccountController.Login)
+                && m.GetParameters().Length == 2);
+
+        // レート制限属性が付いていることを確認する
+        var attr = method.GetCustomAttribute<EnableRateLimitingAttribute>(inherit: false);
+        Assert.NotNull(attr);
+        // ポリシー名が Program.cs で登録される名前付きポリシーと一致することを確認する
+        Assert.Equal(LoginRateLimitOptions.PolicyName, attr!.PolicyName);
+    }
+
+    [Fact]
+    public void AccountController_LoginGet_And_Logout_DoNotHaveRateLimiting()
+    {
+        // レート制限は資格情報を検証する POST /Account/Login のみが対象。
+        // GET(画面表示)や Logout に誤って広げると、正規ユーザーの画面表示や
+        // サインアウトまで巻き添えで拒否されるため、付いていないことを固定する。
+        var loginGet = typeof(AccountController)
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public)
+            .First(m => m.Name == nameof(AccountController.Login)
+                && m.GetParameters().Length == 1
+                && m.GetParameters()[0].ParameterType == typeof(string));
+        var logout = typeof(AccountController).GetMethod(nameof(AccountController.Logout));
+
+        // GET Login にはレート制限属性が無いことを確認する
+        Assert.Null(loginGet.GetCustomAttribute<EnableRateLimitingAttribute>(inherit: false));
+        // Logout にもレート制限属性が無いことを確認する
+        Assert.NotNull(logout);
+        Assert.Null(logout!.GetCustomAttribute<EnableRateLimitingAttribute>(inherit: false));
     }
 
     [Fact]
