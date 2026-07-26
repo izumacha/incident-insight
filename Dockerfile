@@ -19,7 +19,7 @@ RUN dotnet publish src/IncidentInsight.Web/IncidentInsight.Web.csproj \
     --no-restore \
     /p:UseAppHost=false
 
-FROM mcr.microsoft.com/dotnet/aspnet:8.0 AS runtime
+FROM mcr.microsoft.com/dotnet/aspnet:10.0 AS runtime
 WORKDIR /app
 
 # SQLite 既定構成では起動時に /app 直下へ DB ファイル (incident_insight.db) を作成するため、
