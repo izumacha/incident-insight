@@ -3,7 +3,7 @@
 # 既定は SQLite プロバイダでの動作確認用。本番 (SQL Server / PostgreSQL) に切り替える際は
 # CLAUDE.md のマイグレーション再生成手順に従い、Database__Provider と ConnectionStrings__DefaultConnection を環境変数で上書きする。
 
-FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /src
 
 # Restore を先に走らせるために csproj だけ先にコピーしてレイヤキャッシュを効かせる。
