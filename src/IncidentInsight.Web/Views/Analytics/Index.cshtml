@@ -138,6 +138,9 @@
 const COLORS = ['#0d6efd','#6610f2','#fd7e14','#198754','#dc3545','#0dcaf0','#ffc107','#6c757d','#d63384'];
 
 // 指定 URL から JSON を取得し、成功したらコールバックに渡す小さなヘルパー
+// 各呼び出し元の URL は '/Analytics/...' と直書きせず @@Url.Action で生成する。
+// ルート直書きだとリバースプロキシ配下のサブパス配備時に PathBase が付かず 404 になるため
+// (Views/Incidents/Details.cshtml・Views/Home/Index.cshtml と同じ対策)
 async function loadChart(url, callback) {
     try {
         const res = await fetch(url);
@@ -158,7 +161,7 @@ function escapeHtml(str) {
 
 // Monthly Trend
 // 月別トレンド: 折れ線チャートを描画
-loadChart('/Analytics/MonthlyTrend', (d) => {
+loadChart('@Url.Action("MonthlyTrend", "Analytics")', (d) => {
     new Chart(document.getElementById('trendChart'), {
         type: 'line',
         data: {
@@ -182,7 +185,7 @@ loadChart('/Analytics/MonthlyTrend', (d) => {
 
 // Cause Category Doughnut
 // 原因分類別ドーナツ
-loadChart('/Analytics/ByCause', (d) => {
+loadChart('@Url.Action("ByCause", "Analytics")', (d) => {
     new Chart(document.getElementById('causeChart'), {
         type: 'doughnut',
         data: {
@@ -198,7 +201,7 @@ loadChart('/Analytics/ByCause', (d) => {
 
 // By Department (horizontal bar)
 // 部署別の横棒グラフ
-loadChart('/Analytics/ByDepartment', (d) => {
+loadChart('@Url.Action("ByDepartment", "Analytics")', (d) => {
     new Chart(document.getElementById('deptChart'), {
         type: 'bar',
         data: {
@@ -216,14 +219,18 @@ loadChart('/Analytics/ByDepartment', (d) => {
             scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
         }
     });
-    // Store dept for later use in summary panel
+    // Store dept for later use in summary panel; #topDept is injected later by ByIncidentType
     // 最多発生部署(1 位)をサマリー用に退避。escapeHtml で HTML 特殊文字を無害化してから保持する
     window._topDept = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
+    // サマリー領域が既に描画されていれば即反映(fetch の完了順は不定のため双方向に注入する。
+    // 値は上で escapeHtml 済みなので innerHTML で安全に反映できる)
+    const tdEl = document.getElementById('topDept');
+    if (tdEl) tdEl.innerHTML = window._topDept;
 });
 
 // By Severity
 // 重症度別の棒グラフ
-loadChart('/Analytics/BySeverity', (d) => {
+loadChart('@Url.Action("BySeverity", "Analytics")', (d) => {
     // 重症度に対応した色配列。BySeverity は enum 定義順で全重症度を返すため、
     // 同じ順序で EnumLabels(色の一元管理元)からバッジと同じ配色を生成する。
     // ここに16進値を直書きすると EnumLabels とズレたときに気づけない(§6)。
@@ -248,7 +255,7 @@ loadChart('/Analytics/BySeverity', (d) => {
 
 // Measure Status Doughnut
 // 対策ステータス別ドーナツ(計画/進行/超過/完了)
-loadChart('/Analytics/MeasureStatus', (d) => {
+loadChart('@Url.Action("MeasureStatus", "Analytics")', (d) => {
     new Chart(document.getElementById('measureStatusChart'), {
         type: 'doughnut',
         data: {
@@ -277,7 +284,7 @@ loadChart('/Analytics/MeasureStatus', (d) => {
 
 // Effectiveness Rating
 // 有効性評価チャート + 再発統計
-loadChart('/Analytics/EffectivenessRating', (d) => {
+loadChart('@Url.Action("EffectivenessRating", "Analytics")', (d) => {
     new Chart(document.getElementById('effectivenessChart'), {
         type: 'bar',
         data: {
@@ -309,7 +316,7 @@ loadChart('/Analytics/EffectivenessRating', (d) => {
 
 // By Incident Type
 // インシデント種別別棒グラフ + サマリーパネル生成
-loadChart('/Analytics/ByIncidentType', (d) => {
+loadChart('@Url.Action("ByIncidentType", "Analytics")', (d) => {
     new Chart(document.getElementById('typeChart'), {
         type: 'bar',
         data: {
@@ -336,7 +343,7 @@ loadChart('/Analytics/ByIncidentType', (d) => {
     document.getElementById('summaryContent').innerHTML = `
         <div class="col-md-2 text-center border-end">
             <div class="text-muted small">最多発生部署</div>
-            <div class="fw-bold">${topDept}</div>
+            <div class="fw-bold" id="topDept">${topDept}</div>
         </div>
         <div class="col-md-2 text-center border-end">
             <div class="text-muted small">最多インシデント種別</div>
