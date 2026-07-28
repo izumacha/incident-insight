@@ -35,15 +35,21 @@ public class Incident
     [Display(Name = "重症度")]
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
-    // 発生状況や経緯の説明。必須
+    // 発生状況や経緯の説明。必須で最大500文字まで
+    // 入力経路(IncidentCreateEditViewModel)は同じ500文字上限を検証済みだが、EF Core は保存時に
+    // DataAnnotations を自動検証しないため、CompletionNote/EffectivenessNote と同様にエンティティ側にも
+    // [MaxLength] を明示しておく(将来 ViewModel を経由しない書き込み経路が追加された際の検証漏れを防ぐ多層防御)
     // 患者情報が混入する可能性があるため監査ログでは必ず伏せる
     [Required(ErrorMessage = "インシデントの内容を入力してください")]
+    [MaxLength(500)]
     [Display(Name = "状況・経緯")]
     [Sensitive(Mask.Redact)]
     public string Description { get; set; } = "";
 
-    // 発生直後に行った応急対応(省略可)
+    // 発生直後に行った応急対応(省略可、最大500文字)
+    // エンティティ側にも上限を明示する理由は上記 Description と同じ(多層防御)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
+    [MaxLength(500)]
     [Display(Name = "発生直後の対応")]
     [Sensitive(Mask.Redact)]
     public string? ImmediateActions { get; set; }

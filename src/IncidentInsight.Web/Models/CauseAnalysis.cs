@@ -79,8 +79,12 @@ public class CauseAnalysis
     [Display(Name = "分析日")]
     public DateTime? AnalyzedAt { get; set; }
 
-    // 追加の補足メモ
+    // 追加の補足メモ(省略可、最大500文字)
+    // 入力経路(CauseAnalysisFormViewModel)は同じ500文字上限を検証済みだが、EF Core は保存時に
+    // DataAnnotations を自動検証しないため、Why1〜Why5/RootCauseSummary と同様にエンティティ側にも
+    // [MaxLength] を明示しておく(将来別経路で書き込む実装が追加された際の検証漏れを防ぐ多層防御)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
+    [MaxLength(500)]
     [Display(Name = "補足メモ")]
     [Sensitive(Mask.Redact)]
     public string? AdditionalNotes { get; set; }
