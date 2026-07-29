@@ -140,6 +140,7 @@ public class AuthorizationAttributeTests
     [InlineData(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Complete))]
     [InlineData(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Review))]
     [InlineData(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.UpdateStatus))]
+    [InlineData(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Delete))]
     public void MutatingAction_HasValidateAntiForgeryToken(Type controllerType, string actionName)
     {
         var postMethods = controllerType
