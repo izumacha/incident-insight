@@ -117,7 +117,7 @@ public class IncidentMeasuresController : Controller
         // 再描画する(データはクライアントを経由しない)。
         TempData["Warning"] = "入力内容に不備があります。再発防止策フォームの項目を確認してください。";
         var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
-            _db, _recurrence, _clock, vm.IncidentId, newMeasureOverride: vm);
+            _db, _recurrence, _clock, User, vm.IncidentId, newMeasureOverride: vm);
         // 冒頭の FindAsync 成功後に別ユーザーがインシデントを削除した場合は null が返る。
         // null のまま Details ビューへ渡すと NullReferenceException(HTTP 500)になるため 404 を返す
         if (detailVm == null) return NotFound();

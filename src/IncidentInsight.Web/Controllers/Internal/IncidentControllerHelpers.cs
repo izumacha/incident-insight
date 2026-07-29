@@ -1,3 +1,5 @@
+// 部署スコープ拡張メソッド(ScopedByUser)を使う
+using IncidentInsight.Web.Authorization;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // Incident エンティティを使う
@@ -185,6 +187,7 @@ internal static class IncidentControllerHelpers
         ApplicationDbContext db,
         IRecurrenceService recurrence,
         IClock clock,
+        ClaimsPrincipal user,
         int incidentId,
         MeasureFormViewModel? newMeasureOverride = null,
         CauseAnalysisFormViewModel? newCauseAnalysisOverride = null)
@@ -200,8 +203,12 @@ internal static class IncidentControllerHelpers
         if (incident == null) return null;
 
         // 再発検出(HomeController と同じマッチングルールを共有するサービスに委譲)。
-        // 類似インシデント一覧を取得(期間無制限)
-        var similar = await recurrence.FindRecurrencesForIncidentAsync(incident, db.Incidents);
+        // IRecurrenceService の契約どおり、候補集合は ScopedByUser で部署スコープを
+        // 済ませてから渡す(HomeController.Index と同じ扱い)。現在のマッチングルールは
+        // 同一部署のみを返すが、将来ルールが部署をまたいでも認可層で他部署の PHI が
+        // 類似一覧に混入しないよう、ここで二重に防御する(§9 fail-safe)
+        var similar = await recurrence.FindRecurrencesForIncidentAsync(
+            incident, db.Incidents.AsNoTracking().ScopedByUser(user));
         // 原因カテゴリのドロップダウン選択肢(親カテゴリでグルーピング)
         var causeOptions = await BuildCauseCategoryOptionsAsync(db);
 

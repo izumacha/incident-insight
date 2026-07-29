@@ -227,7 +227,7 @@ public class CauseAnalysesController : Controller
         // 値を保持したまま Details ビューをそのまま再描画する(データはクライアントを経由しない)。
         TempData["Warning"] = "入力内容に不備があります。原因分析フォームの項目を確認してください。";
         var detailVm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(
-            _db, _recurrence, _clock, vm.IncidentId, newCauseAnalysisOverride: vm);
+            _db, _recurrence, _clock, User, vm.IncidentId, newCauseAnalysisOverride: vm);
         // 冒頭の FindAsync 成功後に別ユーザーがインシデントを削除した場合は null が返る。
         // null のまま Details ビューへ渡すと NullReferenceException(HTTP 500)になるため 404 を返す
         if (detailVm == null) return NotFound();
