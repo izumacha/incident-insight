@@ -112,6 +112,19 @@
                        placeholder="担当者名で検索" value="@ViewBag.FilterResponsible" />
             </div>
             <div class="col-md-2">
+                @* 期限日の下限。コントローラは受け取るのにフォームに入力欄がないと、
+                   URL 直指定で適用中の日付フィルタが再送信時に無言で解除されてしまう *@
+                <label class="form-label small mb-0">期限日（開始）</label>
+                <input type="date" name="dateFrom" class="form-control form-control-sm"
+                       value="@((ViewBag.DateFrom as DateTime?)?.ToString("yyyy-MM-dd"))" />
+            </div>
+            <div class="col-md-2">
+                @* 期限日の上限（当日を含む） *@
+                <label class="form-label small mb-0">期限日（終了）</label>
+                <input type="date" name="dateTo" class="form-control form-control-sm"
+                       value="@((ViewBag.DateTo as DateTime?)?.ToString("yyyy-MM-dd"))" />
+            </div>
+            <div class="col-md-2">
                 @* 絞り込み実行ボタン *@
                 <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
                 @* 絞り込みをクリア（無条件の一覧へ戻る） *@

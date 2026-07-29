@@ -187,7 +187,7 @@ public class IncidentsController : Controller
         // CauseAnalysesController.AddCauseAnalysis がバリデーション失敗時にこの画面を
         // 再描画する場合とも共有するヘルパーに集約する(CLAUDE.md §6 DRY)。
         // NewCauseAnalysis/NewMeasure は override 未指定のため通常どおり空の ViewModel になる。
-        var vm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(_db, _recurrence, _clock, id);
+        var vm = await IncidentControllerHelpers.BuildIncidentDetailViewModelAsync(_db, _recurrence, _clock, User, id);
 
         // レコードが無ければ 404
         if (vm == null) return NotFound();

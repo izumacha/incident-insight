@@ -40,11 +40,12 @@
         <div class="hero-actions">
             @* 集計期間(週/月/四半期/年)の切り替えボタン群 *@
             <div class="btn-group btn-group-sm" role="group" aria-label="期間選択">
-                @* 各期間ボタン: アクティブなら btn-primary(白塗り)、非アクティブなら btn-outline-secondary(半透明白枠) *@
-                <a class="btn @(Model.Period == "week" ? "btn-primary" : "btn-outline-secondary")" href="?period=week">週</a>
-                <a class="btn @(Model.Period == "month" ? "btn-primary" : "btn-outline-secondary")" href="?period=month">月</a>
-                <a class="btn @(Model.Period == "quarter" ? "btn-primary" : "btn-outline-secondary")" href="?period=quarter">四半期</a>
-                <a class="btn @(Model.Period == "year" ? "btn-primary" : "btn-outline-secondary")" href="?period=year">1年</a>
+                @* 各期間ボタン: アクティブなら btn-primary(白塗り)、非アクティブなら btn-outline-secondary(半透明白枠)。
+                   期間の識別子は DashboardViewModel の定数(唯一の真実の源)を参照し、直書きしない *@
+                <a class="btn @(Model.Period == DashboardViewModel.PeriodWeek ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodWeek">週</a>
+                <a class="btn @(Model.Period == DashboardViewModel.PeriodMonth ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodMonth">月</a>
+                <a class="btn @(Model.Period == DashboardViewModel.PeriodQuarter ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodQuarter">四半期</a>
+                <a class="btn @(Model.Period == DashboardViewModel.PeriodYear ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodYear">1年</a>
             </div>
             @* 新規登録ボタン(主要 CTA): 白塗りでプライマリ文字 *@
             <a asp-controller="Incidents" asp-action="Create" class="btn btn-light btn-sm">
@@ -66,8 +67,8 @@
                     <i class="bi bi-clipboard2-pulse fs-2 text-primary"></i>
                 </div>
                 <div>
-                    @* 期間ラベル(週/月/四半期/年) *@
-                    <div class="kpi-label">@(Model.Period == "week" ? "週間" : Model.Period == "month" ? "月間" : Model.Period == "quarter" ? "四半期" : "年間")インシデント数</div>
+                    @* 期間ラベル(週/月/四半期/年)。期間の識別子は DashboardViewModel の定数を参照する *@
+                    <div class="kpi-label">@(Model.Period == DashboardViewModel.PeriodWeek ? "週間" : Model.Period == DashboardViewModel.PeriodMonth ? "月間" : Model.Period == DashboardViewModel.PeriodQuarter ? "四半期" : "年間")インシデント数</div>
                     @* 件数の大きな数値表示(.kpi-hero の修飾で 3.5rem 相当) *@
                     <div class="kpi-value">@Model.TotalIncidents<span class="unit">件</span></div>
                 </div>
