@@ -69,10 +69,12 @@ public class IncidentsController : Controller
         IncidentTypeKind? incidentType, IncidentSeverity? severity, DateTime? dateFrom, DateTime? dateTo,
         int? causeCategoryId, string? sortBy, int page = 1)
     {
-        // 関連(対策・原因分析)込みで、ユーザー部署スコープに絞ったクエリを用意
+        // 関連(対策)込みで、ユーザー部署スコープに絞ったクエリを用意。
+        // CauseAnalyses は Include しない: 一覧ビュー(Views/Incidents/Index.cshtml)は
+        // PreventiveMeasures しか参照せず、下の causeCategoryId 絞り込みも
+        // Where(...Any(...)) が SQL の EXISTS に翻訳されるため Include を必要としない(§8 N+1/過剰取得の回避)
         var query = _db.Incidents
             .Include(i => i.PreventiveMeasures)
-            .Include(i => i.CauseAnalyses)
             .AsNoTracking()
             .ScopedByUser(User);
 
@@ -121,6 +123,10 @@ public class IncidentsController : Controller
         // 非決定的になり、同じ行が複数ページに出たり抜け落ちたりする(AuditLogsController と同じ対策)。
         query = sortBy switch
         {
+            // 【注意】Severity は DB に enum 名の文字列(HasConversion<string>)で保存されるため、
+            // この OrderByDescending は SQL では辞書順(アルファベット順)ソートになる。
+            // 現状は "Level0".."Level5" の辞書順が重症度順と一致しているから正しく並ぶだけ。
+            // 重症度コードを追加するときは辞書順が崩れないか必ず確認すること(IncidentSeverity.cs の注意書き参照)
             "severity" => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
             // 「期限超過」の唯一の定義は PreventiveMeasure.OverdueOn(today)。ただし
             // OrderByDescending の射影(式ツリー)内で外部の Expression を差し込めない

@@ -44,6 +44,14 @@ public class HomeController : Controller
     // (単一の参照元にするための§6要件。private だとテスト側で値を再度ハードコードする必要が出てしまう)。
     public const int OverdueAlertLimit = 5;
 
+    // ダッシュボードの「最近のインシデント」カードに表示する最大件数。
+    // OverdueAlertLimit と同様に代表例を数件見せるだけの用途で、全件はインシデント一覧
+    // (IncidentsController.Index、PageSize でページング済み)への導線に任せる。
+    // 意味の読み取れない裸の「5」をクエリに直書きしないための名前付き定数(§6)。
+    // View やテストから件数を参照する箇所は現状ないため private に留める
+    // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
+    private const int RecentIncidentsLimit = 5;
+
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
     // 再発検出ロジックのサービス
@@ -112,12 +120,14 @@ public class HomeController : Controller
         var failedMeasures = await measures
             .CountAsync(m => m.RecurrenceObserved == true);
 
-        // 最近のインシデント5件を発生日の新しい順に取得(関連も eager-load)
+        // 最近のインシデントを発生日の新しい順に上限件数だけ取得(対策のみ eager-load)。
+        // CauseAnalyses は Include しない: ダッシュボード(Views/Home/Index.cshtml)の
+        // 「最近のインシデント」カードは PreventiveMeasures(期限超過の強調表示)しか参照せず、
+        // 再発アラートは下の IRecurrenceService が自前でデータを読むため不要(§8 過剰取得の回避)
         var recentIncidents = await incidents
-            .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory)
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
-            .Take(5)
+            .Take(RecentIncidentsLimit)
             .ToListAsync();
 
         // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)。判定は OverdueOn に委譲。

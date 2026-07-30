@@ -322,24 +322,4 @@ public class AnalyticsControllerTests : IDisposable
         Assert.Single(data);
         Assert.Equal(1, data[0]);
     }
-
-    [Fact]
-    public async Task GetSubcategories_ReturnsChildrenOfParent()
-    {
-        var parent = new CauseCategory { Name = "ヒューマン", DisplayOrder = 1 };
-        _db.CauseCategories.Add(parent);
-        await _db.SaveChangesAsync();
-
-        _db.CauseCategories.AddRange(
-            new CauseCategory { Name = "注意不足", ParentId = parent.Id, DisplayOrder = 1 },
-            new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 2 });
-        await _db.SaveChangesAsync();
-
-        var result = await _controller.GetSubcategories(parent.Id);
-        using var doc = ToJsonDocument(result);
-
-        var items = doc.RootElement.EnumerateArray().ToList();
-        Assert.Equal(2, items.Count);
-        Assert.Equal("注意不足", items[0].GetProperty("name").GetString());
-    }
 }

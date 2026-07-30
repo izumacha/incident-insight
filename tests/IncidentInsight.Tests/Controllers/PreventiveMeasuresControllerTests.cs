@@ -85,6 +85,34 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Create_Get_DefaultDueDate_IsClockTodayPlusDefaultMeasureDueDays()
+    {
+        // 対策登録画面(GET)の期限の初期値が、唯一の源 IncidentsController.DefaultMeasureDueDays
+        // 日後(IClock 基準)になることを検証する(30 直書きへの回帰防止)
+        // 期限の基準日を固定するテスト用クロックを用意する(実行日時に依存しない決定論的テスト)
+        var clock = new FixedClock(TestFixtures.Today);
+        // 固定クロックを注入した専用のコントローラを構築する
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            clock,
+            NullLogger<PreventiveMeasuresController>.Instance);
+        // 認可を通すため Admin ユーザーを配線する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 親インシデント(と対策1件)をシードする
+        var measure = await SeedMeasureAsync("内科病棟");
+
+        // 登録画面の GET を実行する
+        var result = await controller.Create(measure.IncidentId);
+
+        // ビューが返り、フォームモデルが積まれていること
+        var view = Assert.IsType<ViewResult>(result);
+        var vm = Assert.IsType<MeasureFormViewModel>(view.Model);
+        // 期限の初期値が「固定した今日 + 既定日数」になっていること
+        Assert.Equal(TestFixtures.Today.AddDays(IncidentsController.DefaultMeasureDueDays), vm.DueDate);
+    }
+
+    [Fact]
     public async Task Edit_Get_PopulatesAnalysisNote()
     {
         // 編集画面を開いたとき、既存の立案根拠メモが ViewModel に積まれること

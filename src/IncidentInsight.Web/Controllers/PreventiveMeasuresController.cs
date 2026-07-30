@@ -192,11 +192,12 @@ public class PreventiveMeasuresController : Controller
 
         // ビュー側で表示する親インシデント情報を積む
         ViewBag.Incident = incident;
-        // 期限の既定値として 30 日後を入れたフォームモデル
+        // 期限の既定値を入れたフォームモデル。日数の唯一の源は
+        // IncidentsController.DefaultMeasureDueDays(登録画面・詳細画面と同じ既定値に揃える)
         var vm = new MeasureFormViewModel
         {
             IncidentId = incidentId.Value,
-            DueDate = _clock.Today.AddDays(30),
+            DueDate = _clock.Today.AddDays(IncidentsController.DefaultMeasureDueDays),
             // 種別の初期選択(ViewModel を nullable 化したため GET 側で設定する)
             MeasureType = MeasureTypeKind.ShortTerm
         };
