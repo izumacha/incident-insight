@@ -285,21 +285,6 @@ public class AnalyticsController : Controller
         });
     }
 
-    // GET /Analytics/GetSubcategories?parentId=1
-    // 親カテゴリに紐づく子カテゴリ一覧を返す(ドロップダウン連動用)
-    public async Task<IActionResult> GetSubcategories(int parentId)
-    {
-        // 子カテゴリを表示順で取得
-        var children = await _db.CauseCategories.AsNoTracking()
-            .Where(c => c.ParentId == parentId)
-            .OrderBy(c => c.DisplayOrder)
-            .Select(c => new { c.Id, c.Name })
-            .ToListAsync();
-
-        // JSON で返却
-        return Json(children);
-    }
-
     // GET /Analytics/ByIncidentType
     // インシデント種別別の件数を返す
     public async Task<IActionResult> ByIncidentType(DateTime? dateFrom, DateTime? dateTo)
