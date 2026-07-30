@@ -367,7 +367,8 @@
     @* ダッシュボード用データ(月別件数配列と折れ線の配色) *@
     <script id="dashboard-data" type="application/json">
         @Html.Raw(System.Text.Json.JsonSerializer.Serialize(new {
-            monthlyData = Model.MonthlyCounts.Select(m => new { m.Label, m.Count }),
+            // DateFrom/DateTo はデータ点クリック時のドリルダウン期間(サーバー側で算出した実バケット期間)
+            monthlyData = Model.MonthlyCounts.Select(m => new { m.Label, m.Count, m.DateFrom, m.DateTo }),
             primaryColor = "#1a6dbf",
             primaryColorRgba = "rgba(26,109,191,0.10)",
             // ドリルダウン先の一覧 URL。JS 側でルートを直書きすると PathBase 付き配備

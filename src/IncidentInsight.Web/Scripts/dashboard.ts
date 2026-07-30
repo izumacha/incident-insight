@@ -2,12 +2,16 @@
 // 従来は Razor 内に inline <script> として書かれていたものを TypeScript に切り出した (UI モダン化 #3)。
 // データは Razor 側で <script type="application/json" id="dashboard-data"> として埋め込み、ここで読み取る。
 
-// 月別データ点 1 件 (Razor 側の JsonSerializer.Serialize で {Label, Count} 形式になる)
+// 月別データ点 1 件 (Razor 側の JsonSerializer.Serialize で {Label, Count, DateFrom, DateTo} 形式になる)
 interface MonthlyDataPoint {
-  // 表示ラベル (例: "2026年5月")
+  // 表示ラベル (例: "2026年5月"、週表示では "5/24")
   Label: string;
   // 件数
   Count: number;
+  // ドリルダウン用の絞り込み開始日 ("yyyy-MM-dd"。サーバー側で算出)
+  DateFrom: string;
+  // ドリルダウン用の絞り込み終了日 ("yyyy-MM-dd"。一覧側で「その日を含む」扱い)
+  DateTo: string;
 }
 
 // ダッシュボード初期化用のデータ構造
@@ -91,7 +95,7 @@ interface DashboardData {
       plugins: { legend: { display: false } },
       // Y 軸は 0 始まり、整数刻み
       scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
-      // データ点クリックで該当月のインシデント一覧へ遷移
+      // データ点クリックで該当期間のインシデント一覧へ遷移
       onClick: (_evt, elements) => {
         // クリックでヒットした要素が無ければ何もしない
         if (!elements.length) {
@@ -99,29 +103,19 @@ interface DashboardData {
         }
         // 最前面の要素のインデックスを取得
         const idx = elements[0].index;
-        // 該当月のラベル文字列を取得
-        const label = data.monthlyData[idx]?.Label ?? '';
-        // 「yyyy年M月」形式を正規表現でパース
-        const monthMatch = label.match(/(\d{4})年(\d{1,2})月/);
-        if (monthMatch) {
-          // 年部分 (4 桁)
-          const y = monthMatch[1];
-          // 月部分 (1〜12、ゼロ埋めして 2 桁化)
-          const m = monthMatch[2].padStart(2, '0');
-          // 月を数値に変換 (月末日計算用)
-          const monthNum = parseInt(m, 10);
-          // 当月の末日を求める (Date の月は 0 始まりのため、翌月インデックス + 日 0 = 当月末日)
-          const lastDay = new Date(parseInt(y, 10), monthNum, 0)
-            .getDate()
-            .toString()
-            .padStart(2, '0');
-          // インシデント一覧へ期間絞り込みつきで遷移。
-          // dateTo はサーバー側で「その日を含む」扱いのため、以前のように翌月 1 日を渡すと
-          // 翌月初日の件数まで混ざり、チャートの月別件数と一覧件数が食い違ってしまう。
-          // 当月末日を渡してチャートと同じ範囲に揃える。
-          // URL はサーバー生成 (incidentsUrl) を使い、PathBase 付き配備でも壊れないようにする。
-          window.location.href = `${data.incidentsUrl}?dateFrom=${y}-${m}-01&dateTo=${y}-${m}-${lastDay}`;
+        // クリックされたデータ点を取得
+        const point = data.monthlyData[idx];
+        // データ点が無い、または期間情報が欠けていれば何もしない (古いキャッシュ JSON 等への保険)
+        if (!point || !point.DateFrom || !point.DateTo) {
+          return;
         }
+        // インシデント一覧へ期間絞り込みつきで遷移。
+        // 期間はサーバー側で算出したバケット実期間 (DateFrom/DateTo) をそのまま使う。
+        // 以前は表示ラベル「yyyy年M月」を正規表現でパースしていたが、週表示のラベル ("M/d") には
+        // 年情報がなくパース不能でクリックが無反応になっていたため、ラベル形式への依存をやめた。
+        // dateTo はサーバー側で「その日を含む」扱いのため、チャートの件数と一覧件数が一致する。
+        // URL はサーバー生成 (incidentsUrl) を使い、PathBase 付き配備でも壊れないようにする。
+        window.location.href = `${data.incidentsUrl}?dateFrom=${point.DateFrom}&dateTo=${point.DateTo}`;
       },
     },
   });

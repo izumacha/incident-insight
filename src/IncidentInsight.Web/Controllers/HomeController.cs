@@ -1,5 +1,7 @@
 // Activity(トレース ID 取得)を使う
 using System.Diagnostics;
+// InvariantCulture(ドリルダウン URL 用の日付書式を実行環境のロケールに依存させない)を使う
+using System.Globalization;
 // 部署スコープ拡張メソッドを使う
 using IncidentInsight.Web.Authorization;
 // DbContext を使う
@@ -51,6 +53,13 @@ public class HomeController : Controller
     // View やテストから件数を参照する箇所は現状ないため private に留める
     // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
     private const int RecentIncidentsLimit = 5;
+
+    // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
+    // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
+    // 以前は呼び出し箇所に裸の 90 が直書きされ、ルール変更時に見落としやすかった(§6)。
+    // IncidentsController.Details 側は「時間無制限」の別ルール(FindRecurrencesForIncidentAsync)
+    // のため、この定数はダッシュボード専用
+    private static readonly TimeSpan RecurrenceAlertWindow = TimeSpan.FromDays(90);
 
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
@@ -165,7 +174,14 @@ public class HomeController : Controller
             {
                 var day = today.AddDays(-i);
                 byDay.TryGetValue(day, out var count);
-                monthlyCounts.Add(new MonthlyCount { Label = day.ToString("M/d"), Count = count });
+                // 日別バケットを 1 件追加(ドリルダウン期間はその 1 日のみ。書式はロケール非依存の ISO 形式)
+                monthlyCounts.Add(new MonthlyCount
+                {
+                    Label = day.ToString("M/d"),
+                    Count = count,
+                    DateFrom = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    DateTo = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                });
             }
         }
         // それ以外の期間は月別集計
@@ -189,14 +205,22 @@ public class HomeController : Controller
             {
                 var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
                 byMonth.TryGetValue((monthStart.Year, monthStart.Month), out var count);
-                monthlyCounts.Add(new MonthlyCount { Label = monthStart.ToString("yyyy年M月"), Count = count });
+                // 月別バケットを 1 件追加。Incidents 一覧の dateTo は「その日を含む」扱いのため、
+                // 翌月 1 日ではなく当月末日を渡してチャートの月別件数と一覧件数を一致させる
+                monthlyCounts.Add(new MonthlyCount
+                {
+                    Label = monthStart.ToString("yyyy年M月"),
+                    Count = count,
+                    DateFrom = monthStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    DateTo = monthStart.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                });
             }
         }
 
         // 再発検出はサービスに集約。90 日ウィンドウは IncidentsController.Details (無制限) と
         // 業務ルールを揃えたまま、ダッシュボードでのみ時間窓を適用する。
         // 90 日以内の再発アラートを再発サービスから取得
-        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, TimeSpan.FromDays(90));
+        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, RecurrenceAlertWindow);
 
         // ビュー用モデルに全ての KPI とリストを詰め込む
         var vm = new DashboardViewModel

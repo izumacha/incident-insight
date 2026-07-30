@@ -409,6 +409,18 @@ public class PreventiveMeasuresController : Controller
         // 編集権限チェック
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
+        // POST と同じライフサイクル前提(完了済みのみ評価可)を GET にも適用する。
+        // 未完了の対策でもフォーム自体は開けてしまうと、古いブックマークや他ユーザーの
+        // 差し戻し(UpdateStatus)後に入力→送信して初めて拒否され、入力内容が無駄になる。
+        // 入力前にここで案内してカンバン一覧へ差し戻す
+        if (measure.Status != MeasureStatus.Completed)
+        {
+            // 未完了である旨を警告トーストで案内
+            TempData["Warning"] = "対策が完了していないため、有効性評価は登録できません。先に対策を完了してください。";
+            // カンバン一覧へ戻す
+            return RedirectToAction(nameof(Index));
+        }
+
         // ビュー側で表示する対策本体の情報を積む
         ViewBag.Measure = measure;
         // 現在値(未入力時は 3 / 再発なし)でフォームを初期化
@@ -652,14 +664,8 @@ public class PreventiveMeasuresController : Controller
     }
 
     // リソース（Incident）に対する Policy 評価。Admin/RiskManager は通過、Staff は部署一致で通過。
-    // 指定ポリシーでユーザーがそのインシデントを操作できるか判定するヘルパー
-    private async Task<bool> IsAuthorizedFor(Incident? incident, string policy)
-    {
-        // インシデントが無ければ一律拒否
-        if (incident == null) return false;
-        // リソース認可を実行
-        var result = await _auth.AuthorizeAsync(User, incident, policy);
-        // 成功したかどうかを返す
-        return result.Succeeded;
-    }
+    // 判定ロジック(null は fail-closed で拒否)は他の 3 コントローラと同じ共有ヘルパーに委譲し、
+    // 認可条件の二重管理(片方だけ直して挙動が食い違う事故)を防ぐ
+    private Task<bool> IsAuthorizedFor(Incident? incident, string policy)
+        => IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, incident, policy);
 }

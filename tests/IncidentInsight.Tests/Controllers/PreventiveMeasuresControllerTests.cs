@@ -649,6 +649,41 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Null(updated.EffectivenessReviewedAt);
     }
 
+    [Fact]
+    public async Task Review_Get_Completed_ReturnsViewWithForm()
+    {
+        // 完了済み対策なら有効性評価フォームが表示されること
+        var measure = await SeedMeasureAsync("内科病棟");
+        measure.Status = MeasureStatus.Completed;
+        await _db.SaveChangesAsync();
+
+        // GET アクションを実行
+        var result = await _controller.Review(measure.Id);
+
+        // ビューが返り、フォーム初期値の ViewModel が渡ること
+        var view = Assert.IsType<ViewResult>(result);
+        var vm = Assert.IsType<ReviewViewModel>(view.Model);
+        Assert.Equal(measure.Id, vm.Id);
+    }
+
+    [Fact]
+    public async Task Review_Get_NotCompleted_RedirectsWithWarning()
+    {
+        // 未完了(Planned)の対策では評価フォームを開かせず、POST と同じく fail-closed で
+        // 一覧へ差し戻すこと(古いブックマークや差し戻し後の遷移で、入力後に初めて
+        // 拒否されて入力内容が無駄になる事故の回帰防止)
+        var measure = await SeedMeasureAsync("内科病棟");
+
+        // GET アクションを実行
+        var result = await _controller.Review(measure.Id);
+
+        // フォームは表示されず一覧へリダイレクトされること
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        // 警告トーストで理由が案内されること
+        Assert.Contains("完了していない", _controller.TempData["Warning"] as string);
+    }
+
     // 担当部署フィルタのドロップダウン選択肢が Incident.Departments(発生部署の許可リスト)
     // ではなく、実際に保存されている対策の担当部署(自由記述)から重複なし・昇順で
     // 生成されることを確認する(許可リスト外の担当部署が永遠にヒットしない回帰の防止)
