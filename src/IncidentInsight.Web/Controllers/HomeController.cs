@@ -44,6 +44,14 @@ public class HomeController : Controller
     // (単一の参照元にするための§6要件。private だとテスト側で値を再度ハードコードする必要が出てしまう)。
     public const int OverdueAlertLimit = 5;
 
+    // ダッシュボードの「最近のインシデント」カードに表示する最大件数。
+    // OverdueAlertLimit と同様に代表例を数件見せるだけの用途で、全件はインシデント一覧
+    // (IncidentsController.Index、PageSize でページング済み)への導線に任せる。
+    // 意味の読み取れない裸の「5」をクエリに直書きしないための名前付き定数(§6)。
+    // View やテストから件数を参照する箇所は現状ないため private に留める
+    // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
+    private const int RecentIncidentsLimit = 5;
+
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
     // 再発検出ロジックのサービス
@@ -119,7 +127,7 @@ public class HomeController : Controller
         var recentIncidents = await incidents
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
-            .Take(5)
+            .Take(RecentIncidentsLimit)
             .ToListAsync();
 
         // 期限超過の対策一覧を期限日の古い順に取得(インシデントも eager-load)。判定は OverdueOn に委譲。
