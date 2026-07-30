@@ -197,6 +197,11 @@ internal static class IncidentControllerHelpers
         var incident = await db.Incidents
             .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory).ThenInclude(cc => cc!.Parent)
             .Include(i => i.PreventiveMeasures)
+            // 2 つのコレクション(原因分析・対策)を 1 本の JOIN で取ると行数が
+            // 「原因分析数 × 対策数」に膨らむ(デカルト爆発)ため、コレクションごとに
+            // SQL を分けて取得する。SQLite / SQL Server / PostgreSQL いずれも
+            // 分割クエリに対応しており、プロバイダ非依存の原則を崩さない(§8)
+            .AsSplitQuery()
             .AsNoTracking()
             .FirstOrDefaultAsync(i => i.Id == incidentId);
         // レコードが無ければ呼び出し側で 404 にできるよう null を返す

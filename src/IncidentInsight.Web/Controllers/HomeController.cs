@@ -112,9 +112,11 @@ public class HomeController : Controller
         var failedMeasures = await measures
             .CountAsync(m => m.RecurrenceObserved == true);
 
-        // 最近のインシデント5件を発生日の新しい順に取得(関連も eager-load)
+        // 最近のインシデントを発生日の新しい順に上限件数だけ取得(対策のみ eager-load)。
+        // CauseAnalyses は Include しない: ダッシュボード(Views/Home/Index.cshtml)の
+        // 「最近のインシデント」カードは PreventiveMeasures(期限超過の強調表示)しか参照せず、
+        // 再発アラートは下の IRecurrenceService が自前でデータを読むため不要(§8 過剰取得の回避)
         var recentIncidents = await incidents
-            .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory)
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
             .Take(5)

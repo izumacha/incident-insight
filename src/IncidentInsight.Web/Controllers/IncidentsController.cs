@@ -69,10 +69,12 @@ public class IncidentsController : Controller
         IncidentTypeKind? incidentType, IncidentSeverity? severity, DateTime? dateFrom, DateTime? dateTo,
         int? causeCategoryId, string? sortBy, int page = 1)
     {
-        // 関連(対策・原因分析)込みで、ユーザー部署スコープに絞ったクエリを用意
+        // 関連(対策)込みで、ユーザー部署スコープに絞ったクエリを用意。
+        // CauseAnalyses は Include しない: 一覧ビュー(Views/Incidents/Index.cshtml)は
+        // PreventiveMeasures しか参照せず、下の causeCategoryId 絞り込みも
+        // Where(...Any(...)) が SQL の EXISTS に翻訳されるため Include を必要としない(§8 N+1/過剰取得の回避)
         var query = _db.Incidents
             .Include(i => i.PreventiveMeasures)
-            .Include(i => i.CauseAnalyses)
             .AsNoTracking()
             .ScopedByUser(User);
 
