@@ -21,8 +21,10 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css"
           integrity="sha384-QWTKZyjpPEjISv5WaRU9OFeRpok6YctnYmDr5pNlyT2bRjXh0JMhjY6hW+ALEwIH"
           crossorigin="anonymous" />
-    @* Bootstrap Icons の CSS(CDN) *@
-    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css" />
+    @* Bootstrap Icons の CSS(CDN)。SRI(integrity)で CDN 改ざん時に読み込みを拒否する *@
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css"
+          integrity="sha384-XGjxtQfXaH2tnPFa9x+ruJTuLE3Aa6LhHSWRr1XeTyhezb4abCG4ccI5AkVDxqC+"
+          crossorigin="anonymous" />
     @* Web フォント: Inter(Latin/数字、Modern SaaS 標準) + Noto Sans JP(和文) *@
     @* preconnect で Google Fonts へのコネクション確立を先回りし、フォント FOIT を回避(display=swap) *@
     <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -203,8 +205,13 @@
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"
             integrity="sha384-YvpcrYf0tY3lHB60NNkmXc5s9fDVZLESaAA55NDzOxhy9GkcIdslK1eN7N6jIeHz"
             crossorigin="anonymous"></script>
-    @* Chart.js(グラフ描画用、CDN 配信) *@
-    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    @* Chart.js(グラフ描画用、CDN 配信)。他の CDN 資産と同様に SRI(integrity)で改ざん検知する。 *@
+    @* 従来の chart.umd.min.js は npm パッケージに存在しない jsDelivr 側の自動 minify 生成物で、 *@
+    @* パッケージ由来のハッシュで完全性を固定(ピン留め)できないため、パッケージに実在する *@
+    @* dist/chart.umd.js を参照する(gzip 配信のため転送量の増加はわずか。認証必須アプリのため許容) *@
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.js"
+            integrity="sha384-G436+Z2nlA8+PNoeRvWdxKbvOf8E/y+lYxqht2iBwNHTQDV5CJr3+AGVj8fGZi5t"
+            crossorigin="anonymous"></script>
     @* アプリ固有 JavaScript *@
     <script src="~/js/site.js" asp-append-version="true"></script>
     @* 各ページ固有のスクリプト section があれば挿入 *@
