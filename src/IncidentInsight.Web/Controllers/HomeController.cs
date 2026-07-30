@@ -54,6 +54,13 @@ public class HomeController : Controller
     // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
     private const int RecentIncidentsLimit = 5;
 
+    // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
+    // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
+    // 以前は呼び出し箇所に裸の 90 が直書きされ、ルール変更時に見落としやすかった(§6)。
+    // IncidentsController.Details 側は「時間無制限」の別ルール(FindRecurrencesForIncidentAsync)
+    // のため、この定数はダッシュボード専用
+    private static readonly TimeSpan RecurrenceAlertWindow = TimeSpan.FromDays(90);
+
     // DB アクセス用コンテキスト
     private readonly ApplicationDbContext _db;
     // 再発検出ロジックのサービス
@@ -213,7 +220,7 @@ public class HomeController : Controller
         // 再発検出はサービスに集約。90 日ウィンドウは IncidentsController.Details (無制限) と
         // 業務ルールを揃えたまま、ダッシュボードでのみ時間窓を適用する。
         // 90 日以内の再発アラートを再発サービスから取得
-        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, TimeSpan.FromDays(90));
+        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, RecurrenceAlertWindow);
 
         // ビュー用モデルに全ての KPI とリストを詰め込む
         var vm = new DashboardViewModel
