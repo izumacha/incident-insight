@@ -664,14 +664,8 @@ public class PreventiveMeasuresController : Controller
     }
 
     // リソース（Incident）に対する Policy 評価。Admin/RiskManager は通過、Staff は部署一致で通過。
-    // 指定ポリシーでユーザーがそのインシデントを操作できるか判定するヘルパー
-    private async Task<bool> IsAuthorizedFor(Incident? incident, string policy)
-    {
-        // インシデントが無ければ一律拒否
-        if (incident == null) return false;
-        // リソース認可を実行
-        var result = await _auth.AuthorizeAsync(User, incident, policy);
-        // 成功したかどうかを返す
-        return result.Succeeded;
-    }
+    // 判定ロジック(null は fail-closed で拒否)は他の 3 コントローラと同じ共有ヘルパーに委譲し、
+    // 認可条件の二重管理(片方だけ直して挙動が食い違う事故)を防ぐ
+    private Task<bool> IsAuthorizedFor(Incident? incident, string policy)
+        => IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, incident, policy);
 }
