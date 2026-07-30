@@ -1,3 +1,5 @@
+// InvariantCulture(期待値の日付書式を実行環境のロケール・暦設定に依存させない)を使う
+using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -237,11 +239,11 @@ public class HomeControllerTests : IDisposable
         // ラベル("M/d")には年が無いため、クリック遷移はこの ISO 日付を使う(年跨ぎ週でも安全)
         var oldestDay = _clock.Today.AddDays(-6);
         // 先頭バケット(最古の日)の開始日がその日の ISO 表記であること
-        Assert.Equal(oldestDay.ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateFrom);
+        Assert.Equal(oldestDay.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), vm.MonthlyCounts.First().DateFrom);
         // 週表示では開始日と終了日が一致すること(1 日単位の絞り込み)
         Assert.Equal(vm.MonthlyCounts.First().DateFrom, vm.MonthlyCounts.First().DateTo);
         // 末尾バケットは今日であること
-        Assert.Equal(_clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts.Last().DateTo);
+        Assert.Equal(_clock.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), vm.MonthlyCounts.Last().DateTo);
     }
 
     [Fact]
@@ -256,8 +258,8 @@ public class HomeControllerTests : IDisposable
         // ドリルダウン期間: 月表示は 1 バケット = 1 か月。先頭バケットは 11 か月前の月
         var firstMonth = new DateTime(_clock.Today.Year, _clock.Today.Month, 1).AddMonths(-11);
         // 開始日は当月 1 日であること
-        Assert.Equal(firstMonth.ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateFrom);
+        Assert.Equal(firstMonth.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), vm.MonthlyCounts.First().DateFrom);
         // 終了日は当月末日であること(一覧側の dateTo は「その日を含む」ため翌月 1 日ではない)
-        Assert.Equal(firstMonth.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateTo);
+        Assert.Equal(firstMonth.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture), vm.MonthlyCounts.First().DateTo);
     }
 }
