@@ -123,6 +123,10 @@ public class IncidentsController : Controller
         // 非決定的になり、同じ行が複数ページに出たり抜け落ちたりする(AuditLogsController と同じ対策)。
         query = sortBy switch
         {
+            // 【注意】Severity は DB に enum 名の文字列(HasConversion<string>)で保存されるため、
+            // この OrderByDescending は SQL では辞書順(アルファベット順)ソートになる。
+            // 現状は "Level0".."Level5" の辞書順が重症度順と一致しているから正しく並ぶだけ。
+            // 重症度コードを追加するときは辞書順が崩れないか必ず確認すること(IncidentSeverity.cs の注意書き参照)
             "severity" => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
             // 「期限超過」の唯一の定義は PreventiveMeasure.OverdueOn(today)。ただし
             // OrderByDescending の射影(式ツリー)内で外部の Expression を差し込めない
