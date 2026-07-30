@@ -92,4 +92,11 @@ public class MonthlyCount
     public string Label { get; set; } = ""; // e.g. "2024年3月"
     // その月の件数
     public int Count { get; set; }
+    // ドリルダウン(チャートのデータ点クリック → インシデント一覧)用の絞り込み開始日("yyyy-MM-dd")。
+    // 以前はクライアント側で表示ラベル(「2024年3月」)を正規表現でパースして期間を組み立てていたが、
+    // 週表示のラベル("M/d")には年情報がなくパース不能でクリックが無反応になっていた。
+    // サーバー側でバケットの実期間をそのまま渡すことで、表示形式に依存せず全期間で動作させる
+    public string DateFrom { get; set; } = "";
+    // ドリルダウン用の絞り込み終了日("yyyy-MM-dd")。Incidents 一覧の dateTo は「その日を含む」扱い
+    public string DateTo { get; set; } = "";
 }

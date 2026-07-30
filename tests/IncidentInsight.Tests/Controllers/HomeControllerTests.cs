@@ -232,6 +232,16 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(7, vm!.MonthlyCounts.Count);
         // Daily labels should be in M/d format
         Assert.Matches(@"^\d{1,2}/\d{1,2}$", vm.MonthlyCounts.First().Label);
+
+        // ドリルダウン期間: 週表示は 1 バケット = 1 日なので DateFrom と DateTo が同一日になる。
+        // ラベル("M/d")には年が無いため、クリック遷移はこの ISO 日付を使う(年跨ぎ週でも安全)
+        var oldestDay = _clock.Today.AddDays(-6);
+        // 先頭バケット(最古の日)の開始日がその日の ISO 表記であること
+        Assert.Equal(oldestDay.ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateFrom);
+        // 週表示では開始日と終了日が一致すること(1 日単位の絞り込み)
+        Assert.Equal(vm.MonthlyCounts.First().DateFrom, vm.MonthlyCounts.First().DateTo);
+        // 末尾バケットは今日であること
+        Assert.Equal(_clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts.Last().DateTo);
     }
 
     [Fact]
@@ -242,5 +252,12 @@ public class HomeControllerTests : IDisposable
 
         Assert.Equal(12, vm!.MonthlyCounts.Count);
         Assert.Matches(@"^\d{4}年\d{1,2}月$", vm.MonthlyCounts.First().Label);
+
+        // ドリルダウン期間: 月表示は 1 バケット = 1 か月。先頭バケットは 11 か月前の月
+        var firstMonth = new DateTime(_clock.Today.Year, _clock.Today.Month, 1).AddMonths(-11);
+        // 開始日は当月 1 日であること
+        Assert.Equal(firstMonth.ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateFrom);
+        // 終了日は当月末日であること(一覧側の dateTo は「その日を含む」ため翌月 1 日ではない)
+        Assert.Equal(firstMonth.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd"), vm.MonthlyCounts.First().DateTo);
     }
 }

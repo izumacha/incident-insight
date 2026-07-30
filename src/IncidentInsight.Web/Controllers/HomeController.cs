@@ -1,5 +1,7 @@
 // Activity(トレース ID 取得)を使う
 using System.Diagnostics;
+// InvariantCulture(ドリルダウン URL 用の日付書式を実行環境のロケールに依存させない)を使う
+using System.Globalization;
 // 部署スコープ拡張メソッドを使う
 using IncidentInsight.Web.Authorization;
 // DbContext を使う
@@ -165,7 +167,14 @@ public class HomeController : Controller
             {
                 var day = today.AddDays(-i);
                 byDay.TryGetValue(day, out var count);
-                monthlyCounts.Add(new MonthlyCount { Label = day.ToString("M/d"), Count = count });
+                // 日別バケットを 1 件追加(ドリルダウン期間はその 1 日のみ。書式はロケール非依存の ISO 形式)
+                monthlyCounts.Add(new MonthlyCount
+                {
+                    Label = day.ToString("M/d"),
+                    Count = count,
+                    DateFrom = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    DateTo = day.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                });
             }
         }
         // それ以外の期間は月別集計
@@ -189,7 +198,15 @@ public class HomeController : Controller
             {
                 var monthStart = new DateTime(today.Year, today.Month, 1).AddMonths(-i);
                 byMonth.TryGetValue((monthStart.Year, monthStart.Month), out var count);
-                monthlyCounts.Add(new MonthlyCount { Label = monthStart.ToString("yyyy年M月"), Count = count });
+                // 月別バケットを 1 件追加。Incidents 一覧の dateTo は「その日を含む」扱いのため、
+                // 翌月 1 日ではなく当月末日を渡してチャートの月別件数と一覧件数を一致させる
+                monthlyCounts.Add(new MonthlyCount
+                {
+                    Label = monthStart.ToString("yyyy年M月"),
+                    Count = count,
+                    DateFrom = monthStart.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+                    DateTo = monthStart.AddMonths(1).AddDays(-1).ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)
+                });
             }
         }
 
