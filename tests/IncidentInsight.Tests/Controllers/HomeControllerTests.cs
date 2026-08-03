@@ -80,6 +80,31 @@ public class HomeControllerTests : IDisposable
         Assert.Equal("year", vm.Period);
     }
 
+    // 未知の period（URL 改ざん・古いブックマーク等）が渡されても、集計窓だけでなく
+    // ViewModel.Period まで既定値 "year" へ丸められることを確認する。丸めないと
+    // ダッシュボードの期間切替ボタンがどれも選択中に見えず、表示中のデータ（1 年分）と
+    // UI の状態が食い違ってしまう
+    [Theory]
+    [InlineData("bogus")]   // 未知の文字列
+    [InlineData("")]        // 空文字
+    [InlineData("Year")]    // 大文字違い（定数と完全一致しないので既定へ丸める）
+    public async Task Index_UnknownPeriod_FallsBackToYear(string period)
+    {
+        _db.Incidents.AddRange(
+            MakeIncident(occurredAt: _clock.Today.AddMonths(-6)),   // 1 年窓の内側
+            MakeIncident(occurredAt: _clock.Today.AddYears(-2))     // 1 年窓の外側
+        );
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // ViewModel には既定値の "year" が入り、View の期間切替ボタンが正しく選択表示される
+        Assert.Equal(DashboardViewModel.PeriodYear, vm!.Period);
+        // 集計窓も 1 年として扱われる（2 年前の 1 件は数えない）
+        Assert.Equal(1, vm.TotalIncidents);
+    }
+
     [Fact]
     public async Task Index_PeriodMonth_CountsLastMonthOnly()
     {

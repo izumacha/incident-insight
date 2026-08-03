@@ -79,8 +79,13 @@ public class HomeController : Controller
     // ダッシュボード画面。period で集計期間を切り替える
     public async Task<IActionResult> Index(string? period)
     {
-        // period 未指定なら既定の「year」を使う
-        period ??= PeriodYear;
+        // period はクエリ文字列由来の外部入力なので、既知の 4 値以外は既定の「year」へ丸める
+        // (§9 入力は信用しない / 不正値はフォールバックする)。未指定も同じ経路で既定値になる。
+        // 丸めずに素通しすると、集計側は switch の既定分岐で 1 年窓になるのに、
+        // ViewModel の Period には "bogus" のような未知の値が残るため、ダッシュボードの
+        // 期間切替ボタン(週/月/四半期/1年)がどれも選択中に見えない状態になり、
+        // 表示中のデータ(1 年分)と UI の状態が食い違ってしまう
+        period = NormalizePeriod(period);
         // 今日の日付(JST)
         var today = _clock.Today;
         // 今月の 1 日(月次集計の基準)
@@ -241,6 +246,22 @@ public class HomeController : Controller
         // ダッシュボードビューへモデルを渡して描画
         return View(vm);
     }
+
+    // クエリ文字列で渡された集計期間を、既知の 4 値(week/month/quarter/year)のいずれかへ丸める。
+    // 未指定・未知の値はすべて既定値の year にフォールバックする(fail-safe)。
+    // 判定に使う定数は DashboardViewModel 側の唯一の真実の源を参照しているため、
+    // 期間の種類を増やすときはこのメソッドと定数定義の両方を更新すれば足りる(§6)。
+    private static string NormalizePeriod(string? period) => period switch
+    {
+        // 直近 7 日間
+        PeriodWeek => PeriodWeek,
+        // 直近 1 か月
+        PeriodMonth => PeriodMonth,
+        // 直近 3 か月
+        PeriodQuarter => PeriodQuarter,
+        // 上記以外(null・空文字・未知の文字列)はすべて既定の直近 1 年として扱う
+        _ => PeriodYear
+    };
 
     // エラーページ。匿名アクセス可、キャッシュさせない
     [AllowAnonymous]
