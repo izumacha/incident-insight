@@ -34,6 +34,11 @@
            （DueDate は Required を機能させるため nullable。未入力は null になるので ?? で既定値に落とす） *@
         var dueDateValue = attemptedDueDate
             ?? (m.DueDate ?? defaultDueDate).ToString("yyyy-MM-dd");
+        @* この行の入力欄に付ける id の接頭辞。タブ1・タブ2 の asp-for が生成する id と同じ
+           ASP.NET の命名規約（Measures[0].Description → Measures_0__Description）に合わせている。
+           label の for 属性と組にして「ラベルと入力欄の対応付け」（CLAUDE.md §7）を成立させるために必要。
+           対策行は asp-for が使えない（添字が実行時に決まりテンプレート複製もされる）ため手で組み立てる *@
+        var fieldIdPrefix = $"Measures_{index}__";
         @* 対策行の外枠（name の添字 Measures[index] がモデルバインドの行番号になる） *@
         <div class="measure-row border rounded-3 p-3 mb-3 bg-light">
             <div class="d-flex justify-content-between align-items-center mb-2">
@@ -42,22 +47,25 @@
                 @* 2行目以降にだけ削除ボタンを付ける（1行目は最低1件必須のため削除不可） *@
                 @if (deletable)
                 {
-                    <button type="button" class="btn btn-outline-danger btn-sm py-0" onclick="removeMeasureRow(this)">
-                        <i class="bi bi-trash"></i>
+                    @* アイコンだけのボタンは読み上げ名が空になるため aria-label で用途を伝え、
+                       装飾アイコン側は aria-hidden で二重読み上げを防ぐ（Details.cshtml の削除ボタンと同じ書き方） *@
+                    <button type="button" class="btn btn-outline-danger btn-sm py-0"
+                            aria-label="この対策行を削除" onclick="removeMeasureRow(this)">
+                        <i class="bi bi-trash" aria-hidden="true"></i>
                     </button>
                 }
             </div>
             <div class="row g-2">
                 <div class="col-12">
                     @* 対策内容（必須）。textarea の中身に投稿済みの値を復元する *@
-                    <label class="form-label small fw-medium">対策内容 <span class="text-danger">*</span></label>
-                    <textarea name="Measures[@(index)].Description" class="form-control form-control-sm" rows="2"
+                    <label class="form-label small fw-medium" for="@(fieldIdPrefix)Description">対策内容 <span class="text-danger">*</span></label>
+                    <textarea id="@(fieldIdPrefix)Description" name="Measures[@(index)].Description" class="form-control form-control-sm" rows="2"
                               placeholder="具体的な再発防止策（5W1Hで記載）">@m.Description</textarea>
                 </div>
                 <div class="col-md-3">
                     @* 対策種別（短期 or 長期）。投稿済みの選択値に selected を付けて復元する *@
-                    <label class="form-label small">対策種別</label>
-                    <select name="Measures[@(index)].MeasureType" class="form-select form-select-sm">
+                    <label class="form-label small" for="@(fieldIdPrefix)MeasureType">対策種別</label>
+                    <select id="@(fieldIdPrefix)MeasureType" name="Measures[@(index)].MeasureType" class="form-select form-select-sm">
                         @* MeasureType は Required を機能させるため nullable。未設定(null)の行は
                            既定の「短期対策」を選択表示する(LongTerm 以外はすべて短期扱い) *@
                         <option value="ShortTerm" selected="@(m.MeasureType != IncidentInsight.Web.Models.Enums.MeasureTypeKind.LongTerm)">短期対策（即時〜1ヶ月）</option>
@@ -66,26 +74,26 @@
                 </div>
                 <div class="col-md-3">
                     @* 担当者（必須）。投稿済みの値を value で復元する *@
-                    <label class="form-label small">担当者 <span class="text-danger">*</span></label>
-                    <input name="Measures[@(index)].ResponsiblePerson" class="form-control form-control-sm"
+                    <label class="form-label small" for="@(fieldIdPrefix)ResponsiblePerson">担当者 <span class="text-danger">*</span></label>
+                    <input id="@(fieldIdPrefix)ResponsiblePerson" name="Measures[@(index)].ResponsiblePerson" class="form-control form-control-sm"
                            value="@m.ResponsiblePerson" />
                 </div>
                 <div class="col-md-3">
                     @* 担当部署（必須）。投稿済みの値を value で復元する *@
-                    <label class="form-label small">担当部署 <span class="text-danger">*</span></label>
-                    <input name="Measures[@(index)].ResponsibleDepartment" class="form-control form-control-sm"
+                    <label class="form-label small" for="@(fieldIdPrefix)ResponsibleDepartment">担当部署 <span class="text-danger">*</span></label>
+                    <input id="@(fieldIdPrefix)ResponsibleDepartment" name="Measures[@(index)].ResponsibleDepartment" class="form-control form-control-sm"
                            value="@m.ResponsibleDepartment" />
                 </div>
                 <div class="col-md-2">
                     @* 実施期限（初期値は既定日数後。解析不能な送信値は空欄のまま再表示される） *@
-                    <label class="form-label small">実施期限 <span class="text-danger">*</span></label>
-                    <input type="date" name="Measures[@(index)].DueDate" class="form-control form-control-sm"
+                    <label class="form-label small" for="@(fieldIdPrefix)DueDate">実施期限 <span class="text-danger">*</span></label>
+                    <input id="@(fieldIdPrefix)DueDate" type="date" name="Measures[@(index)].DueDate" class="form-control form-control-sm"
                            value="@dueDateValue" />
                 </div>
                 <div class="col-md-1">
                     @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
-                    <label class="form-label small">優先度</label>
-                    <select name="Measures[@(index)].Priority" class="form-select form-select-sm">
+                    <label class="form-label small" for="@(fieldIdPrefix)Priority">優先度</label>
+                    <select id="@(fieldIdPrefix)Priority" name="Measures[@(index)].Priority" class="form-select form-select-sm">
                         <option value="1" selected="@(m.Priority == 1)">高</option>
                         <option value="2" selected="@(m.Priority == 2)">中</option>
                         <option value="3" selected="@(m.Priority == 3)">低</option>
@@ -93,8 +101,8 @@
                 </div>
                 <div class="col-12">
                     @* 立案根拠メモ（任意）。textarea の中身に投稿済みの値を復元する *@
-                    <label class="form-label small">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
-                    <textarea name="Measures[@(index)].AnalysisNote" class="form-control form-control-sm" rows="1"
+                    <label class="form-label small" for="@(fieldIdPrefix)AnalysisNote">立案根拠・背景メモ <span class="text-muted">(任意)</span></label>
+                    <textarea id="@(fieldIdPrefix)AnalysisNote" name="Measures[@(index)].AnalysisNote" class="form-control form-control-sm" rows="1"
                               placeholder="なぜこの対策を選んだか、根本原因との対応を記入">@m.AnalysisNote</textarea>
                 </div>
             </div>
@@ -131,22 +139,30 @@
             }
 
             @* ウィザード風に3ステップに分けるタブ *@
+            @* role="tablist" / role="tab" / aria-selected / aria-controls / role="tabpanel" は
+               「タブ UI である」ことを支援技術へ伝えるための必須の組。これが無いと 3 つのボタンが
+               ただの並んだボタンとして読み上げられ、いま何ステップ目にいるのか・全部で何枚あるのかが
+               スクリーンリーダー利用者に伝わらない（Bootstrap のタブは <li> を role="presentation" に
+               して、リスト構造そのものは読み上げから外す前提のマークアップになっている） *@
             <ul class="nav nav-tabs mb-4" id="wizardTabs" role="tablist">
-                <li class="nav-item">
+                <li class="nav-item" role="presentation">
                     @* ステップ1：基本情報（初期表示） *@
-                    <button class="nav-link active" id="tab1-tab" data-bs-toggle="tab" data-bs-target="#tab1" type="button">
+                    <button class="nav-link active" id="tab1-tab" data-bs-toggle="tab" data-bs-target="#tab1" type="button"
+                            role="tab" aria-controls="tab1" aria-selected="true">
                         <span class="badge bg-primary me-1">1</span> 基本情報
                     </button>
                 </li>
-                <li class="nav-item">
+                <li class="nav-item" role="presentation">
                     @* ステップ2：なぜなぜ分析 *@
-                    <button class="nav-link" id="tab2-tab" data-bs-toggle="tab" data-bs-target="#tab2" type="button">
+                    <button class="nav-link" id="tab2-tab" data-bs-toggle="tab" data-bs-target="#tab2" type="button"
+                            role="tab" aria-controls="tab2" aria-selected="false">
                         <span class="badge bg-secondary me-1">2</span> 原因分析
                     </button>
                 </li>
-                <li class="nav-item">
+                <li class="nav-item" role="presentation">
                     @* ステップ3：再発防止策 *@
-                    <button class="nav-link" id="tab3-tab" data-bs-toggle="tab" data-bs-target="#tab3" type="button">
+                    <button class="nav-link" id="tab3-tab" data-bs-toggle="tab" data-bs-target="#tab3" type="button"
+                            role="tab" aria-controls="tab3" aria-selected="false">
                         <span class="badge bg-secondary me-1">3</span> 再発防止策
                     </button>
                 </li>
@@ -154,7 +170,7 @@
 
             <div class="tab-content" id="wizardContent">
                 @* タブ1：基本情報（発生日時・部署・種別など） *@
-                <div class="tab-pane fade show active" id="tab1">
+                <div class="tab-pane fade show active" id="tab1" role="tabpanel" aria-labelledby="tab1-tab">
                     <div class="row g-3">
                         <div class="col-md-4">
                             @* 発生日時（必須） *@
@@ -229,7 +245,7 @@
                 </div>
 
                 @* タブ2：なぜなぜ分析（5回「なぜ？」を繰り返して根本原因を掘り下げる） *@
-                <div class="tab-pane fade" id="tab2">
+                <div class="tab-pane fade" id="tab2" role="tabpanel" aria-labelledby="tab2-tab">
                     <div class="alert alert-info small mb-3">
                         <i class="bi bi-lightbulb me-2"></i>
                         <strong>なぜなぜ分析のポイント：</strong>
@@ -302,7 +318,7 @@
                 </div>
 
                 @* タブ3：再発防止策（1件以上の登録が必須） *@
-                <div class="tab-pane fade" id="tab3">
+                <div class="tab-pane fade" id="tab3" role="tabpanel" aria-labelledby="tab3-tab">
                     <div class="alert alert-success small mb-3">
                         <i class="bi bi-shield-check me-2"></i>
                         <strong>効果的な再発防止策のポイント：</strong>
@@ -385,6 +401,16 @@ function reindexMeasures() {
         row.querySelectorAll('[name]').forEach(el => {
             el.name = el.name.replace(/Measures\[\d+\]/, `Measures[${i}]`);
         });
+        // id と label の for も同じ添字へ揃える。ここを name と一緒に振り直さないと、
+        // 行の追加・削除のたびに id が重複したり別の行を指したままになり、
+        // ラベルと入力欄の対応付け（CLAUDE.md §7）が黙って壊れてしまう
+        row.querySelectorAll('[id], [for]').forEach(el => {
+            // 入力欄側: id の添字部分（Measures_<数字>__）を i に置換する
+            if (el.id) el.id = el.id.replace(/Measures_\d+__/, `Measures_${i}__`);
+            // ラベル側: for 属性が指す id の添字部分も同じ規則で置換する
+            const labelFor = el.getAttribute('for');
+            if (labelFor) el.setAttribute('for', labelFor.replace(/Measures_\d+__/, `Measures_${i}__`));
+        });
         // 行の見出し要素を取得
         const header = row.querySelector('h6');
         // 見出しの連番も並び順に合わせて振り直す（削除しても欠番・重複が出ないようにする）
@@ -414,6 +440,16 @@ function addMeasureRow() {
     // name 属性の仮の添字プレースホルダを実際の添字に置換する
     row.querySelectorAll('[name]').forEach(el => {
         el.name = el.name.replace('@MeasureIndexSentinel', index);
+    });
+    // id と label の for に埋め込まれた仮の添字も同じ値へ置換する。
+    // ここで置換しないとテンプレート由来の仮 id がそのまま残り、2 行目以降を
+    // 追加するたびに同じ id が重複して label のクリック・読み上げが誤った行を指してしまう
+    row.querySelectorAll('[id], [for]').forEach(el => {
+        // 入力欄側: id に埋め込まれた仮の添字を実際の添字へ置換する
+        if (el.id) el.id = el.id.replace('@MeasureIndexSentinel', index);
+        // ラベル側: for 属性が指す id の仮の添字も同じ値へ置換する
+        const labelFor = el.getAttribute('for');
+        if (labelFor) el.setAttribute('for', labelFor.replace('@MeasureIndexSentinel', index));
     });
     // 複製した行をコンテナ末尾に追加
     container.appendChild(row);
