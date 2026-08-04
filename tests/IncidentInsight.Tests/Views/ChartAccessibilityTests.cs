@@ -30,6 +30,56 @@ public class ChartAccessibilityTests
     private static readonly Regex NonEmptyAriaLabelRegex =
         new(@"aria-label\s*=\s*""[^""]+""", RegexOptions.None);
 
+    // aria-label の中身(属性値)だけを取り出す正規表現
+    private static readonly Regex AriaLabelValueRegex =
+        new(@"aria-label\s*=\s*""(?<value>[^""]*)""", RegexOptions.None);
+
+    // 分析ページの canvas が初期 aria-label の末尾に必ず付ける「読み込み中」サフィックス。
+    // Views/Analytics/Index.cshtml の JS 側 CHART_LOADING_SUFFIX と同じ文字列
+    private const string ChartLoadingSuffix = "（データ読み込み中）";
+
+    [Fact]
+    public void AnalyticsChartCanvases_HaveLoadingSuffix_SoScriptCanDeriveChartName()
+    {
+        // 分析ページの JS は「初期 aria-label から読み込み中サフィックスを取り除いた残り」を
+        // グラフ名として退避し、取得成功時は数値入りラベル、失敗時はエラーラベルに組み立て直す。
+        // つまりサフィックスが Razor と JS をつなぐ契約になっている。
+        // サフィックスを外した(あるいは表記を変えた)まま JS を直し忘れると、
+        // 「…（データ読み込み中）。外来 3件」のような二重表記のラベルが読み上げられてしまうため、
+        // ここで Razor 側の書式を固定する。
+        var analyticsView = Path.Combine(FindViewsDirectory(), "Analytics", "Index.cshtml");
+        // 対象ファイルが存在すること(移動・改名の検知)
+        Assert.True(File.Exists(analyticsView), $"{analyticsView} が見つかりません。");
+
+        // ビューのソースを読み込む
+        var source = File.ReadAllText(analyticsView);
+        // サフィックスで終わっていない aria-label を違反として集める
+        var violations = new List<string>();
+        // 検査対象の canvas 数(0 件なら検出パターンの劣化を疑う)
+        var totalCanvases = 0;
+
+        // このファイル内の <canvas> 開始タグをすべて列挙する
+        foreach (Match match in CanvasTagRegex.Matches(source))
+        {
+            totalCanvases++;
+            // 属性列から aria-label の値を取り出す
+            var value = AriaLabelValueRegex.Match(match.Groups["attrs"].Value).Groups["value"].Value;
+            // 末尾が規定のサフィックスなら合格
+            if (value.EndsWith(ChartLoadingSuffix, StringComparison.Ordinal)) continue;
+            // そうでなければ違反として記録する
+            violations.Add(value);
+        }
+
+        // canvas が 1 個も見つからないのは想定外(検出パターンが壊れた可能性がある)
+        Assert.True(totalCanvases > 0,
+            "Views/Analytics/Index.cshtml に <canvas> が 1 つも見つかりませんでした。検出パターンが変更された可能性があります。");
+        // 違反ゼロであること(あればどのラベルかをメッセージで示す)
+        Assert.True(violations.Count == 0,
+            $"分析ページの canvas の初期 aria-label は \"{ChartLoadingSuffix}\" で終わる必要があります " +
+            "(JS がこのサフィックスを外してグラフ名を取り出すため):\n" +
+            string.Join("\n", violations));
+    }
+
     [Fact]
     public void EveryChartCanvas_AcrossAllViews_HasAccessibleName()
     {
