@@ -132,16 +132,80 @@
 // チャート用の共通カラーパレット
 const COLORS = ['#0d6efd','#6610f2','#fd7e14','#198754','#dc3545','#0dcaf0','#ffc107','#6c757d','#d63384'];
 
+// グラフの読み込み状態を表す aria-label の末尾サフィックス。
+// Razor 側の静的な aria-label は「<グラフ名>（データ読み込み中）」という形で書いてあり、
+// JS はこのサフィックスを目印に「グラフ名」だけを取り出す(§6 マジック文字列を避ける)
+const CHART_LOADING_SUFFIX = '（データ読み込み中）';
+// 取得に失敗したときに付け替えるサフィックス
+const CHART_ERROR_SUFFIX = '（データを読み込めませんでした）';
+
+// canvas の id → グラフ名(状態サフィックスを外したもの)の対応表。
+// グラフ名を Razor の aria-label 側だけに置き、JS には同じ文字列を書かないための退避
+// (書き写すと Razor だけ直したときに JS の古い名前で上書きされる。§6 DRY)
+const chartBaseNames = new Map();
+
+// ページ読み込み直後の aria-label からグラフ名を取り出して退避する。
+// この <script> は @@section Scripts 経由で body 末尾に出力されるため、
+// この時点で対象の canvas はすべて DOM 上に存在する
+document.querySelectorAll('canvas[aria-label]').forEach((canvas) => {
+    // Razor が書いた初期ラベル(「〜のグラフ（データ読み込み中）」)を読む
+    const label = canvas.getAttribute('aria-label');
+    // 末尾が読み込み中サフィックスならそれを取り除いた部分がグラフ名。
+    // 付いていないラベル(ダッシュボード等の書式)はそのままグラフ名として扱う
+    const baseName = label.endsWith(CHART_LOADING_SUFFIX)
+        ? label.slice(0, -CHART_LOADING_SUFFIX.length)
+        : label;
+    // id をキーに退避する
+    chartBaseNames.set(canvas.id, baseName);
+});
+
+// canvas の aria-label を「グラフ名＋状態」の形に組み立て直す共通処理。
+// 成功時は数値入りの本文、失敗時はエラー文言と、状態ごとの差し替え口を 1 つにまとめる
+function setChartLabel(canvasId, suffix) {
+    // 対象の canvas を取得する
+    const canvas = document.getElementById(canvasId);
+    // 想定の要素が無ければ何もしない(ページ構成変更時の保険)
+    if (!canvas) return;
+    // 退避しておいたグラフ名に、渡された状態文字列を連結して書き戻す
+    canvas.setAttribute('aria-label', `${chartBaseNames.get(canvasId) ?? ''}${suffix}`);
+}
+
 // 指定 URL から JSON を取得し、成功したらコールバックに渡す小さなヘルパー
 // 各呼び出し元の URL は '/Analytics/...' と直書きせず @@Url.Action で生成する。
 // ルート直書きだとリバースプロキシ配下のサブパス配備時に PathBase が付かず 404 になるため
 // (Views/Incidents/Details.cshtml・Views/Home/Index.cshtml と同じ対策)
-async function loadChart(url, callback) {
+//
+// canvasId は失敗時に aria-label を「読み込み中」のまま放置しないために受け取る。
+// 放置すると、描画されないグラフをスクリーンリーダーが永久に「読み込み中」と読み上げ続け、
+// 待てば表示されるという誤った期待を与えてしまう(§7 / §6 エラーを握り潰さない)
+async function loadChart(url, canvasId, callback) {
+    // 取得したデータの置き場(取得と描画で try を分けるため外側で宣言する)
+    let data;
     try {
         const res = await fetch(url);
-        const data = await res.json();
+        // HTTP エラー(401/500 等)は fetch では例外にならないため明示的に弾く。
+        // これを見ないと、エラーページの HTML を JSON として解析しようとして
+        // 分かりにくい構文エラーになる
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        // 本文を JSON として解析する
+        data = await res.json();
+    } catch(e) {
+        // 開発者向けには原因を残す(利用者向けの画面には内部詳細を出さない。§9)
+        console.error('Chart load error:', url, e);
+        // 支援技術には「読み込めなかった」という確定した状態を伝えて、ここで打ち切る
+        setChartLabel(canvasId, CHART_ERROR_SUFFIX);
+        return;
+    }
+
+    // 描画は取得と別の try で包む。ここを取得側とまとめてしまうと、
+    // 「グラフは描けたがサマリー計算で落ちた」場合にまで
+    // 「読み込めませんでした」という誤ったラベルを付けてしまうため
+    try {
         callback(data);
-    } catch(e) { console.error('Chart load error:', url, e); }
+    } catch(e) {
+        // 描画側の不具合は取得失敗と区別して記録する(原因の切り分けのため)
+        console.error('Chart render error:', url, e);
+    }
 }
 
 // DB 由来の文字列(部署名・インシデント種別など)を innerHTML に埋め込む前に
@@ -158,24 +222,21 @@ function escapeHtml(str) {
 // 各 canvas には Razor 側で role="img" と「〜のグラフ（データ読み込み中）」という
 // aria-label を静的に付けてあるので、データ取得後にその aria-label を実際の数値入りへ
 // 差し替え、スクリーンリーダー利用者にもグラフと同じ情報が届くようにする(§7)。
+// グラフ名は chartBaseNames から引くため、ここでは受け取らない(Razor 側が唯一の源)。
 // labels と values は Chart.js に渡すものと同一の配列を受け取る。
-function describeChart(canvasId, title, labels, values) {
-    // 対象の canvas を取得する
-    const canvas = document.getElementById(canvasId);
-    // 想定の要素が無ければ何もしない(ページ構成変更時の保険)
-    if (!canvas) return;
+function describeChart(canvasId, labels, values) {
     // 「ラベル 件数件」の並びを作る(値が無いラベルは 0 件として読み上げる)
     const parts = labels.map((label, i) => `${label} ${values[i] ?? 0}件`);
     // データが 1 件も無い場合は、その旨だけを伝える
     const body = parts.length > 0 ? parts.join('、') : 'データがありません';
     // aria-label はテキストとして読み上げられるだけなので HTML エスケープは不要
     // (innerHTML と違い、属性値としてブラウザが解釈するため)
-    canvas.setAttribute('aria-label', `${title}。${body}`);
+    setChartLabel(canvasId, `。${body}`);
 }
 
 // Monthly Trend
 // 月別トレンド: 折れ線チャートを描画
-loadChart('@Url.Action("MonthlyTrend", "Analytics")', (d) => {
+loadChart('@Url.Action("MonthlyTrend", "Analytics")', 'trendChart', (d) => {
     new Chart(document.getElementById('trendChart'), {
         type: 'line',
         data: {
@@ -197,12 +258,12 @@ loadChart('@Url.Action("MonthlyTrend", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('trendChart', '月別インシデント発生推移（過去12ヶ月）の折れ線グラフ', d.labels, d.data);
+    describeChart('trendChart', d.labels, d.data);
 });
 
 // Cause Category Doughnut
 // 原因分類別ドーナツ
-loadChart('@Url.Action("ByCause", "Analytics")', (d) => {
+loadChart('@Url.Action("ByCause", "Analytics")', 'causeChart', (d) => {
     new Chart(document.getElementById('causeChart'), {
         type: 'doughnut',
         data: {
@@ -216,12 +277,12 @@ loadChart('@Url.Action("ByCause", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('causeChart', '原因分類別インシデント件数のドーナツグラフ', d.labels, d.data);
+    describeChart('causeChart', d.labels, d.data);
 });
 
 // By Department (horizontal bar)
 // 部署別の横棒グラフ
-loadChart('@Url.Action("ByDepartment", "Analytics")', (d) => {
+loadChart('@Url.Action("ByDepartment", "Analytics")', 'deptChart', (d) => {
     new Chart(document.getElementById('deptChart'), {
         type: 'bar',
         data: {
@@ -241,7 +302,7 @@ loadChart('@Url.Action("ByDepartment", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('deptChart', '部署別インシデント件数の横棒グラフ', d.labels, d.data);
+    describeChart('deptChart', d.labels, d.data);
     // Store dept for later use in summary panel; #topDept is injected later by ByIncidentType
     // 最多発生部署(1 位)をサマリー用に退避。escapeHtml で HTML 特殊文字を無害化してから保持する
     window._topDept = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
@@ -253,7 +314,7 @@ loadChart('@Url.Action("ByDepartment", "Analytics")', (d) => {
 
 // By Severity
 // 重症度別の棒グラフ
-loadChart('@Url.Action("BySeverity", "Analytics")', (d) => {
+loadChart('@Url.Action("BySeverity", "Analytics")', 'severityChart', (d) => {
     // 重症度に対応した色配列。BySeverity は enum 定義順で全重症度を返すため、
     // 同じ順序で EnumLabels(色の一元管理元)からバッジと同じ配色を生成する。
     // ここに16進値を直書きすると EnumLabels とズレたときに気づけない(§6)。
@@ -276,12 +337,12 @@ loadChart('@Url.Action("BySeverity", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('severityChart', '重症度別インシデント件数の棒グラフ', d.labels, d.data);
+    describeChart('severityChart', d.labels, d.data);
 });
 
 // Measure Status Doughnut
 // 対策ステータス別ドーナツ(計画/進行/超過/完了)
-loadChart('@Url.Action("MeasureStatus", "Analytics")', (d) => {
+loadChart('@Url.Action("MeasureStatus", "Analytics")', 'measureStatusChart', (d) => {
     new Chart(document.getElementById('measureStatusChart'), {
         type: 'doughnut',
         data: {
@@ -295,7 +356,7 @@ loadChart('@Url.Action("MeasureStatus", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('measureStatusChart', '再発防止策の実施状況（計画中・進行中・期限超過・完了）のドーナツグラフ', d.labels, d.data);
+    describeChart('measureStatusChart', d.labels, d.data);
 
     // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
     // サマリー用に完了率・期限超過件数を計算して退避
@@ -313,7 +374,7 @@ loadChart('@Url.Action("MeasureStatus", "Analytics")', (d) => {
 
 // Effectiveness Rating
 // 有効性評価チャート + 再発統計
-loadChart('@Url.Action("EffectivenessRating", "Analytics")', (d) => {
+loadChart('@Url.Action("EffectivenessRating", "Analytics")', 'effectivenessChart', (d) => {
     new Chart(document.getElementById('effectivenessChart'), {
         type: 'bar',
         data: {
@@ -332,7 +393,7 @@ loadChart('@Url.Action("EffectivenessRating", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('effectivenessChart', '再発防止策の有効性評価（★1〜★5）分布の棒グラフ', d.labels, d.data);
+    describeChart('effectivenessChart', d.labels, d.data);
 
     // Recurrence stats
     // 再発有無のテキスト表示
@@ -348,7 +409,7 @@ loadChart('@Url.Action("EffectivenessRating", "Analytics")', (d) => {
 
 // By Incident Type
 // インシデント種別別棒グラフ + サマリーパネル生成
-loadChart('@Url.Action("ByIncidentType", "Analytics")', (d) => {
+loadChart('@Url.Action("ByIncidentType", "Analytics")', 'typeChart', (d) => {
     new Chart(document.getElementById('typeChart'), {
         type: 'bar',
         data: {
@@ -367,7 +428,7 @@ loadChart('@Url.Action("ByIncidentType", "Analytics")', (d) => {
     });
 
     // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('typeChart', 'インシデント種別別件数の棒グラフ', d.labels, d.data);
+    describeChart('typeChart', d.labels, d.data);
 
     // 最多種別と最多部署をサマリーに出すため計算。escapeHtml で HTML 特殊文字を無害化する
     const topType = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
