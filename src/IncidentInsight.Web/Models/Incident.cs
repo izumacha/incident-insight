@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 文字数上限の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 // 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
 using IncidentInsight.Web.Models.Auditing;
 // 自プロジェクトの enum 群(重症度などの定義)を使えるようにする
@@ -19,9 +21,9 @@ public class Incident
     [Display(Name = "発生日時")]
     public DateTime OccurredAt { get; set; }
 
-    // 発生部署名。必須で最大100文字まで
+    // 発生部署名。必須で上限は FieldLengths.ShortText
     [Required(ErrorMessage = "部署は必須です")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "発生部署")]
     public string Department { get; set; } = "";
 
@@ -35,29 +37,29 @@ public class Incident
     [Display(Name = "重症度")]
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
-    // 発生状況や経緯の説明。必須で最大500文字まで
-    // 入力経路(IncidentCreateEditViewModel)は同じ500文字上限を検証済みだが、EF Core は保存時に
+    // 発生状況や経緯の説明。必須で上限は FieldLengths.FreeText
+    // 入力経路(IncidentCreateEditViewModel)は同じ自由記述上限(FieldLengths.FreeText)を検証済みだが、EF Core は保存時に
     // DataAnnotations を自動検証しないため、CompletionNote/EffectivenessNote と同様にエンティティ側にも
     // [MaxLength] を明示しておく(将来 ViewModel を経由しない書き込み経路が追加された際の検証漏れを防ぐ多層防御)
     // 患者情報が混入する可能性があるため監査ログでは必ず伏せる
     [Required(ErrorMessage = "インシデントの内容を入力してください")]
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "状況・経緯")]
     [Sensitive(Mask.Redact)]
     public string Description { get; set; } = "";
 
-    // 発生直後に行った応急対応(省略可、最大500文字)
+    // 発生直後に行った応急対応(省略可、上限は FieldLengths.FreeText)
     // エンティティ側にも上限を明示する理由は上記 Description と同じ(多層防御)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "発生直後の対応")]
     [Sensitive(Mask.Redact)]
     public string? ImmediateActions { get; set; }
 
-    // 報告者の名前。必須で最大100文字まで
+    // 報告者の名前。必須で上限は FieldLengths.ShortText
     // 個人名なので監査ログではハッシュ化(同一人物による報告かどうかの監査だけ可能)
     [Required(ErrorMessage = "報告者名は必須です")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "報告者")]
     [Sensitive(Mask.Hash)]
     public string ReporterName { get; set; } = "";

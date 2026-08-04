@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 文字数上限の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 
 // この型が属する名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Models;
@@ -10,9 +12,9 @@ public class CauseCategory
     // 主キー(自動採番)
     public int Id { get; set; }
 
-    // 分類名は必ず入力が必要で、最大100文字まで
+    // 分類名は必ず入力が必要で、上限は FieldLengths.ShortText
     [Required]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "分類名")]
     public string Name { get; set; } = "";
 
