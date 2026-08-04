@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 文字数上限とエラーメッセージ書式の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 // enum(重症度・種別など)を使えるようにする
 using IncidentInsight.Web.Models.Enums;
 // ドロップダウン用の SelectListItem を使えるようにする
@@ -85,9 +87,9 @@ public class IncidentCreateEditViewModel
     [Display(Name = "発生日時")]
     public DateTime? OccurredAt { get; set; }
 
-    // 発生部署。必須で最大100文字
+    // 発生部署。必須で上限は FieldLengths.ShortText
     [Required(ErrorMessage = "部署は必須です")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "発生部署")]
     public string Department { get; set; } = "";
 
@@ -113,22 +115,22 @@ public class IncidentCreateEditViewModel
     [Display(Name = "重症度")]
     public IncidentSeverity? Severity { get; set; }
 
-    // 状況・経緯の記述(必須)。他の自由記述欄(Why1-5/AnalysisNote等)と同じ500文字上限を
+    // 状況・経緯の記述(必須)。他の自由記述欄(Why1-5/AnalysisNote等)と同じ自由記述上限(FieldLengths.FreeText)を
     // 明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、MaxLength を
     // 付けないと ModelState.IsValid が無制限の自由記述を素通りさせてしまう(§9 入力は信用しない)。
     [Required(ErrorMessage = "状況・経緯を入力してください")]
-    [MaxLength(500, ErrorMessage = "状況・経緯は500文字以内で入力してください")]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "状況・経緯")]
     public string Description { get; set; } = "";
 
-    // 発生直後の応急対応(省略可)。他の自由記述欄と同じ500文字上限を明示検証する(理由は上記 Description と同じ)
-    [MaxLength(500, ErrorMessage = "発生直後の対応は500文字以内で入力してください")]
+    // 発生直後の応急対応(省略可)。他の自由記述欄と同じ自由記述上限(FieldLengths.FreeText)を明示検証する(理由は上記 Description と同じ)
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "発生直後の対応")]
     public string? ImmediateActions { get; set; }
 
-    // 報告者の名前。必須で最大100文字
+    // 報告者の名前。必須で上限は FieldLengths.ShortText
     [Required(ErrorMessage = "報告者名は必須です")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "報告者")]
     public string ReporterName { get; set; } = "";
 
@@ -162,46 +164,46 @@ public class CauseAnalysisFormViewModel
     [Display(Name = "原因分類")]
     public int CauseCategoryId { get; set; }
 
-    // なぜ1。必須入力で最大500文字
+    // なぜ1。必須入力で上限は FieldLengths.FreeText
     [Required(ErrorMessage = "なぜ1を入力してください")]
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "なぜ1（何が起きたか・直接原因）")]
     public string Why1 { get; set; } = "";
 
     // なぜ2(任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "なぜ2")]
     public string? Why2 { get; set; }
 
     // なぜ3(任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "なぜ3")]
     public string? Why3 { get; set; }
 
     // なぜ4(任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "なぜ4")]
     public string? Why4 { get; set; }
 
     // なぜ5(根本原因、任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "なぜ5（根本原因）")]
     public string? Why5 { get; set; }
 
     // 根本原因まとめ(任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "根本原因まとめ")]
     public string? RootCauseSummary { get; set; }
 
     // 分析者の名前(任意)
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "分析者")]
     public string? AnalystName { get; set; }
 
-    // 補足メモ(任意)。他の自由記述欄(Why1-5/RootCauseSummary等)と同じ500文字上限を明示検証する。
+    // 補足メモ(任意)。他の自由記述欄(Why1-5/RootCauseSummary等)と同じ自由記述上限(FieldLengths.FreeText)を明示検証する。
     // EF Core は保存時に DataAnnotations を自動検証しないため、MaxLength を付けないと
     // ModelState.IsValid が無制限の自由記述を素通りさせてしまう(§9 入力は信用しない)。
-    [MaxLength(500, ErrorMessage = "補足メモは500文字以内で入力してください")]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "補足メモ")]
     public string? AdditionalNotes { get; set; }
 
@@ -249,9 +251,9 @@ public class MeasureFormViewModel
     // 楽観的同時実行制御トークン(Edit 時のみ意味を持つ)。
     public Guid ConcurrencyToken { get; set; }
 
-    // 対策内容(必須で最大500文字)
+    // 対策内容(必須で上限は FieldLengths.FreeText)
     [Required(ErrorMessage = "対策内容を入力してください")]
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "対策内容")]
     public string Description { get; set; } = "";
 
@@ -265,15 +267,15 @@ public class MeasureFormViewModel
     [Display(Name = "対策種別")]
     public MeasureTypeKind? MeasureType { get; set; }
 
-    // 担当者(必須で最大100文字)
+    // 担当者(必須で上限は FieldLengths.ShortText)
     [Required(ErrorMessage = "担当者を入力してください")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "担当者")]
     public string ResponsiblePerson { get; set; } = "";
 
-    // 担当部署(必須で最大100文字)
+    // 担当部署(必須で上限は FieldLengths.ShortText)
     [Required(ErrorMessage = "担当部署を入力してください")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "担当部署")]
     public string ResponsibleDepartment { get; set; } = "";
 
@@ -296,7 +298,7 @@ public class MeasureFormViewModel
     public int Priority { get; set; } = 2;
 
     // 立案根拠・背景メモ(任意)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "立案根拠・背景メモ")]
     public string? AnalysisNote { get; set; }
 }
@@ -317,9 +319,9 @@ public class ReviewViewModel
     public int EffectivenessRating { get; set; }
 
     // 有効性評価のコメント(任意)。他の自由記述欄(Description/AnalysisNote 等)と同じ
-    // 500文字上限を明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、
+    // 自由記述上限(FieldLengths.FreeText)を明示検証する。EF Core は保存時に DataAnnotations を自動検証しないため、
     // ここが唯一の防波堤になる(未検証だと無制限の自由記述が保存されうる)。
-    [MaxLength(500, ErrorMessage = "有効性評価コメントは500文字以内で入力してください")]
+    [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
     [Display(Name = "有効性評価コメント")]
     public string? EffectivenessNote { get; set; }
 

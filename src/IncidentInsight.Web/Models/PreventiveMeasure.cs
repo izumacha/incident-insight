@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 文字数上限の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 // 「期限超過」を式ツリー(Expression)で表し EF が SQL へ翻訳できるようにするため取り込む
 using System.Linq.Expressions;
 // 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
@@ -25,11 +27,11 @@ public class PreventiveMeasure
     // インシデント本体への参照
     public Incident Incident { get; set; } = null!;
 
-    // 対策の内容(具体的に何をするか)。必須で最大500文字まで
+    // 対策の内容(具体的に何をするか)。必須で上限は FieldLengths.FreeText
     // 業務記述のためマスキング対象外でも問題は少ないが、表現に患者情報が
     // 含まれる可能性があるため監査ログでは伏せる
     [Required(ErrorMessage = "対策内容を入力してください")]
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "対策内容")]
     [Sensitive(Mask.Redact)]
     public string Description { get; set; } = "";
@@ -39,20 +41,20 @@ public class PreventiveMeasure
     [Display(Name = "対策種別")]
     public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
 
-    // 対策を担当する人の名前。必須で最大100文字まで
+    // 対策を担当する人の名前。必須で上限は FieldLengths.ShortText
     // 個人名のため監査ログではハッシュ化(担当者単位の追跡だけ可能)
     [Required(ErrorMessage = "担当者を入力してください")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "担当者")]
     [Sensitive(Mask.Hash)]
     public string ResponsiblePerson { get; set; } = "";
 
-    // 対策を担当する部署。必須で最大100文字まで
+    // 対策を担当する部署。必須で上限は FieldLengths.ShortText
     // Incident.Department（static 辞書に縛られたドロップダウン値）とは異なり自由記述の
     // <input> のため、誤って個人名や補足メモが混入する余地がある。他の自由記述列
     // (Description/AnalysisNote)と同様に監査ログでは伏せる
     [Required(ErrorMessage = "担当部署を入力してください")]
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "担当部署")]
     [Sensitive(Mask.Redact)]
     public string ResponsibleDepartment { get; set; } = "";
@@ -62,9 +64,9 @@ public class PreventiveMeasure
     [Display(Name = "実施期限")]
     public DateTime DueDate { get; set; }
 
-    // 対策立案の根拠や背景メモ(省略可、最大500文字)
+    // 対策立案の根拠や背景メモ(省略可、上限は FieldLengths.FreeText)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "立案根拠・背景メモ")]
     [Sensitive(Mask.Redact)]
     public string? AnalysisNote { get; set; }
@@ -78,13 +80,13 @@ public class PreventiveMeasure
     [Display(Name = "完了日")]
     public DateTime? CompletedAt { get; set; }
 
-    // 完了報告の内容(省略可、最大500文字)
+    // 完了報告の内容(省略可、上限は FieldLengths.FreeText)
     // ViewModel を経由せず生の文字列を直接受け取る POST アクション(CompleteMeasure/
     // PreventiveMeasuresController.Complete)が IncidentControllerHelpers.ValidateFreeTextLength
-    // で同じ500文字上限を手動検証済みのため実害は無いが、Description/AnalysisNote と同様に
+    // で同じ自由記述上限(FieldLengths.FreeText)を手動検証済みのため実害は無いが、Description/AnalysisNote と同様に
     // エンティティ側にも [MaxLength] を明示しておく(将来別経路で書き込む実装が追加された際の
     // 検証漏れを防ぐ多層防御)。自由記述のため PHI 混入リスクあり。監査ログでは伏せる
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "完了報告内容")]
     [Sensitive(Mask.Redact)]
     public string? CompletionNote { get; set; }
@@ -95,13 +97,13 @@ public class PreventiveMeasure
     [Display(Name = "有効性評価(1〜5)")]
     public int? EffectivenessRating { get; set; }
 
-    // 有効性評価のコメント(省略可、最大500文字)
+    // 有効性評価のコメント(省略可、上限は FieldLengths.FreeText)
     // ViewModel を経由せず生の文字列を直接受け取る POST アクション(RateMeasure)が
-    // IncidentControllerHelpers.ValidateFreeTextLength で同じ500文字上限を手動検証済みのため
+    // IncidentControllerHelpers.ValidateFreeTextLength で同じ自由記述上限(FieldLengths.FreeText)を手動検証済みのため
     // 実害は無いが、Description/AnalysisNote と同様にエンティティ側にも [MaxLength] を
     // 明示しておく(将来別経路で書き込む実装が追加された際の検証漏れを防ぐ多層防御)。
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "有効性評価コメント")]
     [Sensitive(Mask.Redact)]
     public string? EffectivenessNote { get; set; }

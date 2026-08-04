@@ -1,5 +1,7 @@
 // 属性(Required / MaxLength など)を使うためのライブラリを取り込む
 using System.ComponentModel.DataAnnotations;
+// 文字数上限の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 // 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
 using IncidentInsight.Web.Models.Auditing;
 
@@ -31,46 +33,46 @@ public class CauseAnalysis
     // 5 Whys chain
     // Why1〜Why5 と RootCauseSummary は患者情報が混入し得る自由記述。
     // 監査ログでは伏せる(マスキングは AuditSaveChangesInterceptor が適用する)
-    // 「なぜ」1段階目。必ず入力が必要で、最大500文字まで
+    // 「なぜ」1段階目。必ず入力が必要で、上限は FieldLengths.FreeText
     [Required(ErrorMessage = "なぜ1（表面的な原因）を入力してください")]
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "なぜ1（何が起きたか）")]
     [Sensitive(Mask.Redact)]
     public string Why1 { get; set; } = "";
 
     // 「なぜ」2段階目。省略可
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "なぜ2")]
     [Sensitive(Mask.Redact)]
     public string? Why2 { get; set; }
 
     // 「なぜ」3段階目。省略可
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "なぜ3")]
     [Sensitive(Mask.Redact)]
     public string? Why3 { get; set; }
 
     // 「なぜ」4段階目。省略可
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "なぜ4")]
     [Sensitive(Mask.Redact)]
     public string? Why4 { get; set; }
 
     // 「なぜ」5段階目(根本原因)。省略可
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "なぜ5（根本原因）")]
     [Sensitive(Mask.Redact)]
     public string? Why5 { get; set; }
 
     // 根本原因をまとめた文章(省略可)
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "根本原因まとめ")]
     [Sensitive(Mask.Redact)]
     public string? RootCauseSummary { get; set; }
 
     // 分析を行った人の名前(省略可)
     // 個人名なので監査ログではハッシュ化
-    [MaxLength(100)]
+    [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "分析者")]
     [Sensitive(Mask.Hash)]
     public string? AnalystName { get; set; }
@@ -79,12 +81,12 @@ public class CauseAnalysis
     [Display(Name = "分析日")]
     public DateTime? AnalyzedAt { get; set; }
 
-    // 追加の補足メモ(省略可、最大500文字)
-    // 入力経路(CauseAnalysisFormViewModel)は同じ500文字上限を検証済みだが、EF Core は保存時に
+    // 追加の補足メモ(省略可、上限は FieldLengths.FreeText)
+    // 入力経路(CauseAnalysisFormViewModel)は同じ自由記述上限(FieldLengths.FreeText)を検証済みだが、EF Core は保存時に
     // DataAnnotations を自動検証しないため、Why1〜Why5/RootCauseSummary と同様にエンティティ側にも
     // [MaxLength] を明示しておく(将来別経路で書き込む実装が追加された際の検証漏れを防ぐ多層防御)
     // 自由記述のため PHI 混入リスクあり。監査ログでは伏せる
-    [MaxLength(500)]
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "補足メモ")]
     [Sensitive(Mask.Redact)]
     public string? AdditionalNotes { get; set; }

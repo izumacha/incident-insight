@@ -211,8 +211,35 @@
                 <h6 class="mb-0"><i class="bi bi-graph-up me-2 text-primary"></i>@Model.TrendChartTitle</h6>
             </div>
             <div class="card-body">
-                @* Chart.js が描画対象とする canvas *@
-                <canvas id="trendChart" height="100"></canvas>
+                @* Chart.js が描画対象とする canvas。
+                   canvas は中身がビットマップのため支援技術には何も伝わらない。role="img" と
+                   aria-label でグラフ全体に名前を与える(§7 スクリーンリーダーに情報を伝える) *@
+                <canvas id="trendChart" height="100" role="img"
+                        aria-label="@Model.TrendChartTitle。各期間の件数は次の一覧を参照してください。"></canvas>
+                @* グラフの等価コンテンツ(text alternative)。
+                   1) canvas 内の数値をスクリーンリーダーへ伝える、
+                   2) データ点クリックでのドリルダウン(canvas の onClick)はマウス専用のため、
+                      同じ絞り込みへ到達できるキーボード操作可能なリンクを用意する(§7)。
+                   visually-hidden-focusable は「子要素がフォーカスを受けたときだけ表示」する
+                   Bootstrap のユーティリティ。単なる visually-hidden だと、キーボード利用者の
+                   フォーカスが画面上のどこにも見えない位置へ飛んでしまう *@
+                <div class="visually-hidden-focusable">
+                    @* 見出しタグ(h3 等)ではなく段落にしているのは、カード見出しが h6 のため
+                       ここに h3 を置くと見出しレベルが逆行し、見出し順序の規約(§7)に反するため *@
+                    <p class="fw-semibold mb-1">@Model.TrendChartTitle（表形式）</p>
+                    <ul class="list-unstyled mb-0">
+                        @foreach (var bucket in Model.MonthlyCounts)
+                        {
+                            @* 1 バケット(月または日)につき 1 行。リンク先はチャートのクリックと同じ絞り込み条件 *@
+                            <li>
+                                <a asp-controller="Incidents" asp-action="Index"
+                                   asp-route-dateFrom="@bucket.DateFrom" asp-route-dateTo="@bucket.DateTo">
+                                    @bucket.Label: @bucket.Count 件
+                                </a>
+                            </li>
+                        }
+                    </ul>
+                </div>
             </div>
         </div>
     </div>

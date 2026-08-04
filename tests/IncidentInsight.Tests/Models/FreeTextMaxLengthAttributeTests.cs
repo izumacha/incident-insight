@@ -2,6 +2,8 @@
 using IncidentInsight.Web.Models;
 // [Sensitive] 属性(PHI マスキング指示)の定義を使うために取り込む
 using IncidentInsight.Web.Models.Auditing;
+// 文字数上限の唯一の真実の源(FieldLengths)を期待値として使うために取り込む
+using IncidentInsight.Web.Models.Validation;
 // [MaxLength] 等の DataAnnotations 属性を参照するために取り込む
 using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報からプロパティや属性を調べる仕組み)を使うために取り込む
@@ -52,10 +54,10 @@ public class FreeTextMaxLengthAttributeTests
     }
 
     [Theory]
-    // 今回の修正で追加した 3 プロパティが、入力経路(ViewModel)と同じ 500 文字上限であることを個別確認する
-    [InlineData(typeof(Incident), nameof(Incident.Description), 500)]
-    [InlineData(typeof(Incident), nameof(Incident.ImmediateActions), 500)]
-    [InlineData(typeof(CauseAnalysis), nameof(CauseAnalysis.AdditionalNotes), 500)]
+    // 自由記述 3 プロパティが、入力経路(ViewModel)と同じ FieldLengths.FreeText 上限であることを個別確認する
+    [InlineData(typeof(Incident), nameof(Incident.Description), FieldLengths.FreeText)]
+    [InlineData(typeof(Incident), nameof(Incident.ImmediateActions), FieldLengths.FreeText)]
+    [InlineData(typeof(CauseAnalysis), nameof(CauseAnalysis.AdditionalNotes), FieldLengths.FreeText)]
     public void FreeTextColumns_HaveExpectedMaxLength(Type entityType, string propertyName, int expected)
     {
         // 対象プロパティをリフレクションで取得する
@@ -66,7 +68,7 @@ public class FreeTextMaxLengthAttributeTests
         var attr = property!.GetCustomAttribute<MaxLengthAttribute>(inherit: false);
         // 属性が付いていることを確認する
         Assert.NotNull(attr);
-        // 上限値が ViewModel 側の検証(500 文字)と一致していることを確認する
+        // 上限値が ViewModel 側の検証(FieldLengths.FreeText)と一致していることを確認する
         Assert.Equal(expected, attr!.Length);
     }
 }
