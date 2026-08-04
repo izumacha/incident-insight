@@ -8,11 +8,6 @@
     <h2 class="mb-0"><i class="bi bi-bar-chart-line me-2 text-primary"></i>分析・集計</h2>
 </div>
 
-<!-- Insight Panel -->
-@* 追加の洞察情報を動的に表示する領域(初期は非表示) *@
-<div id="insightPanel" class="alert alert-light border shadow-sm mb-4" style="display:none!important">
-</div>
-
 <!-- Charts Grid -->
 @* チャートを並べたグリッド *@
 <div class="row g-3 mb-4">
@@ -25,7 +20,7 @@
             </div>
             <div class="card-body">
                 @* Chart.js の描画先 *@
-                <canvas id="trendChart" height="70"></canvas>
+                <canvas id="trendChart" height="70" role="img" aria-label="月別インシデント発生推移（過去12ヶ月）の折れ線グラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -38,7 +33,7 @@
                 <h6 class="mb-0"><i class="bi bi-pie-chart me-2 text-info"></i>原因分類別</h6>
             </div>
             <div class="card-body d-flex align-items-center justify-content-center">
-                <canvas id="causeChart" height="200"></canvas>
+                <canvas id="causeChart" height="200" role="img" aria-label="原因分類別インシデント件数のドーナツグラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -51,7 +46,7 @@
                 <h6 class="mb-0"><i class="bi bi-building me-2 text-secondary"></i>部署別インシデント数</h6>
             </div>
             <div class="card-body">
-                <canvas id="deptChart" height="200"></canvas>
+                <canvas id="deptChart" height="200" role="img" aria-label="部署別インシデント件数の横棒グラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -64,7 +59,7 @@
                 <h6 class="mb-0"><i class="bi bi-exclamation-triangle me-2 text-warning"></i>重症度別分布</h6>
             </div>
             <div class="card-body">
-                <canvas id="severityChart" height="200"></canvas>
+                <canvas id="severityChart" height="200" role="img" aria-label="重症度別インシデント件数の棒グラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -77,7 +72,7 @@
                 <h6 class="mb-0"><i class="bi bi-check2-square me-2 text-success"></i>再発防止策 実施状況</h6>
             </div>
             <div class="card-body d-flex align-items-center justify-content-center">
-                <canvas id="measureStatusChart" height="180"></canvas>
+                <canvas id="measureStatusChart" height="180" role="img" aria-label="再発防止策の実施状況（計画中・進行中・期限超過・完了）のドーナツグラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -93,7 +88,7 @@
                 </h6>
             </div>
             <div class="card-body">
-                <canvas id="effectivenessChart" height="180"></canvas>
+                <canvas id="effectivenessChart" height="180" role="img" aria-label="再発防止策の有効性評価（★1〜★5）分布の棒グラフ（データ読み込み中）"></canvas>
                 @* 再発あり/なしの件数を表示する領域 *@
                 <div id="recurrenceStats" class="mt-2 text-center small text-muted"></div>
             </div>
@@ -108,7 +103,7 @@
                 <h6 class="mb-0"><i class="bi bi-tags me-2 text-secondary"></i>インシデント種別分布</h6>
             </div>
             <div class="card-body">
-                <canvas id="typeChart" height="60"></canvas>
+                <canvas id="typeChart" height="60" role="img" aria-label="インシデント種別別件数の棒グラフ（データ読み込み中）"></canvas>
             </div>
         </div>
     </div>
@@ -159,6 +154,25 @@ function escapeHtml(str) {
     return div.innerHTML;
 }
 
+// canvas はビットマップなので、描画されたグラフの中身は支援技術に一切伝わらない。
+// 各 canvas には Razor 側で role="img" と「〜のグラフ（データ読み込み中）」という
+// aria-label を静的に付けてあるので、データ取得後にその aria-label を実際の数値入りへ
+// 差し替え、スクリーンリーダー利用者にもグラフと同じ情報が届くようにする(§7)。
+// labels と values は Chart.js に渡すものと同一の配列を受け取る。
+function describeChart(canvasId, title, labels, values) {
+    // 対象の canvas を取得する
+    const canvas = document.getElementById(canvasId);
+    // 想定の要素が無ければ何もしない(ページ構成変更時の保険)
+    if (!canvas) return;
+    // 「ラベル 件数件」の並びを作る(値が無いラベルは 0 件として読み上げる)
+    const parts = labels.map((label, i) => `${label} ${values[i] ?? 0}件`);
+    // データが 1 件も無い場合は、その旨だけを伝える
+    const body = parts.length > 0 ? parts.join('、') : 'データがありません';
+    // aria-label はテキストとして読み上げられるだけなので HTML エスケープは不要
+    // (innerHTML と違い、属性値としてブラウザが解釈するため)
+    canvas.setAttribute('aria-label', `${title}。${body}`);
+}
+
 // Monthly Trend
 // 月別トレンド: 折れ線チャートを描画
 loadChart('@Url.Action("MonthlyTrend", "Analytics")', (d) => {
@@ -181,6 +195,9 @@ loadChart('@Url.Action("MonthlyTrend", "Analytics")', (d) => {
             scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('trendChart', '月別インシデント発生推移（過去12ヶ月）の折れ線グラフ', d.labels, d.data);
 });
 
 // Cause Category Doughnut
@@ -197,6 +214,9 @@ loadChart('@Url.Action("ByCause", "Analytics")', (d) => {
             plugins: { legend: { position: 'bottom' } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('causeChart', '原因分類別インシデント件数のドーナツグラフ', d.labels, d.data);
 });
 
 // By Department (horizontal bar)
@@ -219,6 +239,9 @@ loadChart('@Url.Action("ByDepartment", "Analytics")', (d) => {
             scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('deptChart', '部署別インシデント件数の横棒グラフ', d.labels, d.data);
     // Store dept for later use in summary panel; #topDept is injected later by ByIncidentType
     // 最多発生部署(1 位)をサマリー用に退避。escapeHtml で HTML 特殊文字を無害化してから保持する
     window._topDept = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
@@ -251,6 +274,9 @@ loadChart('@Url.Action("BySeverity", "Analytics")', (d) => {
             scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('severityChart', '重症度別インシデント件数の棒グラフ', d.labels, d.data);
 });
 
 // Measure Status Doughnut
@@ -267,6 +293,9 @@ loadChart('@Url.Action("MeasureStatus", "Analytics")', (d) => {
             plugins: { legend: { position: 'bottom' } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('measureStatusChart', '再発防止策の実施状況（計画中・進行中・期限超過・完了）のドーナツグラフ', d.labels, d.data);
 
     // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
     // サマリー用に完了率・期限超過件数を計算して退避
@@ -302,6 +331,9 @@ loadChart('@Url.Action("EffectivenessRating", "Analytics")', (d) => {
         }
     });
 
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('effectivenessChart', '再発防止策の有効性評価（★1〜★5）分布の棒グラフ', d.labels, d.data);
+
     // Recurrence stats
     // 再発有無のテキスト表示
     const el = document.getElementById('recurrenceStats');
@@ -333,6 +365,9 @@ loadChart('@Url.Action("ByIncidentType", "Analytics")', (d) => {
             scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
         }
     });
+
+    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
+    describeChart('typeChart', 'インシデント種別別件数の棒グラフ', d.labels, d.data);
 
     // 最多種別と最多部署をサマリーに出すため計算。escapeHtml で HTML 特殊文字を無害化する
     const topType = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
