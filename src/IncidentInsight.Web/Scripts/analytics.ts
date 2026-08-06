@@ -178,6 +178,18 @@ interface AnalyticsData {
     }
   };
 
+  // サマリー欄の項目が「まだ何も書き込まれていない」(Razor の初期値のまま)ときだけ書き込む。
+  // 描画コールバックが途中で落ちた場合の後始末に使う: 既に正しい値が入っている項目を
+  // エラー文言で塗り潰さず、初期値のまま取り残された項目だけを確定した状態にするため
+  const setSummaryIfUnset = (fieldId: string, text: string): void => {
+    // 対象要素を取得する
+    const el = document.getElementById(fieldId);
+    // 初期値(NO_DATA_TEXT)のままの項目だけを書き換える
+    if (el && el.textContent === NO_DATA_TEXT) {
+      el.textContent = text;
+    }
+  };
+
   // 「ラベル (N件)」形式のサマリー表示を作る。データが空なら NO_DATA_TEXT を返す。
   // labels より data が短い(想定外のレスポンス)場合でも「undefined件」と表示しないよう 0 に倒す
   const formatTopEntry = (series: ChartSeries): string =>
@@ -223,12 +235,17 @@ interface AnalyticsData {
 
     // 描画は取得と別の try で包む。ここを取得側とまとめてしまうと、
     // 「グラフは描けたがサマリー計算で落ちた」場合にまで
-    // 「読み込めませんでした」という誤ったラベルを付けてしまうため
+    // 「読み込めませんでした」という誤ったラベルを付けてしまうため。
+    // グラフ描画の失敗自体は drawChart が内部で処理するので、ここへ到達するのは
+    // サマリー計算などコールバック本体の不具合に限られる (本来起きてはいけない経路)
     try {
       render(data);
     } catch (e) {
-      // 描画側の不具合は取得失敗と区別して記録する (原因の切り分けのため)
-      console.error('Chart render error:', url, e);
+      // 取得失敗・描画失敗と区別できるメッセージで記録する (原因の切り分けのため)
+      console.error('Chart callback error:', url, e);
+      // コールバックが途中で落ちると、まだ書かれていないサマリー項目が初期値「-」のまま残る。
+      // 既に正しい値が入った項目はそのままに、取り残された項目だけを確定した状態にする
+      summaryFields.forEach((field) => setSummaryIfUnset(field, SUMMARY_ERROR_TEXT));
     }
   };
 
@@ -243,7 +260,7 @@ interface AnalyticsData {
   // 描画の失敗はこの関数の中で閉じ込め、aria-label だけを描画失敗の状態にする。
   const drawChart = (
     canvasId: string,
-    buildConfig: (canvas: HTMLCanvasElement) => IIChartConfiguration,
+    chartConfig: IIChartConfiguration,
     labels: string[],
     values: number[],
   ): void => {
@@ -255,7 +272,7 @@ interface AnalyticsData {
     }
     try {
       // Chart.js でグラフを生成する
-      new Chart(canvas, buildConfig(canvas));
+      new Chart(canvas, chartConfig);
       // 描画したグラフと同じ内容を aria-label へ反映する (スクリーンリーダー向けの等価情報)
       describeChart(canvasId, labels, values);
     } catch (e) {
@@ -276,7 +293,7 @@ interface AnalyticsData {
   // 月別トレンド: 折れ線チャートを描画 (サマリー欄には寄与しない)
   void loadChart<ChartSeries>(config.urls.monthlyTrend, 'trendChart', [], (d) => {
     // 折れ線グラフを描画する
-    drawChart('trendChart', () => ({
+    drawChart('trendChart', {
       type: 'line',
       data: {
         labels: d.labels,
@@ -296,17 +313,17 @@ interface AnalyticsData {
         plugins: { legend: { display: false } },
         scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
       },
-    }), d.labels, d.data);
+    }, d.labels, d.data);
   });
 
   // 原因分類別: ドーナツチャートを描画 (サマリー欄には寄与しない)
   void loadChart<ChartSeries>(config.urls.byCause, 'causeChart', [], (d) => {
     // ドーナツグラフを描画する
-    drawChart('causeChart', () => ({
+    drawChart('causeChart', {
       type: 'doughnut',
       data: { labels: d.labels, datasets: [{ data: d.data, backgroundColor: COLORS }] },
       options: { responsive: true, plugins: { legend: { position: 'bottom' } } },
-    }), d.labels, d.data);
+    }, d.labels, d.data);
   });
 
   // 部署別: 横棒グラフを描画し、最多発生部署をサマリーへ流し込む
@@ -316,7 +333,7 @@ interface AnalyticsData {
     [SUMMARY_FIELDS.topDept],
     (d) => {
       // 横棒グラフを描画する (indexAxis: 'y' で横向きになる)
-      drawChart('deptChart', () => ({
+      drawChart('deptChart', {
         type: 'bar',
         data: { labels: d.labels, datasets: [{ label: '件数', data: d.data, backgroundColor: TREND_LINE_COLOR }] },
         options: {
@@ -325,7 +342,7 @@ interface AnalyticsData {
           plugins: { legend: { display: false } },
           scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } },
         },
-      }), d.labels, d.data);
+      }, d.labels, d.data);
       // ByDepartment は件数の多い順に並んでいるため先頭が最多発生部署になる
       setSummary(SUMMARY_FIELDS.topDept, formatTopEntry(d));
     },
@@ -334,7 +351,7 @@ interface AnalyticsData {
   // 重症度別: 棒グラフを描画 (サマリー欄には寄与しない)
   void loadChart<ChartSeries>(config.urls.bySeverity, 'severityChart', [], (d) => {
     // 重症度バッジと同じ配色 (サーバ側で EnumLabels から解決済み) で棒グラフを描画する
-    drawChart('severityChart', () => ({
+    drawChart('severityChart', {
       type: 'bar',
       data: { labels: d.labels, datasets: [{ label: '件数', data: d.data, backgroundColor: config.severityColors }] },
       options: {
@@ -342,7 +359,7 @@ interface AnalyticsData {
         plugins: { legend: { display: false } },
         scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
       },
-    }), d.labels, d.data);
+    }, d.labels, d.data);
   });
 
   // 対策ステータス別: ドーナツチャートを描画し、完了率と期限超過件数をサマリーへ流し込む
@@ -352,11 +369,11 @@ interface AnalyticsData {
     [SUMMARY_FIELDS.completionRate, SUMMARY_FIELDS.overdueMeasures],
     (d) => {
       // ドーナツグラフを描画する (配色もサーバ側 EnumLabels 由来)
-      drawChart('measureStatusChart', () => ({
+      drawChart('measureStatusChart', {
         type: 'doughnut',
         data: { labels: d.labels, datasets: [{ data: d.data, backgroundColor: d.colors }] },
         options: { responsive: true, plugins: { legend: { position: 'bottom' } } },
-      }), d.labels, d.data);
+      }, d.labels, d.data);
 
       // バケットをラベル一致で引き当てる。以前は d.data[3] / d.data[2] と位置で取り出しており、
       // サーバ側でバケットを 1 つ挿入・並べ替えするだけで黙って別の数値を表示していた (§6)
@@ -396,7 +413,7 @@ interface AnalyticsData {
     [SUMMARY_FIELDS.failedMeasures],
     (d) => {
       // ★1〜★5 の棒グラフを描画する
-      drawChart('effectivenessChart', () => ({
+      drawChart('effectivenessChart', {
         type: 'bar',
         data: { labels: d.labels, datasets: [{ label: '対策数', data: d.data, backgroundColor: EFFECTIVENESS_COLORS }] },
         options: {
@@ -404,7 +421,7 @@ interface AnalyticsData {
           plugins: { legend: { display: false } },
           scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
         },
-      }), d.labels, d.data);
+      }, d.labels, d.data);
 
       // 再発なし / 再発ありの件数は Razor 側の静的マークアップ (<strong> 要素) へ数値だけ書き込む。
       // 以前は innerHTML でマークアップごと組み立てていた (§9 生 HTML 挿入を避ける)
@@ -422,7 +439,7 @@ interface AnalyticsData {
     [SUMMARY_FIELDS.topType],
     (d) => {
       // 種別別の棒グラフを描画する
-      drawChart('typeChart', () => ({
+      drawChart('typeChart', {
         type: 'bar',
         data: { labels: d.labels, datasets: [{ label: '件数', data: d.data, backgroundColor: COLORS }] },
         options: {
@@ -430,7 +447,7 @@ interface AnalyticsData {
           plugins: { legend: { display: false } },
           scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } },
         },
-      }), d.labels, d.data);
+      }, d.labels, d.data);
       // ByIncidentType は件数の多い順に並んでいるため先頭が最多種別になる
       setSummary(SUMMARY_FIELDS.topType, formatTopEntry(d));
     },
