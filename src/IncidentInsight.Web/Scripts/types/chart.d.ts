@@ -58,9 +58,12 @@ interface IIChartOptions {
   responsive?: boolean;
   // 縦横比を維持するか
   maintainAspectRatio?: boolean;
+  // 棒グラフの並び方向。'y' を指定すると横棒グラフになる (分析画面の部署別グラフで使用)
+  indexAxis?: 'x' | 'y';
   // 内部プラグインの設定 (凡例・ツールチップなど)
   plugins?: {
-    legend?: { display?: boolean };
+    // 凡例。position はドーナツグラフのように系列名を下部へ出したいときに指定する
+    legend?: { display?: boolean; position?: 'top' | 'bottom' | 'left' | 'right' };
     tooltip?: { enabled?: boolean };
   };
   // x / y 軸の設定

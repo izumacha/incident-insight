@@ -101,7 +101,10 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 ### ビュー / フロント
 
 - Razor ビューはコントローラ名に対応（`src/IncidentInsight.Web/Views/`）。重症度/状態バッジは Model の計算 `*Color` プロパティ（Bootstrap カラー名）を使い、View に直書きしない。
-- Bootstrap 5 / Bootstrap Icons / jQuery Validation Unobtrusive / Chart.js 4 を CDN から読み込み（npm ビルドなし）。
+- Bootstrap 5 / Bootstrap Icons / jQuery Validation Unobtrusive / Chart.js 4 は CDN から SRI 付きで読み込む（バンドラは無し）。
+- **アプリ固有の JS は TypeScript で書く。** `src/IncidentInsight.Web/Scripts/**/*.ts` を `tsc`（`tsconfig.json`, `strict: true`）が `wwwroot/js/` へ出力し、`.csproj` の `CompileTypeScript` ターゲットが `dotnet build` 時に実行する（`wwwroot/js/*.js` は生成物なので gitignore 済み）。型チェック単独は `npm run typecheck`。
+- **ページ固有のスクリプトは inline `<script>` に書かない。** Razor からデータを渡すときは `<script type="application/json" id="...-data">` のデータ島に埋め、対応する `Scripts/<page>.ts` が IIFE で読み取る（`Home/Index.cshtml` ↔ `dashboard.ts`、`Analytics/Index.cshtml` ↔ `analytics.ts`）。inline script は tsc の型チェックを受けられず、`SecurityHeadersMiddleware` が CSP を導入する際の障害にもなる。ルート直書き（`/Analytics/...`）ではなく `Url.Action` の結果をデータ島経由で渡す（PathBase 付き配備で 404 にしないため）。
+- **JS から DOM へ値を流し込むときは `textContent` を使う**（`innerHTML` でのマークアップ組み立てを避ける。§9）。表示の骨組みは Razor 側に静的に置き、JS は値だけを差し替える。フェッチ失敗時は「読み込み中」表示のまま放置せず、確定した失敗表示へ切り替える（§7）。
 
 ### テスト（`tests/IncidentInsight.Tests/`）
 

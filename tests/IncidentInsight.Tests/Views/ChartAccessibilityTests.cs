@@ -35,7 +35,8 @@ public class ChartAccessibilityTests
         new(@"aria-label\s*=\s*""(?<value>[^""]*)""", RegexOptions.None);
 
     // 分析ページの canvas が初期 aria-label の末尾に必ず付ける「読み込み中」サフィックス。
-    // Views/Analytics/Index.cshtml の JS 側 CHART_LOADING_SUFFIX と同じ文字列
+    // Scripts/analytics.ts の CHART_LOADING_SUFFIX と同じ文字列
+    // (以前は Views/Analytics/Index.cshtml の inline script 内にあったが TypeScript へ切り出した)
     private const string ChartLoadingSuffix = "（データ読み込み中）";
 
     [Fact]

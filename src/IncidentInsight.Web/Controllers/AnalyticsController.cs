@@ -235,18 +235,29 @@ public class AnalyticsController : Controller
         var completed = counts?.Completed ?? 0;
 
         // ラベル・件数・色をひとまとめにして JSON 返却(Chart.js の Doughnut 用)。
-        // 色は16進値を直書きせず EnumLabels.Hex(色の一元管理元)から引く(§6。
+        // ラベルは日本語文字列を直書きせず EnumLabels(ラベルの一元管理元)から引く(§6)。
+        // 直書きしていた頃は、同じ「計画中 / 進行中 / 完了」が EnumLabels.StatusJa と
+        // ここの 2 箇所に存在し、片方だけ表記を変えるとカンバンのバッジと分析グラフで
+        // 名前が食い違う状態になりえた。enum に無い派生状態の「期限超過」だけは
+        // EnumLabels.MeasureOverdueLabel を唯一の源とする。
+        // 色も16進値を直書きせず EnumLabels.Hex(色の一元管理元)から引く(§6。
         // 計画中=warning / 進行中=primary / 期限超過=danger / 完了=success)
         return Json(new
         {
-            labels = new[] { "計画中", "進行中", "期限超過", "完了" },
+            labels = new[]
+            {
+                EnumLabels.Japanese(Models.Enums.MeasureStatus.Planned),
+                EnumLabels.Japanese(Models.Enums.MeasureStatus.InProgress),
+                EnumLabels.MeasureOverdueLabel,
+                EnumLabels.Japanese(Models.Enums.MeasureStatus.Completed)
+            },
             data = new[] { planned, inProgress, overdue, completed },
             colors = new[]
             {
-                Models.Enums.EnumLabels.Hex("warning"),
-                Models.Enums.EnumLabels.Hex("primary"),
-                Models.Enums.EnumLabels.Hex("danger"),
-                Models.Enums.EnumLabels.Hex("success")
+                EnumLabels.Hex("warning"),
+                EnumLabels.Hex("primary"),
+                EnumLabels.Hex("danger"),
+                EnumLabels.Hex("success")
             }
         });
     }

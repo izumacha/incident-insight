@@ -39,6 +39,14 @@ public static class EnumLabels
         [MeasureStatus.Completed] = "完了"
     };
 
+    // 「期限超過」バケットの日本語ラベル。MeasureStatus enum には存在しない派生状態
+    // (未完了 かつ 期限日が今日より前 = PreventiveMeasure.OverdueOn の条件)なので
+    // StatusJa には入れられないが、分析画面のドーナツグラフでは他の 3 ステータスと
+    // 同列のバケットとして表示される。AnalyticsController(集計側)と
+    // Views/Analytics/Index.cshtml(サマリー欄がこのラベルでバケットを引き当てる側)の
+    // 2 箇所が同じ文字列を必要とするため、他の enum ラベルと同じくここを唯一の源にする(§6)
+    public const string MeasureOverdueLabel = "期限超過";
+
     // 対策種別 → 日本語ラベルへの変換表
     private static readonly Dictionary<MeasureTypeKind, string> MeasureTypeJa = new()
     {
