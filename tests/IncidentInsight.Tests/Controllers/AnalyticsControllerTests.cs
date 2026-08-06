@@ -170,6 +170,30 @@ public class AnalyticsControllerTests : IDisposable
         Assert.Equal(4, doc.RootElement.GetProperty("colors").GetArrayLength());
     }
 
+    // 分析画面のサマリー欄(Scripts/analytics.ts)は、位置ではなくラベル一致で
+    // 「期限超過」「完了」バケットを引き当てる。ラベルの唯一の源は EnumLabels であり、
+    // ここで日本語文字列を直書きし直すと EnumLabels 側の表記変更に追従できず、
+    // サマリー欄が黙って「取得できません」に落ちる。EnumLabels 由来であることを固定する(§6)
+    [Fact]
+    public async Task MeasureStatus_LabelsComeFromEnumLabels_NotHardcodedStrings()
+    {
+        // 対策が 0 件でもラベル配列は常に 4 バケット分返る(件数だけが 0 になる)
+        var result = await _controller.MeasureStatus();
+        using var doc = ToJsonDocument(result);
+
+        // 返却されたラベル配列を文字列として取り出す
+        var labels = doc.RootElement.GetProperty("labels").EnumerateArray()
+            .Select(e => e.GetString())
+            .ToList();
+
+        // 3 つの enum ラベルは EnumLabels.Japanese(MeasureStatus) と一致すること
+        Assert.Equal(EnumLabels.Japanese(MeasureStatus.Planned), labels[0]);
+        Assert.Equal(EnumLabels.Japanese(MeasureStatus.InProgress), labels[1]);
+        // enum に無い派生バケットは EnumLabels.MeasureOverdueLabel を唯一の源とすること
+        Assert.Equal(EnumLabels.MeasureOverdueLabel, labels[2]);
+        Assert.Equal(EnumLabels.Japanese(MeasureStatus.Completed), labels[3]);
+    }
+
     [Fact]
     public async Task EffectivenessRating_ReturnsFiveBucketsAndRecurrenceStats()
     {

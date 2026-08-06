@@ -18,11 +18,16 @@ namespace IncidentInsight.Web.Middleware;
 ///     他サイトへ遷移する際に、インシデント ID 等を含みうる完全な URL パスを
 ///     Referer ヘッダーで漏らさないようにする(オリジンのみ許可)。
 ///
-/// Content-Security-Policy は意図的に付与しない: 本アプリは Views/Home/Index.cshtml の
-/// ダッシュボード用データ埋め込みや Shared/_Layout.cshtml のテーマ復元スクリプトなど、
-/// nonce を持たないインライン &lt;script&gt; を複数箇所で使用しており、'unsafe-inline' なしの
-/// CSP を安全に適用するには大掛かりなリファクタが必要になる(このミドルウェアの最小スコープを
-/// 超えるため別 PR で扱う)。
+/// Content-Security-Policy は意図的に付与しない: 本アプリはまだ nonce を持たないインライン
+/// &lt;script&gt; を使用している画面が残っており、'unsafe-inline' なしの CSP を安全に適用するには
+/// 大掛かりなリファクタが必要になる(このミドルウェアの最小スコープを超えるため別 PR で扱う)。
+/// 残っているインライン &lt;script&gt;(2026-08 時点):
+///   - Shared/_Layout.cshtml のテーマ復元スクリプト(CSS 適用前に走る必要があり外部化しにくい)
+///   - Incidents/Create.cshtml の対策行の追加・削除・添字振り直し
+///   - Incidents/Details.cshtml
+/// なお Home/Index.cshtml と Analytics/Index.cshtml は
+/// 「&lt;script type="application/json"&gt; のデータ島 + 外部 js(Scripts/*.ts のコンパイル結果)」構成へ
+/// 移行済みで、実行されるインライン &lt;script&gt; は持たない(データ島は実行されないため CSP の対象外)。
 /// </summary>
 public sealed class SecurityHeadersMiddleware
 {

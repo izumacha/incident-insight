@@ -89,8 +89,13 @@
             </div>
             <div class="card-body">
                 <canvas id="effectivenessChart" height="180" role="img" aria-label="再発防止策の有効性評価（★1〜★5）分布の棒グラフ（データ読み込み中）"></canvas>
-                @* 再発あり/なしの件数を表示する領域 *@
-                <div id="recurrenceStats" class="mt-2 text-center small text-muted"></div>
+                @* 再発あり/なしの件数を表示する領域。マークアップはここに静的に置き、 *@
+                @* analytics.ts は <strong> の中身(数値)だけを textContent で差し替える(§9 生 HTML 挿入を避ける) *@
+                <div class="mt-2 text-center small text-muted">
+                    再発なし（対策有効）: <strong class="text-success" id="recurrencePrevented">-</strong>
+                    &nbsp;|&nbsp;
+                    再発あり（要追加対策）: <strong class="text-danger" id="recurrenceRecurred">-</strong>
+                </div>
             </div>
         </div>
     </div>
@@ -116,353 +121,73 @@
         <h6 class="mb-0"><i class="bi bi-clipboard-data me-2 text-primary"></i>分析サマリー</h6>
     </div>
     <div class="card-body">
-        @* データ読み込み完了後に JS で上書きされる領域 *@
-        <div id="summaryContent" class="row g-3">
-            <div class="col text-center text-muted">
-                <div class="spinner-border spinner-border-sm" role="status"></div>
-                <div>データ読み込み中...</div>
+        @* サマリー欄の骨組みは静的に描画し、値の入る要素だけを analytics.ts が textContent で埋める。 *@
+        @* 以前はこの領域全体を ByIncidentType の成功コールバックが innerHTML で生成していたため、 *@
+        @* その 1 本のフェッチが失敗するとスピナーが永久に回り続けていた(§7 / §6 エラーを握り潰さない)。 *@
+        @* 各項目の初期値「-」は、対応するフェッチが完了した時点で数値かエラー文言に置き換わる。 *@
+        <div class="row g-3">
+            <div class="col-md-2 text-center border-end">
+                <div class="text-muted small">最多発生部署</div>
+                <div class="fw-bold" id="topDept">-</div>
+            </div>
+            <div class="col-md-2 text-center border-end">
+                <div class="text-muted small">最多インシデント種別</div>
+                <div class="fw-bold" id="topType">-</div>
+            </div>
+            <div class="col-md-2 text-center border-end">
+                <div class="text-muted small">対策完了率</div>
+                <div class="fw-bold fs-5 text-success" id="completionRate">-</div>
+            </div>
+            <div class="col-md-2 text-center border-end">
+                <div class="text-muted small text-danger">再発確認対策数</div>
+                <div class="fw-bold fs-5 text-danger" id="failedMeasures">-</div>
+            </div>
+            <div class="col-md-2 text-center">
+                <div class="text-muted small">期限超過対策数</div>
+                <div class="fw-bold fs-5 text-warning" id="overdueMeasures">-</div>
             </div>
         </div>
     </div>
 </div>
 
-@* ページ固有のスクリプト: 各 JSON API を叩いて Chart.js を初期化 *@
+@* ページ固有の JavaScript(Chart.js 初期化) *@
+@* Razor から TypeScript (Scripts/analytics.ts) へデータを渡す仕組みは *@
+@* Views/Home/Index.cshtml → Scripts/dashboard.ts と同じ 2 段構成に揃えている: *@
+@*   1) <script type="application/json"> でデータを埋め込む(HTML エスケープ済み) *@
+@*   2) analytics.js が IIFE で起動し、その JSON を読み取って各 JSON API を叩き Chart.js を初期化する *@
+@* これにより従来 330 行あった inline script が TypeScript の型チェック対象になる *@
 @section Scripts {
-<script>
-// チャート用の共通カラーパレット
-const COLORS = ['#0d6efd','#6610f2','#fd7e14','#198754','#dc3545','#0dcaf0','#ffc107','#6c757d','#d63384'];
-
-// グラフの読み込み状態を表す aria-label の末尾サフィックス。
-// Razor 側の静的な aria-label は「<グラフ名>（データ読み込み中）」という形で書いてあり、
-// JS はこのサフィックスを目印に「グラフ名」だけを取り出す(§6 マジック文字列を避ける)
-const CHART_LOADING_SUFFIX = '（データ読み込み中）';
-// 取得に失敗したときに付け替えるサフィックス
-const CHART_ERROR_SUFFIX = '（データを読み込めませんでした）';
-
-// canvas の id → グラフ名(状態サフィックスを外したもの)の対応表。
-// グラフ名を Razor の aria-label 側だけに置き、JS には同じ文字列を書かないための退避
-// (書き写すと Razor だけ直したときに JS の古い名前で上書きされる。§6 DRY)
-const chartBaseNames = new Map();
-
-// ページ読み込み直後の aria-label からグラフ名を取り出して退避する。
-// この <script> は @@section Scripts 経由で body 末尾に出力されるため、
-// この時点で対象の canvas はすべて DOM 上に存在する
-document.querySelectorAll('canvas[aria-label]').forEach((canvas) => {
-    // Razor が書いた初期ラベル(「〜のグラフ（データ読み込み中）」)を読む
-    const label = canvas.getAttribute('aria-label');
-    // 末尾が読み込み中サフィックスならそれを取り除いた部分がグラフ名。
-    // 付いていないラベル(ダッシュボード等の書式)はそのままグラフ名として扱う
-    const baseName = label.endsWith(CHART_LOADING_SUFFIX)
-        ? label.slice(0, -CHART_LOADING_SUFFIX.length)
-        : label;
-    // id をキーに退避する
-    chartBaseNames.set(canvas.id, baseName);
-});
-
-// canvas の aria-label を「グラフ名＋状態」の形に組み立て直す共通処理。
-// 成功時は数値入りの本文、失敗時はエラー文言と、状態ごとの差し替え口を 1 つにまとめる
-function setChartLabel(canvasId, suffix) {
-    // 対象の canvas を取得する
-    const canvas = document.getElementById(canvasId);
-    // 想定の要素が無ければ何もしない(ページ構成変更時の保険)
-    if (!canvas) return;
-    // 退避しておいたグラフ名に、渡された状態文字列を連結して書き戻す
-    canvas.setAttribute('aria-label', `${chartBaseNames.get(canvasId) ?? ''}${suffix}`);
-}
-
-// 指定 URL から JSON を取得し、成功したらコールバックに渡す小さなヘルパー
-// 各呼び出し元の URL は '/Analytics/...' と直書きせず @@Url.Action で生成する。
-// ルート直書きだとリバースプロキシ配下のサブパス配備時に PathBase が付かず 404 になるため
-// (Views/Incidents/Details.cshtml・Views/Home/Index.cshtml と同じ対策)
-//
-// canvasId は失敗時に aria-label を「読み込み中」のまま放置しないために受け取る。
-// 放置すると、描画されないグラフをスクリーンリーダーが永久に「読み込み中」と読み上げ続け、
-// 待てば表示されるという誤った期待を与えてしまう(§7 / §6 エラーを握り潰さない)
-async function loadChart(url, canvasId, callback) {
-    // 取得したデータの置き場(取得と描画で try を分けるため外側で宣言する)
-    let data;
-    try {
-        const res = await fetch(url);
-        // HTTP エラー(401/500 等)は fetch では例外にならないため明示的に弾く。
-        // これを見ないと、エラーページの HTML を JSON として解析しようとして
-        // 分かりにくい構文エラーになる
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        // 本文を JSON として解析する
-        data = await res.json();
-    } catch(e) {
-        // 開発者向けには原因を残す(利用者向けの画面には内部詳細を出さない。§9)
-        console.error('Chart load error:', url, e);
-        // 支援技術には「読み込めなかった」という確定した状態を伝えて、ここで打ち切る
-        setChartLabel(canvasId, CHART_ERROR_SUFFIX);
-        return;
-    }
-
-    // 描画は取得と別の try で包む。ここを取得側とまとめてしまうと、
-    // 「グラフは描けたがサマリー計算で落ちた」場合にまで
-    // 「読み込めませんでした」という誤ったラベルを付けてしまうため
-    try {
-        callback(data);
-    } catch(e) {
-        // 描画側の不具合は取得失敗と区別して記録する(原因の切り分けのため)
-        console.error('Chart render error:', url, e);
-    }
-}
-
-// DB 由来の文字列(部署名・インシデント種別など)を innerHTML に埋め込む前に
-// HTML として解釈されないようエスケープする(XSS対策の多層防御。サーバ側でも
-// 部署の許可リスト検証を行っているが、想定外の書き込み経路や過去データにも
-// 備え、表示側でも安全に倒す)
-function escapeHtml(str) {
-    const div = document.createElement('div');
-    div.textContent = str;
-    return div.innerHTML;
-}
-
-// canvas はビットマップなので、描画されたグラフの中身は支援技術に一切伝わらない。
-// 各 canvas には Razor 側で role="img" と「〜のグラフ（データ読み込み中）」という
-// aria-label を静的に付けてあるので、データ取得後にその aria-label を実際の数値入りへ
-// 差し替え、スクリーンリーダー利用者にもグラフと同じ情報が届くようにする(§7)。
-// グラフ名は chartBaseNames から引くため、ここでは受け取らない(Razor 側が唯一の源)。
-// labels と values は Chart.js に渡すものと同一の配列を受け取る。
-function describeChart(canvasId, labels, values) {
-    // 「ラベル 件数件」の並びを作る(値が無いラベルは 0 件として読み上げる)
-    const parts = labels.map((label, i) => `${label} ${values[i] ?? 0}件`);
-    // データが 1 件も無い場合は、その旨だけを伝える
-    const body = parts.length > 0 ? parts.join('、') : 'データがありません';
-    // aria-label はテキストとして読み上げられるだけなので HTML エスケープは不要
-    // (innerHTML と違い、属性値としてブラウザが解釈するため)
-    setChartLabel(canvasId, `。${body}`);
-}
-
-// Monthly Trend
-// 月別トレンド: 折れ線チャートを描画
-loadChart('@Url.Action("MonthlyTrend", "Analytics")', 'trendChart', (d) => {
-    new Chart(document.getElementById('trendChart'), {
-        type: 'line',
-        data: {
-            labels: d.labels,
-            datasets: [{
-                label: 'インシデント件数',
-                data: d.data,
-                borderColor: '#0d6efd',
-                backgroundColor: 'rgba(13,110,253,0.08)',
-                tension: 0.3, fill: true,
-                pointRadius: 5, pointBackgroundColor: '#0d6efd'
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('trendChart', d.labels, d.data);
-});
-
-// Cause Category Doughnut
-// 原因分類別ドーナツ
-loadChart('@Url.Action("ByCause", "Analytics")', 'causeChart', (d) => {
-    new Chart(document.getElementById('causeChart'), {
-        type: 'doughnut',
-        data: {
-            labels: d.labels,
-            datasets: [{ data: d.data, backgroundColor: COLORS }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { position: 'bottom' } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('causeChart', d.labels, d.data);
-});
-
-// By Department (horizontal bar)
-// 部署別の横棒グラフ
-loadChart('@Url.Action("ByDepartment", "Analytics")', 'deptChart', (d) => {
-    new Chart(document.getElementById('deptChart'), {
-        type: 'bar',
-        data: {
-            labels: d.labels,
-            datasets: [{
-                label: '件数',
-                data: d.data,
-                backgroundColor: '#0d6efd'
-            }]
-        },
-        options: {
-            indexAxis: 'y',
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: { x: { beginAtZero: true, ticks: { stepSize: 1 } } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('deptChart', d.labels, d.data);
-    // Store dept for later use in summary panel; #topDept is injected later by ByIncidentType
-    // 最多発生部署(1 位)をサマリー用に退避。escapeHtml で HTML 特殊文字を無害化してから保持する
-    window._topDept = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
-    // サマリー領域が既に描画されていれば即反映(fetch の完了順は不定のため双方向に注入する。
-    // 値は上で escapeHtml 済みなので innerHTML で安全に反映できる)
-    const tdEl = document.getElementById('topDept');
-    if (tdEl) tdEl.innerHTML = window._topDept;
-});
-
-// By Severity
-// 重症度別の棒グラフ
-loadChart('@Url.Action("BySeverity", "Analytics")', 'severityChart', (d) => {
-    // 重症度に対応した色配列。BySeverity は enum 定義順で全重症度を返すため、
-    // 同じ順序で EnumLabels(色の一元管理元)からバッジと同じ配色を生成する。
-    // ここに16進値を直書きすると EnumLabels とズレたときに気づけない(§6)。
-    const severityColors = [@Html.Raw(string.Join(",", IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities.Select(s => $"'{IncidentInsight.Web.Models.Enums.EnumLabels.Hex(IncidentInsight.Web.Models.Enums.EnumLabels.Color(s))}'")))];
-    new Chart(document.getElementById('severityChart'), {
-        type: 'bar',
-        data: {
-            labels: d.labels,
-            datasets: [{
-                label: '件数',
-                data: d.data,
-                backgroundColor: severityColors
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('severityChart', d.labels, d.data);
-});
-
-// Measure Status Doughnut
-// 対策ステータス別ドーナツ(計画/進行/超過/完了)
-loadChart('@Url.Action("MeasureStatus", "Analytics")', 'measureStatusChart', (d) => {
-    new Chart(document.getElementById('measureStatusChart'), {
-        type: 'doughnut',
-        data: {
-            labels: d.labels,
-            datasets: [{ data: d.data, backgroundColor: d.colors }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { position: 'bottom' } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('measureStatusChart', d.labels, d.data);
-
-    // Store computed values; #completionRate/#overdueMeasures are injected later by ByIncidentType
-    // サマリー用に完了率・期限超過件数を計算して退避
-    const total = d.data.reduce((a, b) => a + b, 0);
-    const completed = d.data[3]; // index 3 = 完了
-    const rate = total > 0 ? Math.round(completed / total * 100) : 0;
-    window._completionRate = rate + '%';
-    window._overdueMeasures = d.data[2] + '件'; // index 2 = 期限超過
-    // サマリー領域が既に描画されていれば即反映
-    const crEl = document.getElementById('completionRate');
-    if (crEl) crEl.textContent = window._completionRate;
-    const omEl = document.getElementById('overdueMeasures');
-    if (omEl) omEl.textContent = window._overdueMeasures;
-});
-
-// Effectiveness Rating
-// 有効性評価チャート + 再発統計
-loadChart('@Url.Action("EffectivenessRating", "Analytics")', 'effectivenessChart', (d) => {
-    new Chart(document.getElementById('effectivenessChart'), {
-        type: 'bar',
-        data: {
-            labels: d.labels,
-            datasets: [{
-                label: '対策数',
-                data: d.data,
-                backgroundColor: ['#dc3545','#fd7e14','#ffc107','#198754','#0d6efd']
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('effectivenessChart', d.labels, d.data);
-
-    // Recurrence stats
-    // 再発有無のテキスト表示
-    const el = document.getElementById('recurrenceStats');
-    el.innerHTML = `再発なし（対策有効）: <strong class="text-success">${d.recurrenceStats.prevented}件</strong> &nbsp;|&nbsp; 再発あり（要追加対策）: <strong class="text-danger">${d.recurrenceStats.recurred}件</strong>`;
-
-    // Store value; #failedMeasures is injected later by ByIncidentType
-    // サマリー用に再発確認件数を退避
-    window._failedMeasures = d.recurrenceStats.recurred + '件';
-    const fmEl = document.getElementById('failedMeasures');
-    if (fmEl) fmEl.textContent = window._failedMeasures;
-});
-
-// By Incident Type
-// インシデント種別別棒グラフ + サマリーパネル生成
-loadChart('@Url.Action("ByIncidentType", "Analytics")', 'typeChart', (d) => {
-    new Chart(document.getElementById('typeChart'), {
-        type: 'bar',
-        data: {
-            labels: d.labels,
-            datasets: [{
-                label: '件数',
-                data: d.data,
-                backgroundColor: COLORS
-            }]
-        },
-        options: {
-            responsive: true,
-            plugins: { legend: { display: false } },
-            scales: { y: { beginAtZero: true, ticks: { stepSize: 1 } } }
-        }
-    });
-
-    // 描画したグラフと同じ内容を aria-label へ反映する(スクリーンリーダー向けの等価情報)
-    describeChart('typeChart', d.labels, d.data);
-
-    // 最多種別と最多部署をサマリーに出すため計算。escapeHtml で HTML 特殊文字を無害化する
-    const topType = d.labels.length > 0 ? escapeHtml(d.labels[0]) + ' (' + d.data[0] + '件)' : '-';
-    const topDept = window._topDept || '-';
-
-    // Reveal summary panel (injected once all data is ready)
-    // サマリーパネルの HTML を書き換えて表示
-    document.getElementById('summaryContent').innerHTML = `
-        <div class="col-md-2 text-center border-end">
-            <div class="text-muted small">最多発生部署</div>
-            <div class="fw-bold" id="topDept">${topDept}</div>
-        </div>
-        <div class="col-md-2 text-center border-end">
-            <div class="text-muted small">最多インシデント種別</div>
-            <div class="fw-bold">${topType}</div>
-        </div>
-        <div class="col-md-2 text-center border-end">
-            <div class="text-muted small">対策完了率</div>
-            <div class="fw-bold fs-5 text-success" id="completionRate">-</div>
-        </div>
-        <div class="col-md-2 text-center border-end">
-            <div class="text-muted small text-danger">再発確認対策数</div>
-            <div class="fw-bold fs-5 text-danger" id="failedMeasures">-</div>
-        </div>
-        <div class="col-md-2 text-center">
-            <div class="text-muted small">期限超過対策数</div>
-            <div class="fw-bold fs-5 text-warning" id="overdueMeasures">-</div>
-        </div>
-    `;
-    // Apply values already computed by other callbacks (async ordering is non-deterministic)
-    // 他のコールバックが先に完了していれば既に退避した値を反映する
-    if (window._completionRate) document.getElementById('completionRate').textContent = window._completionRate;
-    if (window._failedMeasures) document.getElementById('failedMeasures').textContent = window._failedMeasures;
-    if (window._overdueMeasures) document.getElementById('overdueMeasures').textContent = window._overdueMeasures;
-});
-</script>
+    @* 分析画面用データ(各 API の URL・重症度の配色・バケット引き当て用ラベル) *@
+    <script id="analytics-data" type="application/json">
+        @Html.Raw(System.Text.Json.JsonSerializer.Serialize(new {
+            // 各 JSON API の URL。JS 側でルートを直書きするとリバースプロキシのサブパス配備で
+            // PathBase が付かず 404 になるため、サーバー側で生成して渡す
+            urls = new {
+                monthlyTrend = Url.Action("MonthlyTrend", "Analytics"),
+                byCause = Url.Action("ByCause", "Analytics"),
+                byDepartment = Url.Action("ByDepartment", "Analytics"),
+                bySeverity = Url.Action("BySeverity", "Analytics"),
+                measureStatus = Url.Action("MeasureStatus", "Analytics"),
+                effectivenessRating = Url.Action("EffectivenessRating", "Analytics"),
+                byIncidentType = Url.Action("ByIncidentType", "Analytics")
+            },
+            // 重症度別グラフの配色。BySeverity は enum 定義順で全重症度を返すため、
+            // 同じ順序で EnumLabels(色の一元管理元)からバッジと同じ配色を生成する。
+            // JS 側に16進値を直書きすると EnumLabels とズレたときに気づけない(§6)
+            severityColors = IncidentInsight.Web.Models.Enums.EnumLabels.AllSeverities
+                .Select(s => IncidentInsight.Web.Models.Enums.EnumLabels.Hex(
+                    IncidentInsight.Web.Models.Enums.EnumLabels.Color(s))),
+            // MeasureStatus の labels 配列から「期限超過」「完了」のバケットを引き当てるためのラベル。
+            // 位置(インデックス)で取り出すとバケットの増減で黙って別の数値を表示するため、
+            // AnalyticsController と同じ EnumLabels 由来のラベルで一致検索させる(§6)
+            measureStatusLabels = new {
+                overdue = IncidentInsight.Web.Models.Enums.EnumLabels.MeasureOverdueLabel,
+                completed = IncidentInsight.Web.Models.Enums.EnumLabels.Japanese(
+                    IncidentInsight.Web.Models.Enums.MeasureStatus.Completed)
+            }
+        }))
+    </script>
+    @* TypeScript からコンパイルされた analytics.js を読み込む *@
+    @* CDN の Chart.js (グローバル Chart) はレイアウトで先に読み込まれているため、この時点で利用可能 *@
+    <script src="~/js/analytics.js" asp-append-version="true"></script>
 }
