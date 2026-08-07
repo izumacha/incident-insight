@@ -99,7 +99,11 @@ public static class EnumLabels
         ["danger"] = "#dc3545",
         ["warning"] = "#ffc107",
         ["info"] = "#0dcaf0",
-        ["dark"] = "#212529"
+        ["dark"] = "#212529",
+        // Bootstrap 5.3 の拡張パレット($orange)。テーマ色ではないためバッジのクラス名としては
+        // 使えないが、有効性評価グラフ(EffectivenessScale.ColorName)が「赤→黄」の中間色として
+        // 参照する。16進値をグラフ側に直書きさせないため、他の色と同じくここを源にする(§6)
+        ["orange"] = "#fd7e14"
     };
 
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)

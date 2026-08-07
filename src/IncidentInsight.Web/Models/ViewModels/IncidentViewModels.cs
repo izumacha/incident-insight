@@ -312,10 +312,11 @@ public class ReviewViewModel
     // 楽観的同時実行制御トークン。
     public Guid ConcurrencyToken { get; set; }
 
-    // 有効性評価(1〜5、必須)
+    // 有効性評価(1〜5、必須)。段階数・表示名・エラーメッセージは
+    // EffectivenessScale(尺度の唯一の源)から引き、画面ごとの食い違いを防ぐ(§6)
     [Required]
-    [Range(1, 5, ErrorMessage = "1〜5で評価してください")]
-    [Display(Name = "有効性評価（1=効果なし〜5=非常に効果あり）")]
+    [Range(EffectivenessScale.Min, EffectivenessScale.Max, ErrorMessage = EffectivenessScale.RangeMessage)]
+    [Display(Name = EffectivenessScale.DisplayName)]
     public int EffectivenessRating { get; set; }
 
     // 有効性評価のコメント(任意)。他の自由記述欄(Description/AnalysisNote 等)と同じ

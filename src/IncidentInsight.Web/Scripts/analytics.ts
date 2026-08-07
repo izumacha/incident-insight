@@ -36,8 +36,6 @@ const NO_DATA_TEXT = '-';
 const COLORS = [
   '#0d6efd', '#6610f2', '#fd7e14', '#198754', '#dc3545', '#0dcaf0', '#ffc107', '#6c757d', '#d63384',
 ];
-// 有効性評価 (★1〜★5) の棒グラフの配色。★1=赤 → ★5=青で「悪い→良い」を色でも示す
-const EFFECTIVENESS_COLORS = ['#dc3545', '#fd7e14', '#ffc107', '#198754', '#0d6efd'];
 // 月別トレンドの折れ線色と、その下の塗りつぶし色 (半透明)
 const TREND_LINE_COLOR = '#0d6efd';
 const TREND_FILL_COLOR = 'rgba(13,110,253,0.08)';
@@ -50,14 +48,16 @@ interface ChartSeries {
   data: number[];
 }
 
-// MeasureStatus エンドポイントだけは各バケットの配色もサーバから受け取る
-interface MeasureStatusSeries extends ChartSeries {
+// バケットごとに意味づけされた色を持つグラフ (MeasureStatus / EffectivenessRating) の共通形。
+// 配色は EnumLabels(色の一元管理元)でしか解決できないため、16 進値を JS 側に直書きせず
+// サーバから受け取る。直書きすると Bootstrap のテーマ色を変えたときにグラフだけ古い色が残る (§6)
+interface ColoredSeries extends ChartSeries {
   // labels と同じ並び順の 16 進カラーコード (EnumLabels.Hex 由来)
   colors: string[];
 }
 
-// EffectivenessRating エンドポイントは評価分布に加えて再発の有無も返す
-interface EffectivenessSeries extends ChartSeries {
+// EffectivenessRating エンドポイントは評価分布・配色に加えて再発の有無も返す
+interface EffectivenessSeries extends ColoredSeries {
   // 再発の有無ごとの対策件数
   recurrenceStats: {
     // 再発が確認された (= 対策が効かなかった) 件数
@@ -155,8 +155,12 @@ interface AnalyticsData {
 
   // ── サマリー欄 ────────────────────────────────────────────
 
-  // サマリー欄の項目 id と、その値の取得元となるグラフの対応。
-  // 「どのフェッチがどの項目を埋めるか」をこの 1 か所に集約し、
+  // JS から値を流し込む「初期値 - のまま置いてある」要素の id をここに集約する。
+  // 分析サマリー欄の 5 項目に加え、有効性評価グラフの下に置いた再発内訳の 2 項目も含める。
+  // 後者を漏らしていた頃は、EffectivenessRating の取得が 401/500 で失敗すると
+  // 再発内訳だけが「-」のまま取り残され、値が 0 件なのか取得できなかったのか区別できなかった
+  // (§7 待てば表示されるという誤った期待を与えない / §6 エラーを握り潰さない)。
+  // 「どのフェッチがどの項目を埋めるか」を 1 か所に集約し、
   // 失敗時にどの項目をエラー表示にすべきかを機械的に決められるようにする
   const SUMMARY_FIELDS = {
     topDept: 'topDept',
@@ -164,6 +168,8 @@ interface AnalyticsData {
     completionRate: 'completionRate',
     failedMeasures: 'failedMeasures',
     overdueMeasures: 'overdueMeasures',
+    recurrencePrevented: 'recurrencePrevented',
+    recurrenceRecurred: 'recurrenceRecurred',
   } as const;
 
   // サマリー欄の 1 項目にテキストを流し込む。要素が無ければ何もしない (ページ構成変更時の保険)。
@@ -363,7 +369,7 @@ interface AnalyticsData {
   });
 
   // 対策ステータス別: ドーナツチャートを描画し、完了率と期限超過件数をサマリーへ流し込む
-  void loadChart<MeasureStatusSeries>(
+  void loadChart<ColoredSeries>(
     config.urls.measureStatus,
     'measureStatusChart',
     [SUMMARY_FIELDS.completionRate, SUMMARY_FIELDS.overdueMeasures],
@@ -410,12 +416,16 @@ interface AnalyticsData {
   void loadChart<EffectivenessSeries>(
     config.urls.effectivenessRating,
     'effectivenessChart',
-    [SUMMARY_FIELDS.failedMeasures],
+    [
+      SUMMARY_FIELDS.failedMeasures,
+      SUMMARY_FIELDS.recurrencePrevented,
+      SUMMARY_FIELDS.recurrenceRecurred,
+    ],
     (d) => {
-      // ★1〜★5 の棒グラフを描画する
+      // ★1〜★5 の棒グラフを描画する (配色もサーバ側 EffectivenessScale → EnumLabels 由来)
       drawChart('effectivenessChart', {
         type: 'bar',
-        data: { labels: d.labels, datasets: [{ label: '対策数', data: d.data, backgroundColor: EFFECTIVENESS_COLORS }] },
+        data: { labels: d.labels, datasets: [{ label: '対策数', data: d.data, backgroundColor: d.colors }] },
         options: {
           responsive: true,
           plugins: { legend: { display: false } },
@@ -425,8 +435,8 @@ interface AnalyticsData {
 
       // 再発なし / 再発ありの件数は Razor 側の静的マークアップ (<strong> 要素) へ数値だけ書き込む。
       // 以前は innerHTML でマークアップごと組み立てていた (§9 生 HTML 挿入を避ける)
-      setSummary('recurrencePrevented', `${d.recurrenceStats.prevented}件`);
-      setSummary('recurrenceRecurred', `${d.recurrenceStats.recurred}件`);
+      setSummary(SUMMARY_FIELDS.recurrencePrevented, `${d.recurrenceStats.prevented}件`);
+      setSummary(SUMMARY_FIELDS.recurrenceRecurred, `${d.recurrenceStats.recurred}件`);
       // サマリー欄の「再発確認対策数」にも同じ値を流し込む
       setSummary(SUMMARY_FIELDS.failedMeasures, `${d.recurrenceStats.recurred}件`);
     },

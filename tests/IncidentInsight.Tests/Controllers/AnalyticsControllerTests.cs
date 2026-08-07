@@ -221,10 +221,41 @@ public class AnalyticsControllerTests : IDisposable
         var result = await _controller.EffectivenessRating();
         using var doc = ToJsonDocument(result);
 
-        Assert.Equal(5, doc.RootElement.GetProperty("labels").GetArrayLength());
-        Assert.Equal(5, doc.RootElement.GetProperty("data").GetArrayLength());
+        // バケット数は EffectivenessScale(段階数の唯一の源)と一致すること。
+        // 数値を直書きすると、段階を増やしたときにテストだけが古い本数を要求してしまう
+        var expectedBucketCount = EffectivenessScale.All.Count();
+        Assert.Equal(expectedBucketCount, doc.RootElement.GetProperty("labels").GetArrayLength());
+        Assert.Equal(expectedBucketCount, doc.RootElement.GetProperty("data").GetArrayLength());
         Assert.Equal(1, doc.RootElement.GetProperty("recurrenceStats").GetProperty("recurred").GetInt32());
         Assert.Equal(1, doc.RootElement.GetProperty("recurrenceStats").GetProperty("prevented").GetInt32());
+    }
+
+    // 有効性評価グラフのラベル・配色が EffectivenessScale / EnumLabels 由来であることを固定する。
+    // 以前はコントローラが「★1 (効果なし)」等を直書きし、配色は analytics.ts が 16 進値で
+    // 持っていたため、語彙や配色を変えると画面ごとに食い違った(CLAUDE.md §6)
+    [Fact]
+    public async Task EffectivenessRating_LabelsAndColors_ComeFromCentralSource()
+    {
+        var result = await _controller.EffectivenessRating();
+        using var doc = ToJsonDocument(result);
+
+        // 期待するラベル列を尺度から組み立てる(取り出し側が string? なので合わせる)
+        var expectedLabels = EffectivenessScale.All.Select(r => (string?)EffectivenessScale.ChartLabel(r)).ToList();
+        // 実際に返ってきたラベル列を取り出す
+        var actualLabels = doc.RootElement.GetProperty("labels").EnumerateArray()
+            .Select(e => e.GetString())
+            .ToList();
+        Assert.Equal(expectedLabels, actualLabels);
+
+        // 期待する配色列を尺度 → EnumLabels.Hex の順で解決する(取り出し側が string? なので合わせる)
+        var expectedColors = EffectivenessScale.All
+            .Select(r => (string?)EnumLabels.Hex(EffectivenessScale.ColorName(r)))
+            .ToList();
+        // 実際に返ってきた配色列を取り出す
+        var actualColors = doc.RootElement.GetProperty("colors").EnumerateArray()
+            .Select(e => e.GetString())
+            .ToList();
+        Assert.Equal(expectedColors, actualColors);
     }
 
     [Fact]

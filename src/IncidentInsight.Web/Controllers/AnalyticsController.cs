@@ -275,8 +275,12 @@ public class AnalyticsController : Controller
 
         // 評価値をキーにした辞書に変換
         var byRating = ratings.ToDictionary(x => x.Rating, x => x.Count);
-        // 1〜5 の順に件数配列を作成(無い評価は 0)
-        var counts = Enumerable.Range(1, 5)
+        // 段階の一覧は EffectivenessScale(段階数の唯一の源)から引く。
+        // 以前は Enumerable.Range(1, 5) と書いており、段階数を増やしても
+        // このグラフだけ 5 本のままになる状態だった(§6)
+        var scale = EffectivenessScale.All.ToList();
+        // 低い評価から順に件数配列を作成(該当する評価が 1 件も無ければ 0)
+        var counts = scale
             .Select(r => byRating.TryGetValue(r, out var c) ? c : 0)
             .ToList();
 
@@ -287,11 +291,16 @@ public class AnalyticsController : Controller
         var prevented = await _db.PreventiveMeasures.AsNoTracking()
             .CountAsync(m => m.RecurrenceObserved == false);
 
-        // Chart.js 用のラベル・データ + 再発統計を返す
+        // Chart.js 用のラベル・データ + 再発統計を返す。
+        // ラベルと配色は EffectivenessScale(語彙と配色の唯一の源)から解決する。
+        // 直書きしていた頃は、同じ「効果なし / 普通 / 非常に効果あり」がレビュー画面・詳細画面・
+        // ViewModel・ここの 4 箇所に散在し、片方だけ言い回しを変えると画面ごとに食い違った(§6)。
+        // 配色を JSON に載せるのは MeasureStatus と同じ方針: JS 側に 16 進値を直書きさせないため
         return Json(new
         {
-            labels = new[] { "★1 (効果なし)", "★2", "★3 (普通)", "★4", "★5 (非常に効果あり)" },
+            labels = scale.Select(EffectivenessScale.ChartLabel),
             data = counts,
+            colors = scale.Select(r => EnumLabels.Hex(EffectivenessScale.ColorName(r))),
             recurrenceStats = new { recurred, prevented }
         });
     }

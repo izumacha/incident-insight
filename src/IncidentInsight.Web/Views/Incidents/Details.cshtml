@@ -615,17 +615,20 @@
                         <label class="form-label fw-bold">有効性評価 <span class="text-danger">*</span></label>
                         <div class="d-flex gap-2">
                             @* 1〜5の5段階ラジオボタン（デフォルトは中央の3） *@
-                            @for (int i = 1; i <= 5; i++)
+                            @* 段階の一覧は EffectivenessScale(段階数の唯一の源)から引く *@
+                            @foreach (int i in IncidentInsight.Web.Models.Enums.EffectivenessScale.All)
                             {
                                 <div class="form-check">
                                     @* id/for は明示式 @(i) で連結する（rating@i と書くと Razor がメールアドレスと誤認し文字どおり "rating@i" を出力して全ラジオの id が重複し、どのラベルを押しても値1が選ばれてしまう） *@
+                                    @* 初期選択は尺度の中央値（EffectivenessScale.Middle）にして評価者を高低どちらへも誘導しない *@
                                     <input class="form-check-input" type="radio" name="effectivenessRating"
-                                           id="rating@(i)" value="@i" @(i == 3 ? "checked" : "") />
+                                           id="rating@(i)" value="@i" @(i == IncidentInsight.Web.Models.Enums.EffectivenessScale.Middle ? "checked" : "") />
                                     <label class="form-check-label" for="rating@(i)">@i</label>
                                 </div>
                             }
                         </div>
-                        <div class="text-muted small mt-1">1=効果なし / 3=普通 / 5=非常に効果あり</div>
+                        @* 端点・中央値の意味づけ。文言は EffectivenessScale(語彙の唯一の源)から引く *@
+                        <div class="text-muted small mt-1">@IncidentInsight.Web.Models.Enums.EffectivenessScale.HintText</div>
                     </div>
                     <div class="mb-3">
                         @* 再発の有無（重要：true なら再分析を促すメッセージを出す） *@

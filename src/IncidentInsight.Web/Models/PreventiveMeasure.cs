@@ -193,8 +193,8 @@ public class PreventiveMeasure
         _ => "secondary"
     };
 
-    // 有効性評価を ★★★☆☆ のような星記号で返す(未評価なら「未評価」)
-    public string EffectivenessStars => EffectivenessRating.HasValue
-        ? new string('★', EffectivenessRating.Value) + new string('☆', 5 - EffectivenessRating.Value)
-        : "未評価";
+    // 有効性評価を ★★★☆☆ のような星記号で返す(未評価なら「未評価」)。
+    // 星の並べ方と段階数は EffectivenessScale(尺度の唯一の源)へ委譲する。
+    // 以前はここに 5 を直書きしていたため、段階数を変えると星の総数が合わなくなった(§6)
+    public string EffectivenessStars => EffectivenessScale.Stars(EffectivenessRating);
 }
