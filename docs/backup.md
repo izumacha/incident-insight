@@ -35,12 +35,25 @@ DATABASE_URL="..." bash scripts/restore-db.sh var/backups/incident_insight_YYYYM
 
 ### 1. GitHub Actions（`.github/workflows/backup.yml`）
 
-毎日 JST 03:00（cron `0 18 * * *` UTC）に実行。手動実行も可。
-リポジトリ Secret `BACKUP_DATABASE_URL` を設定すると有効化され、ダンプを artifact として
-7 日間保持する。**未設定ならジョブは安全に no-op で終了する**（fail-closed）。
+毎日 JST 03:00（cron `0 18 * * *` UTC）に実行。手動実行も可。次の 2 つのリポジトリ Secret を
+両方設定すると有効化され、**GPG（AES256 対称鍵）で暗号化したダンプ**を artifact として 7 日間保持する。
 
-> ⚠️ artifact には本番データ = **PHI が含まれ得る**。リポジトリ/Actions のアクセス権限を絞り、
-> 可能なら読み取り専用 DB ロールを `BACKUP_DATABASE_URL` に使う。PHI を GitHub に置けない
+| Secret | 説明 |
+| --- | --- |
+| `BACKUP_DATABASE_URL` | ダンプ対象 PostgreSQL の接続文字列（読み取り専用ロール推奨）。未設定ならジョブは安全に no-op で終了する |
+| `BACKUP_ENCRYPTION_PASSPHRASE` | ダンプの GPG 暗号化パスフレーズ。`BACKUP_DATABASE_URL` があるのにこれが無い場合、**平文の PHI を artifact に載せないためジョブは失敗する**（fail-closed） |
+
+暗号化済み artifact（`*.dump.gpg`）の復号:
+
+```bash
+gpg --batch --decrypt --pinentry-mode loopback --passphrase-fd 0 \
+    --output incident_insight_YYYYMMDD_HHMMSS.dump incident_insight_YYYYMMDD_HHMMSS.dump.gpg
+# (標準入力からパスフレーズを渡す。echo でシェル履歴に残さないこと)
+```
+
+> ⚠️ このリポジトリは **public** のため、平文の artifact は事実上誰でもダウンロードできてしまう。
+> ワークフローが暗号化を必須にしているのはこのため。パスフレーズは十分に長いランダム値を使い、
+> パスワードマネージャ等で管理する。PHI（暗号化済みであっても）を GitHub に一切置けない
 > 運用要件（院内規程・契約等）がある場合は本ワークフローを使わず、次のホスト cron を使う。
 
 ### 2. ホスト cron（PHI を外部に出さない運用）
