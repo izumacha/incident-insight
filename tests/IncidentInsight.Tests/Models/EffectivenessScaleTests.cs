@@ -116,6 +116,20 @@ public class EffectivenessScaleTests
         Assert.Equal(EffectivenessScale.DisplayName, display.Name);
     }
 
+    // DisplayName / RangeMessage は属性の引数として使うため const でなければならず、
+    // C# の定数式では数値を文字列へ変換できないので Min / Max を文中に直書きしている。
+    // 段階数だけ変えて文言を直し忘れると、画面に「1〜5」と出たまま実際は別の範囲を
+    // 受け付ける、という食い違いが起きる。ここでその取りこぼしを CI で検知する。
+    [Fact]
+    public void DisplayNameAndRangeMessage_StillMatchTheActualBounds()
+    {
+        // 表示名が実際の下限・上限を含んでいること
+        Assert.Contains($"{EffectivenessScale.Min}=", EffectivenessScale.DisplayName);
+        Assert.Contains($"{EffectivenessScale.Max}=", EffectivenessScale.DisplayName);
+        // 範囲エラーメッセージが実際の下限・上限を含んでいること
+        Assert.Contains($"{EffectivenessScale.Min}〜{EffectivenessScale.Max}", EffectivenessScale.RangeMessage);
+    }
+
     [Fact]
     public void HintText_ListsTheDescribedStepsInAscendingOrder()
     {
