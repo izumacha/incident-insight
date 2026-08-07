@@ -423,12 +423,13 @@ public class PreventiveMeasuresController : Controller
 
         // ビュー側で表示する対策本体の情報を積む
         ViewBag.Measure = measure;
-        // 現在値(未入力時は 3 / 再発なし)でフォームを初期化
+        // 現在値(未入力時は尺度の中央値 / 再発なし)でフォームを初期化
         var vm = new ReviewViewModel
         {
             Id = id,
             ConcurrencyToken = measure.ConcurrencyToken,
-            EffectivenessRating = measure.EffectivenessRating ?? 3,
+            // 未評価なら EffectivenessScale.Middle を初期選択にして、評価者を高低どちらへも誘導しない
+            EffectivenessRating = measure.EffectivenessRating ?? EffectivenessScale.Middle,
             EffectivenessNote = measure.EffectivenessNote,
             // 初回レビュー時は null のまま渡し、どちらのラジオも未選択の状態でフォームを開かせる。
             // ここで false にフォールバックすると、選択せず送信しても「再発なし」が暗黙に

@@ -58,8 +58,8 @@
                         <span class="text-danger">*</span>
                     </label>
                     <div class="d-flex gap-3 mt-2">
-                        @* 1〜5の5段階ラジオを星マーク付きで表示 *@
-                        @for (int i = 1; i <= 5; i++)
+                        @* 5段階ラジオを星マーク付きで表示。段階の一覧は EffectivenessScale(段階数の唯一の源)から引く *@
+                        @foreach (int i in IncidentInsight.Web.Models.Enums.EffectivenessScale.All)
                         {
                             <div class="text-center">
                                 <div class="form-check">
@@ -72,11 +72,11 @@
                                 </div>
                                 @* for も同じく明示式 @(i) で対応するラジオの id を指す（重複 id だと全ラベルが値1のラジオを選んでしまう） *@
                                 <label for="rating@(i)" class="d-block text-center cursor-pointer">
-                                    @* 星（塗りつぶし＋白抜き）で視覚的に段階を表現 *@
-                                    <span class="fs-3">@(new string('★', i) + new string('☆', 5 - i))</span>
+                                    @* 星（塗りつぶし＋白抜き）で視覚的に段階を表現。星の並べ方も EffectivenessScale に集約 *@
+                                    <span class="fs-3">@IncidentInsight.Web.Models.Enums.EffectivenessScale.Stars(i)</span>
                                     <div class="small text-muted">
-                                        @* 端点の補助ラベル *@
-                                        @(i == 1 ? "効果なし" : i == 3 ? "普通" : i == 5 ? "非常に効果あり" : "")
+                                        @* 端点の補助ラベル（語彙は EffectivenessScale が唯一の源） *@
+                                        @IncidentInsight.Web.Models.Enums.EffectivenessScale.Description(i)
                                     </div>
                                 </label>
                             </div>
