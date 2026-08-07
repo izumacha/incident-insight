@@ -1,0 +1,90 @@
+# PostgreSQL 配備 (Database:Provider=postgres) 向けの自動バックアップ (スケジュール実行)。
+# helpdesk-hub の backup.yml を移植したもの (docs/backup.md 参照)。
+#
+# 仕組み:
+#   - 毎日 1 回 (cron) と手動実行 (workflow_dispatch) で scripts/backup-db.sh を走らせる。
+#   - 接続先は Secret `BACKUP_DATABASE_URL`。未設定ならジョブは安全に no-op で終了する
+#     (fail-closed: 認証情報が無い状態でダンプを試みない)。
+#   - 生成したダンプは Actions の artifact として短期保持でアップロードする。
+#
+# セキュリティ上の注意:
+#   - artifact には本番データ = 医療インシデントの PHI が含まれ得る。このリポジトリは public のため
+#     平文の artifact はリポジトリ閲覧者 (= 事実上すべての GitHub ユーザー) がダウンロードできてしまう。
+#     そのためダンプは Secret `BACKUP_ENCRYPTION_PASSPHRASE` で GPG (AES256) 暗号化してから
+#     アップロードし、パスフレーズ未設定なら平文のままアップロードせずジョブを失敗させる (fail-closed)。
+#   - retention は短く設定し、PHI を GitHub に一切置きたくない運用では本ワークフローを使わず
+#     ホスト側 cron で scripts/backup-db.sh を実行する (docs/backup.md 参照)。
+#   - BACKUP_DATABASE_URL は読み取り権限のみを持つ DB ロールを推奨する。
+#   - 既定プロバイダの SQLite 配備は対象外 (docs/operations.md のファイルコピー手順を使う)。
+
+name: DB Backup
+
+on:
+  schedule:
+    # UTC 18:00 = JST 03:00 に毎日 1 回実行する (アクセスが少ない深夜帯)
+    - cron: '0 18 * * *'
+  # 手動トリガも許可する (Actions 画面の Run workflow ボタン)
+  workflow_dispatch:
+
+# 既定の GITHUB_TOKEN は読み取りのみで十分 (このジョブはリポジトリに書き込まない)
+permissions:
+  contents: read
+
+jobs:
+  backup:
+    name: pg_dump backup
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # PostgreSQL クライアント (pg_dump) を入れる。GitHub の ubuntu-latest には
+      # postgresql-client を明示導入して pg_dump のバージョン差異を避ける。
+      - name: Install postgresql-client
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y postgresql-client
+
+      # Secret が設定されているときだけ実バックアップを実行する。
+      # 未設定なら no-op (このリポジトリを fork した環境でもジョブが赤くならないようにする)。
+      - name: Run backup
+        env:
+          BACKUP_DATABASE_URL: ${{ secrets.BACKUP_DATABASE_URL }}
+          BACKUP_ENCRYPTION_PASSPHRASE: ${{ secrets.BACKUP_ENCRYPTION_PASSPHRASE }}
+        run: |
+          if [ -z "${BACKUP_DATABASE_URL}" ]; then
+            echo "BACKUP_DATABASE_URL secret が未設定のためスキップします (no-op)。" >&2
+            echo "skipped=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # fail-closed: 暗号化パスフレーズが無いのに接続先だけある状態では、平文の PHI を
+          # artifact に載せる事故につながるため、ダンプを作る前にジョブを失敗させる。
+          if [ -z "${BACKUP_ENCRYPTION_PASSPHRASE}" ]; then
+            echo "BACKUP_ENCRYPTION_PASSPHRASE secret が未設定です。" >&2
+            echo "public リポジトリの artifact に平文の PHI ダンプは置けないため中止します。" >&2
+            exit 1
+          fi
+          # スクリプトに接続先を渡してバックアップを実行する。出力先はワークスペース配下。
+          DATABASE_URL="${BACKUP_DATABASE_URL}" BACKUP_DIR=./var/backups \
+            bash scripts/backup-db.sh
+          # ダンプを GPG (AES256, 対称鍵) で暗号化する。パスフレーズはコマンドラインに展開せず
+          # 標準入力 (--passphrase-fd 0) で渡す。暗号化後は平文ダンプを必ず削除する。
+          for dump in var/backups/*.dump; do
+            printf '%s' "${BACKUP_ENCRYPTION_PASSPHRASE}" | gpg --batch --symmetric \
+              --cipher-algo AES256 --pinentry-mode loopback --passphrase-fd 0 \
+              --output "${dump}.gpg" "${dump}"
+            rm -f "${dump}"
+          done
+          echo "skipped=false" >> "$GITHUB_OUTPUT"
+        id: backup
+
+      # 暗号化済みダンプを artifact としてアップロードする (Secret 設定時のみファイルが存在する)。
+      # 復号手順は docs/backup.md を参照 (gpg --decrypt)。
+      - name: Upload backup artifact
+        if: steps.backup.outputs.skipped == 'false'
+        uses: actions/upload-artifact@v7
+        with:
+          name: db-backup-${{ github.run_id }}
+          path: var/backups/*.dump.gpg
+          # 暗号化済みとはいえ本番データ由来のため保持を 7 日に短縮する
+          retention-days: 7
+          if-no-files-found: error

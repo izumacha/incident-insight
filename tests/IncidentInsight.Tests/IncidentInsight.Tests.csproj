@@ -7,6 +7,10 @@
 
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
+
+    <!-- NuGet 依存を packages.lock.json に固定し、restore の再現性を保証する (サプライチェーン管理 §9)。 -->
+    <!-- CI では dotnet restore を locked-mode で実行し、ロックファイルとの一致を強制する。 -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

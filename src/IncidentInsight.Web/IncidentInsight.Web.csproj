@@ -5,6 +5,9 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <UserSecretsId>ae0075a8-3d89-4d1a-9923-1129cd4054e6</UserSecretsId>
+    <!-- NuGet 依存を packages.lock.json に固定し、restore の再現性を保証する (サプライチェーン管理 §9)。 -->
+    <!-- CI では dotnet restore を locked-mode で実行し、ロックファイルとの一致を強制する。 -->
+    <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
   </PropertyGroup>
 
   <ItemGroup>

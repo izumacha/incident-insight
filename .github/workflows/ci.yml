@@ -29,8 +29,10 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
+      # --locked-mode でコミット済み packages.lock.json との一致を強制する
+      # (ロックファイル更新漏れや意図しない依存差し替えを CI で検知する)
       - name: Restore dependencies
-        run: dotnet restore
+        run: dotnet restore --locked-mode
 
       - name: Build
         run: dotnet build --no-restore --configuration Release
