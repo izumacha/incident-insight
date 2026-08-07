@@ -18,6 +18,12 @@ cp incident_insight.db.bak incident_insight.db
 
 > ※ アプリ停止中に実施してください。
 
+### バックアップ（PostgreSQL / 定期ダンプの自動化）
+
+PostgreSQL 配備（`Database:Provider=postgres`）では `pg_dump` による定期バックアップを
+自動化しています（GitHub Actions `backup.yml` またはホスト cron ＋ `scripts/backup-db.sh`）。
+設定・復元・リストアテストの手順は [backup.md](backup.md) を参照してください。
+
 ### 監査ログの運用
 
 - 監査ログは `AuditLogs` テーブルに JSON 形式で記録されます。

@@ -34,3 +34,6 @@ Thumbs.db
 !.claude/hooks/
 !.claude/settings.json
 .claude/settings.local.json
+
+## バックアップダンプ (PHI を含むためコミットしない。docs/backup.md 参照)
+var/backups/
