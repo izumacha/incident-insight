@@ -155,8 +155,12 @@ interface AnalyticsData {
 
   // ── サマリー欄 ────────────────────────────────────────────
 
-  // サマリー欄の項目 id と、その値の取得元となるグラフの対応。
-  // 「どのフェッチがどの項目を埋めるか」をこの 1 か所に集約し、
+  // JS から値を流し込む「初期値 - のまま置いてある」要素の id をここに集約する。
+  // 分析サマリー欄の 5 項目に加え、有効性評価グラフの下に置いた再発内訳の 2 項目も含める。
+  // 後者を漏らしていた頃は、EffectivenessRating の取得が 401/500 で失敗すると
+  // 再発内訳だけが「-」のまま取り残され、値が 0 件なのか取得できなかったのか区別できなかった
+  // (§7 待てば表示されるという誤った期待を与えない / §6 エラーを握り潰さない)。
+  // 「どのフェッチがどの項目を埋めるか」を 1 か所に集約し、
   // 失敗時にどの項目をエラー表示にすべきかを機械的に決められるようにする
   const SUMMARY_FIELDS = {
     topDept: 'topDept',
@@ -164,6 +168,8 @@ interface AnalyticsData {
     completionRate: 'completionRate',
     failedMeasures: 'failedMeasures',
     overdueMeasures: 'overdueMeasures',
+    recurrencePrevented: 'recurrencePrevented',
+    recurrenceRecurred: 'recurrenceRecurred',
   } as const;
 
   // サマリー欄の 1 項目にテキストを流し込む。要素が無ければ何もしない (ページ構成変更時の保険)。
@@ -410,7 +416,11 @@ interface AnalyticsData {
   void loadChart<EffectivenessSeries>(
     config.urls.effectivenessRating,
     'effectivenessChart',
-    [SUMMARY_FIELDS.failedMeasures],
+    [
+      SUMMARY_FIELDS.failedMeasures,
+      SUMMARY_FIELDS.recurrencePrevented,
+      SUMMARY_FIELDS.recurrenceRecurred,
+    ],
     (d) => {
       // ★1〜★5 の棒グラフを描画する
       drawChart('effectivenessChart', {
@@ -425,8 +435,8 @@ interface AnalyticsData {
 
       // 再発なし / 再発ありの件数は Razor 側の静的マークアップ (<strong> 要素) へ数値だけ書き込む。
       // 以前は innerHTML でマークアップごと組み立てていた (§9 生 HTML 挿入を避ける)
-      setSummary('recurrencePrevented', `${d.recurrenceStats.prevented}件`);
-      setSummary('recurrenceRecurred', `${d.recurrenceStats.recurred}件`);
+      setSummary(SUMMARY_FIELDS.recurrencePrevented, `${d.recurrenceStats.prevented}件`);
+      setSummary(SUMMARY_FIELDS.recurrenceRecurred, `${d.recurrenceStats.recurred}件`);
       // サマリー欄の「再発確認対策数」にも同じ値を流し込む
       setSummary(SUMMARY_FIELDS.failedMeasures, `${d.recurrenceStats.recurred}件`);
     },
