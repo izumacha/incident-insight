@@ -29,7 +29,41 @@ DATABASE_URL="..." bash scripts/restore-db.sh var/backups/incident_insight_YYYYM
 | `BACKUP_RETENTION_DAYS` | `14` | 保持日数。これより古い `*.dump` は自動削除される |
 
 ダンプは PHI（インシデントの自由記述・関係者情報等）を含むため、`var/backups/` は `.gitignore` 済み
-（リポジトリにコミットしない）。保存先ディレクトリのアクセス権限は必ず絞ること。
+（リポジトリにコミットしない）。
+
+### 保存先の権限
+
+`backup-db.sh` は先頭で `umask 077` を設定するため、**新規に作成する**ダンプは `0600`、新規に作成する
+保存先ディレクトリは `0700`（作成した本人だけが読める）になる。`pg_dump` は `--file` の出力を既定の
+umask のまま作るので、これが無いと多くのホストの既定 umask `022` では `0644` = 同じホストの全ユーザーが
+PHI を読める状態になってしまう。
+
+ただし **既に存在するディレクトリの権限は umask では変わらない**。永続ボリューム等の既存ディレクトリを
+`BACKUP_DIR` に指定する場合は、運用側で明示的に絞ること:
+
+```bash
+install -d -m 700 -o backup -g backup /var/backups/incident-insight
+```
+
+### 接続情報の渡し方
+
+`DATABASE_URL` は `pg_dump` / `pg_restore` の**引数**として渡るため、同じホストにログインできる他の
+ユーザーからは `ps` や `/proc/<pid>/cmdline` で見える。URL にパスワードを埋め込むと、そのパスワードも
+一緒に見えてしまう。共有ホストではパスワードを URL から外し、環境変数かパスワードファイルで渡すこと
+（libpq が自動的に補完するため、スクリプト側の変更は不要）:
+
+```bash
+# URL からパスワードを外し、PGPASSWORD で渡す（環境変数は cmdline と違い他ユーザーから読めない）
+DATABASE_URL="postgresql://backup_ro@localhost:5432/incidentinsight" \
+    PGPASSWORD="..." bash scripts/backup-db.sh
+
+# あるいは ~/.pgpass（0600 必須。ファイルなので cron 定義にも履歴にも残らない）
+printf 'localhost:5432:incidentinsight:backup_ro:...\n' > ~/.pgpass && chmod 600 ~/.pgpass
+DATABASE_URL="postgresql://backup_ro@localhost:5432/incidentinsight" bash scripts/backup-db.sh
+```
+
+GitHub Actions のランナーは 1 ジョブ専有の使い捨て VM で他ユーザーが同居しないため、`backup.yml` は
+`BACKUP_DATABASE_URL` にパスワードを含めた形のままで問題ない。
 
 ## 自動化の選択肢
 
@@ -60,9 +94,12 @@ gpg --batch --decrypt --pinentry-mode loopback --passphrase-fd 0 \
 
 本番サーバー（または DB に到達できるホスト）の crontab に登録する:
 
+パスワードは URL に埋め込まず `~/.pgpass`（`0600`）に置く（「接続情報の渡し方」参照）。
+crontab に書くとバックアップ実行中の `ps` 出力にも載ってしまうため:
+
 ```cron
 # 毎日 03:00 にバックアップ（出力は syslog/logger 等へ）
-0 3 * * * cd /opt/incident-insight && DATABASE_URL="postgresql://backup_ro:***@localhost:5432/incidentinsight" \
+0 3 * * * cd /opt/incident-insight && DATABASE_URL="postgresql://backup_ro@localhost:5432/incidentinsight" \
     BACKUP_DIR=/var/backups/incident-insight BACKUP_RETENTION_DAYS=30 \
     bash scripts/backup-db.sh >> /var/log/incident-insight-backup.log 2>&1
 ```
