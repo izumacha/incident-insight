@@ -1,6 +1,13 @@
 **/bin/
 **/obj/
 **/out/
+
+# ホスト側の node_modules は持ち込まない。
+# Dockerfile の build ステージが `npm ci` で Linux 向けに入れ直すため、
+# ここを除外しないと後続の `COPY . .` がホスト (別 OS/アーキテクチャの可能性がある)
+# のバイナリで上書きしてしまう。ビルドコンテキストの転送量削減にもなる。
+node_modules/
+**/node_modules/
 **/.vs/
 **/.vscode/
 **/.idea/
