@@ -15,8 +15,10 @@ WORKDIR /src
 # 明示でき、apt のリポジトリ状態に依存せずに済むため。
 # なお `22-bookworm-slim` は 22.x のパッチ更新で中身が変わる可動タグであり、
 # ビルドがバイト単位で再現可能になるわけではない (完全固定が必要なら digest を付ける)。
-# メジャーバージョンは CI の actions/setup-node と揃えること (.github/workflows/ci.yml)。
-# 揃っていないと「CI は緑だがイメージでは失敗する」という食い違いが起きる。
+# この node:<major> が CI と共有する Node バージョンの唯一の真実の源。
+# .github/workflows/ci.yml の build-and-test は本行から major を読み出して setup-node に渡すため、
+# ここを上げれば CI も追随する (両方に数字を直書きして片方だけ更新される事故を防ぐ)。
+# タグの書式 node:<major>-... を変える場合は、読み出し側のステップも合わせて更新すること。
 # sdk:8.0 は Debian 12 (bookworm) ベースなので、glibc を揃えるため node も bookworm 系を使う。
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules

@@ -18,14 +18,37 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # フロントエンド型チェック / TypeScript ビルド用に Node をセットアップ。
-      # バージョンは Dockerfile の build ステージが使う Node と揃えること。
-      # 揃っていないと、同じ CompileTypeScript ターゲットを別バージョンで動かすことになり、
-      # 「CI は緑だがイメージのビルドでは失敗する(逆もある)」という食い違いが起きる。
-      - name: Setup Node 22
+      # CI とイメージは同じ CompileTypeScript ターゲット (npm ci + tsc) を動かすため、
+      # 両者の Node メジャーバージョンがずれると「CI は緑だがイメージのビルドでは失敗する
+      # (逆もある)」という食い違いが起きる。以前は双方に数字を直書きし「揃えること」と
+      # コメントで約束していたが、約束は片方だけ更新されて破れる。そこで Dockerfile を
+      # 唯一の真実の源とし、CI 側はそこから読み出す (§6 定数の一元管理)。
+      - name: Resolve Node major version from Dockerfile
+        id: node_major
+        run: |
+          # Dockerfile 中に現れる node:<major> をすべて集め、重複を除く。
+          majors=$(grep -oE 'node:[0-9]+' Dockerfile | cut -d: -f2 | sort -u)
+          # 1 つも取れない = Node の取り込み方を変えた合図。黙って既定値に落ちると
+          # 「揃っているつもりでずれている」状態に戻るので、fail-closed で止める。
+          if [ -z "${majors}" ]; then
+            echo "Dockerfile から node:<major> を検出できませんでした。Node の導入方法を変えたなら本ステップも更新してください。" >&2
+            exit 1
+          fi
+          # 複数取れる = Dockerfile 内で Node のバージョンが割れている。どちらへ揃えるべきか
+          # 機械的に決められないため、こちらも止めて人間に判断させる。
+          if [ "$(echo "${majors}" | wc -l)" -ne 1 ]; then
+            echo "Dockerfile 内の Node メジャーバージョンが割れています: $(echo ${majors} | tr '\n' ' ')" >&2
+            exit 1
+          fi
+          # 後続の setup-node へ渡すため、ステップ出力として書き出す。
+          echo "major=${majors}" >> "${GITHUB_OUTPUT}"
+          echo "Dockerfile から Node ${majors} を検出しました。"
+
+      # フロントエンド型チェック / TypeScript ビルド用に Node をセットアップする。
+      - name: Setup Node
         uses: actions/setup-node@v7
         with:
-          node-version: '22'
+          node-version: ${{ steps.node_major.outputs.major }}
           cache: 'npm'
 
       # tsc などの devDependencies をインストール (package-lock.json から再現性のあるインストール)
@@ -65,11 +88,6 @@ jobs:
       - name: Build image
         run: docker build -t incident-insight:ci .
 
-      # ビルドしたイメージをバックグラウンドで起動する。
-      # - Audit__HashSalt: Production では未設定だと fail-closed で起動失敗する仕様のため、
-      #   スモークテスト専用の使い捨て値を渡す(本番の秘密情報ではない)。
-      # - DB は既定の SQLite なので追加のサービスコンテナは不要。
-      #   コンテナ内の 8080 番をホストの 8080 番へ割り当てる。
       # TypeScript の生成物がイメージに入っているか検証する。
       # wwwroot/js/*.js は Git 管理外の tsc 生成物なので、SkipTsBuild=true が
       # 混入したり tsconfig の outDir/include が壊れたりすると、JS を含まない
@@ -77,9 +95,43 @@ jobs:
       # この退行を素通りさせる。そこで publish 出力を直接確認する。
       - name: Verify TypeScript output is present in image
         run: |
-          docker run --rm --entrypoint sh incident-insight:ci -c \
-            'ls -1 wwwroot/js/dashboard.js wwwroot/js/analytics.js wwwroot/js/site.js'
+          # 期待するファイル名をここに直書きすると、Scripts に .ts を足しても検証対象が
+          # 増えず、新しいスクリプトだけ退行を検知できない状態になる。そこで tsconfig.json の
+          # include (Scripts/**/*.ts) と同じ範囲を走査して期待値を導出する (§6 DRY)。
+          # tsc は rootDir=Scripts / outDir=wwwroot/js なので、相対パスはそのまま対応する。
+          # .d.ts は型宣言のみで JS を生成しないため除外する。
+          expected=$(cd src/IncidentInsight.Web/Scripts \
+            && find . -name '*.ts' ! -name '*.d.ts' \
+            | sed -e 's|^\./||' -e 's|\.ts$|.js|' \
+            | sort)
+          # 1 つも見つからない = Scripts のパスが変わった合図。空の期待値で「全部ある」と
+          # 誤判定すると検査が形骸化するため、fail-closed で止める。
+          if [ -z "${expected}" ]; then
+            echo "src/IncidentInsight.Web/Scripts 配下に .ts が見つかりませんでした。パス変更なら本ステップも更新してください。" >&2
+            exit 1
+          fi
+          echo "期待する生成物:"
+          echo "${expected}"
+          # 期待値リストを 1 引数としてコンテナへ渡し、内側でまとめて存在確認する。
+          # (ファイルごとに docker run すると起動コストが件数分かかるため 1 回で済ませる)
+          # 欠けているものは即座に打ち切らず全件を並べてから落とす。1 回の CI 失敗で
+          # 不足分をすべて把握できるようにするため。
+          docker run --rm --entrypoint sh incident-insight:ci -c '
+            missing=0
+            for js in $1; do
+              if [ ! -f "wwwroot/js/${js}" ]; then
+                echo "イメージに wwwroot/js/${js} がありません。" >&2
+                missing=1
+              fi
+            done
+            exit ${missing}
+          ' _ "${expected}"
 
+      # ビルドしたイメージをバックグラウンドで起動する。
+      # - Audit__HashSalt: Production では未設定だと fail-closed で起動失敗する仕様のため、
+      #   スモークテスト専用の使い捨て値を渡す(本番の秘密情報ではない)。
+      # - DB は既定の SQLite なので追加のサービスコンテナは不要。
+      #   コンテナ内の 8080 番をホストの 8080 番へ割り当てる。
       - name: Start container
         id: start_container
         run: |
