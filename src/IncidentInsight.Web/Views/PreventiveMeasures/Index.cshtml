@@ -124,6 +124,26 @@
                 <input type="date" name="dateTo" class="form-control form-control-sm"
                        value="@((ViewBag.DateTo as DateTime?)?.ToString("yyyy-MM-dd"))" />
             </div>
+            @* col-md-3 にして、上の 5 つの絞り込み(col-md-2 × 5 = 12 グリッド中 10)からは
+               意図的に折り返させ、下の「絞り込み/クリア」ボタン(col-md-2)と同じ行に並べる。
+               col-md-2 にすると 1 行目が 12 ちょうどで埋まり、ボタンだけが次の行に取り残される *@
+            <div class="col-md-3">
+                @* 期限超過のみに絞る。ダッシュボードの期限超過アラートの「全件確認」リンクが
+                   この条件(overdue=true)で遷移してくる。
+                   入力欄を用意しないと、URL 直指定で適用中のフィルタが再送信時に無言で解除される。
+                   チェックボックスは未チェックだと何も送信しないため、直後に hidden の false を
+                   置いて「外した」ことを明示的に送る。順序が重要で、hidden は必ずチェックボックスの
+                   後に置く: モデルバインダは同名の値のうち先頭を採用するため、逆順にすると
+                   チェックしても常に false と解釈される(ASP.NET Core 標準のチェックボックス
+                   タグヘルパーも同じ順序で出力する) *@
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="overdueFilter"
+                           name="overdue" value="true"
+                           checked="@(ViewBag.FilterOverdue is true)" />
+                    <input type="hidden" name="overdue" value="false" />
+                    <label class="form-check-label small" for="overdueFilter">期限超過のみ</label>
+                </div>
+            </div>
             <div class="col-md-2">
                 @* 絞り込み実行ボタン *@
                 <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
@@ -139,13 +159,30 @@
 {
     <div class="card border-0 shadow-sm">
         <div class="card-body text-center py-5">
-            <i class="bi bi-shield-check display-4 text-success d-block mb-3"></i>
-            <h5>再発防止策がまだ登録されていません</h5>
-            <p class="text-muted mb-3">インシデント詳細ページから再発防止策を追加できます。</p>
-            @* インシデント一覧へのリンク（そこから対策を追加する導線） *@
-            <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
-                <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧へ
-            </a>
+            @* 「絞り込みに一致しなかった」のか「1 件も登録されていない」のかで文言を出し分ける。
+               絞り込み中に「まだ登録されていません」と出すと、対策が大量にあってもデータが
+               消えたように読めてしまう(ダッシュボードの「全件確認」は overdue=true で
+               遷移してくるため、対策を消化しきると 0 件表示になるのが通常の状態) *@
+            @if (ViewBag.HasActiveFilter is true)
+            {
+                <i class="bi bi-funnel display-4 text-secondary d-block mb-3"></i>
+                <h5>絞り込み条件に一致する再発防止策はありません</h5>
+                <p class="text-muted mb-3">条件を変えるか、絞り込みをクリアしてください。</p>
+                @* 絞り込みを解除して全件に戻る導線 *@
+                <a asp-action="Index" class="btn btn-outline-secondary">
+                    <i class="bi bi-x-circle me-1"></i>絞り込みをクリア
+                </a>
+            }
+            else
+            {
+                <i class="bi bi-shield-check display-4 text-success d-block mb-3"></i>
+                <h5>再発防止策がまだ登録されていません</h5>
+                <p class="text-muted mb-3">インシデント詳細ページから再発防止策を追加できます。</p>
+                @* インシデント一覧へのリンク（そこから対策を追加する導線） *@
+                <a asp-controller="Incidents" asp-action="Index" class="btn btn-outline-primary">
+                    <i class="bi bi-clipboard2-pulse me-1"></i>インシデント一覧へ
+                </a>
+            }
         </div>
     </div>
 }
