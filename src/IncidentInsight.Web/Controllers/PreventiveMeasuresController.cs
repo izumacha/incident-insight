@@ -167,6 +167,16 @@ public class PreventiveMeasuresController : Controller
         ViewBag.DateTo = dateTo;
         // 期限超過フィルタの適用状態もビューへ戻す(チェックボックスの状態復元用)
         ViewBag.FilterOverdue = overdue == true;
+        // いずれかの絞り込みが効いているか。0 件表示の文言を出し分けるために使う。
+        // 「1 件も登録されていない」と「絞り込みに一致しなかった」を区別しないと、
+        // 対策が大量にあるのに「まだ登録されていません」と表示され、データが消えたように見える。
+        // 判定はここに集約し、ビュー側で ViewBag を個別に見比べる形にしない
+        ViewBag.HasActiveFilter = status.HasValue
+            || overdue == true
+            || !string.IsNullOrEmpty(responsible)
+            || !string.IsNullOrEmpty(responsibleDepartment)
+            || dateFrom.HasValue
+            || dateTo.HasValue;
         // 上限に達し切り詰められたかどうか。true ならビューで注意書きを表示する
         ViewBag.Truncated = truncated;
 

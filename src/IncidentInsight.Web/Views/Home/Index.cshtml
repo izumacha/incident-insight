@@ -377,8 +377,10 @@
                         </table>
                     </div>
                     <div class="p-2 text-end">
-                        @* カンバン全件表示へのリンク *@
-                        <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-sm btn-outline-danger">
+                        @* このカードは期限超過の対策だけを(OverdueAlertLimit 件まで)並べているので、
+                           遷移先も同じ条件で絞る。絞り込み無しにすると、期限内や完了済みまで含む
+                           全対策の一覧に飛んでしまい、一覧に並んでいた内容と対応が取れなくなる *@
+                        <a asp-controller="PreventiveMeasures" asp-action="Index" asp-route-overdue="true" class="btn btn-sm btn-outline-danger">
                             全件管理 <i class="bi bi-arrow-right"></i>
                         </a>
                     </div>

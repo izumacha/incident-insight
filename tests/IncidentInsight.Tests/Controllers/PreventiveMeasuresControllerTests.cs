@@ -890,17 +890,63 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 認可を通すため Admin ユーザーを配線する
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
-        // 期限超過の対策と、期限内の対策を 1 件ずつ用意する
+        // 3 レーンすべてにデータを用意する(いずれかのレーンが落ちる退行を検出するため)。
+        // 期限超過・期限内の両方を混ぜ、期限超過フィルタが効いていないことも確かめる
         await SeedMeasureWithStatusAsync("期限超過-計画中", MeasureStatus.Planned, TestFixtures.Today.AddDays(-5));
         await SeedMeasureWithStatusAsync("期限内-計画中", MeasureStatus.Planned, TestFixtures.Today.AddDays(7));
+        await SeedMeasureWithStatusAsync("期限超過-進行中", MeasureStatus.InProgress, TestFixtures.Today.AddDays(-3));
+        await SeedMeasureWithStatusAsync("完了済み", MeasureStatus.Completed, TestFixtures.Today.AddDays(-10));
 
         // 絞り込み無しでカンバンを表示する
         var result = await controller.Index(null, null, null, null, null);
 
         Assert.IsType<ViewResult>(result);
-        // 期限内の対策も落ちずに両方返ること
+        // 計画中レーンに期限超過・期限内の両方が残ること
         var planned = Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.Planned);
         Assert.Equal(2, planned.Count);
+        // 進行中レーンが落ちていないこと
+        var inProgress = Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.InProgress);
+        Assert.Single(inProgress);
+        // 完了レーンが落ちていないこと
+        var completed = Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.Completed);
+        Assert.Single(completed);
+        // 絞り込み未指定なので「絞り込み中」フラグは立たないこと
+        // (0 件表示の文言の出し分けがこのフラグに依存するため固定しておく)
+        Assert.False((bool)controller.ViewBag.HasActiveFilter);
+    }
+
+    // 絞り込み中に 0 件になった場合、ビューが「まだ登録されていません」ではなく
+    // 「条件に一致しない」と表示できるよう、HasActiveFilter が立つことを確認する。
+    // ダッシュボードの「全件確認」は overdue=true で遷移してくるため、対策を消化しきると
+    // 0 件表示になるのが通常の状態であり、そこで「登録されていません」と出すと
+    // データが消えたように見えてしまう
+    [Fact]
+    public async Task Index_OverdueFilterWithNoMatches_SetsHasActiveFilter()
+    {
+        // 実行日に依存しないよう基準日を固定する
+        var clock = new FixedClock(TestFixtures.Today);
+        // 固定クロックを注入した専用のコントローラを構築する
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            clock,
+            NullLogger<PreventiveMeasuresController>.Instance);
+        // 認可を通すため Admin ユーザーを配線する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        // 期限内の対策だけを用意する(期限超過フィルタには一致しない)
+        await SeedMeasureWithStatusAsync("期限内-計画中", MeasureStatus.Planned, TestFixtures.Today.AddDays(7));
+
+        // 期限超過のみに絞ってカンバンを表示する
+        var result = await controller.Index(null, null, null, null, null, overdue: true);
+
+        Assert.IsType<ViewResult>(result);
+        // どのレーンにも表示対象が無いこと
+        Assert.Empty(Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.Planned));
+        Assert.Empty(Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.InProgress));
+        Assert.Empty(Assert.IsType<List<PreventiveMeasure>>((object)controller.ViewBag.Completed));
+        // 「絞り込み中」と判定され、案内文を出し分けられること
+        Assert.True((bool)controller.ViewBag.HasActiveFilter);
     }
 
     // 指定したステータスと期限日を持つ対策を 1 件だけ持つインシデントをシードする。
