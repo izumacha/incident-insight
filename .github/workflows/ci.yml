@@ -18,11 +18,14 @@ jobs:
         with:
           dotnet-version: '8.0.x'
 
-      # フロントエンド型チェック / TypeScript ビルド用に Node をセットアップ
-      - name: Setup Node 20
+      # フロントエンド型チェック / TypeScript ビルド用に Node をセットアップ。
+      # バージョンは Dockerfile の build ステージが使う Node と揃えること。
+      # 揃っていないと、同じ CompileTypeScript ターゲットを別バージョンで動かすことになり、
+      # 「CI は緑だがイメージのビルドでは失敗する(逆もある)」という食い違いが起きる。
+      - name: Setup Node 22
         uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '22'
           cache: 'npm'
 
       # tsc などの devDependencies をインストール (package-lock.json から再現性のあるインストール)
@@ -67,7 +70,18 @@ jobs:
       #   スモークテスト専用の使い捨て値を渡す(本番の秘密情報ではない)。
       # - DB は既定の SQLite なので追加のサービスコンテナは不要。
       #   コンテナ内の 8080 番をホストの 8080 番へ割り当てる。
+      # TypeScript の生成物がイメージに入っているか検証する。
+      # wwwroot/js/*.js は Git 管理外の tsc 生成物なので、SkipTsBuild=true が
+      # 混入したり tsconfig の outDir/include が壊れたりすると、JS を含まない
+      # イメージが出来上がる。/health は DB 接続しか見ないため 200 を返してしまい、
+      # この退行を素通りさせる。そこで publish 出力を直接確認する。
+      - name: Verify TypeScript output is present in image
+        run: |
+          docker run --rm --entrypoint sh incident-insight:ci -c \
+            'ls -1 wwwroot/js/dashboard.js wwwroot/js/analytics.js wwwroot/js/site.js'
+
       - name: Start container
+        id: start_container
         run: |
           docker run -d --name incident-insight-ci \
             -p 8080:8080 \
@@ -77,9 +91,17 @@ jobs:
       # /health は認証不要で DB 接続確認まで行うため、起動確認に使う。
       # 起動には数秒かかる(マイグレーション適用があるため)ので、最大 60 秒ポーリングする。
       # 200 を受け取った時点で成功として抜ける。
+      # コンテナが落ちている場合は待ち続けても無駄なので即座に打ち切る。
+      # ランタイム不一致で起動直後に終了するケース(このジョブが主に狙う退行)では、
+      # 60 秒待って「応答なし」と報告するより「異常終了した」と報告する方が原因に直結する。
       - name: Wait for /health
         run: |
           for i in $(seq 1 60); do
+            if [ "$(docker inspect -f '{{.State.Running}}' incident-insight-ci)" != "true" ]; then
+              exit_code=$(docker inspect -f '{{.State.ExitCode}}' incident-insight-ci)
+              echo "コンテナが起動待ちの途中で終了しました (exit code: ${exit_code})。" >&2
+              exit 1
+            fi
             code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/health || true)
             if [ "$code" = "200" ]; then
               echo "/health が 200 を返しました (${i} 秒目)。"
@@ -92,8 +114,10 @@ jobs:
 
       # 失敗時のみコンテナログを出力する。起動失敗の原因(ランタイム不一致・
       # 設定不足など)は stdout に出るため、ログが無いと原因究明ができない。
+      # コンテナ生成前(イメージビルド失敗など)には実行しない。無条件に走らせると
+      # "No such container" で二重に赤くなり、本当の失敗理由が埋もれるため。
       - name: Dump container logs on failure
-        if: failure()
+        if: failure() && steps.start_container.outcome == 'success'
         run: docker logs incident-insight-ci
 
       # 成否にかかわらずコンテナを後片付けする。

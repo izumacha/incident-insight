@@ -6,7 +6,6 @@
 # Dockerfile の build ステージが `npm ci` で Linux 向けに入れ直すため、
 # ここを除外しないと後続の `COPY . .` がホスト (別 OS/アーキテクチャの可能性がある)
 # のバイナリで上書きしてしまう。ビルドコンテキストの転送量削減にもなる。
-node_modules/
 **/node_modules/
 **/.vs/
 **/.vscode/
@@ -24,6 +23,12 @@ node_modules/
 **/secrets.json
 .env
 .env.*
+
+# DB バックアップ (PHI を含む)。scripts/backup-db.sh の出力先で .gitignore でも除外している。
+# 除外しないと `COPY . .` が患者データを build ステージのレイヤに焼き込んでしまう。
+# 最終イメージには残らないが、ローカルのレイヤキャッシュや --cache-to/--target build の
+# エクスポート経由で外部へ出得るため、ビルドコンテキストに載せない。
+var/backups/
 
 # Git and CI artifacts
 .git/

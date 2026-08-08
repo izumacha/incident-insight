@@ -11,8 +11,12 @@ WORKDIR /src
 # Node が無いと publish が "npm: not found" (MSB3073) で失敗する。
 # SkipTsBuild=true で回避してはいけない: wwwroot/js/*.js は tsc の生成物で Git 管理外のため、
 # スキップすると JS を一切含まないイメージが出来上がり、ダッシュボード/分析のグラフが動かなくなる。
-# apt ではなく公式 node イメージからコピーするのは、ビルドを再現可能にし
-# (バージョンがタグで固定される)、ネットワーク越しのパッケージ取得を減らすため。
+# apt ではなく公式 node イメージからコピーするのは、取得元とメジャーバージョンを
+# 明示でき、apt のリポジトリ状態に依存せずに済むため。
+# なお `22-bookworm-slim` は 22.x のパッチ更新で中身が変わる可動タグであり、
+# ビルドがバイト単位で再現可能になるわけではない (完全固定が必要なら digest を付ける)。
+# メジャーバージョンは CI の actions/setup-node と揃えること (.github/workflows/ci.yml)。
+# 揃っていないと「CI は緑だがイメージでは失敗する」という食い違いが起きる。
 # sdk:8.0 は Debian 12 (bookworm) ベースなので、glibc を揃えるため node も bookworm 系を使う。
 COPY --from=node:22-bookworm-slim /usr/local/bin/node /usr/local/bin/node
 COPY --from=node:22-bookworm-slim /usr/local/lib/node_modules /usr/local/lib/node_modules
@@ -24,7 +28,14 @@ RUN ln -s /usr/local/lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
 COPY IncidentInsight.sln .
 COPY src/IncidentInsight.Web/IncidentInsight.Web.csproj src/IncidentInsight.Web/
 COPY tests/IncidentInsight.Tests/IncidentInsight.Tests.csproj tests/IncidentInsight.Tests/
-RUN dotnet restore src/IncidentInsight.Web/IncidentInsight.Web.csproj
+# packages.lock.json も一緒にコピーする。これが無いと RestorePackagesWithLockFile=true により
+# NuGet はロックファイルを「検証」せず「新規生成」してしまい、CI の
+# `dotnet restore --locked-mode` が守っている固定が、実際に配布されるイメージでは
+# 効かなくなる (ロック更新漏れの PR でも docker build だけ通ってしまう)。
+COPY src/IncidentInsight.Web/packages.lock.json src/IncidentInsight.Web/
+COPY tests/IncidentInsight.Tests/packages.lock.json tests/IncidentInsight.Tests/
+# --locked-mode で CI と同じ「ロックファイルと不一致なら失敗」の挙動に揃える。
+RUN dotnet restore src/IncidentInsight.Web/IncidentInsight.Web.csproj --locked-mode
 
 # npm の依存も同様に、マニフェストだけ先にコピーしてレイヤキャッシュを効かせる。
 # ここで node_modules を用意しておくと、後続の publish 内の CompileTypeScript が
