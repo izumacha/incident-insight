@@ -69,7 +69,7 @@ public class PreventiveMeasuresController : Controller
     // GET /PreventiveMeasures
     // カンバンボード画面。絞り込み条件でクエリを組み立ててビューに渡す
     public async Task<IActionResult> Index(MeasureStatus? status, string? responsible,
-        string? responsibleDepartment, DateTime? dateFrom, DateTime? dateTo)
+        string? responsibleDepartment, DateTime? dateFrom, DateTime? dateTo, bool? overdue = null)
     {
         // Incident を同時取得し、ユーザー部署スコープで絞り込むベースクエリ
         var query = _db.PreventiveMeasures
@@ -80,6 +80,13 @@ public class PreventiveMeasuresController : Controller
         // ステータス指定があれば絞る
         if (status.HasValue)
             query = query.Where(m => m.Status == status.Value);
+        // 期限超過のみに絞る指定があれば適用する。
+        // 判定は唯一の定義 PreventiveMeasure.OverdueOn に委譲する(未完了 かつ 期限が today より前)。
+        // これは「計画中」と「進行中」の両方を含む点が重要で、status=Planned で代用してはならない。
+        // ダッシュボードの期限超過アラートはこの条件で件数を数えているため、
+        // 「全件確認」の遷移先も同じ条件で絞らないと件数と一覧の中身が食い違う。
+        if (overdue == true)
+            query = query.Where(PreventiveMeasure.OverdueOn(_clock.Today));
         // 担当者キーワードが指定されていれば氏名/部署名で部分一致検索(大文字小文字を区別しない)
         // string.Contains は SQLite/SQL Server では大文字小文字を区別しない LIKE に翻訳されるが、
         // Npgsql(PostgreSQL) は既定で大文字小文字を区別する比較に翻訳するため、ToUpper() 同士の
@@ -158,6 +165,8 @@ public class PreventiveMeasuresController : Controller
         ViewBag.FilterResponsibleDepartment = responsibleDepartment;
         ViewBag.DateFrom = dateFrom;
         ViewBag.DateTo = dateTo;
+        // 期限超過フィルタの適用状態もビューへ戻す(チェックボックスの状態復元用)
+        ViewBag.FilterOverdue = overdue == true;
         // 上限に達し切り詰められたかどうか。true ならビューで注意書きを表示する
         ViewBag.Truncated = truncated;
 

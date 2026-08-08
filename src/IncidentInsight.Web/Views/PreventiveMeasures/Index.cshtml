@@ -125,6 +125,23 @@
                        value="@((ViewBag.DateTo as DateTime?)?.ToString("yyyy-MM-dd"))" />
             </div>
             <div class="col-md-2">
+                @* 期限超過のみに絞る。ダッシュボードの期限超過アラートの「全件確認」リンクが
+                   この条件(overdue=true)で遷移してくる。
+                   入力欄を用意しないと、URL 直指定で適用中のフィルタが再送信時に無言で解除される。
+                   チェックボックスは未チェックだと何も送信しないため、直後に hidden の false を
+                   置いて「外した」ことを明示的に送る。順序が重要で、hidden は必ずチェックボックスの
+                   後に置く: モデルバインダは同名の値のうち先頭を採用するため、逆順にすると
+                   チェックしても常に false と解釈される(ASP.NET Core 標準のチェックボックス
+                   タグヘルパーも同じ順序で出力する) *@
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" id="overdueFilter"
+                           name="overdue" value="true"
+                           checked="@(ViewBag.FilterOverdue is true)" />
+                    <input type="hidden" name="overdue" value="false" />
+                    <label class="form-check-label small" for="overdueFilter">期限超過のみ</label>
+                </div>
+            </div>
+            <div class="col-md-2">
                 @* 絞り込み実行ボタン *@
                 <button type="submit" class="btn btn-primary btn-sm">絞り込み</button>
                 @* 絞り込みをクリア（無条件の一覧へ戻る） *@
