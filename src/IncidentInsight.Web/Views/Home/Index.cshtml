@@ -149,8 +149,11 @@
                 </li>
             }
         </ul>
-        @* 全件確認リンク(カンバンの「計画中」タブへ) *@
-        <a asp-controller="PreventiveMeasures" asp-action="Index" asp-route-status="Planned" class="alert-link mt-2 d-block">
+        @* 全件確認リンク(期限超過で絞り込んだカンバンへ)。
+           status=Planned で絞ってはならない: 上の件数 @Model.OverdueMeasures は
+           PreventiveMeasure.OverdueOn(未完了 かつ 期限切れ)で数えており「進行中」も含むため、
+           計画中だけに絞ると、着手済みで期限を過ぎた最も対応が急がれる対策が一覧から消える *@
+        <a asp-controller="PreventiveMeasures" asp-action="Index" asp-route-overdue="true" class="alert-link mt-2 d-block">
             全件確認 <i class="bi bi-arrow-right"></i>
         </a>
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
@@ -374,8 +377,10 @@
                         </table>
                     </div>
                     <div class="p-2 text-end">
-                        @* カンバン全件表示へのリンク *@
-                        <a asp-controller="PreventiveMeasures" asp-action="Index" class="btn btn-sm btn-outline-danger">
+                        @* このカードは期限超過の対策だけを(OverdueAlertLimit 件まで)並べているので、
+                           遷移先も同じ条件で絞る。絞り込み無しにすると、期限内や完了済みまで含む
+                           全対策の一覧に飛んでしまい、一覧に並んでいた内容と対応が取れなくなる *@
+                        <a asp-controller="PreventiveMeasures" asp-action="Index" asp-route-overdue="true" class="btn btn-sm btn-outline-danger">
                             全件管理 <i class="bi bi-arrow-right"></i>
                         </a>
                     </div>
