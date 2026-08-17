@@ -56,6 +56,15 @@ public class EfCorePackageAlignmentTests
     // グループの適用対象(通常の版更新 / セキュリティ更新)を指定する YAML キー名
     private const string AppliesToKey = "applies-to";
 
+    // 更新設定エントリがどのパッケージ管理系を対象にするかを指定する YAML キー名
+    private const string EcosystemKey = "package-ecosystem";
+
+    // グループ定義をまとめる YAML キー名
+    private const string GroupsKey = "groups";
+
+    // EF Core 系グループが属していなければならないエコシステム(.NET のパッケージ管理系)
+    private const string NuGetEcosystem = "nuget";
+
     // 通常の版更新を表す applies-to の値
     private const string VersionUpdates = "version-updates";
 
@@ -95,6 +104,9 @@ public class EfCorePackageAlignmentTests
 
     // dependabot.yml の中身。1 回のテスト実行で何度も読み直さないよう遅延初期化で 1 度だけ読む(§8)
     private static readonly Lazy<string[]> DependabotLines = new(ReadDependabotLines);
+
+    // nuget エコシステムの groups: 配下の行。グループ探索のたびに切り出し直さないよう共有する(§8)
+    private static readonly Lazy<List<string>> NuGetGroupsBlock = new(ReadNuGetGroupsBlock);
 
     // ソリューションに登録されたプロジェクトの絶対パス一覧(複数のテストで共有する)
     private static readonly Lazy<IReadOnlyList<string>> SolutionProjects = new(ReadSolutionProjects);
@@ -442,40 +454,80 @@ public class EfCorePackageAlignmentTests
     // YAML パーサを新しく依存に足さず、既存テスト(AnalyticsScriptContractTests 等)と同じく
     // ソースを直接走査する。対象は自分たちが書いた既知の形だけで、想定外の形なら黙って
     // 空を返さず失敗させる(空を返すと「対象 0 件」で検査が素通りしてしまう)
+    //
+    // 【探索範囲を nuget エコシステムに限定する理由】グループ名だけをファイル全体から探すと、
+    // 2 つの EF Core グループが npm など別のエコシステム配下へ移動しても見つかってしまう。
+    // その状態では NuGet パッケージに一切効かない(nuget 側に残るのは EF Core 系を除外している
+    // グループだけなので、プロバイダごとの単独 major PR に逆戻りする)のに検査は通る。
+    // 「どこに書いてあるか」まで含めて固定する
     private static IReadOnlyList<string> ReadGroupBlock(string groupName)
     {
-        // 読み込み済みの設定ファイルの行を取り出す(1 回のテスト実行につき読み込みは 1 度だけ)
-        var lines = DependabotLines.Value;
+        // nuget エコシステムの groups: 配下の行だけを対象にする
+        var groupsBlock = NuGetGroupsBlock.Value;
 
         // グループ名の行を探す。コメント行は対象外にし、前後の空白を除いた完全一致だけを認める
         // (EndsWith で拾うと「# 束ねているのは nuget-ef-core:」のような説明文が先に一致し、
         //  そこを起点に走査してしまう)
-        var groupLine = Array.FindIndex(lines, line =>
+        var groupLine = groupsBlock.FindIndex(line =>
             !IsIgnorable(line) && line.Trim() == $"{groupName}:");
-        // グループが消えている＝束ねが外れているので、その事実を明示して落とす
+        // グループが消えている(または別エコシステムへ移った)＝束ねが外れているので、明示して落とす
         Assert.True(groupLine >= 0,
-            $"dependabot.yml に {groupName} グループが見つかりません。"
-            + "EF Core 系をまとめて更新する設定が外れると、プロバイダごとに単独の PR が作られます。");
+            $"dependabot.yml の package-ecosystem: \"{NuGetEcosystem}\" 配下に {groupName} グループが"
+            + "見つかりません。EF Core 系をまとめて更新する設定が外れる(または別のエコシステムへ"
+            + "移る)と、プロバイダごとに単独の PR が作られます。");
 
         // グループのインデント幅(この幅以下の行が現れたらグループの範囲を抜けたと判断する)
-        var groupIndent = IndentOf(lines[groupLine]);
-        // グループ本文の行を溜める入れ物
-        var block = new List<string>();
-
-        // グループ行の次の行から順に走査する
-        for (var i = groupLine + 1; i < lines.Length; i++)
-        {
-            // 空行とコメント行は入れ子の判断材料にならないので読み飛ばす
-            if (IsIgnorable(lines[i])) continue;
-            // グループと同じかそれより浅いインデントに戻ったらグループの範囲は終わり
-            if (IndentOf(lines[i]) <= groupIndent) break;
-            // グループ本文の 1 行として記録する
-            block.Add(lines[i]);
-        }
+        var groupIndent = IndentOf(groupsBlock[groupLine]);
+        // グループ行の次の行から、より深いインデントが続く範囲を本文として切り出す
+        var block = TakeNestedBlock(groupsBlock, groupLine + 1, groupIndent);
 
         // 本文が空のグループは設定として意味を成さないので落とす
         Assert.True(block.Count > 0, $"dependabot.yml の {groupName} グループに中身がありません。");
         // 切り出した本文を返す
+        return block;
+    }
+
+    // dependabot.yml の「nuget エコシステムの groups: 配下」の行だけを切り出す
+    private static List<string> ReadNuGetGroupsBlock()
+    {
+        // 読み込み済みの設定ファイルの行を取り出す(1 回のテスト実行につき読み込みは 1 度だけ)
+        var lines = DependabotLines.Value.ToList();
+
+        // nuget エコシステムの設定エントリの開始行を探す
+        var ecosystemLine = lines.FindIndex(line =>
+            !IsIgnorable(line) && line.Trim() == $"- {EcosystemKey}: \"{NuGetEcosystem}\"");
+        // エントリが無ければ NuGet の更新設定そのものが失われている
+        Assert.True(ecosystemLine >= 0,
+            $"dependabot.yml に {EcosystemKey}: \"{NuGetEcosystem}\" のエントリが見つかりません。");
+
+        // エントリ本文(次のエントリが始まるまで)を切り出す
+        var entryBlock = TakeNestedBlock(lines, ecosystemLine + 1, IndentOf(lines[ecosystemLine]));
+        // そのエントリの groups: の開始行を探す
+        var groupsLine = entryBlock.FindIndex(line => line.Trim() == $"{GroupsKey}:");
+        // グループ定義そのものが無ければ、束ねは一切行われない
+        Assert.True(groupsLine >= 0,
+            $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" エントリに {GroupsKey}: がありません。");
+
+        // groups: 配下の行を返す
+        return TakeNestedBlock(entryBlock, groupsLine + 1, IndentOf(entryBlock[groupsLine]));
+    }
+
+    // 指定位置から、基準インデントより深い行が続く範囲を切り出す(空行・コメント行は捨てる)
+    private static List<string> TakeNestedBlock(IReadOnlyList<string> lines, int startIndex, int parentIndent)
+    {
+        // 切り出した行を溜める入れ物
+        var block = new List<string>();
+        // 開始位置から順に走査する
+        for (var i = startIndex; i < lines.Count; i++)
+        {
+            // 空行とコメント行は入れ子の判断材料にならないので読み飛ばす
+            if (IsIgnorable(lines[i])) continue;
+            // 基準と同じかそれより浅いインデントに戻ったら範囲は終わり
+            if (IndentOf(lines[i]) <= parentIndent) break;
+            // 範囲内の 1 行として記録する
+            block.Add(lines[i]);
+        }
+        // 切り出した範囲を返す
         return block;
     }
 
