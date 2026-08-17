@@ -11,9 +11,57 @@ updates:
       # コミット規約 type(scope) に合わせる (§12)
       prefix: "chore(deps)"
     groups:
-      # minor / patch 更新は 1 本の PR にまとめてレビュー負荷を下げる (major は個別 PR)
+      # EF Core 系パッケージは「メジャー更新であっても」必ず 1 本の PR にまとめる。
+      #
+      # 【なぜ major も束ねるのか】このアプリは DB プロバイダ非依存 (SQLite / SQL Server /
+      # PostgreSQL) で、プロバイダ実装は EF Core 本体 (Microsoft.EntityFrameworkCore.Relational)
+      # と同じメジャー版でしか動作保証がない。既定のように major を個別 PR にすると、たとえば
+      # Sqlite だけ 9.x へ上げた PR がマージされた時点で Relational も推移的に 9.x へ上がり、
+      # 8.x のままの Npgsql.EntityFrameworkCore.PostgreSQL が EF Core 9 の内部 API に対して
+      # 動くことになる。ビルドもテストも通る (テストは InMemory / SQLite しか触らない) ため
+      # 「PostgreSQL 配備でだけ実行時に壊れる」という無言の破壊になる。
+      # 1 本にまとめれば Npgsql を含む全プロバイダが同時に上がり、揃わない組み合わせは
+      # そもそも PR として現れない。
+      #
+      # 版ズレそのものは EfCorePackageAlignmentTests が検出する (この設定を迂回した手動編集や、
+      # Dependabot の設定変更で束ねが外れた場合の最後の砦)。
+      #
+      # 【なぜ 2 グループ必要か】applies-to の既定は version-updates で、セキュリティ更新
+      # (脆弱性の報告を受けて Dependabot が別枠で出す PR) には及ばない。通常の版更新だけを
+      # 束ねても、CVE 対応の更新はパッケージ単位の PR として現れ、その修正版がメジャーを
+      # またぐと同じ版ズレが再発する。適用対象ごとにグループを分けて両方の経路を塞ぐ。
+      # 対象パッケージの一覧は 3 箇所 (下の 2 グループと nuget-minor-and-patch の除外) で
+      # 一致している必要があり、EfCorePackageAlignmentTests が集合として一致を固定する。
+      #
+      # 【束ねる範囲を「EF Core 本体＋プロバイダ実装」に限る理由】
+      # 名前に EntityFrameworkCore を含んでいても、版の動き方が違うものがある。
+      #   - プロバイダ実装 (Sqlite / SqlServer / Npgsql) は EF Core の内部 API に結び付くため、
+      #     EF Core 本体とメジャー版が一致していなければならない ＝ 束ねる対象。
+      #   - Microsoft.AspNetCore.Identity.EntityFrameworkCore と
+      #     Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore は EF Core の
+      #     公開 API しか使わず、メジャー版は .NET のリリース (net8.0 → net9.0) に追随する。
+      #     実際 9.0.0 は net9.0 のみを対象とし、net8.0 のこのアプリでは復元できない。
+      #     これらを同じ束ねに入れると「EF Core 9 へ上げる PR」が net9.0 専用パッケージを
+      #     巻き込んで復元不能になり、支援されているはずの更新経路が塞がれる。
+      nuget-ef-core:
+        applies-to: version-updates
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"                                  # EF Core 本体と各プロバイダ
+          - "Npgsql.EntityFrameworkCore.PostgreSQL"                           # PostgreSQL プロバイダ (メジャー版が EF Core に追随する)
+      # セキュリティ更新も同じ顔ぶれで 1 本にまとめる (上のコメントの理由による)
+      nuget-ef-core-security:
+        applies-to: security-updates
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Npgsql.EntityFrameworkCore.PostgreSQL"
+      # minor / patch 更新は 1 本の PR にまとめてレビュー負荷を下げる (major は個別 PR)。
+      # EF Core 系は上のグループが全 update-type を引き受けるため、ここでは対象外にする
+      # (どちらのグループに入るかを定義順に依存させず、除外で明示する)
       nuget-minor-and-patch:
         update-types: ["minor", "patch"]
+        exclude-patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Npgsql.EntityFrameworkCore.PostgreSQL"
 
   # package.json の npm 依存 (TypeScript ビルドツール)
   - package-ecosystem: "npm"
