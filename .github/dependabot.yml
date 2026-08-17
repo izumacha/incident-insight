@@ -32,20 +32,27 @@ updates:
       # またぐと同じ版ズレが再発する。適用対象ごとにグループを分けて両方の経路を塞ぐ。
       # 対象パッケージの一覧は 3 箇所 (下の 2 グループと nuget-minor-and-patch の除外) で
       # 一致している必要があり、EfCorePackageAlignmentTests が集合として一致を固定する。
+      #
+      # 【束ねる範囲を「EF Core 本体＋プロバイダ実装」に限る理由】
+      # 名前に EntityFrameworkCore を含んでいても、版の動き方が違うものがある。
+      #   - プロバイダ実装 (Sqlite / SqlServer / Npgsql) は EF Core の内部 API に結び付くため、
+      #     EF Core 本体とメジャー版が一致していなければならない ＝ 束ねる対象。
+      #   - Microsoft.AspNetCore.Identity.EntityFrameworkCore と
+      #     Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore は EF Core の
+      #     公開 API しか使わず、メジャー版は .NET のリリース (net8.0 → net9.0) に追随する。
+      #     実際 9.0.0 は net9.0 のみを対象とし、net8.0 のこのアプリでは復元できない。
+      #     これらを同じ束ねに入れると「EF Core 9 へ上げる PR」が net9.0 専用パッケージを
+      #     巻き込んで復元不能になり、支援されているはずの更新経路が塞がれる。
       nuget-ef-core:
         applies-to: version-updates
         patterns:
           - "Microsoft.EntityFrameworkCore*"                                  # EF Core 本体と各プロバイダ
-          - "Microsoft.AspNetCore.Identity.EntityFrameworkCore"               # Identity の EF Core ストア
-          - "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" # DbContext ヘルスチェック
           - "Npgsql.EntityFrameworkCore.PostgreSQL"                           # PostgreSQL プロバイダ (メジャー版が EF Core に追随する)
       # セキュリティ更新も同じ顔ぶれで 1 本にまとめる (上のコメントの理由による)
       nuget-ef-core-security:
         applies-to: security-updates
         patterns:
           - "Microsoft.EntityFrameworkCore*"
-          - "Microsoft.AspNetCore.Identity.EntityFrameworkCore"
-          - "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore"
           - "Npgsql.EntityFrameworkCore.PostgreSQL"
       # minor / patch 更新は 1 本の PR にまとめてレビュー負荷を下げる (major は個別 PR)。
       # EF Core 系は上のグループが全 update-type を引き受けるため、ここでは対象外にする
@@ -54,8 +61,6 @@ updates:
         update-types: ["minor", "patch"]
         exclude-patterns:
           - "Microsoft.EntityFrameworkCore*"
-          - "Microsoft.AspNetCore.Identity.EntityFrameworkCore"
-          - "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore"
           - "Npgsql.EntityFrameworkCore.PostgreSQL"
 
   # package.json の npm 依存 (TypeScript ビルドツール)

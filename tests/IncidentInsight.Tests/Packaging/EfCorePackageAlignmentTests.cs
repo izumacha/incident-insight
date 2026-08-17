@@ -96,6 +96,21 @@ public class EfCorePackageAlignmentTests
     // ないため、両方を並べる必要がある)
     private static readonly string[] EfCoreIdMarkers = { "EntityFrameworkCore", "EFCore" };
 
+    // 名前に上の目印を含むが、EF Core 本体とメジャー版を揃える必要が「ない」パッケージ。
+    //
+    // 【なぜ除外するのか】これらは EF Core の公開 API しか使わず、メジャー版は EF Core ではなく
+    // .NET のリリース (net8.0 → net9.0) に追随する。実際 9.0.0 は net9.0 のみを対象としており、
+    // net8.0 のこのアプリでは復元できない。同じ束ね・同じ版揃えの対象にすると、
+    // 「EF Core 9 へ上げる」という支援された更新経路が net9.0 専用パッケージに引きずられて
+    // 塞がれる。プロバイダ実装(EF Core の内部 API に結び付く)とは版の動き方が違う。
+    // 【追加するときの判断基準】EF Core の内部 API に結び付くか(＝プロバイダか)で決める。
+    // 判断が付かないものは除外せず、束ねる側に入れる(見逃しより誤検出の方が安全)
+    private static readonly string[] DotNetReleaseTrainPackages =
+    {
+        "Microsoft.AspNetCore.Identity.EntityFrameworkCore",                // Identity の EF Core ストア
+        "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" // DbContext ヘルスチェック
+    };
+
     // NuGet が解決済みの版を記録するロックファイルの名前
     private const string LockFileName = "packages.lock.json";
 
@@ -174,6 +189,8 @@ public class EfCorePackageAlignmentTests
         var uncovered = ResolvedPackages.Value
             .Where(package => EfCoreIdMarkers.Any(marker =>
                 package.Id.Contains(marker, StringComparison.OrdinalIgnoreCase)))
+            // .NET のリリースに追随する(EF Core とメジャー版を揃える必要がない)ものは対象外
+            .Where(package => !DotNetReleaseTrainPackages.Contains(package.Id, StringComparer.OrdinalIgnoreCase))
             .Where(package => !MatchesAnyPattern(package.Id, patterns))
             .DistinctBy(package => package.Id)
             .ToList();
@@ -602,6 +619,8 @@ public class EfCorePackageAlignmentTests
             Assert.Fail($"dependabot.yml を YAML として解析できませんでした: {e.Message}");
         }
 
+        // 文書が 1 つも無い(空ファイル・コメントのみ)場合は、素の添字範囲外ではなく状況を示して落とす
+        Assert.True(stream.Documents.Count > 0, "dependabot.yml に YAML 文書がありません(空か、コメントだけの可能性があります)。");
         // 最上位のマッピングから updates: の一覧を取り出す
         var root = Assert.IsType<YamlMappingNode>(stream.Documents[0].RootNode);
         Assert.True(root.Children.TryGetValue(new YamlScalarNode(UpdatesKey), out var updates)
