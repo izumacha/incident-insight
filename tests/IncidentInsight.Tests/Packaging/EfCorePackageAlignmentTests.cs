@@ -62,6 +62,12 @@ public class EfCorePackageAlignmentTests
     // グループ定義をまとめる YAML キー名
     private const string GroupsKey = "groups";
 
+    // グループが受け持つ更新の大きさを絞る YAML キー名
+    private const string UpdateTypesKey = "update-types";
+
+    // 更新の大きさのうち「メジャー」を表す値(この不変条件が守るのはメジャー版の一致)
+    private const string MajorUpdateType = "major";
+
     // EF Core 系グループが属していなければならないエコシステム(.NET のパッケージ管理系)
     private const string NuGetEcosystem = "nuget";
 
@@ -262,32 +268,69 @@ public class EfCorePackageAlignmentTests
                 + "Dependabot が使う定義が食い違います。1 つにまとめてください。");
         }
 
-        // EF Core グループより前に定義されていて、EF Core 系パッケージに一致してしまうグループを集める。
-        // 【なぜ重要か】Dependabot は「最初に一致したグループ」にだけ依存関係を入れる。
-        // 例えば patterns: ["Microsoft.*"] のグループを上に置くと、EF Core 本体とプロバイダは
-        // そちらへ吸い込まれ、束ねは無効化されてプロバイダごとの単独 major PR に戻る
-        var efCoreIndex = groupNames.IndexOf(EfCoreGroupName);
+        // 2 つの EF Core グループそれぞれについて、先に定義されたグループに横取りされないことを確認する
+        // (通常の版更新とセキュリティ更新は別々に解決されるため、片方だけ守っても意味がない)
+        AssertNotShadowed(groupNames, EfCoreGroupName);
+        AssertNotShadowed(groupNames, EfCoreSecurityGroupName);
+    }
+
+    // 指定した EF Core グループが、先に定義された別のグループに横取りされないことを確認する。
+    //
+    // 【なぜ重要か】Dependabot は「最初に一致したグループ」にだけ依存関係を入れる。
+    // 例えば patterns: ["Microsoft.*"] のグループを上に置くと、EF Core 本体とプロバイダは
+    // そちらへ吸い込まれ、束ねは無効化されてプロバイダごとの単独 major PR に戻る
+    private static void AssertNotShadowed(List<string> groupNames, string groupName)
+    {
+        // 対象グループが「グループ定義の直下」に居ることを確かめる。
+        // 【なぜ確認が要るか】インデントを 1 段深くすると、そのグループは別グループの子キーになり
+        // 実質グループでなくなるが、名前で引く読み取りは通ってしまう。位置が取れないまま先へ
+        // 進むと「先行グループ 0 件」となり、検査が何も見ずに合格する空振りになる
+        var index = groupNames.IndexOf(groupName);
+        Assert.True(index >= 0,
+            $"dependabot.yml の {groupName} がグループ定義の直下に見つかりません"
+            + "(インデントが深く、別グループの子になっていないか確認してください)。");
+
+        // このグループが受け持つ更新種別(通常の版更新 / セキュリティ更新)
+        var scope = GroupScopeOf(groupName);
         // EF Core 系として解決されているパッケージ ID を重複なく用意する
+        // (パターンの読み出しはループの外で 1 度だけ行う。§8)
+        var efCorePatterns = ReadGroupList(EfCoreGroupName, PatternsKey);
         var efCorePackageIds = ResolvedPackages.Value
-            .Where(package => MatchesAnyPattern(package.Id, ReadGroupList(EfCoreGroupName, PatternsKey)))
+            .Where(package => MatchesAnyPattern(package.Id, efCorePatterns))
             .Select(package => package.Id)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-        // 先に定義されたグループのうち、EF Core 系を横取りするものを探す
+        // 先に定義されたグループのうち、EF Core 系を横取りしうるものを探す
         var shadowing = groupNames
-            .Take(efCoreIndex)
+            .Take(index)
+            // 更新種別が違うグループ同士は解決の土俵が別なので横取りしない
+            .Where(name => string.Equals(GroupScopeOf(name), scope, StringComparison.Ordinal))
+            // メジャー更新を受け持たないグループは、この不変条件(メジャー版の一致)を壊さない
+            .Where(TakesMajorUpdates)
+            // 実際に EF Core 系パッケージを拾ってしまうか
             .Where(name => efCorePackageIds.Any(id => GroupWouldMatch(name, id)))
             .ToList();
 
         // 横取りするグループが無いこと(あれば、どのグループが原因かを示す)
         Assert.True(shadowing.Count == 0,
-            $"dependabot.yml で {EfCoreGroupName} より前に、EF Core 系パッケージに一致するグループが"
+            $"dependabot.yml で {groupName}({scope}) より前に、EF Core 系パッケージに一致するグループが"
             + $"定義されています: [{string.Join(", ", shadowing)}]\n"
             + "Dependabot は最初に一致したグループにだけ依存関係を入れるため、EF Core 系がそちらへ"
-            + $"吸い込まれ、束ねが無効になります。{EfCoreGroupName} をより前に置くか、"
+            + $"吸い込まれ、束ねが無効になります。{groupName} をより前に置くか、"
             + "先行グループ側で EF Core 系を除外してください。");
     }
+
+    // 指定グループが受け持つ更新種別を返す(applies-to 未指定なら既定の version-updates)
+    private static string GroupScopeOf(string groupName) =>
+        // 明示されていればその値、無ければ Dependabot の既定値
+        TryReadGroupScalar(groupName, AppliesToKey) ?? VersionUpdates;
+
+    // 指定グループがメジャー更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
+    private static bool TakesMajorUpdates(string groupName) =>
+        // 種別が絞られていなければ全て受け持つ。絞られていれば major が含まれるかを見る
+        TryReadGroupList(groupName, UpdateTypesKey) is not { } updateTypes
+        || updateTypes.Contains(MajorUpdateType, StringComparer.OrdinalIgnoreCase);
 
     // 指定グループが、そのパッケージ ID を自分のものとして拾うかどうかを判定する。
     // patterns が無いグループは「すべてに一致」が既定なので、除外指定だけを見る
@@ -492,10 +535,21 @@ public class EfCorePackageAlignmentTests
         // グループ本文を 1 行ずつ見る
         foreach (var line in block)
         {
-            // 目的のキーの開始行なら、以降の箇条書きを読み取る状態へ移る
-            if (line.Trim() == $"{key}:")
+            // 目的のキーの行かどうかを見る(値がこの行に並ぶ書き方と、次行以降へ並ぶ書き方がある)
+            if (line.TrimStart().StartsWith($"{key}:", StringComparison.Ordinal))
             {
-                // 読み取り開始(この行自体に値は無い)
+                // キー名の後ろに続く部分を取り出す
+                var inlineValues = line.TrimStart()[$"{key}:".Length..].Trim();
+                // 同じ行に値が並ぶ書き方(update-types: ["minor", "patch"])はここで読み切る。
+                // 箇条書きだけを想定すると、この書き方のキーを「値ゼロ件」と誤読してしまう
+                if (inlineValues.Length > 0 && !inlineValues.StartsWith('#'))
+                {
+                    // 引用符で囲まれた値をすべて取り出して確定する
+                    values.AddRange(Regex.Matches(inlineValues, @"""(?<value>[^""]*)""")
+                        .Select(match => match.Groups["value"].Value));
+                    break;
+                }
+                // 値が無ければ、次行以降の箇条書きを読み取る状態へ移る
                 insideKey = true;
                 continue;
             }
@@ -533,6 +587,11 @@ public class EfCorePackageAlignmentTests
             .Select(match => match.Groups["key"].Value)
             .ToList();
     }
+
+    // dependabot.yml から「指定グループの指定キー」の単一値を読み出す(キーが無ければ null)
+    private static string? TryReadGroupScalar(string groupName, string key) =>
+        // そのグループにキー自体が書かれていなければ「指定なし」として null を返す
+        ReadGroupKeys(groupName).Contains(key, StringComparer.Ordinal) ? ReadGroupScalar(groupName, key) : null;
 
     // dependabot.yml から「指定グループの指定キー」の単一値(applies-to など)を読み出す
     private static string ReadGroupScalar(string groupName, string key)
@@ -594,12 +653,23 @@ public class EfCorePackageAlignmentTests
         // 読み込み済みの設定ファイルの行を取り出す(1 回のテスト実行につき読み込みは 1 度だけ)
         var lines = DependabotLines.Value.ToList();
 
-        // nuget エコシステムの設定エントリの開始行を探す
-        var ecosystemLine = lines.FindIndex(line =>
-            !IsIgnorable(line) && line.Trim() == $"- {EcosystemKey}: \"{NuGetEcosystem}\"");
+        // nuget エコシステムの設定エントリの開始行をすべて探す
+        var ecosystemLines = lines
+            .Select((line, index) => (line, index))
+            .Where(pair => !IsIgnorable(pair.line) && pair.line.Trim() == $"- {EcosystemKey}: \"{NuGetEcosystem}\"")
+            .Select(pair => pair.index)
+            .ToList();
         // エントリが無ければ NuGet の更新設定そのものが失われている
-        Assert.True(ecosystemLine >= 0,
+        Assert.True(ecosystemLines.Count > 0,
             $"dependabot.yml に {EcosystemKey}: \"{NuGetEcosystem}\" のエントリが見つかりません。");
+        // 2 つ以上ある場合、この検査は最初の 1 つしか見ないため、見ていないエントリが
+        // 束ねの無い状態で残りうる。読み飛ばさず「検査を広げてから追加せよ」と落とす(fail-closed)
+        Assert.True(ecosystemLines.Count == 1,
+            $"dependabot.yml に {EcosystemKey}: \"{NuGetEcosystem}\" のエントリが {ecosystemLines.Count} 個あります。"
+            + "本テストは 1 つ目しか検査しないため、2 つ目以降は束ねが無いまま見逃されます。"
+            + "エントリを増やすときは先に本テストを複数エントリ対応へ広げてください。");
+        // 唯一のエントリの位置を取り出す
+        var ecosystemLine = ecosystemLines[0];
 
         // エントリ本文(次のエントリが始まるまで)を切り出す
         var entryBlock = TakeNestedBlock(lines, ecosystemLine + 1, IndentOf(lines[ecosystemLine]));
