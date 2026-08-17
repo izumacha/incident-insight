@@ -68,6 +68,12 @@ public class EfCorePackageAlignmentTests
     // 更新の大きさのうち「メジャー」を表す値(この不変条件が守るのはメジャー版の一致)
     private const string MajorUpdateType = "major";
 
+    // グループが対象を本番依存 / 開発依存のどちらかに絞る YAML キー名
+    private const string DependencyTypeKey = "dependency-type";
+
+    // 開発時のみの依存を表す dependency-type の値
+    private const string DevelopmentDependencyType = "development";
+
     // EF Core 系グループが属していなければならないエコシステム(.NET のパッケージ管理系)
     private const string NuGetEcosystem = "nuget";
 
@@ -292,9 +298,13 @@ public class EfCorePackageAlignmentTests
 
         // このグループが受け持つ更新種別(通常の版更新 / セキュリティ更新)
         var scope = GroupScopeOf(groupName);
-        // EF Core 系として解決されているパッケージ ID を重複なく用意する
+        // 検査対象グループ自身の対象パターンから、EF Core 系として解決されているパッケージ ID を
+        // 重複なく用意する。【なぜ groupName か】ここで版更新側のパターンを固定で読むと、
+        // セキュリティ側だけが持つパターン(将来 Pomelo 等を足した場合)が視野に入らず、
+        // そのパッケージの横取りを見逃す。2 つのパターンが一致していることは別のテストの責務で、
+        // この検査がそれに依存すると防御が二重に効かなくなる
         // (パターンの読み出しはループの外で 1 度だけ行う。§8)
-        var efCorePatterns = ReadGroupList(EfCoreGroupName, PatternsKey);
+        var efCorePatterns = ReadGroupList(groupName, PatternsKey);
         var efCorePackageIds = ResolvedPackages.Value
             .Where(package => MatchesAnyPattern(package.Id, efCorePatterns))
             .Select(package => package.Id)
@@ -308,6 +318,8 @@ public class EfCorePackageAlignmentTests
             .Where(name => string.Equals(GroupScopeOf(name), scope, StringComparison.Ordinal))
             // メジャー更新を受け持たないグループは、この不変条件(メジャー版の一致)を壊さない
             .Where(TakesMajorUpdates)
+            // 開発時のみの依存に絞ったグループは、本番依存である EF Core 系を拾わない
+            .Where(name => !TargetsDevelopmentDependenciesOnly(name))
             // 実際に EF Core 系パッケージを拾ってしまうか
             .Where(name => efCorePackageIds.Any(id => GroupWouldMatch(name, id)))
             .ToList();
@@ -325,6 +337,12 @@ public class EfCorePackageAlignmentTests
     private static string GroupScopeOf(string groupName) =>
         // 明示されていればその値、無ければ Dependabot の既定値
         TryReadGroupScalar(groupName, AppliesToKey) ?? VersionUpdates;
+
+    // 指定グループが「開発時のみの依存」に絞られているかを返す。
+    // EF Core 系は本番で動く依存なので、そのグループには入らない(先行していても横取りしない)
+    private static bool TargetsDevelopmentDependenciesOnly(string groupName) =>
+        // dependency-type が development のときだけ対象外と判断する
+        string.Equals(TryReadGroupScalar(groupName, DependencyTypeKey), DevelopmentDependencyType, StringComparison.Ordinal);
 
     // 指定グループがメジャー更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
     private static bool TakesMajorUpdates(string groupName) =>
@@ -557,12 +575,16 @@ public class EfCorePackageAlignmentTests
             if (!insideKey) continue;
             // 箇条書き("- ...")でなくなったら、そのキーの一覧は終わり
             if (!line.TrimStart().StartsWith("- ", StringComparison.Ordinal)) break;
-            // ダブルクォートで囲まれた値だけを取り出す(行末のコメントは含めない)
-            var quoted = Regex.Match(line, @"-\s*""(?<value>[^""]*)""");
-            // 想定した書式(引用符付き)でなければ、読み飛ばさず異常として落とす
-            Assert.True(quoted.Success, $"dependabot.yml の {groupName}.{key} に想定外の記述があります: {line.Trim()}");
+            // 箇条書きの値を取り出す。整形ツールが冗長な引用符を外すことがあるため、
+            // 二重引用符・単一引用符・引用符なしのいずれも受け付ける(どれも YAML として同義で、
+            // Dependabot の解釈も変わらない。書式差だけで CI が赤くなるのは偽陽性になる)。
+            // 行末コメントは値に含めない
+            var item = Regex.Match(line.TrimStart(),
+                @"^-\s*(?:""(?<value>[^""]*)""|'(?<value>[^']*)'|(?<value>[^#\s][^#]*?))\s*(?:#.*)?$");
+            // 値として読み取れない記述は、読み飛ばさず異常として落とす
+            Assert.True(item.Success, $"dependabot.yml の {groupName}.{key} に想定外の記述があります: {line.Trim()}");
             // 取り出したパターン文字列を記録する
-            values.Add(quoted.Groups["value"].Value);
+            values.Add(item.Groups["value"].Value.TrimEnd());
         }
 
         // 値が 1 つも無いのは設定が壊れている(または書式が変わった)状態なので失敗させる
@@ -679,8 +701,14 @@ public class EfCorePackageAlignmentTests
         Assert.True(groupsLine >= 0,
             $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" エントリに {GroupsKey}: がありません。");
 
-        // groups: 配下の行を返す
-        return TakeNestedBlock(entryBlock, groupsLine + 1, IndentOf(entryBlock[groupsLine]));
+        // groups: 配下の行を切り出す
+        var groupsBlock = TakeNestedBlock(entryBlock, groupsLine + 1, IndentOf(entryBlock[groupsLine]));
+        // 中身が空なら束ねが 1 つも無い状態。素の例外(添字範囲外)ではなく、何が起きているかを示して落とす
+        Assert.True(groupsBlock.Count > 0,
+            $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" エントリの {GroupsKey}: に"
+            + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
+        // 切り出した範囲を返す
+        return groupsBlock;
     }
 
     // 指定位置から、基準インデントより深い行が続く範囲を切り出す(空行・コメント行は捨てる)
