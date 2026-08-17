@@ -84,6 +84,18 @@ public class EfCorePackageAlignmentTests
     // NuGet が解決済みの版を記録するロックファイルの名前
     private const string LockFileName = "packages.lock.json";
 
+    // ロックファイルで、ターゲットフレームワークごとの解決結果をまとめている JSON キー
+    private const string DependenciesKey = "dependencies";
+
+    // ロックファイルで、直接参照か推移依存かを表す JSON キー
+    private const string TypeKey = "type";
+
+    // ロックファイルで、実際に解決された版を表す JSON キー
+    private const string ResolvedKey = "resolved";
+
+    // Dependabot 設定ファイルのリポジトリルートからの位置
+    private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
+
     // 「このリポジトリのプロジェクト」の正本。CI の dotnet restore / build / test もこれを対象にする
     private const string SolutionFileName = "IncidentInsight.sln";
 
@@ -229,6 +241,68 @@ public class EfCorePackageAlignmentTests
         AssertOnlyAllowedKeys(EfCoreSecurityGroupName);
     }
 
+    [Fact]
+    public void EfCoreGroups_AreDefinedOnceAndNotShadowedByAnEarlierGroup()
+    {
+        // nuget エコシステムに定義されているグループ名を、書かれている順に読み出す
+        var groupNames = ReadNuGetGroupNamesInOrder();
+
+        // 同名のグループが 2 回書かれていないこと。
+        // 【なぜ重要か】YAML の重複キーは「後に書いた方」が採用される一方、この検査は
+        // 素直に読むと「先に書いた方」を見る。コピーして書き換えた 2 つ目が実際の設定になり、
+        // 検査は正しい 1 つ目を見て通す——という食い違いが起きうる
+        foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
+        {
+            // その名前が現れた回数を数える
+            var count = groupNames.Count(name => string.Equals(name, groupName, StringComparison.Ordinal));
+            // 1 回だけであること(0 回は ReadGroupBlock 側が別途落とす)
+            Assert.True(count <= 1,
+                $"dependabot.yml に {groupName} グループが {count} 回書かれています。"
+                + "YAML の重複キーは後に書いた方が採用されるため、検査が読む定義と"
+                + "Dependabot が使う定義が食い違います。1 つにまとめてください。");
+        }
+
+        // EF Core グループより前に定義されていて、EF Core 系パッケージに一致してしまうグループを集める。
+        // 【なぜ重要か】Dependabot は「最初に一致したグループ」にだけ依存関係を入れる。
+        // 例えば patterns: ["Microsoft.*"] のグループを上に置くと、EF Core 本体とプロバイダは
+        // そちらへ吸い込まれ、束ねは無効化されてプロバイダごとの単独 major PR に戻る
+        var efCoreIndex = groupNames.IndexOf(EfCoreGroupName);
+        // EF Core 系として解決されているパッケージ ID を重複なく用意する
+        var efCorePackageIds = ResolvedPackages.Value
+            .Where(package => MatchesAnyPattern(package.Id, ReadGroupList(EfCoreGroupName, PatternsKey)))
+            .Select(package => package.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 先に定義されたグループのうち、EF Core 系を横取りするものを探す
+        var shadowing = groupNames
+            .Take(efCoreIndex)
+            .Where(name => efCorePackageIds.Any(id => GroupWouldMatch(name, id)))
+            .ToList();
+
+        // 横取りするグループが無いこと(あれば、どのグループが原因かを示す)
+        Assert.True(shadowing.Count == 0,
+            $"dependabot.yml で {EfCoreGroupName} より前に、EF Core 系パッケージに一致するグループが"
+            + $"定義されています: [{string.Join(", ", shadowing)}]\n"
+            + "Dependabot は最初に一致したグループにだけ依存関係を入れるため、EF Core 系がそちらへ"
+            + $"吸い込まれ、束ねが無効になります。{EfCoreGroupName} をより前に置くか、"
+            + "先行グループ側で EF Core 系を除外してください。");
+    }
+
+    // 指定グループが、そのパッケージ ID を自分のものとして拾うかどうかを判定する。
+    // patterns が無いグループは「すべてに一致」が既定なので、除外指定だけを見る
+    private static bool GroupWouldMatch(string groupName, string packageId)
+    {
+        // 除外指定に当てはまるなら、そのグループは拾わない
+        if (TryReadGroupList(groupName, ExcludePatternsKey) is { } excluded && MatchesAnyPattern(packageId, excluded))
+        {
+            // 除外されているので一致しない
+            return false;
+        }
+        // 対象指定が書かれていれば、それに当てはまるかを見る。書かれていなければ全てに一致する
+        return TryReadGroupList(groupName, PatternsKey) is not { } patterns || MatchesAnyPattern(packageId, patterns);
+    }
+
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
     private static void AssertOnlyAllowedKeys(string groupName)
     {
@@ -293,8 +367,11 @@ public class EfCorePackageAlignmentTests
             packageId,
             // '*' だけをワイルドカードとして扱い、それ以外の記号は literal として扱う
             "^" + string.Join(".*", pattern.Split('*').Select(Regex.Escape)) + "$",
-            // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない
-            RegexOptions.IgnoreCase));
+            // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない。
+            // CultureInvariant を併せるのは、トルコ語ロケール等で I/i の対応が変わると
+            // 一致しなくなり、エラーではなく「対象から静かに外れる」fail-open になるため
+            // (このファイルの他の比較も Ordinal 系で揃えている)
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant));
 
     // ソリューションに登録された全プロジェクトの packages.lock.json から、解決済みパッケージを
     // 漏れなく読み出す。プロジェクトを増やしたときに一覧へ追記し忘れて検査対象から外れる事故は、
@@ -318,8 +395,8 @@ public class EfCorePackageAlignmentTests
             // 解決結果はターゲットフレームワークごとに入れ子になっている。
             // 書式が変わって dependencies が無いときは、素の KeyNotFoundException ではなく
             // どのファイルが読めなかったかを示して落とす(このファイルの他の異常系と扱いを揃える)
-            Assert.True(document.RootElement.TryGetProperty("dependencies", out var dependencies),
-                $"{project} に dependencies がありません。{LockFileName} の書式が変わった可能性があります"
+            Assert.True(document.RootElement.TryGetProperty(DependenciesKey, out var dependencies),
+                $"{project} に {DependenciesKey} がありません。{LockFileName} の書式が変わった可能性があります"
                 + "(読み取れないと、そのプロジェクトだけ検査対象から静かに外れます)。");
             // ターゲットフレームワークごとに解決結果を見る
             foreach (var framework in dependencies.EnumerateObject())
@@ -329,9 +406,9 @@ public class EfCorePackageAlignmentTests
                 {
                     // 直接参照(Direct)か推移依存(Transitive)かを控える。壊れる主役は推移依存なので、
                     // 失敗メッセージで「どこを直せばよいか」が分かるよう残しておく
-                    var kind = entry.Value.TryGetProperty("type", out var type) ? type.GetString() ?? "" : "";
+                    var kind = entry.Value.TryGetProperty(TypeKey, out var type) ? type.GetString() ?? "" : "";
                     // 実際に解決された版を取り出す(Project 参照など resolved を持たない項目は対象外)
-                    if (!entry.Value.TryGetProperty("resolved", out var resolved)) continue;
+                    if (!entry.Value.TryGetProperty(ResolvedKey, out var resolved)) continue;
                     // 1 件分として記録する
                     packages.Add(new ResolvedPackage(project, entry.Name, kind, resolved.GetString() ?? ""));
                 }
@@ -376,6 +453,30 @@ public class EfCorePackageAlignmentTests
             + string.Join("\n", missing.Select(path => $"  {Path.GetRelativePath(RepositoryRoot, path)}")));
         // 読み取ったプロジェクト一覧を返す
         return projects;
+    }
+
+    // nuget エコシステムに定義されているグループ名を、書かれている順に読み出す
+    // (Dependabot は「最初に一致したグループ」にだけ依存関係を入れるため、順序に意味がある)
+    private static List<string> ReadNuGetGroupNamesInOrder()
+    {
+        // groups: 直下のインデント幅(先頭行が必ずグループ名の行になる)
+        var nameIndent = IndentOf(NuGetGroupsBlock.Value[0]);
+        // その深さにある "名前:" の行だけをグループ名として拾う
+        return NuGetGroupsBlock.Value
+            .Where(line => IndentOf(line) == nameIndent)
+            .Select(line => Regex.Match(line.Trim(), @"^(?<name>[A-Za-z][A-Za-z0-9._-]*):$"))
+            .Where(match => match.Success)
+            .Select(match => match.Groups["name"].Value)
+            .ToList();
+    }
+
+    // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す(キーが無ければ null)
+    private static IReadOnlyList<string>? TryReadGroupList(string groupName, string key)
+    {
+        // そのグループにキー自体が書かれていなければ「指定なし」として null を返す
+        if (!ReadGroupKeys(groupName).Contains(key, StringComparer.Ordinal)) return null;
+        // 書かれていれば通常どおり読み出す
+        return ReadGroupList(groupName, key);
     }
 
     // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す
@@ -535,7 +636,7 @@ public class EfCorePackageAlignmentTests
     private static string[] ReadDependabotLines()
     {
         // 設定ファイルの絶対パスを組み立てる
-        var path = Path.Combine(RepositoryRoot, ".github", "dependabot.yml");
+        var path = Path.Combine(RepositoryRoot, DependabotConfigPath);
         // 設定ファイルの存在を確認する
         Assert.True(File.Exists(path), $"{path} が見つかりません。");
         // 全行を読み込んで返す
