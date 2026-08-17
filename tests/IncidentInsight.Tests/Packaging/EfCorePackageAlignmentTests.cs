@@ -63,18 +63,32 @@ public class EfCorePackageAlignmentTests
     private const string SecurityUpdates = "security-updates";
 
     // 「EF Core 系のはずなのにパターンから漏れている」を検出するための目印。
-    // NuGet の EF Core プロバイダは慣例としてパッケージ ID にこの語を含む
-    // (Microsoft.EntityFrameworkCore.* / Npgsql.EntityFrameworkCore.PostgreSQL / Pomelo... など)
-    private const string EfCoreIdMarker = "EntityFrameworkCore";
+    // EF Core 連携パッケージの ID は慣例として、この 2 つのどちらかを含む。
+    //   - EntityFrameworkCore: Microsoft.EntityFrameworkCore.* / Npgsql.EntityFrameworkCore.PostgreSQL /
+    //                          Pomelo.EntityFrameworkCore.MySql など
+    //   - EFCore            : EFCore.NamingConventions / EFCore.BulkExtensions など、EF Core の
+    //                          メジャー版に厳密追随する周辺パッケージ
+    // 前者だけを目印にすると後者の系統が丸ごと検査対象から外れる(片方が他方の部分文字列では
+    // ないため、両方を並べる必要がある)
+    private static readonly string[] EfCoreIdMarkers = { "EntityFrameworkCore", "EFCore" };
 
     // NuGet が解決済みの版を記録するロックファイルの名前
     private const string LockFileName = "packages.lock.json";
 
-    // ビルド生成物のディレクトリ名(ロックファイル探索から除外する)
+    // プロジェクトファイルの探索パターン(ロックファイルの有無を突き合わせる相手)
+    private const string ProjectFilePattern = "*.csproj";
+
+    // ビルド生成物のディレクトリ名(ファイル探索から除外する)
     private static readonly string[] BuildOutputDirectories = { "bin", "obj" };
 
     // リポジトリルート。走査のたびに親を遡り直す必要はないので一度だけ解決して使い回す(§8)
     private static readonly string RepositoryRoot = FindRepositoryRoot();
+
+    // dependabot.yml の中身。1 回のテスト実行で何度も読み直さないよう遅延初期化で 1 度だけ読む(§8)
+    private static readonly Lazy<string[]> DependabotLines = new(ReadDependabotLines);
+
+    // 解決済みパッケージの一覧。リポジトリ全走査を複数のテストで共有する(§8)
+    private static readonly Lazy<IReadOnlyList<ResolvedPackage>> ResolvedPackages = new(ReadAllResolvedPackages);
 
     // ロックファイル 1 行分の情報(どのプロジェクトの・どのパッケージが・直接か推移か・どの版か)
     private readonly record struct ResolvedPackage(string Project, string Id, string Kind, string Version);
@@ -85,7 +99,7 @@ public class EfCorePackageAlignmentTests
         // dependabot.yml が定める「EF Core 系」の判定パターンを読み出す
         var patterns = ReadGroupList(EfCoreGroupName, PatternsKey);
         // 全ロックファイルから EF Core 系として解決されているパッケージだけを集める
-        var efCorePackages = ReadAllResolvedPackages()
+        var efCorePackages = ResolvedPackages.Value
             .Where(package => MatchesAnyPattern(package.Id, patterns))
             .ToList();
 
@@ -112,8 +126,9 @@ public class EfCorePackageAlignmentTests
         // dependabot.yml が定める「EF Core 系」の判定パターンを読み出す
         var patterns = ReadGroupList(EfCoreGroupName, PatternsKey);
         // 名前から EF Core 系と分かるのに、パターンに拾われていないパッケージを集める
-        var uncovered = ReadAllResolvedPackages()
-            .Where(package => package.Id.Contains(EfCoreIdMarker, StringComparison.OrdinalIgnoreCase))
+        var uncovered = ResolvedPackages.Value
+            .Where(package => EfCoreIdMarkers.Any(marker =>
+                package.Id.Contains(marker, StringComparison.OrdinalIgnoreCase)))
             .Where(package => !MatchesAnyPattern(package.Id, patterns))
             .DistinctBy(package => package.Id)
             .ToList();
@@ -122,10 +137,38 @@ public class EfCorePackageAlignmentTests
         // 「そのパッケージは EF Core 系ではない」ことになり、上の版揃えテストも
         // Dependabot の束ねも同時に無効化できてしまう(検出網の自己無効化を防ぐ)
         Assert.True(uncovered.Count == 0,
-            $"名前に {EfCoreIdMarker} を含むのに dependabot.yml の {EfCoreGroupName}.{PatternsKey} で"
-            + "拾われていないパッケージがあります。パターンから外すと版揃えの検査対象からも外れ、"
+            $"名前に {string.Join(" / ", EfCoreIdMarkers)} を含むのに dependabot.yml の "
+            + $"{EfCoreGroupName}.{PatternsKey} で拾われていないパッケージがあります。"
+            + "パターンから外すと版揃えの検査対象からも外れ、"
             + "Dependabot も単独の major PR を作るようになります。パターンへ追加してください:\n"
             + Describe(uncovered));
+    }
+
+    [Fact]
+    public void EveryProject_HasCommittedLockFile()
+    {
+        // ビルド生成物を除いた全プロジェクトファイルを探す
+        var projects = FindFiles(ProjectFilePattern).ToList();
+
+        // プロジェクトが見つからないのは探索の劣化なので、まずその前提を固定する
+        Assert.True(projects.Count > 0, $"{ProjectFilePattern} が 1 つも見つかりませんでした。探索条件を確認してください。");
+
+        // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
+        var missing = projects
+            .Where(project => !File.Exists(Path.Combine(Path.GetDirectoryName(project)!, LockFileName)))
+            .Select(project => Path.GetRelativePath(RepositoryRoot, project))
+            .ToList();
+
+        // 漏れが無いこと。ロックファイルが無いプロジェクトは、この検査の対象から外れるだけでなく
+        // CI の locked-mode restore もすり抜ける(RestorePackagesWithLockFile を宣言していない
+        // プロジェクトに対して dotnet restore --locked-mode はロックファイルを作らず正常終了する)。
+        // つまり EF Core 9 を参照する新プロジェクトを足すと、版ズレが誰にも気付かれないまま通る
+        Assert.True(missing.Count == 0,
+            $"{LockFileName} が無いプロジェクトがあります。ロックファイルが無いと本テストの検査対象から"
+            + "外れるうえ、CI の locked-mode restore もすり抜けます(未宣言のプロジェクトに対しては"
+            + "ロックファイルを生成せず正常終了するため)。csproj に RestorePackagesWithLockFile を"
+            + "追加して restore し、生成されたロックファイルをコミットしてください:\n"
+            + string.Join("\n", missing.Select(path => $"  {path}")));
     }
 
     [Fact]
@@ -213,7 +256,7 @@ public class EfCorePackageAlignmentTests
         // 見つかったパッケージを溜める入れ物
         var packages = new List<ResolvedPackage>();
         // ビルド生成物を除いたロックファイルを 1 つずつ読む
-        foreach (var lockFile in FindLockFiles())
+        foreach (var lockFile in FindFiles(LockFileName))
         {
             // 失敗メッセージ用に、リポジトリルートからの相対パスにしておく
             var project = Path.GetRelativePath(RepositoryRoot, lockFile);
@@ -244,15 +287,26 @@ public class EfCorePackageAlignmentTests
         return packages;
     }
 
-    // リポジトリ配下のロックファイルを、ビルド生成物(bin / obj)を除いて列挙する
-    private static IEnumerable<string> FindLockFiles() =>
+    // リポジトリ配下の指定ファイルを、ビルド生成物(bin / obj)を除いて列挙する。
+    //
+    // 【除外判定をリポジトリ相対パスで行う理由】絶対パスに対して判定すると、チェックアウト先が
+    // /home/user/bin/incident-insight のように bin / obj を名前に含む場所だと全ファイルが
+    // 除外され、「ロックファイルがコミットされていません」という実態と食い違うメッセージで
+    // 落ちる。リポジトリ内での位置だけを見れば、置き場所に左右されない
+    private static IEnumerable<string> FindFiles(string searchPattern) =>
         // ルートから再帰的に探し、生成物ディレクトリ配下のものは除く
-        Directory.EnumerateFiles(RepositoryRoot, LockFileName, SearchOption.AllDirectories)
-            .Where(path => !BuildOutputDirectories.Any(directory =>
-                // パス区切りで挟まれた bin / obj を含む経路かどうかで判定する
-                path.Contains($"{Path.DirectorySeparatorChar}{directory}{Path.DirectorySeparatorChar}", StringComparison.Ordinal)))
+        Directory.EnumerateFiles(RepositoryRoot, searchPattern, SearchOption.AllDirectories)
+            .Where(path => !IsUnderBuildOutput(Path.GetRelativePath(RepositoryRoot, path)))
             // 実行順を環境に依存させないよう並びを固定する(失敗メッセージの再現性のため)
             .OrderBy(path => path, StringComparer.Ordinal);
+
+    // リポジトリ相対パスがビルド生成物(bin / obj)配下かどうかを返す
+    private static bool IsUnderBuildOutput(string relativePath) =>
+        // パスを区切り単位に分解し、途中のディレクトリ名が bin / obj と一致するかを見る
+        // (単純な部分一致だと "obj-store" のような無関係な名前まで除外してしまう)
+        relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .SkipLast(1)
+            .Any(segment => BuildOutputDirectories.Contains(segment, StringComparer.OrdinalIgnoreCase));
 
     // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す
     private static IReadOnlyList<string> ReadGroupList(string groupName, string key)
@@ -315,12 +369,8 @@ public class EfCorePackageAlignmentTests
     // 空を返さず失敗させる(空を返すと「対象 0 件」で検査が素通りしてしまう)
     private static IReadOnlyList<string> ReadGroupBlock(string groupName)
     {
-        // dependabot.yml の絶対パスを組み立てる
-        var path = Path.Combine(RepositoryRoot, ".github", "dependabot.yml");
-        // 設定ファイルの存在を確認する
-        Assert.True(File.Exists(path), $"{path} が見つかりません。");
-        // 行単位で読み込む(インデントで入れ子を判断するため)
-        var lines = File.ReadAllLines(path);
+        // 読み込み済みの設定ファイルの行を取り出す(1 回のテスト実行につき読み込みは 1 度だけ)
+        var lines = DependabotLines.Value;
 
         // グループ名の行を探す。コメント行は対象外にし、前後の空白を除いた完全一致だけを認める
         // (EndsWith で拾うと「# 束ねているのは nuget-ef-core:」のような説明文が先に一致し、
@@ -352,6 +402,17 @@ public class EfCorePackageAlignmentTests
         Assert.True(block.Count > 0, $"dependabot.yml の {groupName} グループに中身がありません。");
         // 切り出した本文を返す
         return block;
+    }
+
+    // dependabot.yml を行単位で読み込む(インデントで入れ子を判断するため行の並びを保つ)
+    private static string[] ReadDependabotLines()
+    {
+        // 設定ファイルの絶対パスを組み立てる
+        var path = Path.Combine(RepositoryRoot, ".github", "dependabot.yml");
+        // 設定ファイルの存在を確認する
+        Assert.True(File.Exists(path), $"{path} が見つかりません。");
+        // 全行を読み込んで返す
+        return File.ReadAllLines(path);
     }
 
     // 入れ子の判断材料にならない行(空行・コメント行)かどうかを返す
