@@ -2,6 +2,10 @@
 using System.Text.Json;
 // dependabot.yml のパターン照合に正規表現を使うため取り込む
 using System.Text.RegularExpressions;
+// dependabot.yml を構造として読むための YAML パーサ
+using YamlDotNet.Core;
+// YAML の各ノード型(マッピング / 一覧 / スカラー)を扱うため取り込む
+using YamlDotNet.RepresentationModel;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Packaging;
@@ -20,7 +24,9 @@ namespace IncidentInsight.Tests.Packaging;
 // 対策は 2 段構え。
 //   (1) .github/dependabot.yml の nuget-ef-core / nuget-ef-core-security グループが
 //       major も含めて 1 本の PR に束ねる(予防)
-//   (2) 本テストが版ズレそのものを検出する(手動編集や設定変更で束ねが外れた場合の最後の砦)
+//   (2) 本テストが版ズレそのものを検出する(手動編集や設定変更で束ねが外れた場合の最後の砦)。
+//       設定側は dependabot.yml を YAML として構造で読み、書き方の揺れ(フロー記法・引用符・
+//       行末コメント・キーの並び順)に左右されずに「何が設定されているか」だけを見る
 //
 // 【なぜ csproj ではなく packages.lock.json を読むのか】
 // 壊れる仕組みは「Sqlite を上げると Relational が"推移的に"上がる」ことであり、Relational は
@@ -61,6 +67,9 @@ public class EfCorePackageAlignmentTests
 
     // グループ定義をまとめる YAML キー名
     private const string GroupsKey = "groups";
+
+    // 更新設定のエントリを並べる最上位の YAML キー名
+    private const string UpdatesKey = "updates";
 
     // グループが受け持つ更新の大きさを絞る YAML キー名
     private const string UpdateTypesKey = "update-types";
@@ -119,12 +128,6 @@ public class EfCorePackageAlignmentTests
 
     // リポジトリルート。走査のたびに親を遡り直す必要はないので一度だけ解決して使い回す(§8)
     private static readonly string RepositoryRoot = FindRepositoryRoot();
-
-    // dependabot.yml の中身。1 回のテスト実行で何度も読み直さないよう遅延初期化で 1 度だけ読む(§8)
-    private static readonly Lazy<string[]> DependabotLines = new(ReadDependabotLines);
-
-    // nuget エコシステムの groups: 配下の行。グループ探索のたびに切り出し直さないよう共有する(§8)
-    private static readonly Lazy<List<string>> NuGetGroupsBlock = new(ReadNuGetGroupsBlock);
 
     // ソリューションに登録されたプロジェクトの絶対パス一覧(複数のテストで共有する)
     private static readonly Lazy<IReadOnlyList<string>> SolutionProjects = new(ReadSolutionProjects);
@@ -248,28 +251,17 @@ public class EfCorePackageAlignmentTests
     }
 
     [Fact]
-    public void EfCoreGroups_AreDefinedOnceAndNotShadowedByAnEarlierGroup()
+    public void EfCoreGroups_AreNotShadowedByAnEarlierGroup()
     {
         // nuget エコシステムに定義されているグループ名を、書かれている順に読み出す
         var groupNames = ReadNuGetGroupNamesInOrder();
 
-        // 同名のグループが 2 回書かれていないこと。
-        // 【なぜ重要か】YAML の重複キーは「後に書いた方」が採用される一方、この検査は
-        // 素直に読むと「先に書いた方」を見る。コピーして書き換えた 2 つ目が実際の設定になり、
-        // 検査は正しい 1 つ目を見て通す——という食い違いが起きうる
-        foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
-        {
-            // その名前が現れた回数を数える
-            var count = groupNames.Count(name => string.Equals(name, groupName, StringComparison.Ordinal));
-            // 1 回だけであること(0 回は ReadGroupBlock 側が別途落とす)
-            Assert.True(count <= 1,
-                $"dependabot.yml に {groupName} グループが {count} 回書かれています。"
-                + "YAML の重複キーは後に書いた方が採用されるため、検査が読む定義と"
-                + "Dependabot が使う定義が食い違います。1 つにまとめてください。");
-        }
-
         // 2 つの EF Core グループそれぞれについて、先に定義されたグループに横取りされないことを確認する
         // (通常の版更新とセキュリティ更新は別々に解決されるため、片方だけ守っても意味がない)
+        //
+        // なお同名グループの重複定義は、YAML の解析時点で弾かれる(ReadNuGetGroups の catch)。
+        // 重複キーは YAML では後勝ちのため、素朴に読むと「検査は 1 つ目・Dependabot は 2 つ目」を
+        // 見る食い違いが起きうるが、構造として読むようにしたことでその経路自体が無くなった
         AssertNotShadowed(groupNames, EfCoreGroupName);
         AssertNotShadowed(groupNames, EfCoreSecurityGroupName);
     }
@@ -512,244 +504,139 @@ public class EfCorePackageAlignmentTests
 
     // nuget エコシステムに定義されているグループ名を、書かれている順に読み出す
     // (Dependabot は「最初に一致したグループ」にだけ依存関係を入れるため、順序に意味がある)
-    private static List<string> ReadNuGetGroupNamesInOrder()
-    {
-        // groups: 直下のインデント幅(先頭行が必ずグループ名の行になる)
-        var nameIndent = IndentOf(NuGetGroupsBlock.Value[0]);
-        // その深さにある "名前:" の行だけをグループ名として拾う
-        return NuGetGroupsBlock.Value
-            .Where(line => IndentOf(line) == nameIndent)
-            .Select(line => Regex.Match(line.Trim(), @"^(?<name>[A-Za-z][A-Za-z0-9._-]*):$"))
-            .Where(match => match.Success)
-            .Select(match => match.Groups["name"].Value)
-            .ToList();
-    }
-
-    // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す(キーが無ければ null)
-    private static IReadOnlyList<string>? TryReadGroupList(string groupName, string key)
-    {
-        // そのグループにキー自体が書かれていなければ「指定なし」として null を返す
-        if (!ReadGroupKeys(groupName).Contains(key, StringComparer.Ordinal)) return null;
-        // 書かれていれば通常どおり読み出す
-        return ReadGroupList(groupName, key);
-    }
-
-    // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す
-    private static IReadOnlyList<string> ReadGroupList(string groupName, string key)
-    {
-        // グループの本文(そのグループに属する行だけ)を取り出す
-        var block = ReadGroupBlock(groupName);
-        // 読み取った値を溜める入れ物
-        var values = new List<string>();
-        // 目的のキー配下を読んでいる最中かどうか
-        var insideKey = false;
-
-        // グループ本文を 1 行ずつ見る
-        foreach (var line in block)
-        {
-            // 目的のキーの行かどうかを見る(値がこの行に並ぶ書き方と、次行以降へ並ぶ書き方がある)
-            if (line.TrimStart().StartsWith($"{key}:", StringComparison.Ordinal))
-            {
-                // キー名の後ろに続く部分を取り出す
-                var inlineValues = line.TrimStart()[$"{key}:".Length..].Trim();
-                // 同じ行に値が並ぶ書き方(update-types: ["minor", "patch"])はここで読み切る。
-                // 箇条書きだけを想定すると、この書き方のキーを「値ゼロ件」と誤読してしまう
-                if (inlineValues.Length > 0 && !inlineValues.StartsWith('#'))
-                {
-                    // 角括弧と行末コメントを取り除き、カンマ区切りの各要素から引用符を外して取り出す
-                    // (["minor", "patch"] も [minor, patch] も YAML として同義なので両方受け付ける)
-                    values.AddRange(inlineValues.Split('#')[0].Trim().Trim('[', ']')
-                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                        .Select(value => value.Trim('"', '\'')));
-                    break;
-                }
-                // 値が無ければ、次行以降の箇条書きを読み取る状態へ移る
-                insideKey = true;
-                continue;
-            }
-            // キーの外側にいる間は何もしない
-            if (!insideKey) continue;
-            // 箇条書き("- ...")でなくなったら、そのキーの一覧は終わり
-            if (!line.TrimStart().StartsWith("- ", StringComparison.Ordinal)) break;
-            // 箇条書きの値を取り出す。整形ツールが冗長な引用符を外すことがあるため、
-            // 二重引用符・単一引用符・引用符なしのいずれも受け付ける(どれも YAML として同義で、
-            // Dependabot の解釈も変わらない。書式差だけで CI が赤くなるのは偽陽性になる)。
-            // 行末コメントは値に含めない
-            var item = Regex.Match(line.TrimStart(),
-                @"^-\s*(?:""(?<value>[^""]*)""|'(?<value>[^']*)'|(?<value>[^#\s][^#]*?))\s*(?:#.*)?$");
-            // 値として読み取れない記述は、読み飛ばさず異常として落とす
-            Assert.True(item.Success, $"dependabot.yml の {groupName}.{key} に想定外の記述があります: {line.Trim()}");
-            // 取り出したパターン文字列を記録する
-            values.Add(item.Groups["value"].Value.TrimEnd());
-        }
-
-        // 値が 1 つも無いのは設定が壊れている(または書式が変わった)状態なので失敗させる
-        Assert.True(values.Count > 0, $"dependabot.yml の {groupName}.{key} から値を読み取れませんでした。");
-        // 読み取ったパターン一覧を返す
-        return values;
-    }
-
-    // dependabot.yml の指定グループ直下に書かれているキー名を列挙する
-    // (そのグループに「何が書かれていないか」を検査するために使う)
-    private static IReadOnlyList<string> ReadGroupKeys(string groupName)
-    {
-        // グループの本文(そのグループに属する行だけ)を取り出す
-        var block = ReadGroupBlock(groupName);
-        // グループ直下のインデント幅(本文の先頭行が必ず直下のキーになる)
-        var keyIndent = IndentOf(block[0]);
-        // 直下の階層にある "キー:" だけを拾う(配下の箇条書きや入れ子は対象外)
-        return block
-            .Where(line => IndentOf(line) == keyIndent)
-            .Select(line => Regex.Match(line.Trim(), @"^(?<key>[A-Za-z][A-Za-z0-9-]*):"))
-            .Where(match => match.Success)
-            .Select(match => match.Groups["key"].Value)
-            .ToList();
-    }
-
-    // dependabot.yml から「指定グループの指定キー」の単一値を読み出す(キーが無ければ null)
-    private static string? TryReadGroupScalar(string groupName, string key) =>
-        // そのグループにキー自体が書かれていなければ「指定なし」として null を返す
-        ReadGroupKeys(groupName).Contains(key, StringComparer.Ordinal) ? ReadGroupScalar(groupName, key) : null;
-
-    // dependabot.yml から「指定グループの指定キー」の単一値(applies-to など)を読み出す
-    private static string ReadGroupScalar(string groupName, string key)
-    {
-        // グループの本文を取り出す
-        var block = ReadGroupBlock(groupName);
-        // "key: value" 形式の行を探す(値は引用符の有無どちらでも読めるようにする)
-        var match = block
-            .Select(line => Regex.Match(line.Trim(), $@"^{Regex.Escape(key)}:\s*""?(?<value>[^""#]+?)""?\s*(#.*)?$"))
-            .FirstOrDefault(m => m.Success);
-
-        // キーが無ければ既定値へ落ちて意図と食い違うため、存在しないこと自体を失敗として扱う
-        Assert.True(match is not null, $"dependabot.yml の {groupName} に {key} が指定されていません。");
-        // 読み取った値を返す
-        return match!.Groups["value"].Value;
-    }
-
-    // dependabot.yml から指定グループに属する行だけを切り出す。
+    // dependabot.yml の nuget エコシステムに定義されたグループ(名前 → 設定)。
     //
-    // YAML パーサを新しく依存に足さず、既存テスト(AnalyticsScriptContractTests 等)と同じく
-    // ソースを直接走査する。対象は自分たちが書いた既知の形だけで、想定外の形なら黙って
-    // 空を返さず失敗させる(空を返すと「対象 0 件」で検査が素通りしてしまう)
-    //
-    // 【探索範囲を nuget エコシステムに限定する理由】グループ名だけをファイル全体から探すと、
-    // 2 つの EF Core グループが npm など別のエコシステム配下へ移動しても見つかってしまう。
-    // その状態では NuGet パッケージに一切効かない(nuget 側に残るのは EF Core 系を除外している
-    // グループだけなので、プロバイダごとの単独 major PR に逆戻りする)のに検査は通る。
-    // 「どこに書いてあるか」まで含めて固定する
-    private static IReadOnlyList<string> ReadGroupBlock(string groupName)
-    {
-        // nuget エコシステムの groups: 配下の行だけを対象にする
-        var groupsBlock = NuGetGroupsBlock.Value;
+    // 【なぜ YAML パーサを使うのか】当初はインデントを数える自前の走査で読んでいたが、
+    // YAML には同じ意味を表す書き方が多数あり(フロー記法 {a: b} / 引用符付きキー / 行末コメント /
+    // キーの並び順 / 重複キーの後勝ち)、そのすべてを自前で網羅するのは現実的でなかった。
+    // 実際、想定していない書き方をされると (a) 検査が対象を見落として素通りする、
+    // (b) 正しい設定なのに CI が赤くなる、のどちらかが起きた。構造として読めば、
+    // 「どう書かれているか」ではなく「何が設定されているか」だけを見られる。
+    // 依存は YamlDotNet(MIT・.NET の標準的な YAML ライブラリ)をテストプロジェクトにのみ追加する
+    private static readonly Lazy<YamlMappingNode> NuGetGroups = new(ReadNuGetGroups);
 
-        // グループ名の行を探す。コメント行は対象外にし、前後の空白を除いた完全一致だけを認める
-        // (EndsWith で拾うと「# 束ねているのは nuget-ef-core:」のような説明文が先に一致し、
-        //  そこを起点に走査してしまう)
-        var groupLine = groupsBlock.FindIndex(line =>
-            !IsIgnorable(line) && line.Trim() == $"{groupName}:");
-        // グループが消えている(または別エコシステムへ移った)＝束ねが外れているので、明示して落とす
-        Assert.True(groupLine >= 0,
-            $"dependabot.yml の package-ecosystem: \"{NuGetEcosystem}\" 配下に {groupName} グループが"
+    // グループ名を定義順に並べた一覧(Dependabot は「最初に一致したグループ」に入れるため順序に意味がある)
+    private static List<string> ReadNuGetGroupNamesInOrder() =>
+        // マッピングのキーを、書かれている順に文字列として取り出す
+        NuGetGroups.Value.Children.Keys.Select(key => ((YamlScalarNode)key).Value ?? "").ToList();
+
+    // 指定グループの設定(マッピング)を取り出す
+    private static YamlMappingNode ReadGroup(string groupName)
+    {
+        // グループ名で引く(見つからなければ束ねが外れているということ)
+        var found = NuGetGroups.Value.Children
+            .FirstOrDefault(entry => ((YamlScalarNode)entry.Key).Value == groupName).Value;
+        // 見つからない、またはマッピングでない場合は、その事実を明示して落とす
+        Assert.True(found is YamlMappingNode,
+            $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" 配下に {groupName} グループが"
             + "見つかりません。EF Core 系をまとめて更新する設定が外れる(または別のエコシステムへ"
             + "移る)と、プロバイダごとに単独の PR が作られます。");
-
-        // グループのインデント幅(この幅以下の行が現れたらグループの範囲を抜けたと判断する)
-        var groupIndent = IndentOf(groupsBlock[groupLine]);
-        // グループ行の次の行から、より深いインデントが続く範囲を本文として切り出す
-        var block = TakeNestedBlock(groupsBlock, groupLine + 1, groupIndent);
-
-        // 本文が空のグループは設定として意味を成さないので落とす
-        Assert.True(block.Count > 0, $"dependabot.yml の {groupName} グループに中身がありません。");
-        // 切り出した本文を返す
-        return block;
+        // マッピングとして返す
+        return (YamlMappingNode)found!;
     }
 
-    // dependabot.yml の「nuget エコシステムの groups: 配下」の行だけを切り出す
-    private static List<string> ReadNuGetGroupsBlock()
+    // 指定グループ直下に書かれているキー名を列挙する(「他に何も書かれていないこと」の検査に使う)
+    private static IReadOnlyList<string> ReadGroupKeys(string groupName) =>
+        // マッピングのキーを文字列として取り出す
+        ReadGroup(groupName).Children.Keys.Select(key => ((YamlScalarNode)key).Value ?? "").ToList();
+
+    // 指定グループの指定キーを一覧として読み出す(キーが無ければ null)。
+    // ブロック記法(- a)とフロー記法([a, b])のどちらで書かれていても同じ結果になる
+    private static IReadOnlyList<string>? TryReadGroupList(string groupName, string key)
     {
-        // 読み込み済みの設定ファイルの行を取り出す(1 回のテスト実行につき読み込みは 1 度だけ)
-        var lines = DependabotLines.Value.ToList();
-
-        // nuget エコシステムの設定エントリの開始行をすべて探す
-        // 引用符の有無・種類は YAML として同義なので、どれも受け付ける
-        // (箇条書きの値と同じ方針。書式差だけで CI が赤くなるのは偽陽性になる)
-        var ecosystemPattern = new Regex(
-            $@"^-\s*{Regex.Escape(EcosystemKey)}:\s*[""']?{Regex.Escape(NuGetEcosystem)}[""']?\s*(?:#.*)?$");
-        var ecosystemLines = lines
-            .Select((line, index) => (line, index))
-            .Where(pair => !IsIgnorable(pair.line) && ecosystemPattern.IsMatch(pair.line.TrimStart()))
-            .Select(pair => pair.index)
-            .ToList();
-        // エントリが無ければ NuGet の更新設定そのものが失われている
-        Assert.True(ecosystemLines.Count > 0,
-            $"dependabot.yml に {EcosystemKey}: \"{NuGetEcosystem}\" のエントリが見つかりません。");
-        // 2 つ以上ある場合、この検査は最初の 1 つしか見ないため、見ていないエントリが
-        // 束ねの無い状態で残りうる。読み飛ばさず「検査を広げてから追加せよ」と落とす(fail-closed)
-        Assert.True(ecosystemLines.Count == 1,
-            $"dependabot.yml に {EcosystemKey}: \"{NuGetEcosystem}\" のエントリが {ecosystemLines.Count} 個あります。"
-            + "本テストは 1 つ目しか検査しないため、2 つ目以降は束ねが無いまま見逃されます。"
-            + "エントリを増やすときは先に本テストを複数エントリ対応へ広げてください。");
-        // 唯一のエントリの位置を取り出す
-        var ecosystemLine = ecosystemLines[0];
-
-        // エントリ本文(次のエントリが始まるまで)を切り出す
-        var entryBlock = TakeNestedBlock(lines, ecosystemLine + 1, IndentOf(lines[ecosystemLine]));
-        // そのエントリの groups: の開始行を探す
-        var groupsLine = entryBlock.FindIndex(line => line.Trim() == $"{GroupsKey}:");
-        // グループ定義そのものが無ければ、束ねは一切行われない
-        Assert.True(groupsLine >= 0,
-            $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" エントリに {GroupsKey}: がありません。");
-
-        // groups: 配下の行を切り出す
-        var groupsBlock = TakeNestedBlock(entryBlock, groupsLine + 1, IndentOf(entryBlock[groupsLine]));
-        // 中身が空なら束ねが 1 つも無い状態。素の例外(添字範囲外)ではなく、何が起きているかを示して落とす
-        Assert.True(groupsBlock.Count > 0,
-            $"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" エントリの {GroupsKey}: に"
-            + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
-        // 切り出した範囲を返す
-        return groupsBlock;
+        // そのキーが書かれていなければ「指定なし」として null を返す
+        if (!ReadGroup(groupName).Children.TryGetValue(new YamlScalarNode(key), out var node)) return null;
+        // 一覧として書かれていることを確かめる(単一値だった場合は設定ミスなので落とす)
+        Assert.True(node is YamlSequenceNode, $"dependabot.yml の {groupName}.{key} が一覧ではありません。");
+        // 各要素を文字列として取り出す
+        return ((YamlSequenceNode)node).Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
     }
 
-    // 指定位置から、基準インデントより深い行が続く範囲を切り出す(空行・コメント行は捨てる)
-    private static List<string> TakeNestedBlock(IReadOnlyList<string> lines, int startIndex, int parentIndent)
+    // 指定グループの指定キーを一覧として読み出す(キーが無ければ落とす)
+    private static IReadOnlyList<string> ReadGroupList(string groupName, string key)
     {
-        // 切り出した行を溜める入れ物
-        var block = new List<string>();
-        // 開始位置から順に走査する
-        for (var i = startIndex; i < lines.Count; i++)
-        {
-            // 空行とコメント行は入れ子の判断材料にならないので読み飛ばす
-            if (IsIgnorable(lines[i])) continue;
-            // 基準と同じかそれより浅いインデントに戻ったら範囲は終わり
-            if (IndentOf(lines[i]) <= parentIndent) break;
-            // 範囲内の 1 行として記録する
-            block.Add(lines[i]);
-        }
-        // 切り出した範囲を返す
-        return block;
+        // 任意読み取りを試みる
+        var values = TryReadGroupList(groupName, key);
+        // 無ければ、設定が壊れている状態として落とす
+        Assert.True(values is { Count: > 0 }, $"dependabot.yml の {groupName}.{key} から値を読み取れませんでした。");
+        // 読み取った一覧を返す
+        return values!;
     }
 
-    // dependabot.yml を行単位で読み込む(インデントで入れ子を判断するため行の並びを保つ)
-    private static string[] ReadDependabotLines()
+    // 指定グループの指定キーを単一値として読み出す(キーが無ければ null)
+    private static string? TryReadGroupScalar(string groupName, string key) =>
+        // スカラーとして書かれていればその値、書かれていなければ null
+        ReadGroup(groupName).Children.TryGetValue(new YamlScalarNode(key), out var node) && node is YamlScalarNode scalar
+            ? scalar.Value
+            : null;
+
+    // 指定グループの指定キーを単一値として読み出す(キーが無ければ落とす)
+    private static string ReadGroupScalar(string groupName, string key)
+    {
+        // 任意読み取りを試みる
+        var value = TryReadGroupScalar(groupName, key);
+        // キーが無ければ既定値へ落ちて意図と食い違うため、存在しないこと自体を失敗として扱う
+        Assert.True(value is not null, $"dependabot.yml の {groupName} に {key} が指定されていません。");
+        // 読み取った値を返す
+        return value!;
+    }
+
+    // dependabot.yml を構造として読み込み、nuget エコシステムの groups: を取り出す
+    private static YamlMappingNode ReadNuGetGroups()
     {
         // 設定ファイルの絶対パスを組み立てる
         var path = Path.Combine(RepositoryRoot, DependabotConfigPath);
         // 設定ファイルの存在を確認する
         Assert.True(File.Exists(path), $"{path} が見つかりません。");
-        // 全行を読み込んで返す
-        return File.ReadAllLines(path);
+
+        // YAML として解析する。同名キーの重複などで解析できない場合は、原因を添えて落とす
+        // (重複キーは YAML では後勝ちで、検査と Dependabot が別の定義を見る食い違いの元になる)
+        var stream = new YamlStream();
+        try
+        {
+            using var reader = new StringReader(File.ReadAllText(path));
+            stream.Load(reader);
+        }
+        catch (YamlException e)
+        {
+            Assert.Fail($"dependabot.yml を YAML として解析できませんでした: {e.Message}");
+        }
+
+        // 最上位のマッピングから updates: の一覧を取り出す
+        var root = Assert.IsType<YamlMappingNode>(stream.Documents[0].RootNode);
+        Assert.True(root.Children.TryGetValue(new YamlScalarNode(UpdatesKey), out var updates)
+            && updates is YamlSequenceNode,
+            $"dependabot.yml に {UpdatesKey}: の一覧がありません。");
+
+        // nuget エコシステムの設定エントリを集める
+        var nugetEntries = ((YamlSequenceNode)updates!).Children
+            .OfType<YamlMappingNode>()
+            .Where(entry => entry.Children.TryGetValue(new YamlScalarNode(EcosystemKey), out var ecosystem)
+                && (ecosystem as YamlScalarNode)?.Value == NuGetEcosystem)
+            .ToList();
+
+        // エントリが無ければ NuGet の更新設定そのものが失われている
+        Assert.True(nugetEntries.Count > 0,
+            $"dependabot.yml に {EcosystemKey}: {NuGetEcosystem} のエントリが見つかりません。");
+        // 2 つ以上ある場合、この検査は最初の 1 つしか見ないため、見ていないエントリが
+        // 束ねの無い状態で残りうる。読み飛ばさず「検査を広げてから追加せよ」と落とす(fail-closed)
+        Assert.True(nugetEntries.Count == 1,
+            $"dependabot.yml に {EcosystemKey}: {NuGetEcosystem} のエントリが {nugetEntries.Count} 個あります。"
+            + "本テストは 1 つ目しか検査しないため、2 つ目以降は束ねが無いまま見逃されます。"
+            + "エントリを増やすときは先に本テストを複数エントリ対応へ広げてください。");
+
+        // そのエントリの groups: を取り出す
+        Assert.True(nugetEntries[0].Children.TryGetValue(new YamlScalarNode(GroupsKey), out var groups)
+            && groups is YamlMappingNode,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリに {GroupsKey}: がありません。");
+        // 中身が空なら束ねが 1 つも無い状態なので、何が起きているかを示して落とす
+        var groupsNode = (YamlMappingNode)groups!;
+        Assert.True(groupsNode.Children.Count > 0,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリの {GroupsKey}: に"
+            + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
+        // 読み取ったグループ定義を返す
+        return groupsNode;
     }
-
-    // 入れ子の判断材料にならない行(空行・コメント行)かどうかを返す
-    private static bool IsIgnorable(string line) =>
-        // 空白だけの行か、'#' で始まる行であれば読み飛ばしてよい
-        line.Trim().Length == 0 || line.TrimStart().StartsWith('#');
-
-    // 行頭の空白文字数(インデントの深さ)を返す
-    private static int IndentOf(string line) =>
-        // 先頭から空白でない文字が現れるまでの長さを数える
-        line.Length - line.TrimStart().Length;
 
     // テスト実行ディレクトリから上へ辿り、リポジトリルート(src/IncidentInsight.Web と .github を
     // 併せ持つ階層)を見つける。既存テストは Web プロジェクトだけを探すが、本テストは

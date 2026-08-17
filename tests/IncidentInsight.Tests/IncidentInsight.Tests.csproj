@@ -29,6 +29,12 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <!-- .github/dependabot.yml を「構造」として読むための YAML パーサ (EfCorePackageAlignmentTests)。
+         インデントを数える自前の走査では、YAML の同義な書き方 (フロー記法・引用符付きキー・
+         行末コメント・キーの並び順・重複キーの後勝ち) を網羅できず、検査が対象を見落とすか
+         正しい設定で CI が赤くなるかのどちらかになっていた。MIT ライセンスの .NET 標準的な
+         YAML ライブラリで、テストプロジェクト限定の依存 (本番アセンブリには入らない)。 -->
+    <PackageReference Include="YamlDotNet" Version="18.1.0" />
   </ItemGroup>
 
   <ItemGroup>
