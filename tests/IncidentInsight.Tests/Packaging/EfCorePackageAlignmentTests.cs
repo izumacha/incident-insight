@@ -244,14 +244,19 @@ public class EfCorePackageAlignmentTests
         // minor / patch グループが束ねから外している一覧
         var excludedPatterns = ReadGroupList(MinorAndPatchGroupName, ExcludePatternsKey);
 
-        // 3 つの一覧が同じ集合であること。どれか 1 つにだけパッケージを足すと、その
-        // パッケージは更新の種類(minor / major / セキュリティ)によって入るグループが変わり、
-        // 結局どこかの経路だけが単独 PR に戻ってしまう。
+        // 2 つの EF Core グループは同じ顔ぶれであること。片方にだけ足すと、そのパッケージは
+        // 通常の版更新とセキュリティ更新で扱いが変わり、片方の経路だけ単独 PR に戻ってしまう。
         // 並び順は Dependabot の挙動に影響しないため集合として比較する(整列しただけで CI が
         // 赤くなると、規約が守られていないのではなく検査が硬すぎるという偽陽性になる)
         AssertSameSet($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
             $"{EfCoreSecurityGroupName}.{PatternsKey}", securityUpdatePatterns);
-        AssertSameSet($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
+
+        // minor / patch グループ側は「EF Core 系がすべて除外に含まれていること」だけを求める。
+        // 【なぜ完全一致にしないか】ここでの不変条件は「EF Core 系が minor/patch の束ねへ
+        // 紛れ込まないこと」であって、除外一覧に他のパッケージが載っていること自体は問題ない。
+        // 完全一致を求めると、無関係なパッケージを除外しただけで「EF Core 系を追加・削除する
+        // ときは両方を同じ内容に保ってください」という的外れなメッセージで CI が赤くなる
+        AssertIsSubsetOf($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
             $"{MinorAndPatchGroupName}.{ExcludePatternsKey}", excludedPatterns);
 
         // 2 つのグループが実際に別々の更新種別を受け持っていること。
@@ -382,6 +387,21 @@ public class EfCorePackageAlignmentTests
             + $"{ExcludePatternsKey} や update-types を足すと束ねる範囲が狭まり、"
             + "プロバイダごとの単独 PR が再び作られるようになります"
             + $"(書いてよいのは {string.Join(" / ", AllowedEfCoreGroupKeys)} だけです)。");
+    }
+
+    // 左の一覧が右の一覧にすべて含まれることを確認する。欠けていれば、どれが漏れているかを示して落とす
+    private static void AssertIsSubsetOf(string leftName, IReadOnlyList<string> left, string rightName, IReadOnlyList<string> right)
+    {
+        // NuGet のパッケージ ID は大文字小文字を区別しないため、比較も区別しない集合にする
+        var rightSet = new HashSet<string>(right, StringComparer.OrdinalIgnoreCase);
+        // 右に無いものを漏れとして集める
+        var missing = left.Where(pattern => !rightSet.Contains(pattern)).ToList();
+
+        // 漏れが無いこと(あれば、どれが足りないのかを具体的に示す)
+        Assert.True(missing.Count == 0,
+            $"dependabot.yml の {leftName} にあるのに {rightName} に無い対象があります: "
+            + $"[{string.Join(", ", missing)}]\n"
+            + "EF Core 系が minor / patch の束ねへ紛れ込まないよう、除外にも同じ対象を並べてください。");
     }
 
     // 2 つのパターン一覧が同じ集合であることを確認する。違えば「どちらにだけ有るか」を示して落とす
@@ -519,8 +539,6 @@ public class EfCorePackageAlignmentTests
         return projects;
     }
 
-    // nuget エコシステムに定義されているグループ名を、書かれている順に読み出す
-    // (Dependabot は「最初に一致したグループ」にだけ依存関係を入れるため、順序に意味がある)
     // dependabot.yml の nuget エコシステムに定義されたグループ(名前 → 設定)。
     //
     // 【なぜ YAML パーサを使うのか】当初はインデントを数える自前の走査で読んでいたが、
