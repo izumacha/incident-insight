@@ -68,12 +68,6 @@ public class EfCorePackageAlignmentTests
     // 更新の大きさのうち「メジャー」を表す値(この不変条件が守るのはメジャー版の一致)
     private const string MajorUpdateType = "major";
 
-    // グループが対象を本番依存 / 開発依存のどちらかに絞る YAML キー名
-    private const string DependencyTypeKey = "dependency-type";
-
-    // 開発時のみの依存を表す dependency-type の値
-    private const string DevelopmentDependencyType = "development";
-
     // EF Core 系グループが属していなければならないエコシステム(.NET のパッケージ管理系)
     private const string NuGetEcosystem = "nuget";
 
@@ -318,8 +312,14 @@ public class EfCorePackageAlignmentTests
             .Where(name => string.Equals(GroupScopeOf(name), scope, StringComparison.Ordinal))
             // メジャー更新を受け持たないグループは、この不変条件(メジャー版の一致)を壊さない
             .Where(TakesMajorUpdates)
-            // 開発時のみの依存に絞ったグループは、本番依存である EF Core 系を拾わない
-            .Where(name => !TargetsDevelopmentDependenciesOnly(name))
+            // 【dependency-type で絞り込まない理由】「開発依存だけのグループは本番依存の
+            // EF Core 系を拾わない」と考えたくなるが、前提が成り立たない。
+            // Microsoft.EntityFrameworkCore.Design は csproj で PrivateAssets=all を指定して
+            // おり、Dependabot からは開発依存に見える。この除外を入れると、開発依存に絞った
+            // 先行グループが Design を吸い込む経路を見逃す。Design は Relational を推移依存に
+            // 持つため、その単独 major PR をマージすれば版ズレが再発する。
+            // 絞り込みキーの解釈を増やすほど見逃しが生まれるので、ここは保守的に倒す
+            // (誤検出はレビューで気付けるが、見逃しは PostgreSQL 配備でしか現れない)
             // 実際に EF Core 系パッケージを拾ってしまうか
             .Where(name => efCorePackageIds.Any(id => GroupWouldMatch(name, id)))
             .ToList();
@@ -337,12 +337,6 @@ public class EfCorePackageAlignmentTests
     private static string GroupScopeOf(string groupName) =>
         // 明示されていればその値、無ければ Dependabot の既定値
         TryReadGroupScalar(groupName, AppliesToKey) ?? VersionUpdates;
-
-    // 指定グループが「開発時のみの依存」に絞られているかを返す。
-    // EF Core 系は本番で動く依存なので、そのグループには入らない(先行していても横取りしない)
-    private static bool TargetsDevelopmentDependenciesOnly(string groupName) =>
-        // dependency-type が development のときだけ対象外と判断する
-        string.Equals(TryReadGroupScalar(groupName, DependencyTypeKey), DevelopmentDependencyType, StringComparison.Ordinal);
 
     // 指定グループがメジャー更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
     private static bool TakesMajorUpdates(string groupName) =>
@@ -562,9 +556,11 @@ public class EfCorePackageAlignmentTests
                 // 箇条書きだけを想定すると、この書き方のキーを「値ゼロ件」と誤読してしまう
                 if (inlineValues.Length > 0 && !inlineValues.StartsWith('#'))
                 {
-                    // 引用符で囲まれた値をすべて取り出して確定する
-                    values.AddRange(Regex.Matches(inlineValues, @"""(?<value>[^""]*)""")
-                        .Select(match => match.Groups["value"].Value));
+                    // 角括弧と行末コメントを取り除き、カンマ区切りの各要素から引用符を外して取り出す
+                    // (["minor", "patch"] も [minor, patch] も YAML として同義なので両方受け付ける)
+                    values.AddRange(inlineValues.Split('#')[0].Trim().Trim('[', ']')
+                        .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                        .Select(value => value.Trim('"', '\'')));
                     break;
                 }
                 // 値が無ければ、次行以降の箇条書きを読み取る状態へ移る
@@ -676,9 +672,13 @@ public class EfCorePackageAlignmentTests
         var lines = DependabotLines.Value.ToList();
 
         // nuget エコシステムの設定エントリの開始行をすべて探す
+        // 引用符の有無・種類は YAML として同義なので、どれも受け付ける
+        // (箇条書きの値と同じ方針。書式差だけで CI が赤くなるのは偽陽性になる)
+        var ecosystemPattern = new Regex(
+            $@"^-\s*{Regex.Escape(EcosystemKey)}:\s*[""']?{Regex.Escape(NuGetEcosystem)}[""']?\s*(?:#.*)?$");
         var ecosystemLines = lines
             .Select((line, index) => (line, index))
-            .Where(pair => !IsIgnorable(pair.line) && pair.line.Trim() == $"- {EcosystemKey}: \"{NuGetEcosystem}\"")
+            .Where(pair => !IsIgnorable(pair.line) && ecosystemPattern.IsMatch(pair.line.TrimStart()))
             .Select(pair => pair.index)
             .ToList();
         // エントリが無ければ NuGet の更新設定そのものが失われている
