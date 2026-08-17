@@ -75,11 +75,20 @@ public class EfCorePackageAlignmentTests
     // NuGet が解決済みの版を記録するロックファイルの名前
     private const string LockFileName = "packages.lock.json";
 
-    // プロジェクトファイルの探索パターン(ロックファイルの有無を突き合わせる相手)
-    private const string ProjectFilePattern = "*.csproj";
+    // 「このリポジトリのプロジェクト」の正本。CI の dotnet restore / build / test もこれを対象にする
+    private const string SolutionFileName = "IncidentInsight.sln";
 
-    // ビルド生成物のディレクトリ名(ファイル探索から除外する)
-    private static readonly string[] BuildOutputDirectories = { "bin", "obj" };
+    // ソリューションファイルからプロジェクトの相対パスを抜き出す正規表現。
+    // 行の形は Project("{型GUID}") = "表示名", "相対パス.csproj", "{GUID}"
+    private static readonly Regex SolutionProjectRegex =
+        new(@"""(?<path>[^""]+\.csproj)""", RegexOptions.None);
+
+    // EF Core 系グループに書いてよいキー。
+    // 【なぜ限定するか】patterns と applies-to が正しくても、同じグループに update-types や
+    // exclude-patterns を足せば束ねる範囲を後から狭められる(例: update-types を minor/patch に
+    // すると major が再びプロバイダごとの単独 PR に戻り、この PR が防いだ状態そのものに戻る)。
+    // 「何が書いてあるか」だけでなく「他に何も書かれていないこと」まで固定する
+    private static readonly string[] AllowedEfCoreGroupKeys = { AppliesToKey, PatternsKey };
 
     // リポジトリルート。走査のたびに親を遡り直す必要はないので一度だけ解決して使い回す(§8)
     private static readonly string RepositoryRoot = FindRepositoryRoot();
@@ -87,7 +96,10 @@ public class EfCorePackageAlignmentTests
     // dependabot.yml の中身。1 回のテスト実行で何度も読み直さないよう遅延初期化で 1 度だけ読む(§8)
     private static readonly Lazy<string[]> DependabotLines = new(ReadDependabotLines);
 
-    // 解決済みパッケージの一覧。リポジトリ全走査を複数のテストで共有する(§8)
+    // ソリューションに登録されたプロジェクトの絶対パス一覧(複数のテストで共有する)
+    private static readonly Lazy<IReadOnlyList<string>> SolutionProjects = new(ReadSolutionProjects);
+
+    // 解決済みパッケージの一覧。ロックファイルの読み取りを複数のテストで共有する(§8)
     private static readonly Lazy<IReadOnlyList<ResolvedPackage>> ResolvedPackages = new(ReadAllResolvedPackages);
 
     // ロックファイル 1 行分の情報(どのプロジェクトの・どのパッケージが・直接か推移か・どの版か)
@@ -147,11 +159,12 @@ public class EfCorePackageAlignmentTests
     [Fact]
     public void EveryProject_HasCommittedLockFile()
     {
-        // ビルド生成物を除いた全プロジェクトファイルを探す
-        var projects = FindFiles(ProjectFilePattern).ToList();
-
-        // プロジェクトが見つからないのは探索の劣化なので、まずその前提を固定する
-        Assert.True(projects.Count > 0, $"{ProjectFilePattern} が 1 つも見つかりませんでした。探索条件を確認してください。");
+        // ソリューションに登録されたプロジェクトを対象にする。
+        // 【なぜリポジトリ全走査ではないか】*.csproj をリポジトリ全体から拾うと node_modules や
+        // ベンダーディレクトリに紛れ込んだ第三者の csproj まで対象になり、開発者が直しようのない
+        // ファイルを指して CI が赤くなる。CI が restore / build / test する範囲＝ソリューションを
+        // 正本にすれば、検査対象と「ロックが強制される範囲」が原理的に一致する
+        var projects = SolutionProjects.Value;
 
         // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
         var missing = projects
@@ -196,6 +209,29 @@ public class EfCorePackageAlignmentTests
         // 両グループとも通常の版更新を見に行き、CVE 対応の更新が束ねを素通りする
         Assert.Equal(VersionUpdates, ReadGroupScalar(EfCoreGroupName, AppliesToKey));
         Assert.Equal(SecurityUpdates, ReadGroupScalar(EfCoreSecurityGroupName, AppliesToKey));
+
+        // 束ねる範囲を後から狭めるキーが足されていないこと。
+        // patterns が正しくても update-types や exclude-patterns を書き足せば束ねを骨抜きにできる
+        // (update-types: [minor, patch] にすると major が再びプロバイダごとの単独 PR に戻る)
+        AssertOnlyAllowedKeys(EfCoreGroupName);
+        AssertOnlyAllowedKeys(EfCoreSecurityGroupName);
+    }
+
+    // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
+    private static void AssertOnlyAllowedKeys(string groupName)
+    {
+        // そのグループ直下に書かれているキーのうち、許可一覧に無いものを集める
+        var unexpected = ReadGroupKeys(groupName)
+            .Where(key => !AllowedEfCoreGroupKeys.Contains(key, StringComparer.Ordinal))
+            .ToList();
+
+        // 余計なキーが無いこと(あれば、どのキーが束ねを狭めうるかを示す)
+        Assert.True(unexpected.Count == 0,
+            $"dependabot.yml の {groupName} に想定外のキーがあります: [{string.Join(", ", unexpected)}]\n"
+            + $"このグループは EF Core 系を「全ての更新をまとめて 1 本の PR にする」ために置いています。"
+            + $"{ExcludePatternsKey} や update-types を足すと束ねる範囲が狭まり、"
+            + "プロバイダごとの単独 PR が再び作られるようになります"
+            + $"(書いてよいのは {string.Join(" / ", AllowedEfCoreGroupKeys)} だけです)。");
     }
 
     // 2 つのパターン一覧が同じ集合であることを確認する。違えば「どちらにだけ有るか」を示して落とす
@@ -248,22 +284,33 @@ public class EfCorePackageAlignmentTests
             // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない
             RegexOptions.IgnoreCase));
 
-    // リポジトリ内の全 packages.lock.json から、解決済みパッケージを漏れなく読み出す。
-    // プロジェクトを増やしたときに一覧へ追記し忘れて検査対象から外れる事故を防ぐため、
-    // 固定のパス一覧ではなくファイル探索で集める
+    // ソリューションに登録された全プロジェクトの packages.lock.json から、解決済みパッケージを
+    // 漏れなく読み出す。プロジェクトを増やしたときに一覧へ追記し忘れて検査対象から外れる事故は、
+    // 探索元をソリューション(CI が restore する範囲そのもの)にすることで防ぐ
     private static IReadOnlyList<ResolvedPackage> ReadAllResolvedPackages()
     {
         // 見つかったパッケージを溜める入れ物
         var packages = new List<ResolvedPackage>();
-        // ビルド生成物を除いたロックファイルを 1 つずつ読む
-        foreach (var lockFile in FindFiles(LockFileName))
+        // 各プロジェクトの隣にあるロックファイルを 1 つずつ読む
+        foreach (var projectFile in SolutionProjects.Value)
         {
+            // プロジェクトと同じディレクトリのロックファイルを指す
+            var lockFile = Path.Combine(Path.GetDirectoryName(projectFile)!, LockFileName);
+            // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するのでここでは飛ばす
+            // (同じ事実で 2 つのテストが落ちると、原因が 2 種類あるように見えて読み手を惑わせる)
+            if (!File.Exists(lockFile)) continue;
             // 失敗メッセージ用に、リポジトリルートからの相対パスにしておく
             var project = Path.GetRelativePath(RepositoryRoot, lockFile);
             // ロックファイルを JSON として解析する
             using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
-            // 解決結果はターゲットフレームワークごとに入れ子になっている
-            foreach (var framework in document.RootElement.GetProperty("dependencies").EnumerateObject())
+            // 解決結果はターゲットフレームワークごとに入れ子になっている。
+            // 書式が変わって dependencies が無いときは、素の KeyNotFoundException ではなく
+            // どのファイルが読めなかったかを示して落とす(このファイルの他の異常系と扱いを揃える)
+            Assert.True(document.RootElement.TryGetProperty("dependencies", out var dependencies),
+                $"{project} に dependencies がありません。{LockFileName} の書式が変わった可能性があります"
+                + "(読み取れないと、そのプロジェクトだけ検査対象から静かに外れます)。");
+            // ターゲットフレームワークごとに解決結果を見る
+            foreach (var framework in dependencies.EnumerateObject())
             {
                 // そのフレームワーク配下のパッケージを 1 件ずつ取り出す
                 foreach (var entry in framework.Value.EnumerateObject())
@@ -279,34 +326,45 @@ public class EfCorePackageAlignmentTests
             }
         }
 
-        // ロックファイルが 1 つも無いのは異常(RestorePackagesWithLockFile が外れた等)なので落とす
+        // ロックファイルが 1 つも読めないのは異常(全プロジェクトで欠落している等)なので落とす
         Assert.True(packages.Count > 0,
-            $"{LockFileName} が 1 つも見つかりませんでした。"
+            $"{LockFileName} から解決済みパッケージを 1 件も読み取れませんでした。"
             + "RestorePackagesWithLockFile が外れているか、ロックファイルがコミットされていません。");
         // 集めた一覧を返す
         return packages;
     }
 
-    // リポジトリ配下の指定ファイルを、ビルド生成物(bin / obj)を除いて列挙する。
-    //
-    // 【除外判定をリポジトリ相対パスで行う理由】絶対パスに対して判定すると、チェックアウト先が
-    // /home/user/bin/incident-insight のように bin / obj を名前に含む場所だと全ファイルが
-    // 除外され、「ロックファイルがコミットされていません」という実態と食い違うメッセージで
-    // 落ちる。リポジトリ内での位置だけを見れば、置き場所に左右されない
-    private static IEnumerable<string> FindFiles(string searchPattern) =>
-        // ルートから再帰的に探し、生成物ディレクトリ配下のものは除く
-        Directory.EnumerateFiles(RepositoryRoot, searchPattern, SearchOption.AllDirectories)
-            .Where(path => !IsUnderBuildOutput(Path.GetRelativePath(RepositoryRoot, path)))
-            // 実行順を環境に依存させないよう並びを固定する(失敗メッセージの再現性のため)
-            .OrderBy(path => path, StringComparer.Ordinal);
+    // ソリューションファイルから、登録されているプロジェクトの絶対パスを読み出す。
+    // ソリューション行の形は Project("{型GUID}") = "表示名", "相対パス.csproj", "{GUID}" で、
+    // ソリューションフォルダ(仮想フォルダ)の行は .csproj を含まないため自然に除外される
+    private static IReadOnlyList<string> ReadSolutionProjects()
+    {
+        // ソリューションファイルの絶対パスを組み立てる
+        var solutionPath = Path.Combine(RepositoryRoot, SolutionFileName);
+        // ソリューションが見つからないのは探索の前提が崩れている状態なので落とす
+        Assert.True(File.Exists(solutionPath), $"{solutionPath} が見つかりません。");
 
-    // リポジトリ相対パスがビルド生成物(bin / obj)配下かどうかを返す
-    private static bool IsUnderBuildOutput(string relativePath) =>
-        // パスを区切り単位に分解し、途中のディレクトリ名が bin / obj と一致するかを見る
-        // (単純な部分一致だと "obj-store" のような無関係な名前まで除外してしまう)
-        relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .SkipLast(1)
-            .Any(segment => BuildOutputDirectories.Contains(segment, StringComparer.OrdinalIgnoreCase));
+        // 各行から csproj の相対パスを抜き出し、絶対パスへ直す
+        var projects = SolutionProjectRegex.Matches(File.ReadAllText(solutionPath))
+            // ソリューションは Windows 形式の区切りで書かれるため、実行環境の区切りへ直す
+            .Select(match => match.Groups["path"].Value.Replace('\\', Path.DirectorySeparatorChar))
+            // リポジトリルートからの絶対パスにする
+            .Select(relativePath => Path.Combine(RepositoryRoot, relativePath))
+            // 失敗メッセージの再現性のため並びを固定する
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToList();
+
+        // プロジェクトが 1 つも読み取れないのは書式変更などの異常なので落とす
+        Assert.True(projects.Count > 0,
+            $"{SolutionFileName} からプロジェクトを 1 つも読み取れませんでした。書式が変わった可能性があります。");
+        // 登録されているのに実体が無いプロジェクトは、ソリューションの記述ずれとして落とす
+        var missing = projects.Where(path => !File.Exists(path)).ToList();
+        Assert.True(missing.Count == 0,
+            $"{SolutionFileName} に登録されたプロジェクトが見つかりません:\n"
+            + string.Join("\n", missing.Select(path => $"  {Path.GetRelativePath(RepositoryRoot, path)}")));
+        // 読み取ったプロジェクト一覧を返す
+        return projects;
+    }
 
     // dependabot.yml から「指定グループの指定キー」の箇条書きを読み出す
     private static IReadOnlyList<string> ReadGroupList(string groupName, string key)
@@ -344,6 +402,23 @@ public class EfCorePackageAlignmentTests
         Assert.True(values.Count > 0, $"dependabot.yml の {groupName}.{key} から値を読み取れませんでした。");
         // 読み取ったパターン一覧を返す
         return values;
+    }
+
+    // dependabot.yml の指定グループ直下に書かれているキー名を列挙する
+    // (そのグループに「何が書かれていないか」を検査するために使う)
+    private static IReadOnlyList<string> ReadGroupKeys(string groupName)
+    {
+        // グループの本文(そのグループに属する行だけ)を取り出す
+        var block = ReadGroupBlock(groupName);
+        // グループ直下のインデント幅(本文の先頭行が必ず直下のキーになる)
+        var keyIndent = IndentOf(block[0]);
+        // 直下の階層にある "キー:" だけを拾う(配下の箇条書きや入れ子は対象外)
+        return block
+            .Where(line => IndentOf(line) == keyIndent)
+            .Select(line => Regex.Match(line.Trim(), @"^(?<key>[A-Za-z][A-Za-z0-9-]*):"))
+            .Where(match => match.Success)
+            .Select(match => match.Groups["key"].Value)
+            .ToList();
     }
 
     // dependabot.yml から「指定グループの指定キー」の単一値(applies-to など)を読み出す
