@@ -25,12 +25,28 @@ updates:
       #
       # 版ズレそのものは EfCorePackageAlignmentTests が検出する (この設定を迂回した手動編集や、
       # Dependabot の設定変更で束ねが外れた場合の最後の砦)。
+      #
+      # 【なぜ 2 グループ必要か】applies-to の既定は version-updates で、セキュリティ更新
+      # (脆弱性の報告を受けて Dependabot が別枠で出す PR) には及ばない。通常の版更新だけを
+      # 束ねても、CVE 対応の更新はパッケージ単位の PR として現れ、その修正版がメジャーを
+      # またぐと同じ版ズレが再発する。適用対象ごとにグループを分けて両方の経路を塞ぐ。
+      # 対象パッケージの一覧は 3 箇所 (下の 2 グループと nuget-minor-and-patch の除外) で
+      # 一致している必要があり、EfCorePackageAlignmentTests が集合として一致を固定する。
       nuget-ef-core:
+        applies-to: version-updates
         patterns:
           - "Microsoft.EntityFrameworkCore*"                                  # EF Core 本体と各プロバイダ
           - "Microsoft.AspNetCore.Identity.EntityFrameworkCore"               # Identity の EF Core ストア
           - "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" # DbContext ヘルスチェック
           - "Npgsql.EntityFrameworkCore.PostgreSQL"                           # PostgreSQL プロバイダ (メジャー版が EF Core に追随する)
+      # セキュリティ更新も同じ顔ぶれで 1 本にまとめる (上のコメントの理由による)
+      nuget-ef-core-security:
+        applies-to: security-updates
+        patterns:
+          - "Microsoft.EntityFrameworkCore*"
+          - "Microsoft.AspNetCore.Identity.EntityFrameworkCore"
+          - "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore"
+          - "Npgsql.EntityFrameworkCore.PostgreSQL"
       # minor / patch 更新は 1 本の PR にまとめてレビュー負荷を下げる (major は個別 PR)。
       # EF Core 系は上のグループが全 update-type を引き受けるため、ここでは対象外にする
       # (どちらのグループに入るかを定義順に依存させず、除外で明示する)
