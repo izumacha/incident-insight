@@ -303,7 +303,7 @@ public class EfCorePackageAlignmentTests
             // (散文側で綴りの大小が揺れただけで「説明がありません」と落ちるのは、
             // 規約違反ではなく検査が硬すぎる偽陽性。このファイルの他の比較とも揃える)
             .SelectMany(source => DotNetReleaseTrainPackages
-                .Where(id => !source.Text.Contains(id, StringComparison.OrdinalIgnoreCase))
+                .Where(id => !MentionsPackageName(source.Text, id))
                 .Select(id => $"{source.Document}: {id}"))
             .ToList();
 
@@ -314,6 +314,57 @@ public class EfCorePackageAlignmentTests
             + $"実際に効くのは {nameof(DotNetReleaseTrainPackages)} だけですが、"
             + "束ねる/束ねないの判断はこの散文を読んで行われます。"
             + "配列へ追加したら、除外する理由も併せて書いてください。");
+    }
+
+    // 代表値の作り方を、現行の dependabot.yml に無い書き方まで含めて固定する。
+    //
+    // 【なぜ設定ファイル経由の検査だけでは足りないか】今の patterns は末尾 '*' 付きと
+    // ワイルドカード無しの 2 通りしかなく、途中に '*' を含む場合や "*" だけの場合の分岐は
+    // 一度も実行されない。ここが壊れても 8 本のテストは緑のままなので、
+    // 純粋ロジックとして入力→期待出力を直接固定する(§11)
+    [Theory]
+    // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
+    [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL", "Npgsql.EntityFrameworkCore.PostgreSQL")]
+    // 末尾 '*' は「続きがある」場合と「続きが無い」場合の 2 つを代表にする
+    [InlineData("Microsoft.EntityFrameworkCore*", "Microsoft.EntityFrameworkCore<任意>", "Microsoft.EntityFrameworkCore")]
+    // 途中の '*' も目印へ置き換えれば一致例になる(前置詞は作れないので 1 つだけ)
+    [InlineData("*EFCore*", "<任意>EFCore<任意>")]
+    // 先頭だけが '*' の場合も同様
+    [InlineData("*.EntityFrameworkCore.MySql", "<任意>.EntityFrameworkCore.MySql")]
+    // "*" だけのパターンは、空文字列を代表にしても何も伝わらないので目印だけ返す
+    [InlineData("*", "<任意>")]
+    public void RepresentativeIdsOf_CoversTheWholePatternSet(string pattern, params string[] expected)
+    {
+        // 実際に作られる代表値を取り出す
+        var actual = RepresentativeIdsOf(pattern).ToList();
+
+        // 期待した代表値と順序も含めて一致すること
+        Assert.Equal(expected, actual);
+
+        // どの代表値も、元のパターンに実際に一致すること(集合の要素であることの確認)。
+        // ここが崩れると「パターンが表す範囲の代表」という前提そのものが失われる
+        Assert.All(actual, id => Assert.True(MatchesAnyPattern(id, new[] { pattern }),
+            $"代表値 \"{id}\" が元のパターン \"{pattern}\" に一致しません。"));
+    }
+
+    // 散文への言及判定を、より長いパッケージ名に埋もれる場合まで含めて固定する
+    [Theory]
+    // 名前がそのまま出てくれば言及とみなす
+    [InlineData("Npgsql は EF Core とは版の動き方が違う", "Npgsql", true)]
+    // 記号で囲まれていても言及とみなす
+    [InlineData("`Npgsql` を直接参照する場合", "Npgsql", true)]
+    // より長いパッケージ名の一部でしかない場合は言及とみなさない
+    [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL を束ねる", "Npgsql", false)]
+    // 逆向き(前側が続いている)も同様
+    [InlineData("Foo.Npgsql を束ねる", "Npgsql", false)]
+    // 長い名前の言及と埋もれた出現が混在するなら、独立した言及がある方を採る
+    [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL と、土台の Npgsql", "Npgsql", true)]
+    // どこにも出てこなければ言及なし
+    [InlineData("EF Core の話しかしていない", "Npgsql", false)]
+    public void MentionsPackageName_IgnoresMatchesBuriedInLongerNames(string text, string packageId, bool expected)
+    {
+        // 判定結果が期待どおりであること
+        Assert.Equal(expected, MentionsPackageName(text, packageId));
     }
 
     [Fact]
@@ -587,6 +638,37 @@ public class EfCorePackageAlignmentTests
             + "EF Core 系を追加・削除するときは両方を同じ内容に保ってください:\n"
             + $"  {leftName} にのみ有り : [{string.Join(", ", onlyLeft)}]\n"
             + $"  {rightName} にのみ有り: [{string.Join(", ", onlyRight)}]");
+    }
+
+    // パッケージ ID の一部として使われうる文字(この文字が前後に続く一致は、
+    // 別のもっと長いパッケージ名の一部を拾っただけとみなす)
+    private static bool IsPackageIdChar(char c) => char.IsLetterOrDigit(c) || c == '.' || c == '-';
+
+    // 本文がそのパッケージ名に「言及している」かを返す。
+    //
+    // 【なぜ単純な部分文字列照合では足りないか】例えば "Npgsql" を除外一覧へ足したとき、
+    // 散文に "Npgsql.EntityFrameworkCore.PostgreSQL" と書いてあるだけで
+    // 「説明済み」と判定されてしまう。実際にはなぜ Npgsql を束ねないのかが一言も書かれていない
+    // のに検査が通り、しかもそれは最も説明が要る場面。前後がパッケージ ID の続きに見えない
+    // 位置で現れたときだけ、その名前について書かれているとみなす
+    private static bool MentionsPackageName(string text, string packageId)
+    {
+        // 見つかった位置から順に、次の候補を探していく
+        for (var index = text.IndexOf(packageId, StringComparison.OrdinalIgnoreCase);
+             index >= 0;
+             index = text.IndexOf(packageId, index + 1, StringComparison.OrdinalIgnoreCase))
+        {
+            // 直前の文字が ID の続きに見えないこと(見えるなら、より長い名前の一部)
+            var startsCleanly = index == 0 || !IsPackageIdChar(text[index - 1]);
+            // 直後の位置を求める
+            var end = index + packageId.Length;
+            // 直後の文字も ID の続きに見えないこと
+            var endsCleanly = end >= text.Length || !IsPackageIdChar(text[end]);
+            // 前後とも区切れていれば、その名前そのものへの言及とみなす
+            if (startsCleanly && endsCleanly) return true;
+        }
+        // 独立した言及が 1 つも無かった
+        return false;
     }
 
     // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
