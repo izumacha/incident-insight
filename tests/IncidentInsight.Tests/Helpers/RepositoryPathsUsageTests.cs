@@ -49,18 +49,26 @@ public class RepositoryPathsUsageTests
         "[\"/\\\\]" + Regex.Escape(RepositoryPaths.WebProjectDirectoryName) + "[\"/\\\\]",
         RegexOptions.Compiled);
 
+    // 行全体がコメントの行(先頭の空白を除いて // で始まる行)を取り除くための正規表現。
+    // 説明文の中で目印に触れただけの行を検査対象から外すために使う。
+    // 「行全体がコメント」の行しか消さないので、コードを巻き込む余地が無い
+    // (行末コメントやコード中の文字列は手を付けないため、"https://…" のような
+    // リテラルの後ろに書いた違反を消してしまう心配も無い)
+    private static readonly Regex WholeLineCommentRegex = new(
+        @"^[ \t]*//.*$",
+        RegexOptions.Multiline | RegexOptions.Compiled);
+
     // 検査対象から外すファイル(リポジトリルートからの相対パス)。
     // ファイル名だけで判定すると、別フォルダへ置いた同名のコピー
     // (Views/RepositoryPaths.cs など)まで免除されて検出網が素通りするため、
-    // 「どこにある、どのファイルか」まで含めて指定する
+    // 「どこにある、どのファイルか」まで含めて指定する。
+    // 本テスト自身はここに入れない。説明文で目印に触れてはいるが、それは
+    // 行全体コメントの除去で外れるので、免除しなくても誤検出しない。
+    // ファイル単位の免除はその中の違反も見えなくするため、1 件でも減らす
     private static readonly string[] ExemptRelativePaths =
     {
-        // 共有ヘルパー本体。ここだけがリポジトリ構成の目印を持ってよい
+        // 共有ヘルパー本体。ここだけがリポジトリ構成の目印をコードに持ってよい
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
-        // 本テスト自身。上の説明文が src/IncidentInsight.Web という形で目印に触れており、
-        // 「/ の直後」の判定に引っかかるため除外する(パスで固定しているので、
-        // 別の場所へ置いた同名のコピーは免除されない)
-        Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPathsUsageTests.cs"),
     };
 
     // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
@@ -97,8 +105,10 @@ public class RepositoryPathsUsageTests
                 continue;
             }
 
-            // ソースを読み込み、目印が文字列リテラルの中に現れるかを見る
-            if (!LayoutMarkerRegex.IsMatch(File.ReadAllText(file))) continue;
+            // ソースを読み込み、説明だけの行を落としてから判定する
+            var code = WholeLineCommentRegex.Replace(File.ReadAllText(file), string.Empty);
+            // 目印がパスの 1 区切りとして現れるかを見る
+            if (!LayoutMarkerRegex.IsMatch(code)) continue;
             // 現れていれば、構成の知識がヘルパーの外へ漏れた状態として記録する
             violations.Add(relativePath);
         }
