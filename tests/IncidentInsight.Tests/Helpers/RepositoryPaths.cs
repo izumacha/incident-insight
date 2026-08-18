@@ -36,11 +36,15 @@ internal static class RepositoryPaths
     // テストプロジェクトを収める最上位ディレクトリ名
     private const string TestsDirectoryName = "tests";
 
-    // リポジトリルートの絶対パス。探索は 1 回で済むので静的フィールドへ保持する(§8)
-    private static readonly string RootDirectory = FindRoot();
+    // リポジトリルートの絶対パス。探索は 1 回で済むので結果を保持する(§8)。
+    // static readonly フィールドで直接初期化すると探索が型初期化子の中で走り、
+    // 失敗時に下の DirectoryNotFoundException が TypeInitializationException に包まれて
+    // 「型の初期化子が例外をスローしました」だけが見出しに出る。原因を名指しした
+    // メッセージを呼び出し側にそのまま届けたいので Lazy で遅延させる
+    private static readonly Lazy<string> RootDirectory = new(FindRoot);
 
-    /// <summary>リポジトリルート(src/IncidentInsight.Web を直下に持つ階層)の絶対パス。</summary>
-    public static string Root => RootDirectory;
+    /// <summary>リポジトリルート(Web プロジェクトを直下に持つ階層)の絶対パス。</summary>
+    public static string Root => RootDirectory.Value;
 
     /// <summary>Web プロジェクト(src/IncidentInsight.Web)の絶対パス。</summary>
     public static string WebProject => Path.Combine(Root, SrcDirectoryName, WebProjectDirectoryName);

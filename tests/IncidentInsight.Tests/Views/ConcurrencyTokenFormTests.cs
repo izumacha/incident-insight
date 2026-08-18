@@ -41,6 +41,10 @@ public class ConcurrencyTokenFormTests
         var viewsDir = RepositoryPaths.Views;
         // 検出した違反(ファイル名と該当フォームの冒頭)を集める
         var violations = new List<string>();
+        // 検査したトークン必須フォームの数。0 件のまま終わると「違反なし」と区別が付かず、
+        // 検出パターンが壊れただけなのに緑になってしまうため数えておく
+        // (ChartAccessibilityTests / RoleGatedNavigationTests と同じ空振り対策)
+        var inspectedTargetForms = 0;
 
         // すべての Razor ビューを走査する
         foreach (var file in Directory.EnumerateFiles(viewsDir, "*.cshtml", SearchOption.AllDirectories))
@@ -54,6 +58,8 @@ public class ConcurrencyTokenFormTests
                 var attrs = form.Groups["attrs"].Value;
                 // トークン必須アクションへ POST するフォームだけを対象にする
                 if (!TargetsTokenRequiredAction(attrs)) continue;
+                // 対象フォームを 1 件検査したものとして数える
+                inspectedTargetForms++;
                 // フォーム内に concurrencyToken の入力欄があるか検査する(素の name 記法と asp-for 記法の両対応)
                 if (HasConcurrencyTokenField(form.Value)) continue;
                 // 欠落を違反として記録する(ファイルとフォーム冒頭 80 文字で位置を特定できるようにする)
@@ -61,6 +67,12 @@ public class ConcurrencyTokenFormTests
                 violations.Add($"{Path.GetFileName(file)}: {head[..Math.Min(80, head.Length)]}");
             }
         }
+
+        // 検査対象が 1 件も見つからないのは想定外(フォームの書き方が変わって FormBlockRegex が
+        // 合わなくなった、アクション名を改名して TokenRequiredActions と食い違った、等を示す)
+        Assert.True(inspectedTargetForms > 0,
+            "トークン必須アクションへ POST するフォームが Views 配下に 1 つも見つかりませんでした。"
+            + "検出パターンまたは対象アクション名が変更された可能性があります。");
 
         // 違反ゼロであること(あればどのフォームかをメッセージで示す)
         Assert.True(violations.Count == 0,

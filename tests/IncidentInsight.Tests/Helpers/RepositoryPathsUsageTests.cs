@@ -1,3 +1,6 @@
+// 目印の出現位置を判定するために正規表現を使う
+using System.Text.RegularExpressions;
+
 // このテストクラスが属する名前空間(検査対象の RepositoryPaths と同じなので using は不要)
 namespace IncidentInsight.Tests.Helpers;
 
@@ -22,16 +25,23 @@ namespace IncidentInsight.Tests.Helpers;
 // (c) .Parent は CauseCategory.Parent というドメイン語彙でもあるため、
 // パス探索をしていないテストまで巻き込む、という三方向の外れ方をした。
 //
-// 判定は「引用符で囲まれた文字列リテラル」に限る。日本語の説明文では
-// src/IncidentInsight.Web のように引用符なしで書くため、コメントとは衝突しない。
+// 判定は「目印がパス文字列の中に現れること」を直前の 1 文字(" / \)で見分ける。
+// 名前空間参照(using IncidentInsight.Web.Models;)は直前が空白なので巻き込まない。
 //
 // 既知の限界: ルートの目印にソリューションファイル名を使う複製までは捕まえられない
 // (EfCorePackageAlignmentTests が正当な用途で同じ名前を書いているため、そちらは見ない)。
 public class RepositoryPathsUsageTests
 {
-    // 検査対象のリテラル。共有ヘルパーの定数から組み立てるので、
-    // この文字列そのものは本テストのソースには現れない(自分を違反として拾わずに済む)
-    private static readonly string QuotedLayoutMarker = $"\"{RepositoryPaths.WebProjectDirectoryName}\"";
+    // 検査するパターン。目印が「文字列リテラルの中」に現れることを、直前の 1 文字で見分ける。
+    //   " の直後   … "IncidentInsight.Web" のように単独のセグメントとして書いた形
+    //   / や \ の直後 … "src/IncidentInsight.Web/Views" のように 1 つのリテラルへ繋げて書いた形
+    // 閉じ引用符まで求めると後者を取り逃がすため、前側だけで判定する。
+    // 一方 using IncidentInsight.Web.Models; のような名前空間参照は直前が空白なので巻き込まない
+    // (テストの大半がこの using を持つので、ここを外すと検出網が意味を失う)。
+    // 目印そのものは共有ヘルパーの定数から組み立て、リテラルを書き写さない
+    private static readonly Regex LayoutMarkerRegex = new(
+        "[\"/\\\\]" + Regex.Escape(RepositoryPaths.WebProjectDirectoryName),
+        RegexOptions.Compiled);
 
     // 検査対象から外すファイル(リポジトリルートからの相対パス)。
     // ファイル名だけで判定すると、別フォルダへ置いた同名のコピー
@@ -41,6 +51,10 @@ public class RepositoryPathsUsageTests
     {
         // 共有ヘルパー本体。ここだけがリポジトリ構成の目印を持ってよい
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
+        // 本テスト自身。上の説明文が src/IncidentInsight.Web という形で目印に触れており、
+        // 「/ の直後」の判定に引っかかるため除外する(パスで固定しているので、
+        // 別の場所へ置いた同名のコピーは免除されない)
+        Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPathsUsageTests.cs"),
     };
 
     // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
@@ -75,8 +89,8 @@ public class RepositoryPathsUsageTests
                 continue;
             }
 
-            // ソースを読み込み、目印が文字列リテラルとして現れるかを見る
-            if (!File.ReadAllText(file).Contains(QuotedLayoutMarker, StringComparison.Ordinal)) continue;
+            // ソースを読み込み、目印が文字列リテラルの中に現れるかを見る
+            if (!LayoutMarkerRegex.IsMatch(File.ReadAllText(file))) continue;
             // 現れていれば、構成の知識がヘルパーの外へ漏れた状態として記録する
             violations.Add(relativePath);
         }
@@ -90,7 +104,7 @@ public class RepositoryPathsUsageTests
 
         // 違反ゼロであること(あればどのファイルかをメッセージで示す)
         Assert.True(violations.Count == 0,
-            $"リポジトリ構成を指す {QuotedLayoutMarker} をソースに書いてよいのは {nameof(RepositoryPaths)} だけです "
+            $"リポジトリ構成を指す {RepositoryPaths.WebProjectDirectoryName} をパス文字列に書いてよいのは {nameof(RepositoryPaths)} だけです "
             + "(過去に同じ探索が 5 箇所へ複製され、目印の条件まで食い違っていました)。"
             + $"必要なパスは {nameof(RepositoryPaths)} のプロパティから受け取ってください。次のファイルが目印を直接書いています:\n"
             + string.Join("\n", violations));
