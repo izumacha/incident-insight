@@ -96,7 +96,14 @@ public class EfCorePackageAlignmentTests
     //   - EFCore            : EFCore.NamingConventions / EFCore.BulkExtensions など、EF Core の
     //                          メジャー版に厳密追随する周辺パッケージ
     // 前者だけを目印にすると後者の系統が丸ごと検査対象から外れる(片方が他方の部分文字列では
-    // ないため、両方を並べる必要がある)
+    // ないため、両方を並べる必要がある)。
+    //
+    // 【既知の限界】EF Core と同じリポジトリ・同じ版で出荷されるのに、名前にどちらの目印も
+    // 含まないパッケージがある(Microsoft.Data.Sqlite / Microsoft.Data.Sqlite.Core)。
+    // 現在は Microsoft.EntityFrameworkCore.Sqlite.Core が要求する推移依存としてのみ入っており、
+    // 推移依存に対して Dependabot は単独 PR を作らないため実害はない。ただし csproj から
+    // 直接参照した時点で、これだけが単独の major PR として現れうる。目印を名前だけに頼る
+    // 限りこの穴は塞げないため、直接参照を足すときは patterns への追記も併せて検討する
     private static readonly string[] EfCoreIdMarkers = { "EntityFrameworkCore", "EFCore" };
 
     // 名前に上の目印を含むが、EF Core 本体とメジャー版を揃える必要が「ない」パッケージ。
@@ -107,7 +114,11 @@ public class EfCorePackageAlignmentTests
     // 「EF Core 9 へ上げる」という支援された更新経路が net9.0 専用パッケージに引きずられて
     // 塞がれる。プロバイダ実装(EF Core の内部 API に結び付く)とは版の動き方が違う。
     // 【追加するときの判断基準】EF Core の内部 API に結び付くか(＝プロバイダか)で決める。
-    // 判断が付かないものは除外せず、束ねる側に入れる(見逃しより誤検出の方が安全)
+    // 判断が付かないものは除外せず、束ねる側に入れる(見逃しより誤検出の方が安全)。
+    // 【この配列が正本】同じ顔ぶれは dependabot.yml と CLAUDE.md の散文にも出てくるが、
+    // 実際に効くのはこの配列だけで、散文は判断材料として読まれる場所にすぎない。
+    // 片方だけ増えて静かに古くなるのを防ぐため、散文側にも名前が載っていることを
+    // DotNetReleaseTrainPackages_AreDocumentedWhereBundlingIsDecided が機械的に固定する
     private static readonly string[] DotNetReleaseTrainPackages =
     {
         "Microsoft.AspNetCore.Identity.EntityFrameworkCore",                // Identity の EF Core ストア
@@ -128,6 +139,9 @@ public class EfCorePackageAlignmentTests
 
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
+
+    // リポジトリの規約・不変条件をまとめたガイド(束ねる/束ねないの判断根拠が書かれている)
+    private const string ClaudeGuideFileName = "CLAUDE.md";
 
     // 「このリポジトリのプロジェクト」の正本。CI の dotnet restore / build / test もこれを対象にする
     private const string SolutionFileName = "IncidentInsight.sln";
@@ -207,6 +221,76 @@ public class EfCorePackageAlignmentTests
     }
 
     [Fact]
+    public void DotNetReleaseTrainPackages_AreNotBundledWithEfCore()
+    {
+        // 除外一覧が実在するパッケージを指していること。ロックファイルに無い名前が並んでいると、
+        // 綴り違いや削除済みパッケージが「除外できているつもり」で残り、
+        // DependabotPatterns_CoverEveryEntityFrameworkCorePackage の網に穴を空けたまま気付けない
+        var resolvedIds = ResolvedPackages.Value
+            .Select(package => package.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var unknown = DotNetReleaseTrainPackages.Where(id => !resolvedIds.Contains(id)).ToList();
+        Assert.True(unknown.Count == 0,
+            $"{nameof(DotNetReleaseTrainPackages)} に、{LockFileName} のどこにも解決されていない"
+            + $"パッケージがあります: [{string.Join(", ", unknown)}]\n"
+            + "参照をやめたのなら配列からも削り、綴り違いなら直してください"
+            + "(実在しない名前は何も除外せず、網羅性検査の穴になります)。");
+
+        // 2 つの EF Core グループそれぞれについて、除外対象を拾っていないことを確認する
+        foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
+        {
+            // そのグループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
+            var matcher = ReadGroupMatcher(groupName);
+            // .NET のリリースに追随するパッケージのうち、束ねに拾われてしまうものを集める
+            var bundled = DotNetReleaseTrainPackages.Where(matcher.Matches).ToList();
+
+            // 拾われていないこと。【なぜこの向きの検査が要るか】既存の検査は
+            // 「EF Core 系がパターンから漏れていないか」しか見ておらず、逆に
+            // .NET リリース列のパッケージを patterns へ足す方向は素通りしていた。
+            // 束ねてしまうと「EF Core 9 へ上げる PR」が net9.0 専用パッケージを巻き込み、
+            // net8.0 のこのアプリでは復元できない PR になる(＝更新経路が塞がれる)
+            Assert.True(bundled.Count == 0,
+                $"dependabot.yml の {groupName}.{PatternsKey} が、EF Core とメジャー版を揃える必要の"
+                + $"ないパッケージを拾っています: [{string.Join(", ", bundled)}]\n"
+                + "これらは EF Core の公開 API しか使わず、メジャー版は .NET のリリース"
+                + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
+                + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
+        }
+    }
+
+    [Fact]
+    public void DotNetReleaseTrainPackages_AreDocumentedWhereBundlingIsDecided()
+    {
+        // 「このパッケージを束ねに入れるべきか」を判断する人が読む場所。
+        // 配列(正本)だけが増えて散文が古くなると、判断の入口が誤った一覧を示すことになる
+        var documents = new[] { DependabotConfigPath, ClaudeGuideFileName };
+
+        // 各ドキュメントについて、除外一覧のパッケージ名が本文に載っていることを確かめる
+        foreach (var document in documents)
+        {
+            // リポジトリルートからの絶対パスを組み立てる
+            var path = Path.Combine(RepositoryPaths.Root, document);
+            // ドキュメントが移動・削除されていれば、検査が空振りする前に落とす
+            Assert.True(File.Exists(path), $"{document} が見つかりません(移動またはリネームされた可能性があります)。");
+
+            // 本文を読み込む(判断材料として読まれるのは散文なので、書式は問わず名前の有無だけを見る)
+            var text = File.ReadAllText(path);
+            // 本文に名前が出てこないパッケージを集める
+            var undocumented = DotNetReleaseTrainPackages
+                .Where(id => !text.Contains(id, StringComparison.Ordinal))
+                .ToList();
+
+            // 漏れが無いこと(あれば、どの名前を書き足せばよいかを示す)
+            Assert.True(undocumented.Count == 0,
+                $"{document} に、束ねから除外しているパッケージの説明がありません: "
+                + $"[{string.Join(", ", undocumented)}]\n"
+                + $"実際に効くのは {nameof(DotNetReleaseTrainPackages)} だけですが、"
+                + "束ねる/束ねないの判断はこの散文を読んで行われます。"
+                + "配列へ追加したら、除外する理由も併せて書いてください。");
+        }
+    }
+
+    [Fact]
     public void EveryProject_HasCommittedLockFile()
     {
         // ソリューションに登録されたプロジェクトを対象にする。
@@ -241,8 +325,6 @@ public class EfCorePackageAlignmentTests
         var versionUpdatePatterns = ReadGroupList(EfCoreGroupName, PatternsKey);
         // セキュリティ更新を束ねるグループの対象一覧
         var securityUpdatePatterns = ReadGroupList(EfCoreSecurityGroupName, PatternsKey);
-        // minor / patch グループが束ねから外している一覧
-        var excludedPatterns = ReadGroupList(MinorAndPatchGroupName, ExcludePatternsKey);
 
         // 2 つの EF Core グループは同じ顔ぶれであること。片方にだけ足すと、そのパッケージは
         // 通常の版更新とセキュリティ更新で扱いが変わり、片方の経路だけ単独 PR に戻ってしまう。
@@ -251,13 +333,29 @@ public class EfCorePackageAlignmentTests
         AssertSameSet($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
             $"{EfCoreSecurityGroupName}.{PatternsKey}", securityUpdatePatterns);
 
-        // minor / patch グループ側は「EF Core 系がすべて除外に含まれていること」だけを求める。
-        // 【なぜ完全一致にしないか】ここでの不変条件は「EF Core 系が minor/patch の束ねへ
-        // 紛れ込まないこと」であって、除外一覧に他のパッケージが載っていること自体は問題ない。
-        // 完全一致を求めると、無関係なパッケージを除外しただけで「EF Core 系を追加・削除する
-        // ときは両方を同じ内容に保ってください」という的外れなメッセージで CI が赤くなる
-        AssertIsSubsetOf($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
-            $"{MinorAndPatchGroupName}.{ExcludePatternsKey}", excludedPatterns);
+        // minor / patch グループが EF Core 系を 1 つも拾わないこと。
+        // 【なぜパターン文字列を突き合わせないか】ここでの不変条件は「EF Core 系が minor/patch の
+        // 束ねへ紛れ込まないこと」であって、除外一覧の書き方ではない。文字列集合として比べると、
+        // 例えば除外を "Npgsql*" と広めに書いた設定は不変条件を満たしているのに
+        // "Npgsql.EntityFrameworkCore.PostgreSQL" と一致しないという理由だけで CI が赤くなる
+        // (規約違反ではなく検査が硬すぎる偽陽性)。実際のパッケージ ID が拾われるかどうかで
+        // 判定すれば、書き方の揺れに左右されず不変条件そのものを固定できる。
+        //
+        // 判定対象はロックファイル上の ID だけでは足りない。まだ csproj へ足していないプロバイダを
+        // patterns へ先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れが
+        // 導入時まで気付かれない。各パターンの「最短の一致例」(末尾 '*' を取り除いた文字列)も
+        // 併せて見て、パターンを足した時点で除外漏れが分かるようにする
+        var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
+        var leakedIntoMinorAndPatch = EfCorePackageIdsOf(EfCoreGroupName)
+            .Concat(versionUpdatePatterns.Select(pattern => pattern.Replace("*", "")))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Where(minorAndPatchMatcher.Matches)
+            .ToList();
+        Assert.True(leakedIntoMinorAndPatch.Count == 0,
+            $"EF Core 系パッケージが dependabot.yml の {MinorAndPatchGroupName} に拾われています: "
+            + $"[{string.Join(", ", leakedIntoMinorAndPatch)}]\n"
+            + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} に当てはまるパターンを追加して、"
+            + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください。");
 
         // 2 つのグループが実際に別々の更新種別を受け持っていること。
         // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
@@ -312,12 +410,7 @@ public class EfCorePackageAlignmentTests
         // そのパッケージの横取りを見逃す。2 つのパターンが一致していることは別のテストの責務で、
         // この検査がそれに依存すると防御が二重に効かなくなる
         // (パターンの読み出しはループの外で 1 度だけ行う。§8)
-        var efCorePatterns = ReadGroupList(groupName, PatternsKey);
-        var efCorePackageIds = ResolvedPackages.Value
-            .Where(package => MatchesAnyPattern(package.Id, efCorePatterns))
-            .Select(package => package.Id)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        var efCorePackageIds = EfCorePackageIdsOf(groupName);
 
         // 先に定義されたグループのうち、EF Core 系を横取りしうるものを探す
         var shadowing = groupNames
@@ -334,8 +427,11 @@ public class EfCorePackageAlignmentTests
             // 持つため、その単独 major PR をマージすれば版ズレが再発する。
             // 絞り込みキーの解釈を増やすほど見逃しが生まれるので、ここは保守的に倒す
             // (誤検出はレビューで気付けるが、見逃しは PostgreSQL 配備でしか現れない)
+            // 候補グループごとに patterns / exclude-patterns を 1 度だけ読み出す(§8)
+            .Select(name => (Name: name, Matcher: ReadGroupMatcher(name)))
             // 実際に EF Core 系パッケージを拾ってしまうか
-            .Where(name => efCorePackageIds.Any(id => GroupWouldMatch(name, id)))
+            .Where(candidate => efCorePackageIds.Any(candidate.Matcher.Matches))
+            .Select(candidate => candidate.Name)
             .ToList();
 
         // 横取りするグループが無いこと(あれば、どのグループが原因かを示す)
@@ -358,18 +454,39 @@ public class EfCorePackageAlignmentTests
         TryReadGroupList(groupName, UpdateTypesKey) is not { } updateTypes
         || updateTypes.Contains(MajorUpdateType, StringComparer.OrdinalIgnoreCase);
 
-    // 指定グループが、そのパッケージ ID を自分のものとして拾うかどうかを判定する。
-    // patterns が無いグループは「すべてに一致」が既定なので、除外指定だけを見る
-    private static bool GroupWouldMatch(string groupName, string packageId)
+    // 1 つのグループが「どのパッケージを自分のものとして拾うか」を表す判定器。
+    //
+    // 【なぜ判定のたびに YAML を読まないのか】判定は「候補グループ × パッケージ ID」の組で行うため、
+    // 呼び出しのたびに読み直すと 1 グループあたりパッケージ数だけ YAML マッピングの線形探索と
+    // List の再生成が走る。読み出しを一度きりにして、以降は純粋な照合だけにする(§8)
+    private readonly record struct GroupMatcher(IReadOnlyList<string>? Patterns, IReadOnlyList<string>? ExcludePatterns)
     {
-        // 除外指定に当てはまるなら、そのグループは拾わない
-        if (TryReadGroupList(groupName, ExcludePatternsKey) is { } excluded && MatchesAnyPattern(packageId, excluded))
-        {
-            // 除外されているので一致しない
-            return false;
-        }
-        // 対象指定が書かれていれば、それに当てはまるかを見る。書かれていなければ全てに一致する
-        return TryReadGroupList(groupName, PatternsKey) is not { } patterns || MatchesAnyPattern(packageId, patterns);
+        // そのパッケージ ID をこのグループが拾うかどうかを返す
+        public bool Matches(string packageId) =>
+            // 除外指定に当てはまるなら拾わない
+            (ExcludePatterns is not { } excluded || !MatchesAnyPattern(packageId, excluded))
+            // 対象指定が書かれていれば当てはまるかを見る。書かれていなければ全てに一致する
+            && (Patterns is not { } patterns || MatchesAnyPattern(packageId, patterns));
+    }
+
+    // 指定グループの patterns / exclude-patterns を 1 度だけ読み出して判定器を作る
+    private static GroupMatcher ReadGroupMatcher(string groupName) =>
+        // どちらのキーも「書かれていなければ null」で、その意味づけは GroupMatcher が持つ
+        new(TryReadGroupList(groupName, PatternsKey), TryReadGroupList(groupName, ExcludePatternsKey));
+
+    // 指定グループの patterns に一致する、ロックファイル上のパッケージ ID を重複なく返す。
+    // 【なぜグループ名を引数に取るか】版更新側とセキュリティ側で patterns が食い違っていても
+    // 各検査がそれぞれ自分の対象を見られるようにするため(一致の確認は別テストの責務)
+    private static IReadOnlyList<string> EfCorePackageIdsOf(string groupName)
+    {
+        // そのグループが「EF Core 系」と定義しているパターンを 1 度だけ読み出す
+        var patterns = ReadGroupList(groupName, PatternsKey);
+        // 解決済みパッケージのうちパターンに当てはまるものを、ID の重複を除いて集める
+        return ResolvedPackages.Value
+            .Where(package => MatchesAnyPattern(package.Id, patterns))
+            .Select(package => package.Id)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
@@ -384,24 +501,9 @@ public class EfCorePackageAlignmentTests
         Assert.True(unexpected.Count == 0,
             $"dependabot.yml の {groupName} に想定外のキーがあります: [{string.Join(", ", unexpected)}]\n"
             + $"このグループは EF Core 系を「全ての更新をまとめて 1 本の PR にする」ために置いています。"
-            + $"{ExcludePatternsKey} や update-types を足すと束ねる範囲が狭まり、"
+            + $"{ExcludePatternsKey} や {UpdateTypesKey} を足すと束ねる範囲が狭まり、"
             + "プロバイダごとの単独 PR が再び作られるようになります"
             + $"(書いてよいのは {string.Join(" / ", AllowedEfCoreGroupKeys)} だけです)。");
-    }
-
-    // 左の一覧が右の一覧にすべて含まれることを確認する。欠けていれば、どれが漏れているかを示して落とす
-    private static void AssertIsSubsetOf(string leftName, IReadOnlyList<string> left, string rightName, IReadOnlyList<string> right)
-    {
-        // NuGet のパッケージ ID は大文字小文字を区別しないため、比較も区別しない集合にする
-        var rightSet = new HashSet<string>(right, StringComparer.OrdinalIgnoreCase);
-        // 右に無いものを漏れとして集める
-        var missing = left.Where(pattern => !rightSet.Contains(pattern)).ToList();
-
-        // 漏れが無いこと(あれば、どれが足りないのかを具体的に示す)
-        Assert.True(missing.Count == 0,
-            $"dependabot.yml の {leftName} にあるのに {rightName} に無い対象があります: "
-            + $"[{string.Join(", ", missing)}]\n"
-            + "EF Core 系が minor / patch の束ねへ紛れ込まないよう、除外にも同じ対象を並べてください。");
     }
 
     // 2 つのパターン一覧が同じ集合であることを確認する。違えば「どちらにだけ有るか」を示して落とす
@@ -599,11 +701,22 @@ public class EfCorePackageAlignmentTests
     }
 
     // 指定グループの指定キーを単一値として読み出す(キーが無ければ null)
-    private static string? TryReadGroupScalar(string groupName, string key) =>
-        // スカラーとして書かれていればその値、書かれていなければ null
-        ReadGroup(groupName).Children.TryGetValue(new YamlScalarNode(key), out var node) && node is YamlScalarNode scalar
-            ? scalar.Value
-            : null;
+    private static string? TryReadGroupScalar(string groupName, string key)
+    {
+        // そのキーが書かれていなければ「指定なし」として null を返す
+        if (!ReadGroup(groupName).Children.TryGetValue(new YamlScalarNode(key), out var node)) return null;
+        // 単一値として書かれていることを確かめる。
+        // 【なぜ握り潰さないか】ここで null を返すと、呼び出し元の GroupScopeOf が既定値
+        // version-updates へ落ちる。applies-to: ["security-updates"] のような一覧記法で
+        // 書かれたセキュリティ更新のグループは「通常の版更新のグループ」と誤認され、
+        // 横取り検査の対象から静かに外れる(実際に横取りしていても green のまま通る)。
+        // 同ファイルの TryReadGroupList / MajorVersionOf と同じく fail-closed に倒す
+        Assert.True(node is YamlScalarNode,
+            $"dependabot.yml の {groupName}.{key} が単一値ではありません。"
+            + "一覧やマッピングで書かれていると既定値として扱われ、検査対象から静かに外れます。");
+        // 値を文字列として取り出す
+        return ((YamlScalarNode)node).Value;
+    }
 
     // 指定グループの指定キーを単一値として読み出す(キーが無ければ落とす)
     private static string ReadGroupScalar(string groupName, string key)
