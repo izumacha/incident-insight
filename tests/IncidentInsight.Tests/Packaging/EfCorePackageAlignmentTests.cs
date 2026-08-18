@@ -342,7 +342,11 @@ public class EfCorePackageAlignmentTests
         // パターンだけを見ていると、この経路の後退が緑のまま通ってしまう。
         // 【なぜ別の Fact か】除外の広さとは独立した条件で、同居させると片方が throw した
         // ときもう片方が検証されない
-        var updateTypes = ReadGroupList(MinorAndPatchGroupName, UpdateTypesKey);
+        // 【なぜ TryReadGroupList か】update-types を書かない場合、Dependabot は全種別を
+        // 受け持つ。つまり minor / patch も束ねられており、この不変条件は満たされている。
+        // ReadGroupList で必須にすると「読み取れませんでした」と、成立している設定を
+        // 別の理由で落とすことになる
+        if (TryReadGroupList(MinorAndPatchGroupName, UpdateTypesKey) is not { } updateTypes) return;
         // 受け持つべき更新の大きさのうち、指定から漏れているものを集める
         var missingUpdateTypes = MinorAndPatchUpdateTypes
             .Where(type => !updateTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
@@ -441,6 +445,10 @@ public class EfCorePackageAlignmentTests
     [InlineData("# - Npgsql: 束ねない理由", "Npgsql", true)]
     // 区切り文字のあとに ID が続くなら、やはり長い名前の一部
     [InlineData("Npgsql.EntityFrameworkCore を束ねる", "Npgsql", false)]
+    // 箇条書きのハイフンが直前に付く形も言及とみなす(前側も後ろ側と対称に判定する)
+    [InlineData("-Npgsql: 束ねない理由", "Npgsql", true)]
+    // 前に区切り文字、さらにその手前に ID があるなら長い名前の途中
+    [InlineData("Foo.Npgsql.Bar", "Npgsql", false)]
     // 長い名前の言及と埋もれた出現が混在するなら、独立した言及がある方を採る
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL と、土台の Npgsql", "Npgsql", true)]
     // どこにも出てこなければ言及なし
@@ -494,6 +502,29 @@ public class EfCorePackageAlignmentTests
         AssertSameSet($"{EfCoreGroupName}.{PatternsKey}", versionUpdatePatterns,
             $"{EfCoreSecurityGroupName}.{PatternsKey}", securityUpdatePatterns);
 
+        // 2 つのグループが実際に別々の更新種別を受け持っていること。
+        // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
+        // 両グループとも通常の版更新を見に行き、CVE 対応の更新が束ねを素通りする
+        Assert.Equal(VersionUpdates, ReadGroupScalar(EfCoreGroupName, AppliesToKey));
+        Assert.Equal(SecurityUpdates, ReadGroupScalar(EfCoreSecurityGroupName, AppliesToKey));
+
+        // 束ねる範囲を後から狭めるキーが足されていないこと。
+        // patterns が正しくても update-types や exclude-patterns を書き足せば束ねを骨抜きにできる
+        // (update-types: [minor, patch] にすると major が再びプロバイダごとの単独 PR に戻る)
+        foreach (var groupName in EfCoreGroupNames) AssertOnlyAllowedKeys(groupName);
+    }
+
+    [Fact]
+    public void EfCorePackages_DoNotLeakIntoTheMinorAndPatchBundle()
+    {
+        // 2 つの EF Core グループが「EF Core 系」と定義しているパターンを読み出す。
+        // 【なぜ別の Fact か】同じ Fact に置くと、先に走る AssertSameSet(2 グループの
+        // 一致検査)が throw した時点でこの検査は実行されない。実際、セキュリティ側にだけ
+        // パターンを足して除外を書き忘れると、集合の不一致を直して再実行するまで
+        // 漏れが見えなかった。独立させて 1 回の実行で両方が分かるようにする
+        var versionUpdatePatterns = ReadGroupList(EfCoreGroupName, PatternsKey);
+        var securityUpdatePatterns = ReadGroupList(EfCoreSecurityGroupName, PatternsKey);
+
         // minor / patch グループが EF Core 系を 1 つも拾わないこと。
         // 【なぜパターン文字列を突き合わせないか】ここでの不変条件は「EF Core 系が minor/patch の
         // 束ねへ紛れ込まないこと」であって、除外一覧の書き方ではない。文字列集合として比べると、
@@ -504,13 +535,21 @@ public class EfCorePackageAlignmentTests
         //
         // 判定対象はロックファイル上の ID だけでは足りない。まだ csproj へ足していないプロバイダを
         // patterns へ先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れが
-        // 導入時まで気付かれない。各パターンの「最短の一致例」も併せて見て、
-        // パターンを足した時点で除外漏れが分かるようにする
+        // 導入時まで気付かれない。各パターンが表す範囲の代表値(前置詞そのものと、
+        // 前置詞に続きが付いた形)も併せて見て、パターンを足した時点で除外漏れが分かるようにする
         // minor / patch グループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
-        // 解決済みの EF Core 系 ID と、各パターンの最短の一致例を突き合わせ対象にする
-        var leakedIntoMinorAndPatch = EfCorePackageIdsMatching(versionUpdatePatterns)
-            .Concat(versionUpdatePatterns.SelectMany(RepresentativeIdsOf))
+        // 【なぜ 2 グループの和集合を見るか】版更新側だけを見ると、セキュリティ側にだけ
+        // 足されたパターンの除外漏れが視野に入らない。しかも上の AssertSameSet が先に
+        // throw するため、集合の不一致を直して再実行するまで漏れが見えない。
+        // 和集合で見れば、1 回の実行で「一致していない」と「除外が漏れている」の両方が分かる
+        var allEfCorePatterns = versionUpdatePatterns
+            .Concat(securityUpdatePatterns)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        // 解決済みの EF Core 系 ID と、各パターンが表す範囲の代表値を突き合わせ対象にする
+        var leakedIntoMinorAndPatch = EfCorePackageIdsMatching(allEfCorePatterns)
+            .Concat(allEfCorePatterns.SelectMany(RepresentativeIdsOf))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             // minor / patch グループに拾われてしまうものだけを残す
             .Where(minorAndPatchMatcher.Matches)
@@ -528,16 +567,6 @@ public class EfCorePackageAlignmentTests
                   + "そのパターンが表す同族すべてを表す代表値です。)"
                 : ""));
 
-        // 2 つのグループが実際に別々の更新種別を受け持っていること。
-        // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
-        // 両グループとも通常の版更新を見に行き、CVE 対応の更新が束ねを素通りする
-        Assert.Equal(VersionUpdates, ReadGroupScalar(EfCoreGroupName, AppliesToKey));
-        Assert.Equal(SecurityUpdates, ReadGroupScalar(EfCoreSecurityGroupName, AppliesToKey));
-
-        // 束ねる範囲を後から狭めるキーが足されていないこと。
-        // patterns が正しくても update-types や exclude-patterns を書き足せば束ねを骨抜きにできる
-        // (update-types: [minor, patch] にすると major が再びプロバイダごとの単独 PR に戻る)
-        foreach (var groupName in EfCoreGroupNames) AssertOnlyAllowedKeys(groupName);
     }
 
     [Fact]
@@ -753,6 +782,16 @@ public class EfCorePackageAlignmentTests
         && (text[index] is not ('.' or '_' or '-')
             || (index + 1 < text.Length && IsPackageIdChar(text[index + 1])));
 
+    // 指定位置の文字が「直後の名前へ続く ID の一部」かどうかを返す(ContinuesPackageId の前側版)
+    private static bool PrecedesPackageId(string text, int index) =>
+        // 範囲外なら続きは無い
+        index >= 0
+        // ID を構成する文字であること
+        && IsPackageIdChar(text[index])
+        // 区切り文字の場合は、そのさらに手前に ID の文字があるときだけ「途中」とみなす
+        && (text[index] is not ('.' or '_' or '-')
+            || (index - 1 >= 0 && IsPackageIdChar(text[index - 1])));
+
     // 本文がそのパッケージ名に「言及している」かを返す。
     //
     // 【なぜ単純な部分文字列照合では足りないか】例えば "Npgsql" を除外一覧へ足したとき、
@@ -767,8 +806,10 @@ public class EfCorePackageAlignmentTests
              index >= 0;
              index = text.IndexOf(packageId, index + 1, StringComparison.OrdinalIgnoreCase))
         {
-            // 直前の文字が ID の続きに見えないこと(見えるなら、より長い名前の一部)
-            var startsCleanly = index == 0 || !IsPackageIdChar(text[index - 1]);
+            // 直前にも ID の続きが無いこと。区切り文字( . _ - )は、そのさらに手前に
+            // ID の文字があるときだけ「長い名前の途中」とみなす(箇条書きの "- Npgsql" や
+            // 文の区切りの ".Npgsql" を名前の一部と誤読しないため。後ろ側と対称にする)
+            var startsCleanly = index == 0 || !PrecedesPackageId(text, index - 1);
             // 直後の位置を求める
             var end = index + packageId.Length;
             // 直後にも ID の続きが無いこと(文末の句点などは「続き」とみなさない)
