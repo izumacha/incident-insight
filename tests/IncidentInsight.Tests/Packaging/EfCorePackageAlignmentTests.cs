@@ -233,7 +233,8 @@ public class EfCorePackageAlignmentTests
         // DependabotPatterns_CoverEveryEntityFrameworkCorePackage の網に穴を空けたまま気付けない。
         // 【なぜ束ね検査と分けるか】これは「配列の掃除漏れ」であって束ねの不変条件ではない。
         // 同じ Fact に同居させると、参照をやめただけで先頭の Assert が throw し、
-        // 本来の不変条件(patterns が除外対象を拾っていないこと)がその実行では一切検証されない
+        // 本来の不変条件(patterns が除外対象を拾っていないこと)がその実行では一切検証されない。
+        // ロックファイルに解決されているパッケージ ID を、大小文字を区別しない集合にまとめる
         var resolvedIds = ResolvedPackages.Value
             .Select(package => package.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -253,10 +254,17 @@ public class EfCorePackageAlignmentTests
         // 2 つの EF Core グループそれぞれについて、除外対象を拾っていないことを確認する
         foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
         {
-            // そのグループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
-            var matcher = ReadGroupMatcher(groupName);
+            // そのグループの patterns を 1 度だけ読み出す(§8)。
+            // 【なぜ ReadGroupMatcher を使わないか】この 2 グループは AssertOnlyAllowedKeys により
+            // exclude-patterns を書けない。除外込みで判定すると、仮に誰かが exclude-patterns を
+            // 足したとき「除外されているから拾わない」と読んで静かに通ってしまい、
+            // しかも失敗メッセージは patterns を名指しする形になって実態と食い違う。
+            // このテストが言いたいのは「patterns が拾っていないこと」なので、patterns だけを見る
+            var patterns = ReadGroupList(groupName, PatternsKey);
             // .NET のリリースに追随するパッケージのうち、束ねに拾われてしまうものを集める
-            var bundled = DotNetReleaseTrainPackages.Where(matcher.Matches).ToList();
+            var bundled = DotNetReleaseTrainPackages
+                .Where(id => MatchesAnyPattern(id, patterns))
+                .ToList();
 
             // 拾われていないこと。【なぜこの向きの検査が要るか】既存の検査は
             // 「EF Core 系がパターンから漏れていないか」しか見ておらず、逆に
@@ -372,8 +380,8 @@ public class EfCorePackageAlignmentTests
             + $"[{string.Join(", ", leakedIntoMinorAndPatch)}]\n"
             + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} に当てはまるパターンを追加して、"
             + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください"
-            + $"({RepresentativeSuffix} を含むものは実在のパッケージ名ではなく、"
-            + "前置詞で始まる同族すべてを表す代表値です)。");
+            + $"({WildcardPlaceholder} を含むものは実在のパッケージ名ではなく、"
+            + "そのパターンが表す同族すべてを表す代表値です)。");
 
         // 2 つのグループが実際に別々の更新種別を受け持っていること。
         // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
@@ -504,12 +512,12 @@ public class EfCorePackageAlignmentTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    // 前方一致パターンの「続き」を表す代表値の目印。実在の ID ではなく、
-    // 前置詞で始まる別名すべてを 1 つで代表させるための文字列(失敗メッセージにそのまま出るので、
-    // 読み手が「これは代表値であって実在のパッケージ名ではない」と分かる字面にしている)
-    private const string RepresentativeSuffix = ".<任意の続き>";
+    // ワイルドカードの位置に差し込む目印。実在の ID ではなく「ここには何が来てもよい」ことを
+    // 表す代表値の一部で、失敗メッセージにそのまま出るため、読み手が
+    // 「これは代表値であって実在のパッケージ名ではない」と分かる字面にしている
+    private const string WildcardPlaceholder = "<任意>";
 
-    // パターンが表す集合から、除外の網を確かめるための代表値を返す(作れない場合は空)。
+    // パターンが表す集合から、除外の網を確かめるための代表値を返す。
     //
     // 【何のために使うか】まだロックファイルに現れていないパターンでも、除外の書き忘れを
     // その場で検出できるようにする。返すのはいずれもパターンが表す集合の実際の要素なので、
@@ -517,22 +525,24 @@ public class EfCorePackageAlignmentTests
     // 【なぜ前置詞だけでは足りないか】"Pomelo.EntityFrameworkCore.MySql*" に対して前置詞だけを
     // 見ると、除外に "Pomelo.EntityFrameworkCore.MySql"(末尾 '*' 無し)と書いただけで通ってしまう。
     // 実際には .Design や .NetTopologySuite といった同族が minor / patch へ流れるのに、
-    // 前置詞は「最も狭い除外にも覆われる要素」なので漏れを代表できない。前置詞そのものと、
-    // 前置詞で始まる別名の 2 つを見て初めて「集合ごと覆えているか」を問える。
-    // 【なぜ末尾以外の '*' を諦めるか】"*.EntityFrameworkCore.*" のようなパターンから
-    // 単純に '*' を除去すると ".EntityFrameworkCore." という実在しない ID が合成され、
-    // 不変条件は守られているのにその幽霊 ID だけが引っ掛かって落ちる(書き方に依存した偽陽性)。
-    // 代表値を作れないパターンは、解決済み ID 側の照合に任せて対象から外す
+    // 前置詞は「最も狭い除外にも覆われる要素」なので漏れを代表できない。
+    // 【なぜ末尾以外の '*' も対象にするか】"*EFCore*" のような書き方を代表値なしで素通りさせると、
+    // そのパターンがロックファイルに現れるまで除外の書き忘れを誰も検出できない。
+    // '*' を目印へ置き換えた文字列は位置によらずパターンの一致例なので、同じ理屈で漏れを問える
     private static IEnumerable<string> RepresentativeIdsOf(string pattern)
     {
         // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
         if (!pattern.Contains('*')) return new[] { pattern };
-        // 末尾以外にワイルドカードがあると実在する代表値を作れないので諦める
-        if (pattern.IndexOf('*') != pattern.Length - 1) return Array.Empty<string>();
-        // 末尾の 1 個だけがワイルドカードなら、それを取り除いた前置詞を取り出す
-        var prefix = pattern[..^1];
-        // 前置詞そのものと、前置詞で始まる別名の 2 つを代表にする
-        return new[] { prefix, prefix + RepresentativeSuffix };
+        // '*' を目印へ置き換えると、パターンが表す集合の要素が 1 つ得られる
+        var representatives = new List<string> { pattern.Replace("*", WildcardPlaceholder) };
+        // 末尾の '*' を取り除いた前置詞。「続きが何も無い」場合を表す
+        var prefix = pattern.EndsWith('*') ? pattern[..^1] : null;
+        // その前置詞自体にワイルドカードが残らないときだけ代表に加える。
+        // 残る場合(例: "*EFCore*" → "*EFCore")は ID ではなくパターンに見えて読み手を惑わせるうえ、
+        // 目印へ置き換えた側が同じ集合をすでに代表している
+        if (prefix is not null && !prefix.Contains('*')) representatives.Add(prefix);
+        // 集めた代表値を返す
+        return representatives;
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
@@ -745,18 +755,21 @@ public class EfCorePackageAlignmentTests
         // 【なぜ素のキャストで済ませないか】`- name: "Npgsql..."` のような書き間違いがあると
         // InvalidCastException だけが飛び、どのファイルのどのキーが原因かが分からない。
         // このファイルの他の異常系と同じく、場所を示して落とす
+        // 以降で 2 度参照するので、一覧として 1 度だけ受け取っておく
+        var sequence = (YamlSequenceNode)node;
         // 何番目の要素かと YAML 上の行番号を添える(件数だけでは一覧を目視で追う羽目になる)
-        var malformed = ((YamlSequenceNode)node).Children
+        var malformed = sequence.Children
             .Select((item, index) => (Item: item, Index: index))
             .Where(entry => entry.Item is not YamlScalarNode)
             .Select(entry => $"{entry.Index + 1} 番目(行 {entry.Item.Start.Line})")
             .ToList();
+        // 単一値でない要素が無いこと(あれば、何番目の何行目かを示す)
         Assert.True(malformed.Count == 0,
             $"dependabot.yml の {groupName}.{key} に、単一値でない要素があります: "
             + $"[{string.Join(", ", malformed)}]\n"
             + "一覧の各要素はパターン文字列などの単一値である必要があります。");
         // 各要素を文字列として取り出す
-        return ((YamlSequenceNode)node).Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
+        return sequence.Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
     }
 
     // 指定グループの指定キーを一覧として読み出す(キーが無ければ落とす)
