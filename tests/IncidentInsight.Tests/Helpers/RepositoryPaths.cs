@@ -47,8 +47,11 @@ internal static class RepositoryPaths
     /// <summary>Razor ビュー(src/IncidentInsight.Web/Views)の絶対パス。</summary>
     public static string Views => Path.Combine(WebProject, ViewsDirectoryName);
 
+    /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
+    public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
+
     /// <summary>テストプロジェクト(tests/IncidentInsight.Tests)の絶対パス。</summary>
-    public static string TestProject => Path.Combine(Root, TestsDirectoryName, TestProjectDirectoryName);
+    public static string TestProject => Path.Combine(TestsRoot, TestProjectDirectoryName);
 
     // ビルド出力ディレクトリから上へ辿ってリポジトリルートを探す
     private static string FindRoot()

@@ -1,4 +1,4 @@
-// コメントを除去する前処理で正規表現を使うために取り込む
+// 探索パターンの照合に正規表現を使うために取り込む
 using System.Text.RegularExpressions;
 
 // このテストクラスが属する名前空間(検査対象の RepositoryPaths と同じなので using は不要)
@@ -13,21 +13,33 @@ namespace IncidentInsight.Tests.Helpers;
 // 加えていた。コピーが増えても何も落ちないため重複は静かに育つ
 // (実際、5 つ目を足した PR のコメント自体が「既存と同じ探索ロジック」と認めていた)。
 //
-// そこで「探索の起点になる API をテストソースで直接触るのは共有ヘルパーだけ」という形で
-// 機械的に固定する。6 つ目のコピーはこのテストで落ちる。
+// 何を「重複」とみなすか: 禁じたいのは API 名そのものではなく「起点となるディレクトリを
+// 取得し、そこから親を遡る」という探索の形なので、
+//   (1) 起点になりうる API(AppContext.BaseDirectory など)
+//   (2) 親を遡る操作(.Parent / Directory.GetParent)
+// の両方が同じファイルに現れることを違反とする。
+//
+// この条件にした理由は 2 つある。第一に、起点 API の出現だけを見ると、CLAUDE.md §5 が
+// 求める説明コメントの中で API 名に言及しただけの正しいファイルまで違反になってしまう
+// (コメントを機械的に除去する方法も試したが、文字列リテラルに "/*" や "//" を含む
+// ファイルでコメント除去がコード本体を巻き込み、逆に違反を隠す穴になった)。
+// 第二に、探索の形そのものを見るほうが、起点 API の綴りを変えただけの複製にも効く。
 public class RepositoryPathsUsageTests
 {
-    // 探索の起点として使える API 群。ここを直に触るのが重複の入口になる。
-    // AppContext.BaseDirectory だけを見ていると、dotnet test では同じ場所を指す
-    // Directory.GetCurrentDirectory() などで書かれた「同じ意味の重複」を取り逃がすため、
-    // 起点になりうる API をまとめて見る
-    private static readonly string[] SearchRootApis =
-    {
-        "AppContext.BaseDirectory",
-        "Directory.GetCurrentDirectory()",
-        "Environment.CurrentDirectory",
-        "Assembly.Location",
-    };
+    // 探索の起点になりうる API。dotnet test ではいずれもテスト出力ディレクトリを指すため、
+    // どれを使っても同じ探索が書けてしまう。綴りの揺れ(空白・改行)を許して照合する
+    private static readonly Regex SearchRootApiRegex = new(
+        @"\bAppContext\s*\.\s*BaseDirectory\b"
+        + @"|\bAppDomain\s*\.\s*CurrentDomain\s*\.\s*BaseDirectory\b"
+        + @"|\bDirectory\s*\.\s*GetCurrentDirectory\b"
+        + @"|\bEnvironment\s*\.\s*CurrentDirectory\b"
+        + @"|\bAssembly\s*\.\s*Location\b",
+        RegexOptions.Compiled);
+
+    // 親ディレクトリを遡る操作。起点 API と組み合わさって初めて「探索の複製」になる
+    private static readonly Regex ParentWalkRegex = new(
+        @"\.\s*Parent\b|\bDirectory\s*\.\s*GetParent\b",
+        RegexOptions.Compiled);
 
     // 検査対象から外すファイル(リポジトリルートからの相対パス)。
     // ファイル名だけで判定すると、別フォルダへ置いた同名のコピー
@@ -37,54 +49,48 @@ public class RepositoryPathsUsageTests
     {
         // 共有ヘルパー本体。ここだけが実際に探索を実装してよい
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
-        // 本テスト自身。探す文字列そのものをソースに書く必要があるため除外する
+        // 本テスト自身。探すパターンそのものをソースに書く必要があるため除外する
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPathsUsageTests.cs"),
     };
 
     // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
     private static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
 
-    // 行コメント(// …)とブロックコメント(/* … */)を取り除くための正規表現。
-    // CLAUDE.md §5 が 1 行ごとのコメントを求めている以上、「AppContext.BaseDirectory から遡る
-    // 処理は集約済み」のような正確な説明文がコメントに現れるのは自然で、それを違反として
-    // 報告すると正しいコードを直させることになる。判定はコードの部分だけで行う
-    private static readonly Regex CommentRegex = new(
-        @"//[^\r\n]*|/\*.*?\*/",
-        RegexOptions.Singleline | RegexOptions.Compiled);
-
     [Fact]
     public void RepositorySearch_IsImplementedOnlyInSharedHelper()
     {
-        // 走査対象のテストプロジェクトを共有ヘルパーから受け取る(パスの知識を二重に持たない)
-        var testProjectDir = RepositoryPaths.TestProject;
+        // 走査対象は tests 配下の全テストプロジェクト。1 つに決め打ちすると、
+        // 将来 2 つ目のテストプロジェクトが増えたときにそこだけ検査対象から漏れる
+        // (RepositoryPaths は internal なので、別アセンブリからは見えず自前実装しやすい)
+        var testsRoot = RepositoryPaths.TestsRoot;
         // 走査対象が実在すること(ディレクトリ改名でテストが無言で無効化されるのを防ぐ)
-        Assert.True(Directory.Exists(testProjectDir), $"{testProjectDir} が見つかりません。");
+        Assert.True(Directory.Exists(testsRoot), $"{testsRoot} が見つかりません。");
 
-        // 共有ヘルパー以外で探索起点 API を使っているファイルを集める
+        // 共有ヘルパー以外で探索を自前実装しているファイルを集める
         var violations = new List<string>();
         // 除外指定が実際に使われたかを数える(パス変更で除外が空振りしていないかの確認用)
         var exemptionsApplied = 0;
 
-        // テストプロジェクト配下の C# ソースを 1 件ずつ確認する
-        foreach (var file in Directory.EnumerateFiles(testProjectDir, "*.cs", SearchOption.AllDirectories))
+        // tests 配下の C# ソースを 1 件ずつ確認する
+        foreach (var file in Directory.EnumerateFiles(testsRoot, "*.cs", SearchOption.AllDirectories))
         {
             // ビルド生成物(obj / bin 配下の自動生成コード)は検査対象から外す
-            if (IsBuildArtifact(file, testProjectDir)) continue;
+            if (IsBuildArtifact(file, testsRoot)) continue;
 
             // リポジトリルートからの相対パスに直して除外リストと突き合わせる
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, file);
-            // 除外対象(共有ヘルパー本体と本テスト自身)は探索起点 API を書いてよい
+            // 除外対象(共有ヘルパー本体と本テスト自身)は探索を書いてよい
             if (ExemptRelativePaths.Contains(relativePath, StringComparer.Ordinal))
             {
                 exemptionsApplied++;
                 continue;
             }
 
-            // ソースを読み込み、コメントを除いたコード部分だけを判定対象にする
-            var code = CommentRegex.Replace(File.ReadAllText(file), string.Empty);
-            // 探索起点 API を 1 つも含まなければ問題なし
-            if (!SearchRootApis.Any(api => code.Contains(api, StringComparison.Ordinal))) continue;
-            // 含んでいれば重複の芽として記録する
+            // ソースを読み込む
+            var source = File.ReadAllText(file);
+            // 起点 API と親を遡る操作の両方が揃ったときだけ「探索の複製」とみなす
+            if (!SearchRootApiRegex.IsMatch(source) || !ParentWalkRegex.IsMatch(source)) continue;
+            // 揃っていれば重複として記録する
             violations.Add(relativePath);
         }
 
@@ -99,15 +105,15 @@ public class RepositoryPathsUsageTests
         Assert.True(violations.Count == 0,
             $"リポジトリ内のパス探索は {nameof(RepositoryPaths)} に集約してください "
             + "(過去に同じ探索が 5 箇所へ複製され、目印の条件まで食い違っていました)。"
-            + $"次のファイルが探索起点 API({string.Join(" / ", SearchRootApis)})を直接使っています:\n"
+            + "次のファイルが「起点ディレクトリの取得」と「親を遡る操作」を自前で組み合わせています:\n"
             + string.Join("\n", violations));
     }
 
     // obj / bin 配下(ビルド生成物)かどうかを判定する
-    private static bool IsBuildArtifact(string filePath, string testProjectDir)
+    private static bool IsBuildArtifact(string filePath, string scanRoot)
     {
-        // テストプロジェクトからの相対パスをディレクトリ区切りで分解する
-        var segments = Path.GetRelativePath(testProjectDir, filePath)
+        // 走査の起点からの相対パスをディレクトリ区切りで分解する
+        var segments = Path.GetRelativePath(scanRoot, filePath)
             .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
         // 途中に obj / bin があれば生成物とみなす
         return segments.Any(segment =>
