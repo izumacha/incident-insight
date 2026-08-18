@@ -1,11 +1,8 @@
-// 探索パターンの照合に正規表現を使うために取り込む
-using System.Text.RegularExpressions;
-
 // このテストクラスが属する名前空間(検査対象の RepositoryPaths と同じなので using は不要)
 namespace IncidentInsight.Tests.Helpers;
 
-// Guard-rail test: リポジトリ内のパス探索を <see cref="RepositoryPaths"/> 以外で
-// 自前実装していないことを検査する。
+// Guard-rail test: リポジトリの構成(src/IncidentInsight.Web という配置)を知っているのが
+// <see cref="RepositoryPaths"/> だけであることを検査する。
 //
 // 背景: ビルド出力から親を遡ってソースツリーを探すロジックは、集約するまでに
 // テストプロジェクト内へ 5 箇所コピーされていた(issue #164)。しかも探す目印が
@@ -13,33 +10,28 @@ namespace IncidentInsight.Tests.Helpers;
 // 加えていた。コピーが増えても何も落ちないため重複は静かに育つ
 // (実際、5 つ目を足した PR のコメント自体が「既存と同じ探索ロジック」と認めていた)。
 //
-// 何を「重複」とみなすか: 禁じたいのは API 名そのものではなく「起点となるディレクトリを
-// 取得し、そこから親を遡る」という探索の形なので、
-//   (1) 起点になりうる API(AppContext.BaseDirectory など)
-//   (2) 親を遡る操作(.Parent / Directory.GetParent)
-// の両方が同じファイルに現れることを違反とする。
+// 何を見るか: 「探索の書き方」ではなく「リポジトリ構成の目印を書いていること」を見る。
+// issue #164 が問題としたのは、目印(src/IncidentInsight.Web)を変えると 5 箇所すべてを
+// 直す必要がある状態そのものだった。どんな書き方で親を遡ろうと
+// (.Parent でも ".." 相対でも Path.GetDirectoryName の連鎖でも)、目的地を名指しする以上
+// この目印だけは必ずソースに現れるため、書き方の揺れに左右されずに済む。
 //
-// この条件にした理由は 2 つある。第一に、起点 API の出現だけを見ると、CLAUDE.md §5 が
-// 求める説明コメントの中で API 名に言及しただけの正しいファイルまで違反になってしまう
-// (コメントを機械的に除去する方法も試したが、文字列リテラルに "/*" や "//" を含む
-// ファイルでコメント除去がコード本体を巻き込み、逆に違反を隠す穴になった)。
-// 第二に、探索の形そのものを見るほうが、起点 API の綴りを変えただけの複製にも効く。
+// なぜ探索 API 名を見ないのか: 最初は AppContext.BaseDirectory 等の出現で判定したが、
+// それだと (a) 綴りを変えた複製や ".." 相対で遡る複製を取り逃がし、
+// (b) 説明コメントで API 名に触れただけの正しいファイルを違反にしてしまい、
+// (c) .Parent は CauseCategory.Parent というドメイン語彙でもあるため、
+// パス探索をしていないテストまで巻き込む、という三方向の外れ方をした。
+//
+// 判定は「引用符で囲まれた文字列リテラル」に限る。日本語の説明文では
+// src/IncidentInsight.Web のように引用符なしで書くため、コメントとは衝突しない。
+//
+// 既知の限界: ルートの目印にソリューションファイル名を使う複製までは捕まえられない
+// (EfCorePackageAlignmentTests が正当な用途で同じ名前を書いているため、そちらは見ない)。
 public class RepositoryPathsUsageTests
 {
-    // 探索の起点になりうる API。dotnet test ではいずれもテスト出力ディレクトリを指すため、
-    // どれを使っても同じ探索が書けてしまう。綴りの揺れ(空白・改行)を許して照合する
-    private static readonly Regex SearchRootApiRegex = new(
-        @"\bAppContext\s*\.\s*BaseDirectory\b"
-        + @"|\bAppDomain\s*\.\s*CurrentDomain\s*\.\s*BaseDirectory\b"
-        + @"|\bDirectory\s*\.\s*GetCurrentDirectory\b"
-        + @"|\bEnvironment\s*\.\s*CurrentDirectory\b"
-        + @"|\bAssembly\s*\.\s*Location\b",
-        RegexOptions.Compiled);
-
-    // 親ディレクトリを遡る操作。起点 API と組み合わさって初めて「探索の複製」になる
-    private static readonly Regex ParentWalkRegex = new(
-        @"\.\s*Parent\b|\bDirectory\s*\.\s*GetParent\b",
-        RegexOptions.Compiled);
+    // 検査対象のリテラル。共有ヘルパーの定数から組み立てるので、
+    // この文字列そのものは本テストのソースには現れない(自分を違反として拾わずに済む)
+    private static readonly string QuotedLayoutMarker = $"\"{RepositoryPaths.WebProjectDirectoryName}\"";
 
     // 検査対象から外すファイル(リポジトリルートからの相対パス)。
     // ファイル名だけで判定すると、別フォルダへ置いた同名のコピー
@@ -47,26 +39,23 @@ public class RepositoryPathsUsageTests
     // 「どこにある、どのファイルか」まで含めて指定する
     private static readonly string[] ExemptRelativePaths =
     {
-        // 共有ヘルパー本体。ここだけが実際に探索を実装してよい
+        // 共有ヘルパー本体。ここだけがリポジトリ構成の目印を持ってよい
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
-        // 本テスト自身。探すパターンそのものをソースに書く必要があるため除外する
-        Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPathsUsageTests.cs"),
     };
 
     // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
     private static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
 
     [Fact]
-    public void RepositorySearch_IsImplementedOnlyInSharedHelper()
+    public void RepositoryLayout_IsKnownOnlyToSharedHelper()
     {
         // 走査対象は tests 配下の全テストプロジェクト。1 つに決め打ちすると、
         // 将来 2 つ目のテストプロジェクトが増えたときにそこだけ検査対象から漏れる
-        // (RepositoryPaths は internal なので、別アセンブリからは見えず自前実装しやすい)
         var testsRoot = RepositoryPaths.TestsRoot;
         // 走査対象が実在すること(ディレクトリ改名でテストが無言で無効化されるのを防ぐ)
         Assert.True(Directory.Exists(testsRoot), $"{testsRoot} が見つかりません。");
 
-        // 共有ヘルパー以外で探索を自前実装しているファイルを集める
+        // 共有ヘルパー以外でリポジトリ構成の目印を書いているファイルを集める
         var violations = new List<string>();
         // 除外指定が実際に使われたかを数える(パス変更で除外が空振りしていないかの確認用)
         var exemptionsApplied = 0;
@@ -79,18 +68,16 @@ public class RepositoryPathsUsageTests
 
             // リポジトリルートからの相対パスに直して除外リストと突き合わせる
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, file);
-            // 除外対象(共有ヘルパー本体と本テスト自身)は探索を書いてよい
+            // 除外対象(共有ヘルパー本体)は目印を書いてよい
             if (ExemptRelativePaths.Contains(relativePath, StringComparer.Ordinal))
             {
                 exemptionsApplied++;
                 continue;
             }
 
-            // ソースを読み込む
-            var source = File.ReadAllText(file);
-            // 起点 API と親を遡る操作の両方が揃ったときだけ「探索の複製」とみなす
-            if (!SearchRootApiRegex.IsMatch(source) || !ParentWalkRegex.IsMatch(source)) continue;
-            // 揃っていれば重複として記録する
+            // ソースを読み込み、目印が文字列リテラルとして現れるかを見る
+            if (!File.ReadAllText(file).Contains(QuotedLayoutMarker, StringComparison.Ordinal)) continue;
+            // 現れていれば、構成の知識がヘルパーの外へ漏れた状態として記録する
             violations.Add(relativePath);
         }
 
@@ -103,9 +90,9 @@ public class RepositoryPathsUsageTests
 
         // 違反ゼロであること(あればどのファイルかをメッセージで示す)
         Assert.True(violations.Count == 0,
-            $"リポジトリ内のパス探索は {nameof(RepositoryPaths)} に集約してください "
+            $"リポジトリ構成を指す {QuotedLayoutMarker} をソースに書いてよいのは {nameof(RepositoryPaths)} だけです "
             + "(過去に同じ探索が 5 箇所へ複製され、目印の条件まで食い違っていました)。"
-            + "次のファイルが「起点ディレクトリの取得」と「親を遡る操作」を自前で組み合わせています:\n"
+            + $"必要なパスは {nameof(RepositoryPaths)} のプロパティから受け取ってください。次のファイルが目印を直接書いています:\n"
             + string.Join("\n", violations));
     }
 

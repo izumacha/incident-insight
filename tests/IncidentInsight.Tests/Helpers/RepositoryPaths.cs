@@ -23,8 +23,12 @@ internal static class RepositoryPaths
     // ソースを収める最上位ディレクトリ名(リポジトリルートの目印)
     private const string SrcDirectoryName = "src";
 
-    // Web プロジェクトのディレクトリ名(リポジトリルートの目印・続き)
-    private const string WebProjectDirectoryName = "IncidentInsight.Web";
+    /// <summary>
+    /// Web プロジェクトのディレクトリ名。リポジトリの構成を指す目印そのもので、
+    /// この文字列をソースに書いてよいのはこのクラスだけ(RepositoryPathsUsageTests が
+    /// それを検査するために、リテラルを書き写さずここから読む)。
+    /// </summary>
+    internal const string WebProjectDirectoryName = "IncidentInsight.Web";
 
     // Razor ビューを収めるディレクトリ名
     private const string ViewsDirectoryName = "Views";
@@ -32,13 +36,10 @@ internal static class RepositoryPaths
     // テストプロジェクトを収める最上位ディレクトリ名
     private const string TestsDirectoryName = "tests";
 
-    // テストプロジェクトのディレクトリ名
-    private const string TestProjectDirectoryName = "IncidentInsight.Tests";
-
     // リポジトリルートの絶対パス。探索は 1 回で済むので静的フィールドへ保持する(§8)
     private static readonly string RootDirectory = FindRoot();
 
-    /// <summary>リポジトリルート(ソリューションファイルや .github がある階層)の絶対パス。</summary>
+    /// <summary>リポジトリルート(src/IncidentInsight.Web を直下に持つ階層)の絶対パス。</summary>
     public static string Root => RootDirectory;
 
     /// <summary>Web プロジェクト(src/IncidentInsight.Web)の絶対パス。</summary>
@@ -49,9 +50,6 @@ internal static class RepositoryPaths
 
     /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
-
-    /// <summary>テストプロジェクト(tests/IncidentInsight.Tests)の絶対パス。</summary>
-    public static string TestProject => Path.Combine(TestsRoot, TestProjectDirectoryName);
 
     // ビルド出力ディレクトリから上へ辿ってリポジトリルートを探す
     private static string FindRoot()
