@@ -7,6 +7,9 @@ using YamlDotNet.Core;
 // YAML の各ノード型(マッピング / 一覧 / スカラー)を扱うため取り込む
 using YamlDotNet.RepresentationModel;
 
+// リポジトリ内のパスを解決する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
+
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Packaging;
 
@@ -141,9 +144,6 @@ public class EfCorePackageAlignmentTests
     // 「何が書いてあるか」だけでなく「他に何も書かれていないこと」まで固定する
     private static readonly string[] AllowedEfCoreGroupKeys = { AppliesToKey, PatternsKey };
 
-    // リポジトリルート。走査のたびに親を遡り直す必要はないので一度だけ解決して使い回す(§8)
-    private static readonly string RepositoryRoot = FindRepositoryRoot();
-
     // ソリューションに登録されたプロジェクトの絶対パス一覧(複数のテストで共有する)
     private static readonly Lazy<IReadOnlyList<string>> SolutionProjects = new(ReadSolutionProjects);
 
@@ -219,7 +219,7 @@ public class EfCorePackageAlignmentTests
         // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
         var missing = projects
             .Where(project => !File.Exists(Path.Combine(Path.GetDirectoryName(project)!, LockFileName)))
-            .Select(project => Path.GetRelativePath(RepositoryRoot, project))
+            .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
             .ToList();
 
         // 漏れが無いこと。ロックファイルが無いプロジェクトは、この検査の対象から外れるだけでなく
@@ -473,7 +473,7 @@ public class EfCorePackageAlignmentTests
             // (同じ事実で 2 つのテストが落ちると、原因が 2 種類あるように見えて読み手を惑わせる)
             if (!File.Exists(lockFile)) continue;
             // 失敗メッセージ用に、リポジトリルートからの相対パスにしておく
-            var project = Path.GetRelativePath(RepositoryRoot, lockFile);
+            var project = Path.GetRelativePath(RepositoryPaths.Root, lockFile);
             // ロックファイルを JSON として解析する
             using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
             // 解決結果はターゲットフレームワークごとに入れ子になっている。
@@ -513,7 +513,7 @@ public class EfCorePackageAlignmentTests
     private static IReadOnlyList<string> ReadSolutionProjects()
     {
         // ソリューションファイルの絶対パスを組み立てる
-        var solutionPath = Path.Combine(RepositoryRoot, SolutionFileName);
+        var solutionPath = Path.Combine(RepositoryPaths.Root, SolutionFileName);
         // ソリューションが見つからないのは探索の前提が崩れている状態なので落とす
         Assert.True(File.Exists(solutionPath), $"{solutionPath} が見つかりません。");
 
@@ -522,7 +522,7 @@ public class EfCorePackageAlignmentTests
             // ソリューションは Windows 形式の区切りで書かれるため、実行環境の区切りへ直す
             .Select(match => match.Groups["path"].Value.Replace('\\', Path.DirectorySeparatorChar))
             // リポジトリルートからの絶対パスにする
-            .Select(relativePath => Path.Combine(RepositoryRoot, relativePath))
+            .Select(relativePath => Path.Combine(RepositoryPaths.Root, relativePath))
             // 失敗メッセージの再現性のため並びを固定する
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
@@ -534,7 +534,7 @@ public class EfCorePackageAlignmentTests
         var missing = projects.Where(path => !File.Exists(path)).ToList();
         Assert.True(missing.Count == 0,
             $"{SolutionFileName} に登録されたプロジェクトが見つかりません:\n"
-            + string.Join("\n", missing.Select(path => $"  {Path.GetRelativePath(RepositoryRoot, path)}")));
+            + string.Join("\n", missing.Select(path => $"  {Path.GetRelativePath(RepositoryPaths.Root, path)}")));
         // 読み取ったプロジェクト一覧を返す
         return projects;
     }
@@ -620,7 +620,7 @@ public class EfCorePackageAlignmentTests
     private static YamlMappingNode ReadNuGetGroups()
     {
         // 設定ファイルの絶対パスを組み立てる
-        var path = Path.Combine(RepositoryRoot, DependabotConfigPath);
+        var path = Path.Combine(RepositoryPaths.Root, DependabotConfigPath);
         // 設定ファイルの存在を確認する
         Assert.True(File.Exists(path), $"{path} が見つかりません。");
 
@@ -673,29 +673,5 @@ public class EfCorePackageAlignmentTests
             + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
         // 読み取ったグループ定義を返す
         return groupsNode;
-    }
-
-    // テスト実行ディレクトリから上へ辿り、リポジトリルート(src/IncidentInsight.Web と .github を
-    // 併せ持つ階層)を見つける。既存テストは Web プロジェクトだけを探すが、本テストは
-    // .github/dependabot.yml と全プロジェクトのロックファイルを読むためルートまで遡る必要がある
-    private static string FindRepositoryRoot()
-    {
-        // ビルド出力ディレクトリを起点にする
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        // ルートに達するまで親を遡る
-        while (dir != null)
-        {
-            // Web プロジェクトと .github の両方を持つ階層がリポジトリルート
-            if (Directory.Exists(Path.Combine(dir.FullName, "src", "IncidentInsight.Web"))
-                && Directory.Exists(Path.Combine(dir.FullName, ".github")))
-            {
-                // 見つかったのでその絶対パスを返す
-                return dir.FullName;
-            }
-            // 1 つ上の階層へ移動する
-            dir = dir.Parent;
-        }
-        // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
-        throw new DirectoryNotFoundException("リポジトリルート(src/IncidentInsight.Web と .github を持つ階層)がテスト実行位置から見つかりません。");
     }
 }

@@ -1,6 +1,9 @@
 // 正規表現で View / TypeScript ソースを走査するために取り込む
 using System.Text.RegularExpressions;
 
+// リポジトリ内のパスを解決する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
+
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Views;
 
@@ -126,7 +129,7 @@ public class AnalyticsScriptContractTests
     private static string AnalyticsViewPath()
     {
         // Views ディレクトリ配下の Analytics/Index.cshtml を指す
-        var path = Path.Combine(FindWebProjectDirectory(), "Views", "Analytics", "Index.cshtml");
+        var path = Path.Combine(RepositoryPaths.Views, "Analytics", "Index.cshtml");
         // 移動・改名を検知できるよう存在を確認する
         Assert.True(File.Exists(path), $"{path} が見つかりません。");
         return path;
@@ -136,29 +139,9 @@ public class AnalyticsScriptContractTests
     private static string AnalyticsScriptPath()
     {
         // Scripts ディレクトリ配下の analytics.ts を指す
-        var path = Path.Combine(FindWebProjectDirectory(), "Scripts", "analytics.ts");
+        var path = Path.Combine(RepositoryPaths.WebProject, "Scripts", "analytics.ts");
         // inline script へ戻された場合はここで失敗する(ファイルごと消えるため)
         Assert.True(File.Exists(path), $"{path} が見つかりません。");
         return path;
-    }
-
-    // テスト実行ディレクトリから上へ辿り src/IncidentInsight.Web を見つける
-    // (ChartAccessibilityTests / RoleGatedNavigationTests と同じ探索ロジック)
-    private static string FindWebProjectDirectory()
-    {
-        // ビルド出力ディレクトリを起点にする
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        // ルートに達するまで親を遡る
-        while (dir != null)
-        {
-            // リポジトリルート配下の Web プロジェクト候補を組み立てる
-            var candidate = Path.Combine(dir.FullName, "src", "IncidentInsight.Web");
-            // 見つかればそれを返す
-            if (Directory.Exists(candidate)) return candidate;
-            // 1 つ上の階層へ移動する
-            dir = dir.Parent;
-        }
-        // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
-        throw new DirectoryNotFoundException("src/IncidentInsight.Web がテスト実行位置から見つかりません。");
     }
 }

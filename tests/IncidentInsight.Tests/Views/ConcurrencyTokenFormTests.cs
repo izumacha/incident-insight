@@ -1,5 +1,8 @@
 using System.Text.RegularExpressions;
 
+// リポジトリ内のパスを解決する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
+
 namespace IncidentInsight.Tests.Views;
 
 // Guard-rail tests: 楽観ロックトークンを引数で受け取る POST アクション
@@ -35,9 +38,13 @@ public class ConcurrencyTokenFormTests
     public void Forms_PostingToTokenPinningActions_IncludeConcurrencyTokenHiddenField()
     {
         // リポジトリ内の Views ディレクトリを特定する
-        var viewsDir = FindViewsDirectory();
+        var viewsDir = RepositoryPaths.Views;
         // 検出した違反(ファイル名と該当フォームの冒頭)を集める
         var violations = new List<string>();
+        // 検査したトークン必須フォームの数。0 件のまま終わると「違反なし」と区別が付かず、
+        // 検出パターンが壊れただけなのに緑になってしまうため数えておく
+        // (ChartAccessibilityTests / RoleGatedNavigationTests と同じ空振り対策)
+        var inspectedTargetForms = 0;
 
         // すべての Razor ビューを走査する
         foreach (var file in Directory.EnumerateFiles(viewsDir, "*.cshtml", SearchOption.AllDirectories))
@@ -51,6 +58,8 @@ public class ConcurrencyTokenFormTests
                 var attrs = form.Groups["attrs"].Value;
                 // トークン必須アクションへ POST するフォームだけを対象にする
                 if (!TargetsTokenRequiredAction(attrs)) continue;
+                // 対象フォームを 1 件検査したものとして数える
+                inspectedTargetForms++;
                 // フォーム内に concurrencyToken の入力欄があるか検査する(素の name 記法と asp-for 記法の両対応)
                 if (HasConcurrencyTokenField(form.Value)) continue;
                 // 欠落を違反として記録する(ファイルとフォーム冒頭 80 文字で位置を特定できるようにする)
@@ -58,6 +67,12 @@ public class ConcurrencyTokenFormTests
                 violations.Add($"{Path.GetFileName(file)}: {head[..Math.Min(80, head.Length)]}");
             }
         }
+
+        // 検査対象が 1 件も見つからないのは想定外(フォームの書き方が変わって FormBlockRegex が
+        // 合わなくなった、アクション名を改名して TokenRequiredActions と食い違った、等を示す)
+        Assert.True(inspectedTargetForms > 0,
+            "トークン必須アクションへ POST するフォームが Views 配下に 1 つも見つかりませんでした。"
+            + "検出パターンまたは対象アクション名が変更された可能性があります。");
 
         // 違反ゼロであること(あればどのフォームかをメッセージで示す)
         Assert.True(violations.Count == 0,
@@ -68,7 +83,7 @@ public class ConcurrencyTokenFormTests
     public void DashboardOverdueAlert_CompleteForm_SendsConcurrencyToken()
     {
         // ダッシュボードの期限超過アラート内「完了報告」フォーム(過去に欠落した箇所)を個別に固定する
-        var indexView = Path.Combine(FindViewsDirectory(), "Home", "Index.cshtml");
+        var indexView = Path.Combine(RepositoryPaths.Views, "Home", "Index.cshtml");
         // ビューのソースを読み込む
         var source = File.ReadAllText(indexView);
         // Complete へ POST するフォームブロックを取り出す
@@ -106,24 +121,5 @@ public class ConcurrencyTokenFormTests
         return formBlock.Contains(TokenPartialReference, StringComparison.Ordinal) ||
                formBlock.Contains(TokenFieldNameLiteral, StringComparison.OrdinalIgnoreCase) ||
                formBlock.Contains("asp-for=\"ConcurrencyToken\"", StringComparison.Ordinal);
-    }
-
-    // テスト実行ディレクトリから上へ辿り src/IncidentInsight.Web/Views を見つける
-    private static string FindViewsDirectory()
-    {
-        // ビルド出力ディレクトリを起点にする
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        // ルートに達するまで親を遡る
-        while (dir != null)
-        {
-            // リポジトリルートの目印(ソリューションファイル)を探す
-            var candidate = Path.Combine(dir.FullName, "src", "IncidentInsight.Web", "Views");
-            // Views ディレクトリが見つかればそれを返す
-            if (Directory.Exists(candidate)) return candidate;
-            // 1 つ上の階層へ移動する
-            dir = dir.Parent;
-        }
-        // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
-        throw new DirectoryNotFoundException("src/IncidentInsight.Web/Views がテスト実行位置から見つかりません。");
     }
 }

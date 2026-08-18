@@ -1,5 +1,8 @@
 using System.Text.RegularExpressions;
 
+// リポジトリ内のパスを解決する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
+
 namespace IncidentInsight.Tests.Views;
 
 // Guard-rail tests: Admin/RiskManager 限定のコントローラ(AnalyticsController /
@@ -88,7 +91,7 @@ public class RoleGatedNavigationTests
         var totalMatches = 0;
 
         // Views 配下のすべての .cshtml を走査する
-        foreach (var file in Directory.EnumerateFiles(FindViewsDirectory(), "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(RepositoryPaths.Views, "*.cshtml", SearchOption.AllDirectories))
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);
@@ -124,27 +127,7 @@ public class RoleGatedNavigationTests
     // Views/{controller}/{file} を読み込むヘルパー
     private static string ReadView(string controllerFolder, string fileName)
     {
-        var path = Path.Combine(FindViewsDirectory(), controllerFolder, fileName);
+        var path = Path.Combine(RepositoryPaths.Views, controllerFolder, fileName);
         return File.ReadAllText(path);
-    }
-
-    // テスト実行ディレクトリから上へ辿り src/IncidentInsight.Web/Views を見つける
-    // (ConcurrencyTokenFormTests と同じ探索ロジック)
-    private static string FindViewsDirectory()
-    {
-        // ビルド出力ディレクトリを起点にする
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        // ルートに達するまで親を遡る
-        while (dir != null)
-        {
-            // リポジトリルートの目印(ソリューションファイル)を探す
-            var candidate = Path.Combine(dir.FullName, "src", "IncidentInsight.Web", "Views");
-            // Views ディレクトリが見つかればそれを返す
-            if (Directory.Exists(candidate)) return candidate;
-            // 1 つ上の階層へ移動する
-            dir = dir.Parent;
-        }
-        // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
-        throw new DirectoryNotFoundException("src/IncidentInsight.Web/Views がテスト実行位置から見つかりません。");
     }
 }

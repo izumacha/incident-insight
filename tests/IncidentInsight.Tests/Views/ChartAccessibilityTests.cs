@@ -1,6 +1,9 @@
 // 正規表現で View ソースを走査するために取り込む
 using System.Text.RegularExpressions;
 
+// リポジトリ内のパスを解決する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
+
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Views;
 
@@ -48,7 +51,7 @@ public class ChartAccessibilityTests
         // サフィックスを外した(あるいは表記を変えた)まま JS を直し忘れると、
         // 「…（データ読み込み中）。外来 3件」のような二重表記のラベルが読み上げられてしまうため、
         // ここで Razor 側の書式を固定する。
-        var analyticsView = Path.Combine(FindViewsDirectory(), "Analytics", "Index.cshtml");
+        var analyticsView = Path.Combine(RepositoryPaths.Views, "Analytics", "Index.cshtml");
         // 対象ファイルが存在すること(移動・改名の検知)
         Assert.True(File.Exists(analyticsView), $"{analyticsView} が見つかりません。");
 
@@ -90,7 +93,7 @@ public class ChartAccessibilityTests
         var totalCanvases = 0;
 
         // Views 配下のすべての .cshtml を走査する(特定ファイル固定だと将来の追加を見逃すため)
-        foreach (var file in Directory.EnumerateFiles(FindViewsDirectory(), "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in Directory.EnumerateFiles(RepositoryPaths.Views, "*.cshtml", SearchOption.AllDirectories))
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);
@@ -115,25 +118,5 @@ public class ChartAccessibilityTests
             "role=\"img\" と空でない aria-label が付いていない <canvas> があります " +
             "(canvas の中身は支援技術に伝わらないため、グラフに名前を付ける必要があります):\n" +
             string.Join("\n", violations));
-    }
-
-    // テスト実行ディレクトリから上へ辿り src/IncidentInsight.Web/Views を見つける
-    // (RoleGatedNavigationTests / ConcurrencyTokenFormTests と同じ探索ロジック)
-    private static string FindViewsDirectory()
-    {
-        // ビルド出力ディレクトリを起点にする
-        var dir = new DirectoryInfo(AppContext.BaseDirectory);
-        // ルートに達するまで親を遡る
-        while (dir != null)
-        {
-            // リポジトリルート配下の Views ディレクトリ候補を組み立てる
-            var candidate = Path.Combine(dir.FullName, "src", "IncidentInsight.Web", "Views");
-            // Views ディレクトリが見つかればそれを返す
-            if (Directory.Exists(candidate)) return candidate;
-            // 1 つ上の階層へ移動する
-            dir = dir.Parent;
-        }
-        // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
-        throw new DirectoryNotFoundException("src/IncidentInsight.Web/Views がテスト実行位置から見つかりません。");
     }
 }
