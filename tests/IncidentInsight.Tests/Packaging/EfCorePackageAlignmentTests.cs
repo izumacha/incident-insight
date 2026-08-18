@@ -98,12 +98,14 @@ public class EfCorePackageAlignmentTests
     // 前者だけを目印にすると後者の系統が丸ごと検査対象から外れる(片方が他方の部分文字列では
     // ないため、両方を並べる必要がある)。
     //
-    // 【既知の限界】EF Core と同じリポジトリ・同じ版で出荷されるのに、名前にどちらの目印も
-    // 含まないパッケージがある(Microsoft.Data.Sqlite / Microsoft.Data.Sqlite.Core)。
-    // 現在は Microsoft.EntityFrameworkCore.Sqlite.Core が要求する推移依存としてのみ入っており、
-    // 推移依存に対して Dependabot は単独 PR を作らないため実害はない。ただし csproj から
-    // 直接参照した時点で、これだけが単独の major PR として現れうる。目印を名前だけに頼る
-    // 限りこの穴は塞げないため、直接参照を足すときは patterns への追記も併せて検討する
+    // 【既知の限界】プロバイダ実装と版が連動するのに、名前にどちらの目印も含まないパッケージがある。
+    //   - Microsoft.Data.Sqlite / Microsoft.Data.Sqlite.Core — EF Core と同じリポジトリ・同じ版で出荷
+    //   - Npgsql — Npgsql.EntityFrameworkCore.PostgreSQL の土台で、メジャー版が連動する
+    // いずれも現在は上位プロバイダが要求する推移依存としてのみ入っており、推移依存に対して
+    // Dependabot は単独 PR を作らないため実害はない。ただし csproj から直接参照した時点で、
+    // これらだけが単独の major PR として現れうる(例えば Npgsql 9.x を 8.x のプロバイダの下に
+    // 置く PR が緑のまま作られる)。目印を名前だけに頼る限りこの穴は塞げないため、
+    // 直接参照を足すときは patterns への追記も併せて検討する
     private static readonly string[] EfCoreIdMarkers = { "EntityFrameworkCore", "EFCore" };
 
     // 名前に上の目印を含むが、EF Core 本体とメジャー版を揃える必要が「ない」パッケージ。
@@ -280,13 +282,8 @@ public class EfCorePackageAlignmentTests
         // 各ドキュメントについて、除外一覧のパッケージ名が本文に載っていることを確かめる
         foreach (var document in documents)
         {
-            // リポジトリルートからの絶対パスを組み立てる
-            var path = Path.Combine(RepositoryPaths.Root, document);
-            // ドキュメントが移動・削除されていれば、検査が空振りする前に落とす
-            Assert.True(File.Exists(path), $"{document} が見つかりません(移動またはリネームされた可能性があります)。");
-
             // 本文を読み込む(判断材料として読まれるのは散文なので、書式は問わず名前の有無だけを見る)
-            var text = File.ReadAllText(path);
+            var text = ReadRepositoryFile(document);
             // 本文に名前が出てこないパッケージを集める。
             // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない
             // (散文側で綴りの大小が揺れただけで「説明がありません」と落ちるのは、
@@ -364,7 +361,7 @@ public class EfCorePackageAlignmentTests
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
         // 解決済みの EF Core 系 ID と、各パターンの最短の一致例を突き合わせ対象にする
         var leakedIntoMinorAndPatch = EfCorePackageIdsMatching(versionUpdatePatterns)
-            .Concat(versionUpdatePatterns.Select(ShortestMatchOf).OfType<string>())
+            .Concat(versionUpdatePatterns.SelectMany(RepresentativeIdsOf))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             // minor / patch グループに拾われてしまうものだけを残す
             .Where(minorAndPatchMatcher.Matches)
@@ -374,7 +371,9 @@ public class EfCorePackageAlignmentTests
             $"EF Core 系パッケージが dependabot.yml の {MinorAndPatchGroupName} に拾われています: "
             + $"[{string.Join(", ", leakedIntoMinorAndPatch)}]\n"
             + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} に当てはまるパターンを追加して、"
-            + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください。");
+            + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください"
+            + $"({RepresentativeSuffix} を含むものは実在のパッケージ名ではなく、"
+            + "前置詞で始まる同族すべてを表す代表値です)。");
 
         // 2 つのグループが実際に別々の更新種別を受け持っていること。
         // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
@@ -505,23 +504,35 @@ public class EfCorePackageAlignmentTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    // パターンが表す集合の中で「最も短い一致例」を返す(表せない場合は null)。
+    // 前方一致パターンの「続き」を表す代表値の目印。実在の ID ではなく、
+    // 前置詞で始まる別名すべてを 1 つで代表させるための文字列(失敗メッセージにそのまま出るので、
+    // 読み手が「これは代表値であって実在のパッケージ名ではない」と分かる字面にしている)
+    private const string RepresentativeSuffix = ".<任意の続き>";
+
+    // パターンが表す集合から、除外の網を確かめるための代表値を返す(作れない場合は空)。
     //
     // 【何のために使うか】まだロックファイルに現れていないパターンでも、除外の書き忘れを
-    // その場で検出できるようにするための代表値。パターンが表す集合の実際の要素なので、
-    // これが除外に当たらなければ集合の少なくとも 1 要素が漏れている＝本物の漏れになる。
-    // 【なぜ末尾以外の '*' を諦めるか】"*.EntityFrameworkCore.*" のようなパターンで
+    // その場で検出できるようにする。返すのはいずれもパターンが表す集合の実際の要素なので、
+    // どれかが除外に当たらなければ集合の少なくとも 1 要素が漏れている＝本物の漏れになる。
+    // 【なぜ前置詞だけでは足りないか】"Pomelo.EntityFrameworkCore.MySql*" に対して前置詞だけを
+    // 見ると、除外に "Pomelo.EntityFrameworkCore.MySql"(末尾 '*' 無し)と書いただけで通ってしまう。
+    // 実際には .Design や .NetTopologySuite といった同族が minor / patch へ流れるのに、
+    // 前置詞は「最も狭い除外にも覆われる要素」なので漏れを代表できない。前置詞そのものと、
+    // 前置詞で始まる別名の 2 つを見て初めて「集合ごと覆えているか」を問える。
+    // 【なぜ末尾以外の '*' を諦めるか】"*.EntityFrameworkCore.*" のようなパターンから
     // 単純に '*' を除去すると ".EntityFrameworkCore." という実在しない ID が合成され、
     // 不変条件は守られているのにその幽霊 ID だけが引っ掛かって落ちる(書き方に依存した偽陽性)。
     // 代表値を作れないパターンは、解決済み ID 側の照合に任せて対象から外す
-    private static string? ShortestMatchOf(string pattern)
+    private static IEnumerable<string> RepresentativeIdsOf(string pattern)
     {
         // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
-        if (!pattern.Contains('*')) return pattern;
-        // 末尾の 1 個だけがワイルドカードなら、それを取り除いた前置詞が最短の一致例
-        if (pattern.IndexOf('*') == pattern.Length - 1) return pattern[..^1];
-        // それ以外(途中や複数のワイルドカード)は実在する代表値を作れないので諦める
-        return null;
+        if (!pattern.Contains('*')) return new[] { pattern };
+        // 末尾以外にワイルドカードがあると実在する代表値を作れないので諦める
+        if (pattern.IndexOf('*') != pattern.Length - 1) return Array.Empty<string>();
+        // 末尾の 1 個だけがワイルドカードなら、それを取り除いた前置詞を取り出す
+        var prefix = pattern[..^1];
+        // 前置詞そのものと、前置詞で始まる別名の 2 つを代表にする
+        return new[] { prefix, prefix + RepresentativeSuffix };
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
@@ -559,6 +570,21 @@ public class EfCorePackageAlignmentTests
             + "EF Core 系を追加・削除するときは両方を同じ内容に保ってください:\n"
             + $"  {leftName} にのみ有り : [{string.Join(", ", onlyLeft)}]\n"
             + $"  {rightName} にのみ有り: [{string.Join(", ", onlyRight)}]");
+    }
+
+    // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
+    // 【なぜ共通化するか】「絶対パスを組み立てる → 存在を確かめる → 読む」の 3 行が
+    // ソリューション・dependabot.yml・散文の 3 箇所に現れ、失敗メッセージの言い回しだけが
+    // 少しずつ違っていた。ファイルが無いときの報告を 1 箇所に揃える(§6)
+    private static string ReadRepositoryFile(string relativePath)
+    {
+        // リポジトリルートからの絶対パスを組み立てる
+        var path = Path.Combine(RepositoryPaths.Root, relativePath);
+        // 見つからないまま先へ進むと検査が空振りするので、ここで落とす
+        Assert.True(File.Exists(path),
+            $"{relativePath} が見つかりません(移動またはリネームされた可能性があります)。");
+        // 本文をすべて読み出して返す
+        return File.ReadAllText(path);
     }
 
     // 失敗メッセージ用に「どのプロジェクトの・どのパッケージが・直接か推移か・どの版か」を並べる
@@ -649,13 +675,8 @@ public class EfCorePackageAlignmentTests
     // ソリューションフォルダ(仮想フォルダ)の行は .csproj を含まないため自然に除外される
     private static IReadOnlyList<string> ReadSolutionProjects()
     {
-        // ソリューションファイルの絶対パスを組み立てる
-        var solutionPath = Path.Combine(RepositoryPaths.Root, SolutionFileName);
-        // ソリューションが見つからないのは探索の前提が崩れている状態なので落とす
-        Assert.True(File.Exists(solutionPath), $"{solutionPath} が見つかりません。");
-
         // 各行から csproj の相対パスを抜き出し、絶対パスへ直す
-        var projects = SolutionProjectRegex.Matches(File.ReadAllText(solutionPath))
+        var projects = SolutionProjectRegex.Matches(ReadRepositoryFile(SolutionFileName))
             // ソリューションは Windows 形式の区切りで書かれるため、実行環境の区切りへ直す
             .Select(match => match.Groups["path"].Value.Replace('\\', Path.DirectorySeparatorChar))
             // リポジトリルートからの絶対パスにする
@@ -781,17 +802,12 @@ public class EfCorePackageAlignmentTests
     // dependabot.yml を構造として読み込み、nuget エコシステムの groups: を取り出す
     private static YamlMappingNode ReadNuGetGroups()
     {
-        // 設定ファイルの絶対パスを組み立てる
-        var path = Path.Combine(RepositoryPaths.Root, DependabotConfigPath);
-        // 設定ファイルの存在を確認する
-        Assert.True(File.Exists(path), $"{path} が見つかりません。");
-
         // YAML として解析する。同名キーの重複などで解析できない場合は、原因を添えて落とす
         // (重複キーは YAML では後勝ちで、検査と Dependabot が別の定義を見る食い違いの元になる)
         var stream = new YamlStream();
         try
         {
-            using var reader = new StringReader(File.ReadAllText(path));
+            using var reader = new StringReader(ReadRepositoryFile(DependabotConfigPath));
             stream.Load(reader);
         }
         catch (YamlException e)
