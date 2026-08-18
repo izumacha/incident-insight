@@ -412,7 +412,9 @@ public class EfCorePackageAlignmentTests
             + $"{string.Join("\n", undocumented.Select(entry => $"  {entry}"))}\n"
             + $"実際に効くのは {nameof(DotNetReleaseTrainPackages)} だけですが、"
             + "束ねる/束ねないの判断はこの散文を読んで行われます。"
-            + "配列へ追加したら、除外する理由も併せて書いてください。");
+            + "配列へ追加したら、除外する理由も併せて書いてください"
+            + "(照合は 1 行の中で名前がそのまま現れるかを見るので、"
+            + "説明済みなのに落ちる場合は名前が改行で分断されていないか確認してください)。");
     }
 
     // 代表値の作り方を、現行の dependabot.yml に無い書き方まで含めて固定する。
@@ -554,12 +556,9 @@ public class EfCorePackageAlignmentTests
         // (規約違反ではなく検査が硬すぎる偽陽性)。実際のパッケージ ID が拾われるかどうかで
         // 判定すれば、書き方の揺れに左右されず不変条件そのものを固定できる。
         //
-        // 判定対象はロックファイル上の ID だけでは足りない。まだ csproj へ足していないプロバイダを
-        // patterns へ先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れが
-        // 導入時まで気付かれない。各パターンが表す範囲の代表値(前置詞そのものと、
-        // 前置詞に続きが付いた形)も併せて見て、パターンを足した時点で除外漏れが分かるようにする
+        // 判定対象は MatchTargetsOf に任せる(解決済み ID ＋ パターンが表す範囲の代表値)
         // minor / patch グループの判定器をキャッシュから引く(§8)
-        var minorAndPatchMatcher = GroupMatchers.Value[MinorAndPatchGroupName];
+        var minorAndPatchMatcher = MatcherOf(MinorAndPatchGroupName);
         // 【なぜ全グループの和集合を見るか】版更新側だけを見ると、セキュリティ側にだけ
         // 足されたパターンの除外漏れが視野に入らない。しかも AssertSameSet(別 Fact)が
         // 先に落ちても、こちらは独立に走って漏れを報告できる
@@ -572,9 +571,7 @@ public class EfCorePackageAlignmentTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         // 解決済みの EF Core 系 ID と、各パターンが表す範囲の代表値を突き合わせ対象にする
-        var leakedIntoMinorAndPatch = EfCorePackageIdsMatching(allEfCorePatterns)
-            .Concat(allEfCorePatterns.SelectMany(RepresentativeIdsOf))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
+        var leakedIntoMinorAndPatch = MatchTargetsOf(allEfCorePatterns)
             // minor / patch グループに拾われてしまうものだけを残す
             .Where(minorAndPatchMatcher.Matches)
             .ToList();
@@ -590,7 +587,6 @@ public class EfCorePackageAlignmentTests
                 ? $"\n({WildcardPlaceholder} を含むものは実在のパッケージ名ではなく、"
                   + "そのパターンが表す同族すべてを表す代表値です。)"
                 : ""));
-
     }
 
     [Fact]
@@ -633,14 +629,8 @@ public class EfCorePackageAlignmentTests
         // この検査がそれに依存すると防御が二重に効かなくなる
         // (パターンの読み出しはループの外で 1 度だけ行う。§8)
         var efCorePatterns = ReadGroupList(groupName, PatternsKey);
-        // 解決済みの ID に加えて、各パターンが表す範囲の代表値も対象にする。
-        // 【なぜ代表値も要るか】ID だけを見ると、まだ csproj に無いプロバイダを patterns へ
-        // 先に書いた場合に横取りを検出できず、実際にそのパッケージを参照する PR まで
-        // 気付けない。除外漏れの検査と同じ理屈で、パターンを足した時点で分かるようにする
-        var efCorePackageIds = EfCorePackageIdsMatching(efCorePatterns)
-            .Concat(efCorePatterns.SelectMany(RepresentativeIdsOf))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // 解決済みの ID と、各パターンが表す範囲の代表値をあわせて対象にする
+        var efCorePackageIds = MatchTargetsOf(efCorePatterns);
 
         // 先に定義されたグループのうち、EF Core 系を横取りしうるものを探す
         var shadowing = groupNames
@@ -658,7 +648,7 @@ public class EfCorePackageAlignmentTests
             // 絞り込みキーの解釈を増やすほど見逃しが生まれるので、ここは保守的に倒す
             // (誤検出はレビューで気付けるが、見逃しは PostgreSQL 配備でしか現れない)
             // 判定器は 1 度だけ読み出したキャッシュから引く(§8)
-            .Select(name => (Name: name, Matcher: GroupMatchers.Value[name]))
+            .Select(name => (Name: name, Matcher: MatcherOf(name)))
             // 実際に EF Core 系パッケージを拾ってしまうか
             .Where(candidate => efCorePackageIds.Any(candidate.Matcher.Matches))
             .Select(candidate => candidate.Name)
@@ -698,7 +688,7 @@ public class EfCorePackageAlignmentTests
             // その大きさの更新を受け持たないグループは、この更新を奪わない
             .Where(name => TakesUpdateType(name, updateType))
             // 対象に当てはまる最初のグループが、実際の入り先になる
-            .FirstOrDefault(name => GroupMatchers.Value[name].Matches(packageId));
+            .FirstOrDefault(name => MatcherOf(name).Matches(packageId));
 
     // 通常の版更新を受け持つグループを、定義順に並べたもの。
     // 【なぜ applies-to で絞るか】セキュリティ更新専用のグループは通常の版更新を奪わない。
@@ -709,6 +699,20 @@ public class EfCorePackageAlignmentTests
             // 通常の版更新を受け持つグループだけを、定義順のまま残す
             .Where(name => GroupScopeOf(name) == VersionUpdates)
             .ToList());
+
+    // キャッシュから判定器を引く。見つからないときは、生の KeyNotFoundException ではなく
+    // 「どのグループが失われたか」と、その結果どうなるかを示して落とす
+    // (グループ名を変えた場合に、原因の分からない例外だけが飛ぶのを避ける)
+    private static GroupMatcher MatcherOf(string groupName)
+    {
+        // 名前で引けたらそれを返す
+        if (GroupMatchers.Value.TryGetValue(groupName, out var matcher)) return matcher;
+        // 引けないのは、そのグループが消えたか名前が変わったということ
+        Assert.Fail($"dependabot.yml の {EcosystemKey}: \"{NuGetEcosystem}\" 配下に {groupName} グループが"
+            + "見つかりません。束ねの設定が外れると、パッケージごとに単独の PR が作られます。");
+        // Assert.Fail は必ず throw するのでここには到達しない
+        return default;
+    }
 
     // グループ名 → 判定器。1 度だけ読み出して使い回す(§8)
     private static readonly Lazy<IReadOnlyDictionary<string, GroupMatcher>> GroupMatchers =
@@ -733,6 +737,20 @@ public class EfCorePackageAlignmentTests
     private static GroupMatcher ReadGroupMatcher(string groupName) =>
         // どちらのキーも「書かれていなければ null」で、その意味づけは GroupMatcher が持つ
         new(TryReadGroupList(groupName, PatternsKey), TryReadGroupList(groupName, ExcludePatternsKey));
+
+    // 指定パターンについて「グループが拾うかどうか」を確かめる対象を返す。
+    //
+    // 【なぜ解決済み ID だけでは足りないか】まだ csproj に無いプロバイダを patterns へ
+    // 先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れや
+    // 横取りが「実際にそのパッケージを参照する PR」まで検出されない。その PR の作者は
+    // 「パッケージを足しただけ」なのに無関係に見える失敗を受け取ることになる。
+    // パターンが表す範囲の代表値も混ぜて、パターンを足した時点で分かるようにする
+    private static IReadOnlyList<string> MatchTargetsOf(IReadOnlyList<string> patterns) =>
+        // 解決済みの ID と代表値を合わせ、重複を除いて返す
+        EfCorePackageIdsMatching(patterns)
+            .Concat(patterns.SelectMany(RepresentativeIdsOf))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
 
     // 指定パターンに一致する、ロックファイル上のパッケージ ID を重複なく返す。
     // 【なぜ読み出し済みのパターンを受け取るか】呼び出し側が既に patterns を読んでいる場面が
