@@ -80,6 +80,10 @@ public class EfCorePackageAlignmentTests
     // 更新の大きさのうち「メジャー」を表す値(この不変条件が守るのはメジャー版の一致)
     private const string MajorUpdateType = "major";
 
+    // minor / patch グループが受け持つべき更新の大きさ。
+    // どちらかが抜けると、その種別の更新だけ束ねから外れて単独 PR に戻る
+    private static readonly string[] MinorAndPatchUpdateTypes = { "minor", "patch" };
+
     // EF Core 系グループが属していなければならないエコシステム(.NET のパッケージ管理系)
     private const string NuGetEcosystem = "nuget";
 
@@ -243,11 +247,8 @@ public class EfCorePackageAlignmentTests
         // 実際に直すべきはロックファイルのコミットで、それは
         // EveryProject_HasCommittedLockFile が専任で報告する(同じ事実で 2 つのテストが
         // 別々の原因を指すと読み手を惑わせる。ReadAllResolvedPackages と同じ方針)
-        var missingLockFiles = SolutionProjects.Value
-            .Where(project => !File.Exists(Path.Combine(Path.GetDirectoryName(project)!, LockFileName)))
-            .ToList();
         // 欠けているものがあるなら、この検査は成立しないので何も言わずに終える
-        if (missingLockFiles.Count > 0) return;
+        if (SolutionProjects.Value.Any(project => !File.Exists(LockFilePathOf(project)))) return;
 
         // ロックファイルに解決されているパッケージ ID を、大小文字を区別しない集合にまとめる
         var resolvedIds = ResolvedPackages.Value
@@ -296,12 +297,19 @@ public class EfCorePackageAlignmentTests
             + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
             + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
 
+    }
+
+    [Fact]
+    public void DotNetReleaseTrainPackages_StayInTheMinorAndPatchBundle()
+    {
         // 裏返しの不変条件: これらは minor / patch の束ねには「入っていてほしい」。
         // 【なぜ両方向を見るか】EF Core 側の patterns から外すだけでは足りない。
         // 例えば nuget-minor-and-patch の除外を "*EntityFrameworkCore*" と広く書くと、
         // EF Core 系の漏れは無くなる一方でこの 2 つまで minor / patch から外れ、
         // 通常運転の更新がパッケージごとの単独 PR に戻ってレビュー負荷が上がる
-        // (束ねを広げる方向の事故は、狭める方向と違って赤くならないので気付きにくい)
+        // (束ねを広げる方向の事故は、狭める方向と違って赤くならないので気付きにくい)。
+        // 【なぜ別の Fact か】「束ねに入っていないこと」とは独立した条件で、同居させると
+        // 片方が throw したときもう片方が検証されない(このファイルで繰り返し避けている形)
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
         // minor / patch の束ねから外れてしまっているものを集める
         var droppedFromMinorAndPatch = DotNetReleaseTrainPackages
@@ -314,6 +322,22 @@ public class EfCorePackageAlignmentTests
             + $"除外しています: [{string.Join(", ", droppedFromMinorAndPatch)}]\n"
             + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を、EF Core 本体とプロバイダ実装だけに"
             + "当たる書き方へ狭めてください。");
+
+        // 束ねが minor と patch の両方を受け持っていること。
+        // 【なぜ update-types も見るか】除外に当たらなくても、update-types を ["patch"] へ
+        // 狭めれば minor 更新はこの束ねから外れ、結局パッケージごとの単独 PR に戻る。
+        // パターンだけを見ていると、この経路の後退が緑のまま通ってしまう
+        var updateTypes = ReadGroupList(MinorAndPatchGroupName, UpdateTypesKey);
+        // 受け持つべき更新の大きさのうち、指定から漏れているものを集める
+        var missingUpdateTypes = MinorAndPatchUpdateTypes
+            .Where(type => !updateTypes.Contains(type, StringComparer.OrdinalIgnoreCase))
+            .ToList();
+
+        // 漏れが無いこと(あれば、どの種別が抜けているかを示す)
+        Assert.True(missingUpdateTypes.Count == 0,
+            $"dependabot.yml の {MinorAndPatchGroupName}.{UpdateTypesKey} に"
+            + $"[{string.Join(", ", missingUpdateTypes)}] が含まれていません。"
+            + "抜けた種別の更新は束ねから外れ、パッケージごとの単独 PR に戻ります。");
     }
 
     [Fact]
@@ -365,6 +389,9 @@ public class EfCorePackageAlignmentTests
     [InlineData("*.EntityFrameworkCore.MySql", WildcardPlaceholder + ".EntityFrameworkCore.MySql")]
     // "*" だけのパターンは、空文字列を代表にしても何も伝わらないので目印だけ返す
     [InlineData("*", WildcardPlaceholder)]
+    // 空のパターンからは代表値を作らない(TryReadGroupList が空要素を弾くので設定からは
+    // 届かないが、代表値を作る側でも空を持ち込まないことを二重に固定しておく)
+    [InlineData("")]
     public void RepresentativeIdsOf_CoversTheWholePatternSet(string pattern, params string[] expected)
     {
         // 実際に作られる代表値を取り出す
@@ -415,7 +442,7 @@ public class EfCorePackageAlignmentTests
 
         // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
         var missing = projects
-            .Where(project => !File.Exists(Path.Combine(Path.GetDirectoryName(project)!, LockFileName)))
+            .Where(project => !File.Exists(LockFilePathOf(project)))
             .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
             .ToList();
 
@@ -472,9 +499,13 @@ public class EfCorePackageAlignmentTests
             $"EF Core 系パッケージが dependabot.yml の {MinorAndPatchGroupName} に拾われています: "
             + $"[{string.Join(", ", leakedIntoMinorAndPatch)}]\n"
             + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} に当てはまるパターンを追加して、"
-            + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください"
-            + $"({WildcardPlaceholder} を含むものは実在のパッケージ名ではなく、"
-            + "そのパターンが表す同族すべてを表す代表値です)。");
+            + "EF Core 系が minor / patch の束ねへ紛れ込まないようにしてください。"
+            // 代表値が 1 つも含まれないのに注記だけ出ると、読み手は在りもしない
+            // 目印を一覧から探すことになるので、含まれるときだけ添える
+            + (leakedIntoMinorAndPatch.Any(id => id.Contains(WildcardPlaceholder, StringComparison.Ordinal))
+                ? $"\n({WildcardPlaceholder} を含むものは実在のパッケージ名ではなく、"
+                  + "そのパターンが表す同族すべてを表す代表値です。)"
+                : ""));
 
         // 2 つのグループが実際に別々の更新種別を受け持っていること。
         // applies-to の既定は version-updates なので、セキュリティ側で指定を忘れると
@@ -716,6 +747,14 @@ public class EfCorePackageAlignmentTests
         return false;
     }
 
+    // そのプロジェクトの隣にあるロックファイルの絶対パスを返す。
+    // 【なぜ共通化するか】同じ組み立てが「欠落の検査」「解決済みの読み出し」「除外一覧の
+    // 実在検査」の 3 箇所に現れていた。ロックファイルの置き場所が変わったとき、
+    // 直し漏れた検査だけが静かに意味を変えるのを防ぐ
+    private static string LockFilePathOf(string projectFile) =>
+        // プロジェクトファイルと同じディレクトリに置かれる決まり
+        Path.Combine(Path.GetDirectoryName(projectFile)!, LockFileName);
+
     // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
     // 【なぜ共通化するか】「絶対パスを組み立てる → 存在を確かめる → 読む」の 3 行が
     // ソリューション・dependabot.yml・散文の 3 箇所に現れ、失敗メッセージの言い回しだけが
@@ -778,7 +817,7 @@ public class EfCorePackageAlignmentTests
         foreach (var projectFile in SolutionProjects.Value)
         {
             // プロジェクトと同じディレクトリのロックファイルを指す
-            var lockFile = Path.Combine(Path.GetDirectoryName(projectFile)!, LockFileName);
+            var lockFile = LockFilePathOf(projectFile);
             // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するのでここでは飛ばす
             // (同じ事実で 2 つのテストが落ちると、原因が 2 種類あるように見えて読み手を惑わせる)
             if (!File.Exists(lockFile)) continue;
@@ -905,8 +944,27 @@ public class EfCorePackageAlignmentTests
             $"dependabot.yml の {groupName}.{key} に、単一値でない要素があります: "
             + $"[{string.Join(", ", malformed)}]\n"
             + "一覧の各要素はパターン文字列などの単一値である必要があります。");
+
         // 各要素を文字列として取り出す
-        return sequence.Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
+        var values = sequence.Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
+        // 中身が空の要素を集める。
+        // 【なぜ空を拒むか】プロバイダの行を消したあとに `- ` だけが残ると、空パターンは
+        // どのパッケージにも一致せず、どこからも文句が出ないまま静かに無効な行として居座る。
+        // `- name: x` のような書き間違いは落とすのに空だけ通すのは方針が揃わない(fail-closed)
+        var blank = values
+            .Select((value, index) => (Value: value, Index: index))
+            .Where(entry => string.IsNullOrWhiteSpace(entry.Value))
+            .Select(entry => $"{entry.Index + 1} 番目")
+            .ToList();
+
+        // 空の要素が無いこと(あれば、何番目かを示す)
+        Assert.True(blank.Count == 0,
+            $"dependabot.yml の {groupName}.{key} に、中身が空の要素があります: "
+            + $"[{string.Join(", ", blank)}]\n"
+            + "空のパターンはどのパッケージにも一致しないため、消し忘れた行の可能性があります。");
+
+        // 検査を通った一覧を返す
+        return values;
     }
 
     // 指定グループの指定キーを一覧として読み出す(キーが無ければ落とす)
