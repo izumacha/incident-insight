@@ -475,6 +475,8 @@ public class EfCorePackageAlignmentTests
     [InlineData("-Npgsql: 束ねない理由", "Npgsql", true)]
     // 前に区切り文字、さらにその手前に ID があるなら長い名前の途中
     [InlineData("Foo.Npgsql.Bar", "Npgsql", false)]
+    // 本文の先頭が区切り文字の場合(その手前に文字が無い)も言及とみなす
+    [InlineData(".Npgsql は版が連動する", "Npgsql", true)]
     // 長い名前の言及と埋もれた出現が混在するなら、独立した言及がある方を採る
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL と、土台の Npgsql", "Npgsql", true)]
     // どこにも出てこなければ言及なし
@@ -638,7 +640,7 @@ public class EfCorePackageAlignmentTests
             // 更新種別が違うグループ同士は解決の土俵が別なので横取りしない
             .Where(name => string.Equals(GroupScopeOf(name), scope, StringComparison.Ordinal))
             // メジャー更新を受け持たないグループは、この不変条件(メジャー版の一致)を壊さない
-            .Where(TakesMajorUpdates)
+            .Where(name => TakesUpdateType(name, MajorUpdateType))
             // 【dependency-type で絞り込まない理由】「開発依存だけのグループは本番依存の
             // EF Core 系を拾わない」と考えたくなるが、前提が成り立たない。
             // Microsoft.EntityFrameworkCore.Design は csproj で PrivateAssets=all を指定して
@@ -667,11 +669,6 @@ public class EfCorePackageAlignmentTests
     private static string GroupScopeOf(string groupName) =>
         // 明示されていればその値、無ければ Dependabot の既定値
         TryReadGroupScalar(groupName, AppliesToKey) ?? VersionUpdates;
-
-    // 指定グループがメジャー更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
-    private static bool TakesMajorUpdates(string groupName) =>
-        // メジャー更新を受け持つかどうかを、汎用の判定に委ねる
-        TakesUpdateType(groupName, MajorUpdateType);
 
     // 指定グループが、その大きさの更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
     private static bool TakesUpdateType(string groupName, string updateType) =>
@@ -755,13 +752,12 @@ public class EfCorePackageAlignmentTests
     // 指定パターンに一致する、ロックファイル上のパッケージ ID を重複なく返す。
     // 【なぜ読み出し済みのパターンを受け取るか】呼び出し側が既に patterns を読んでいる場面が
     // あり、グループ名を渡す形にすると同じキーを 2 度読むことになるため(§8)
-    private static IReadOnlyList<string> EfCorePackageIdsMatching(IReadOnlyList<string> patterns) =>
-        // 解決済みパッケージのうちパターンに当てはまるものを、ID の重複を除いて集める
+    // (重複除去は呼び出し側の MatchTargetsOf がまとめて行う)
+    private static IEnumerable<string> EfCorePackageIdsMatching(IReadOnlyList<string> patterns) =>
+        // 解決済みパッケージのうちパターンに当てはまるものの ID を返す
         ResolvedPackages.Value
             .Where(package => MatchesAnyPattern(package.Id, patterns))
-            .Select(package => package.Id)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+            .Select(package => package.Id);
 
     // ワイルドカードの位置に差し込む目印。実在の ID ではなく「ここには何が来てもよい」ことを
     // 表す代表値の一部で、失敗メッセージにそのまま出るため、読み手が
