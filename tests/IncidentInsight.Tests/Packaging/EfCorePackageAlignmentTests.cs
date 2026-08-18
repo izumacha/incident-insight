@@ -103,7 +103,8 @@ public class EfCorePackageAlignmentTests
     // ないため、両方を並べる必要がある)。
     //
     // 【既知の限界】プロバイダ実装と版が連動するのに、名前にどちらの目印も含まないパッケージがある。
-    //   - Microsoft.Data.Sqlite / Microsoft.Data.Sqlite.Core — EF Core と同じリポジトリ・同じ版で出荷
+    //   - Microsoft.Data.Sqlite.Core — EF Core と同じリポジトリ・同じ版で出荷
+    //     (同系の Microsoft.Data.Sqlite を直接参照した場合も同じ穴に落ちる)
     //   - Npgsql — Npgsql.EntityFrameworkCore.PostgreSQL の土台で、メジャー版が連動する
     // いずれも現在は上位プロバイダが要求する推移依存としてのみ入っており、推移依存に対して
     // Dependabot は単独 PR を作らないため実害はない。ただし csproj から直接参照した時点で、
@@ -253,8 +254,15 @@ public class EfCorePackageAlignmentTests
         // 実際に直すべきはロックファイルのコミットで、それは
         // EveryProject_HasCommittedLockFile が専任で報告する(同じ事実で 2 つのテストが
         // 別々の原因を指すと読み手を惑わせる。ReadAllResolvedPackages と同じ方針)
-        // 欠けているものがあるなら、この検査は成立しないので何も言わずに終える
-        if (SolutionProjects.Value.Any(project => !File.Exists(LockFilePathOf(project)))) return;
+        // ロックファイルが欠けているプロジェクトを控えておく。
+        // 【なぜ検査を飛ばさないか】黙って return すると「何も確かめずに緑」になり、
+        // 配列の掃除漏れが素通りする。かといって素の失敗文では、実際の原因が
+        // ロックファイルの未コミットなのに「配列を直せ」と誤って案内してしまう。
+        // 検査は必ず行い、案内する原因の方を状況で切り替える
+        var projectsWithoutLockFile = SolutionProjects.Value
+            .Where(project => !File.Exists(LockFilePathOf(project)))
+            .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
+            .ToList();
 
         // ロックファイルに解決されているパッケージ ID を、大小文字を区別しない集合にまとめる
         var resolvedIds = ResolvedPackages.Value
@@ -266,8 +274,14 @@ public class EfCorePackageAlignmentTests
         Assert.True(unknown.Count == 0,
             $"{nameof(DotNetReleaseTrainPackages)} に、{LockFileName} のどこにも解決されていない"
             + $"パッケージがあります: [{string.Join(", ", unknown)}]\n"
-            + "参照をやめたのなら配列からも削り、綴り違いなら直してください"
-            + "(実在しない名前は何も除外せず、網羅性検査の穴になります)。");
+            + (projectsWithoutLockFile.Count > 0
+                // ロックファイルが欠けているなら、読み飛ばされたプロジェクトが原因の可能性が高い
+                ? $"ただし {LockFileName} が無いプロジェクトがあり"
+                  + $"({string.Join(" / ", projectsWithoutLockFile)})、その分が読み飛ばされています。"
+                  + $"まず {nameof(EveryProject_HasCommittedLockFile)} の指摘を直してください。"
+                // すべて揃っているなら、配列側の掃除漏れ
+                : "参照をやめたのなら配列からも削り、綴り違いなら直してください"
+                  + "(実在しない名前は何も除外せず、網羅性検査の穴になります)。"));
     }
 
     [Fact]
@@ -302,7 +316,6 @@ public class EfCorePackageAlignmentTests
             + "これらは EF Core の公開 API しか使わず、メジャー版は .NET のリリース"
             + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
             + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
-
     }
 
     [Fact]
@@ -316,21 +329,25 @@ public class EfCorePackageAlignmentTests
         // (束ねを広げる方向の事故は、狭める方向と違って赤くならないので気付きにくい)。
         // 【なぜ別の Fact か】「束ねに入っていないこと」とは独立した条件で、同居させると
         // 片方が throw したときもう片方が検証されない(このファイルで繰り返し避けている形)
-        var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
-        // minor / patch の束ねから外れてしまっているものを集める
+        // 「どのパッケージの・どの種別が・どこへ入るか」を定義順に解決し、
+        // minor / patch の束ね以外へ流れるものを集める
         var droppedFromMinorAndPatch = DotNetReleaseTrainPackages
-            .Where(id => !minorAndPatchMatcher.Matches(id))
+            .SelectMany(id => MinorAndPatchUpdateTypes.Select(type => (Id: id, Type: type)))
+            .Select(target => (target.Id, target.Type, Owner: OwningGroupOf(target.Id, target.Type)))
+            .Where(result => result.Owner != MinorAndPatchGroupName)
+            .Select(result => $"{result.Id} の {result.Type} → "
+                + (result.Owner is null ? "どのグループにも入らない" : $"{result.Owner} に入る"))
             .ToList();
 
         // 外れていないこと(あれば、どのパッケージが束ねから落ちたかを示す)
         Assert.True(droppedFromMinorAndPatch.Count == 0,
-            $"dependabot.yml の {MinorAndPatchGroupName} が、まとめて更新したいパッケージまで"
-            + $"除外しています: [{string.Join(", ", droppedFromMinorAndPatch)}]\n"
+            "dependabot.yml で、まとめて更新したいパッケージが "
+            + $"{MinorAndPatchGroupName} の束ねに入っていません:\n"
+            + $"{string.Join("\n", droppedFromMinorAndPatch.Select(entry => $"  {entry}"))}\n"
             + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を EF Core 本体とプロバイダ実装だけに"
             + $"当たる書き方へ狭めるか、{MinorAndPatchGroupName}.{PatternsKey} を書いている場合は"
             + "これらにも当たるよう広げてください"
             + $"(このグループが拾わない理由は {ExcludePatternsKey} と {PatternsKey} の両方にありえます)。");
-
     }
 
     [Fact]
@@ -649,9 +666,23 @@ public class EfCorePackageAlignmentTests
 
     // 指定グループがメジャー更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
     private static bool TakesMajorUpdates(string groupName) =>
-        // 種別が絞られていなければ全て受け持つ。絞られていれば major が含まれるかを見る
+        // メジャー更新を受け持つかどうかを、汎用の判定に委ねる
+        TakesUpdateType(groupName, MajorUpdateType);
+
+    // 指定グループが、その大きさの更新を受け持つかどうかを返す(update-types 未指定なら全種別が対象)
+    private static bool TakesUpdateType(string groupName, string updateType) =>
+        // 種別が絞られていなければ全て受け持つ。絞られていれば、その種別が含まれるかを見る
         TryReadGroupList(groupName, UpdateTypesKey) is not { } updateTypes
-        || updateTypes.Contains(MajorUpdateType, StringComparer.OrdinalIgnoreCase);
+        || updateTypes.Contains(updateType, StringComparer.OrdinalIgnoreCase);
+
+    // その大きさの更新で、指定パッケージを実際に受け取るグループ名を返す(どれにも入らなければ null)。
+    // 【なぜ先頭から探すか】Dependabot は「最初に一致したグループ」にだけ依存関係を入れる。
+    // 名指ししたグループへ直接尋ねると、手前に置かれた別のグループが先に攫っていく経路を見逃す
+    private static string? OwningGroupOf(string packageId, string updateType) =>
+        // 定義順に並べたグループを順に見て、種別と対象の両方に当てはまる最初のものを返す
+        ReadNuGetGroupNamesInOrder()
+            .Where(name => TakesUpdateType(name, updateType))
+            .FirstOrDefault(name => ReadGroupMatcher(name).Matches(packageId));
 
     // 1 つのグループが「どのパッケージを自分のものとして拾うか」を表す判定器。
     //
@@ -768,29 +799,21 @@ public class EfCorePackageAlignmentTests
     private static bool IsPackageIdChar(char c) =>
         c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '.' or '_' or '-';
 
-    // 区切り文字( . _ - )のうち、その後ろに ID の続きが無いもの(文末の句点など)を見分ける。
-    // 【なぜ要るか】"Npgsql." が「Npgsql.EntityFrameworkCore… の途中」なのか
-    // 「Npgsql. という文の区切り」なのかは、次の 1 文字を見ないと決められない。
-    // 区切り文字だけで打ち切ると、散文の「…は Npgsql. である」を名前の一部と誤読して
-    // 「説明がありません」で落ちる(直前のコミットで直した日本語助詞の件と同じ型の偽陽性)
-    private static bool ContinuesPackageId(string text, int index) =>
-        // 範囲外なら続きは無い
-        index < text.Length
-        // ID を構成する文字であること
-        && IsPackageIdChar(text[index])
-        // 区切り文字の場合は、そのさらに次に ID の続きがあるときだけ「続き」とみなす
-        && (text[index] is not ('.' or '_' or '-')
-            || (index + 1 < text.Length && IsPackageIdChar(text[index + 1])));
-
-    // 指定位置の文字が「直後の名前へ続く ID の一部」かどうかを返す(ContinuesPackageId の前側版)
-    private static bool PrecedesPackageId(string text, int index) =>
-        // 範囲外なら続きは無い
-        index >= 0
-        // ID を構成する文字であること
-        && IsPackageIdChar(text[index])
-        // 区切り文字の場合は、そのさらに手前に ID の文字があるときだけ「途中」とみなす
-        && (text[index] is not ('.' or '_' or '-')
-            || (index - 1 >= 0 && IsPackageIdChar(text[index - 1])));
+    // 指定位置から step 方向へ見て、そこに「名前の続き」があるかどうかを返す。
+    // 【なぜ方向を引数にするか】前側と後ろ側で同じ規則を使う必要があり(片方だけ直すと
+    // 判定が非対称になる)、違いは走査の向きだけだったため 1 つにまとめる
+    private static bool HasPackageIdNeighbor(string text, int index, int step)
+    {
+        // 範囲外なら隣接する ID の文字は無い
+        if (index < 0 || index >= text.Length) return false;
+        // ID を構成しない文字なら、そこで名前は途切れている
+        if (!IsPackageIdChar(text[index])) return false;
+        // 区切り文字以外なら、それ自体が名前の一部
+        if (text[index] is not ('.' or '_' or '-')) return true;
+        // 区切り文字は、さらにその先にも ID の文字があるときだけ「名前の途中」とみなす
+        var next = index + step;
+        return next >= 0 && next < text.Length && IsPackageIdChar(text[next]);
+    }
 
     // 本文がそのパッケージ名に「言及している」かを返す。
     //
@@ -809,11 +832,11 @@ public class EfCorePackageAlignmentTests
             // 直前にも ID の続きが無いこと。区切り文字( . _ - )は、そのさらに手前に
             // ID の文字があるときだけ「長い名前の途中」とみなす(箇条書きの "- Npgsql" や
             // 文の区切りの ".Npgsql" を名前の一部と誤読しないため。後ろ側と対称にする)
-            var startsCleanly = index == 0 || !PrecedesPackageId(text, index - 1);
+            var startsCleanly = !HasPackageIdNeighbor(text, index - 1, step: -1);
             // 直後の位置を求める
             var end = index + packageId.Length;
             // 直後にも ID の続きが無いこと(文末の句点などは「続き」とみなさない)
-            var endsCleanly = !ContinuesPackageId(text, end);
+            var endsCleanly = !HasPackageIdNeighbor(text, end, step: 1);
             // 前後とも区切れていれば、その名前そのものへの言及とみなす
             if (startsCleanly && endsCleanly) return true;
         }
