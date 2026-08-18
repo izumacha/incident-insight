@@ -248,12 +248,6 @@ public class EfCorePackageAlignmentTests
         // 同じ Fact に同居させると、参照をやめただけで先頭の Assert が throw し、
         // 本来の不変条件(patterns が除外対象を拾っていないこと)がその実行では一切検証されない。
         //
-        // ロックファイルが欠けているプロジェクトがあるときは、この検査を行わない。
-        // 【なぜ飛ばすか】ReadAllResolvedPackages は欠けたプロジェクトを読み飛ばすので、
-        // ここで解決済み ID を突き合わせると「配列の掃除漏れ」に見える失敗を出してしまう。
-        // 実際に直すべきはロックファイルのコミットで、それは
-        // EveryProject_HasCommittedLockFile が専任で報告する(同じ事実で 2 つのテストが
-        // 別々の原因を指すと読み手を惑わせる。ReadAllResolvedPackages と同じ方針)
         // ロックファイルが欠けているプロジェクトを控えておく。
         // 【なぜ検査を飛ばさないか】黙って return すると「何も確かめずに緑」になり、
         // 配列の掃除漏れが素通りする。かといって素の失敗文では、実際の原因が
@@ -344,10 +338,18 @@ public class EfCorePackageAlignmentTests
             "dependabot.yml で、まとめて更新したいパッケージが "
             + $"{MinorAndPatchGroupName} の束ねに入っていません:\n"
             + $"{string.Join("\n", droppedFromMinorAndPatch.Select(entry => $"  {entry}"))}\n"
-            + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を EF Core 本体とプロバイダ実装だけに"
-            + $"当たる書き方へ狭めるか、{MinorAndPatchGroupName}.{PatternsKey} を書いている場合は"
-            + "これらにも当たるよう広げてください"
-            + $"(このグループが拾わない理由は {ExcludePatternsKey} と {PatternsKey} の両方にありえます)。");
+            // 手前の別グループへ流れているなら、直す先はそのグループ側
+            + (droppedFromMinorAndPatch.Any(entry => entry.Contains(" に入る", StringComparison.Ordinal))
+                ? $"手前のグループが先に拾っています。{MinorAndPatchGroupName} をより前に置くか、"
+                  + "そのグループ側でこれらを除外してください"
+                  + "(Dependabot は最初に一致したグループにだけ依存関係を入れます)。\n"
+                : "")
+            // どこにも入らないなら、minor / patch グループ自身の条件が合っていない
+            + (droppedFromMinorAndPatch.Any(entry => entry.Contains("どのグループにも入らない", StringComparison.Ordinal))
+                ? $"どのグループにも入らないものは、{MinorAndPatchGroupName} の "
+                  + $"{ExcludePatternsKey} / {PatternsKey} / {UpdateTypesKey} のいずれかが"
+                  + "これらを外していないか確認してください。"
+                : ""));
     }
 
     [Fact]
@@ -357,8 +359,9 @@ public class EfCorePackageAlignmentTests
         // 【なぜ update-types も見るか】除外に当たらなくても、update-types を ["patch"] へ
         // 狭めれば minor 更新はこの束ねから外れ、結局パッケージごとの単独 PR に戻る。
         // パターンだけを見ていると、この経路の後退が緑のまま通ってしまう。
-        // 【なぜ別の Fact か】除外の広さとは独立した条件で、同居させると片方が throw した
-        // ときもう片方が検証されない
+        // 【なぜ別の Fact か】上の帰属検査も update-types を経由するため結果は重なるが、
+        // 「種別の指定が足りない」という原因を名指しする方が直す場所が分かりやすい。
+        // 同居させると片方が throw したときもう片方が検証されない
         // 【なぜ TryReadGroupList か】update-types を書かない場合、Dependabot は全種別を
         // 受け持つ。つまり minor / patch も束ねられており、この不変条件は満たされている。
         // ReadGroupList で必須にすると「読み取れませんでした」と、成立している設定を
@@ -539,8 +542,11 @@ public class EfCorePackageAlignmentTests
         // 一致検査)が throw した時点でこの検査は実行されない。実際、セキュリティ側にだけ
         // パターンを足して除外を書き忘れると、集合の不一致を直して再実行するまで
         // 漏れが見えなかった。独立させて 1 回の実行で両方が分かるようにする
-        var versionUpdatePatterns = ReadGroupList(EfCoreGroupName, PatternsKey);
-        var securityUpdatePatterns = ReadGroupList(EfCoreSecurityGroupName, PatternsKey);
+        // 【なぜ EfCoreGroupNames を回すか】2 グループを直に書くと、グループを足したとき
+        // ここだけ更新から漏れて、そのグループのパターンが除外検査の対象外になる(§6)
+        var efCorePatternsByGroup = EfCoreGroupNames
+            .Select(groupName => ReadGroupList(groupName, PatternsKey))
+            .ToList();
 
         // minor / patch グループが EF Core 系を 1 つも拾わないこと。
         // 【なぜパターン文字列を突き合わせないか】ここでの不変条件は「EF Core 系が minor/patch の
@@ -556,12 +562,11 @@ public class EfCorePackageAlignmentTests
         // 前置詞に続きが付いた形)も併せて見て、パターンを足した時点で除外漏れが分かるようにする
         // minor / patch グループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
-        // 【なぜ 2 グループの和集合を見るか】版更新側だけを見ると、セキュリティ側にだけ
-        // 足されたパターンの除外漏れが視野に入らない。しかも上の AssertSameSet が先に
-        // throw するため、集合の不一致を直して再実行するまで漏れが見えない。
-        // 和集合で見れば、1 回の実行で「一致していない」と「除外が漏れている」の両方が分かる
-        var allEfCorePatterns = versionUpdatePatterns
-            .Concat(securityUpdatePatterns)
+        // 【なぜ全グループの和集合を見るか】版更新側だけを見ると、セキュリティ側にだけ
+        // 足されたパターンの除外漏れが視野に入らない。しかも AssertSameSet(別 Fact)が
+        // 先に落ちても、こちらは独立に走って漏れを報告できる
+        var allEfCorePatterns = efCorePatternsByGroup
+            .SelectMany(patterns => patterns)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
         // 解決済みの EF Core 系 ID と、各パターンが表す範囲の代表値を突き合わせ対象にする
@@ -680,9 +685,24 @@ public class EfCorePackageAlignmentTests
     // 名指ししたグループへ直接尋ねると、手前に置かれた別のグループが先に攫っていく経路を見逃す
     private static string? OwningGroupOf(string packageId, string updateType) =>
         // 定義順に並べたグループを順に見て、種別と対象の両方に当てはまる最初のものを返す
-        ReadNuGetGroupNamesInOrder()
-            .Where(name => TakesUpdateType(name, updateType))
-            .FirstOrDefault(name => ReadGroupMatcher(name).Matches(packageId));
+        VersionUpdateGroups.Value
+            .Where(group => TakesUpdateType(group.Name, updateType))
+            .Select(group => group.Name)
+            .FirstOrDefault(name => GroupMatchers.Value[name].Matches(packageId));
+
+    // 通常の版更新を受け持つグループを、定義順に並べたもの。
+    // 【なぜ applies-to で絞るか】セキュリティ更新専用のグループは通常の版更新を奪わない。
+    // 絞らずに先勝ち判定をすると、"applies-to: security-updates" の広いグループを
+    // 手前に置いただけで「そちらへ入る」と誤判定する(AssertNotShadowed と同じ考え方)
+    private static readonly Lazy<IReadOnlyList<(string Name, int Order)>> VersionUpdateGroups =
+        new(() => ReadNuGetGroupNamesInOrder()
+            .Where(name => GroupScopeOf(name) == VersionUpdates)
+            .Select((name, order) => (name, order))
+            .ToList());
+
+    // グループ名 → 判定器。1 度だけ読み出して使い回す(§8)
+    private static readonly Lazy<IReadOnlyDictionary<string, GroupMatcher>> GroupMatchers =
+        new(() => ReadNuGetGroupNamesInOrder().ToDictionary(name => name, ReadGroupMatcher, StringComparer.Ordinal));
 
     // 1 つのグループが「どのパッケージを自分のものとして拾うか」を表す判定器。
     //
