@@ -10,25 +10,32 @@ namespace IncidentInsight.Tests.Helpers;
 /// (4 箇所は src/IncidentInsight.Web だけ、1 箇所は .github も条件に加えていた)、
 /// 唯一の参照元としてここへ集約する(issue #164 / CLAUDE.md §6 の DRY)。
 ///
-/// 目印は「src/IncidentInsight.Web と .github を併せ持つ階層」で統一する。
-/// src/IncidentInsight.Web だけを目印にすると、将来リポジトリの外側に同名の
-/// ディレクトリ構成があった場合に誤って手前で止まりうるため、条件が厳しい方に揃えている。
+/// 目印は src/IncidentInsight.Web だけにする。下から上へ遡って最初に一致した階層を返すため、
+/// 見つかるのは必ず「最も近い」= 本物のリポジトリルートであり、外側に同名の構成があっても
+/// 手前で止まることはない。かつて 1 箇所だけが加えていた .github の条件は、この探索を
+/// 厳しくする意味がない一方で、.github を含まない形でソースを展開した場合(git archive で
+/// 書き出したツリーなど)に探索そのものを失敗させるため、採用しない。.github を実際に読む
+/// EfCorePackageAlignmentTests は、そのファイルの存在を自分で Assert して落ちるので
+/// 検出は失われない(むしろ「dependabot.yml が無い」と正確に報告される)。
 /// </summary>
 internal static class RepositoryPaths
 {
-    // ソースを収める最上位ディレクトリ名(リポジトリルートの目印その 1)
+    // ソースを収める最上位ディレクトリ名(リポジトリルートの目印)
     private const string SrcDirectoryName = "src";
 
-    // Web プロジェクトのディレクトリ名(リポジトリルートの目印その 1・続き)
+    // Web プロジェクトのディレクトリ名(リポジトリルートの目印・続き)
     private const string WebProjectDirectoryName = "IncidentInsight.Web";
-
-    // GitHub 設定ディレクトリ名(リポジトリルートの目印その 2)
-    private const string GitHubDirectoryName = ".github";
 
     // Razor ビューを収めるディレクトリ名
     private const string ViewsDirectoryName = "Views";
 
-    // リポジトリルートの絶対パス。探索は 1 回で済むので静的フィールドへ保持する
+    // テストプロジェクトを収める最上位ディレクトリ名
+    private const string TestsDirectoryName = "tests";
+
+    // テストプロジェクトのディレクトリ名
+    private const string TestProjectDirectoryName = "IncidentInsight.Tests";
+
+    // リポジトリルートの絶対パス。探索は 1 回で済むので静的フィールドへ保持する(§8)
     private static readonly string RootDirectory = FindRoot();
 
     /// <summary>リポジトリルート(ソリューションファイルや .github がある階層)の絶対パス。</summary>
@@ -40,6 +47,9 @@ internal static class RepositoryPaths
     /// <summary>Razor ビュー(src/IncidentInsight.Web/Views)の絶対パス。</summary>
     public static string Views => Path.Combine(WebProject, ViewsDirectoryName);
 
+    /// <summary>テストプロジェクト(tests/IncidentInsight.Tests)の絶対パス。</summary>
+    public static string TestProject => Path.Combine(Root, TestsDirectoryName, TestProjectDirectoryName);
+
     // ビルド出力ディレクトリから上へ辿ってリポジトリルートを探す
     private static string FindRoot()
     {
@@ -48,9 +58,8 @@ internal static class RepositoryPaths
         // ファイルシステムのルートに達するまで親を遡る
         while (dir != null)
         {
-            // Web プロジェクトと .github の両方を持つ階層がリポジトリルート
-            if (Directory.Exists(Path.Combine(dir.FullName, SrcDirectoryName, WebProjectDirectoryName))
-                && Directory.Exists(Path.Combine(dir.FullName, GitHubDirectoryName)))
+            // Web プロジェクトを持つ最も近い階層がリポジトリルート
+            if (Directory.Exists(Path.Combine(dir.FullName, SrcDirectoryName, WebProjectDirectoryName)))
             {
                 // 見つかったのでその絶対パスを返す
                 return dir.FullName;
@@ -60,7 +69,7 @@ internal static class RepositoryPaths
         }
         // 見つからない場合はテスト環境の異常として失敗させる(fail-closed)
         throw new DirectoryNotFoundException(
-            $"リポジトリルート({SrcDirectoryName}/{WebProjectDirectoryName} と {GitHubDirectoryName} を持つ階層)が"
+            $"リポジトリルート({SrcDirectoryName}/{WebProjectDirectoryName} を持つ階層)が"
             + $"テスト実行位置({AppContext.BaseDirectory})から見つかりません。");
     }
 }
