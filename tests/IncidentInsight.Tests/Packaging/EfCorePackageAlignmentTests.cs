@@ -162,6 +162,12 @@ public class EfCorePackageAlignmentTests
     private static readonly Regex SolutionProjectRegex =
         new(@"""(?<path>[^""]+\.csproj)""", RegexOptions.None);
 
+    // EF Core 系を束ねるグループの一覧(通常の版更新とセキュリティ更新)。
+    // 【なぜ配列にするか】この 2 つを並べる箇所が「除外対象を拾っていないか」
+    // 「許可キー以外が無いか」「先行グループに横取りされないか」の 3 つに増えた。
+    // グループを足したとき 1 箇所だけ直して他が素通りするのを防ぐ(§6)
+    private static readonly string[] EfCoreGroupNames = { EfCoreGroupName, EfCoreSecurityGroupName };
+
     // EF Core 系グループに書いてよいキー。
     // 【なぜ限定するか】patterns と applies-to が正しくても、同じグループに update-types や
     // exclude-patterns を足せば束ねる範囲を後から狭められる(例: update-types を minor/patch に
@@ -271,7 +277,7 @@ public class EfCorePackageAlignmentTests
         // 【なぜループの中で Assert しないか】1 グループ目で throw すると 2 グループ目は
         // 検証されず、片方を直して再実行して初めてもう片方の違反を知ることになる。
         // 全グループ分を集めてから 1 度だけ落とし、1 回の実行で全体が分かるようにする
-        var bundled = new[] { EfCoreGroupName, EfCoreSecurityGroupName }
+        var bundled = EfCoreGroupNames
             // そのグループの patterns を 1 度だけ読み出す(§8)。
             // 【なぜ ReadGroupMatcher を使わないか】この 2 グループは AssertOnlyAllowedKeys により
             // exclude-patterns を書けない。除外込みで判定すると、仮に誰かが exclude-patterns を
@@ -320,13 +326,22 @@ public class EfCorePackageAlignmentTests
         Assert.True(droppedFromMinorAndPatch.Count == 0,
             $"dependabot.yml の {MinorAndPatchGroupName} が、まとめて更新したいパッケージまで"
             + $"除外しています: [{string.Join(", ", droppedFromMinorAndPatch)}]\n"
-            + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を、EF Core 本体とプロバイダ実装だけに"
-            + "当たる書き方へ狭めてください。");
+            + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を EF Core 本体とプロバイダ実装だけに"
+            + $"当たる書き方へ狭めるか、{MinorAndPatchGroupName}.{PatternsKey} を書いている場合は"
+            + "これらにも当たるよう広げてください"
+            + $"(このグループが拾わない理由は {ExcludePatternsKey} と {PatternsKey} の両方にありえます)。");
 
+    }
+
+    [Fact]
+    public void MinorAndPatchGroup_TakesBothMinorAndPatchUpdates()
+    {
         // 束ねが minor と patch の両方を受け持っていること。
         // 【なぜ update-types も見るか】除外に当たらなくても、update-types を ["patch"] へ
         // 狭めれば minor 更新はこの束ねから外れ、結局パッケージごとの単独 PR に戻る。
-        // パターンだけを見ていると、この経路の後退が緑のまま通ってしまう
+        // パターンだけを見ていると、この経路の後退が緑のまま通ってしまう。
+        // 【なぜ別の Fact か】除外の広さとは独立した条件で、同居させると片方が throw した
+        // ときもう片方が検証されない
         var updateTypes = ReadGroupList(MinorAndPatchGroupName, UpdateTypesKey);
         // 受け持つべき更新の大きさのうち、指定から漏れているものを集める
         var missingUpdateTypes = MinorAndPatchUpdateTypes
@@ -420,6 +435,12 @@ public class EfCorePackageAlignmentTests
     [InlineData("Npgsqlは EF Core に追随する", "Npgsql", true)]
     // 前後とも日本語で挟まれていても同様
     [InlineData("土台のNpgsqlは版が連動する", "Npgsql", true)]
+    // 文末の句点は名前の続きではない
+    [InlineData("土台は Npgsql. 版が連動する", "Npgsql", true)]
+    // 箇条書きの区切りに続く場合も名前の続きではない
+    [InlineData("# - Npgsql: 束ねない理由", "Npgsql", true)]
+    // 区切り文字のあとに ID が続くなら、やはり長い名前の一部
+    [InlineData("Npgsql.EntityFrameworkCore を束ねる", "Npgsql", false)]
     // 長い名前の言及と埋もれた出現が混在するなら、独立した言及がある方を採る
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL と、土台の Npgsql", "Npgsql", true)]
     // どこにも出てこなければ言及なし
@@ -516,8 +537,7 @@ public class EfCorePackageAlignmentTests
         // 束ねる範囲を後から狭めるキーが足されていないこと。
         // patterns が正しくても update-types や exclude-patterns を書き足せば束ねを骨抜きにできる
         // (update-types: [minor, patch] にすると major が再びプロバイダごとの単独 PR に戻る)
-        AssertOnlyAllowedKeys(EfCoreGroupName);
-        AssertOnlyAllowedKeys(EfCoreSecurityGroupName);
+        foreach (var groupName in EfCoreGroupNames) AssertOnlyAllowedKeys(groupName);
     }
 
     [Fact]
@@ -532,8 +552,7 @@ public class EfCorePackageAlignmentTests
         // なお同名グループの重複定義は、YAML の解析時点で弾かれる(ReadNuGetGroups の catch)。
         // 重複キーは YAML では後勝ちのため、素朴に読むと「検査は 1 つ目・Dependabot は 2 つ目」を
         // 見る食い違いが起きうるが、構造として読むようにしたことでその経路自体が無くなった
-        AssertNotShadowed(groupNames, EfCoreGroupName);
-        AssertNotShadowed(groupNames, EfCoreSecurityGroupName);
+        foreach (var groupName in EfCoreGroupNames) AssertNotShadowed(groupNames, groupName);
     }
 
     // 指定した EF Core グループが、先に定義された別のグループに横取りされないことを確認する。
@@ -720,6 +739,20 @@ public class EfCorePackageAlignmentTests
     private static bool IsPackageIdChar(char c) =>
         c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '.' or '_' or '-';
 
+    // 区切り文字( . _ - )のうち、その後ろに ID の続きが無いもの(文末の句点など)を見分ける。
+    // 【なぜ要るか】"Npgsql." が「Npgsql.EntityFrameworkCore… の途中」なのか
+    // 「Npgsql. という文の区切り」なのかは、次の 1 文字を見ないと決められない。
+    // 区切り文字だけで打ち切ると、散文の「…は Npgsql. である」を名前の一部と誤読して
+    // 「説明がありません」で落ちる(直前のコミットで直した日本語助詞の件と同じ型の偽陽性)
+    private static bool ContinuesPackageId(string text, int index) =>
+        // 範囲外なら続きは無い
+        index < text.Length
+        // ID を構成する文字であること
+        && IsPackageIdChar(text[index])
+        // 区切り文字の場合は、そのさらに次に ID の続きがあるときだけ「続き」とみなす
+        && (text[index] is not ('.' or '_' or '-')
+            || (index + 1 < text.Length && IsPackageIdChar(text[index + 1])));
+
     // 本文がそのパッケージ名に「言及している」かを返す。
     //
     // 【なぜ単純な部分文字列照合では足りないか】例えば "Npgsql" を除外一覧へ足したとき、
@@ -738,8 +771,8 @@ public class EfCorePackageAlignmentTests
             var startsCleanly = index == 0 || !IsPackageIdChar(text[index - 1]);
             // 直後の位置を求める
             var end = index + packageId.Length;
-            // 直後の文字も ID の続きに見えないこと
-            var endsCleanly = end >= text.Length || !IsPackageIdChar(text[end]);
+            // 直後にも ID の続きが無いこと(文末の句点などは「続き」とみなさない)
+            var endsCleanly = !ContinuesPackageId(text, end);
             // 前後とも区切れていれば、その名前そのものへの言及とみなす
             if (startsCleanly && endsCleanly) return true;
         }
