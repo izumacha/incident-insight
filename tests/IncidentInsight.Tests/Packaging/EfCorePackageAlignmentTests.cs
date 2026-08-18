@@ -236,6 +236,19 @@ public class EfCorePackageAlignmentTests
         // 【なぜ束ね検査と分けるか】これは「配列の掃除漏れ」であって束ねの不変条件ではない。
         // 同じ Fact に同居させると、参照をやめただけで先頭の Assert が throw し、
         // 本来の不変条件(patterns が除外対象を拾っていないこと)がその実行では一切検証されない。
+        //
+        // ロックファイルが欠けているプロジェクトがあるときは、この検査を行わない。
+        // 【なぜ飛ばすか】ReadAllResolvedPackages は欠けたプロジェクトを読み飛ばすので、
+        // ここで解決済み ID を突き合わせると「配列の掃除漏れ」に見える失敗を出してしまう。
+        // 実際に直すべきはロックファイルのコミットで、それは
+        // EveryProject_HasCommittedLockFile が専任で報告する(同じ事実で 2 つのテストが
+        // 別々の原因を指すと読み手を惑わせる。ReadAllResolvedPackages と同じ方針)
+        var missingLockFiles = SolutionProjects.Value
+            .Where(project => !File.Exists(Path.Combine(Path.GetDirectoryName(project)!, LockFileName)))
+            .ToList();
+        // 欠けているものがあるなら、この検査は成立しないので何も言わずに終える
+        if (missingLockFiles.Count > 0) return;
+
         // ロックファイルに解決されているパッケージ ID を、大小文字を区別しない集合にまとめる
         var resolvedIds = ResolvedPackages.Value
             .Select(package => package.Id)
@@ -282,6 +295,25 @@ public class EfCorePackageAlignmentTests
             + "これらは EF Core の公開 API しか使わず、メジャー版は .NET のリリース"
             + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
             + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
+
+        // 裏返しの不変条件: これらは minor / patch の束ねには「入っていてほしい」。
+        // 【なぜ両方向を見るか】EF Core 側の patterns から外すだけでは足りない。
+        // 例えば nuget-minor-and-patch の除外を "*EntityFrameworkCore*" と広く書くと、
+        // EF Core 系の漏れは無くなる一方でこの 2 つまで minor / patch から外れ、
+        // 通常運転の更新がパッケージごとの単独 PR に戻ってレビュー負荷が上がる
+        // (束ねを広げる方向の事故は、狭める方向と違って赤くならないので気付きにくい)
+        var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
+        // minor / patch の束ねから外れてしまっているものを集める
+        var droppedFromMinorAndPatch = DotNetReleaseTrainPackages
+            .Where(id => !minorAndPatchMatcher.Matches(id))
+            .ToList();
+
+        // 外れていないこと(あれば、どのパッケージが束ねから落ちたかを示す)
+        Assert.True(droppedFromMinorAndPatch.Count == 0,
+            $"dependabot.yml の {MinorAndPatchGroupName} が、まとめて更新したいパッケージまで"
+            + $"除外しています: [{string.Join(", ", droppedFromMinorAndPatch)}]\n"
+            + $"{MinorAndPatchGroupName}.{ExcludePatternsKey} を、EF Core 本体とプロバイダ実装だけに"
+            + "当たる書き方へ狭めてください。");
     }
 
     [Fact]
@@ -326,13 +358,13 @@ public class EfCorePackageAlignmentTests
     // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL", "Npgsql.EntityFrameworkCore.PostgreSQL")]
     // 末尾 '*' は「続きがある」場合と「続きが無い」場合の 2 つを代表にする
-    [InlineData("Microsoft.EntityFrameworkCore*", "Microsoft.EntityFrameworkCore<任意>", "Microsoft.EntityFrameworkCore")]
+    [InlineData("Microsoft.EntityFrameworkCore*", "Microsoft.EntityFrameworkCore" + WildcardPlaceholder, "Microsoft.EntityFrameworkCore")]
     // 途中の '*' も目印へ置き換えれば一致例になる(前置詞は作れないので 1 つだけ)
-    [InlineData("*EFCore*", "<任意>EFCore<任意>")]
+    [InlineData("*EFCore*", WildcardPlaceholder + "EFCore" + WildcardPlaceholder)]
     // 先頭だけが '*' の場合も同様
-    [InlineData("*.EntityFrameworkCore.MySql", "<任意>.EntityFrameworkCore.MySql")]
+    [InlineData("*.EntityFrameworkCore.MySql", WildcardPlaceholder + ".EntityFrameworkCore.MySql")]
     // "*" だけのパターンは、空文字列を代表にしても何も伝わらないので目印だけ返す
-    [InlineData("*", "<任意>")]
+    [InlineData("*", WildcardPlaceholder)]
     public void RepresentativeIdsOf_CoversTheWholePatternSet(string pattern, params string[] expected)
     {
         // 実際に作られる代表値を取り出す
@@ -357,6 +389,10 @@ public class EfCorePackageAlignmentTests
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL を束ねる", "Npgsql", false)]
     // 逆向き(前側が続いている)も同様
     [InlineData("Foo.Npgsql を束ねる", "Npgsql", false)]
+    // 日本語の助詞が直後に続いても言及とみなす(語間に空白を置かないため)
+    [InlineData("Npgsqlは EF Core に追随する", "Npgsql", true)]
+    // 前後とも日本語で挟まれていても同様
+    [InlineData("土台のNpgsqlは版が連動する", "Npgsql", true)]
     // 長い名前の言及と埋もれた出現が混在するなら、独立した言及がある方を採る
     [InlineData("Npgsql.EntityFrameworkCore.PostgreSQL と、土台の Npgsql", "Npgsql", true)]
     // どこにも出てこなければ言及なし
@@ -588,6 +624,9 @@ public class EfCorePackageAlignmentTests
     // '*' を目印へ置き換えた文字列は位置によらずパターンの一致例なので、同じ理屈で漏れを問える
     private static IEnumerable<string> RepresentativeIdsOf(string pattern)
     {
+        // 空のパターン(YAML に `- ` とだけ書いた場合など)は代表値を作らない。
+        // 空文字列を返すと失敗メッセージに空要素が並ぶだけで何も伝わらない
+        if (pattern.Length == 0) return Array.Empty<string>();
         // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
         if (!pattern.Contains('*')) return new[] { pattern };
         // '*' を目印へ置き換えると、パターンが表す集合の要素が 1 つ得られる
@@ -641,8 +680,14 @@ public class EfCorePackageAlignmentTests
     }
 
     // パッケージ ID の一部として使われうる文字(この文字が前後に続く一致は、
-    // 別のもっと長いパッケージ名の一部を拾っただけとみなす)
-    private static bool IsPackageIdChar(char c) => char.IsLetterOrDigit(c) || c == '.' || c == '-';
+    // 別のもっと長いパッケージ名の一部を拾っただけとみなす)。
+    // 【なぜ char.IsLetterOrDigit を使わないか】日本語の仮名・漢字も「文字」と判定されるため、
+    // 「Microsoft.AspNetCore.Identity.EntityFrameworkCore は公開 API しか使わず」のように
+    // 助詞が続く自然な日本語(語間に空白を置かない)を「名前の一部」と誤読し、
+    // きちんと説明されているのに「説明がありません」で落ちる。NuGet のパッケージ ID に
+    // 使えるのは ASCII の英数字と . _ - だけなので、その範囲に限って判定する
+    private static bool IsPackageIdChar(char c) =>
+        c is (>= 'a' and <= 'z') or (>= 'A' and <= 'Z') or (>= '0' and <= '9') or '.' or '_' or '-';
 
     // 本文がそのパッケージ名に「言及している」かを返す。
     //
@@ -679,9 +724,12 @@ public class EfCorePackageAlignmentTests
     {
         // リポジトリルートからの絶対パスを組み立てる
         var path = Path.Combine(RepositoryPaths.Root, relativePath);
-        // 見つからないまま先へ進むと検査が空振りするので、ここで落とす
+        // 見つからないまま先へ進むと検査が空振りするので、ここで落とす。
+        // 絶対パスも示す(リポジトリルートの解決自体がずれている場合、
+        // 相対パスだけでは「移動した」のか「探す場所を間違えた」のかが分からない)
         Assert.True(File.Exists(path),
-            $"{relativePath} が見つかりません(移動またはリネームされた可能性があります)。");
+            $"{relativePath} が見つかりません(移動・リネーム、または探索の起点がずれている"
+            + $"可能性があります)。探した場所: {path}");
         // 本文をすべて読み出して返す
         return File.ReadAllText(path);
     }

@@ -37,8 +37,10 @@ updates:
       #   - nuget-minor-and-patch が EF Core 系を 1 つも拾わないこと。除外の書き方は問わないが、
       #     「今ロックファイルに在るパッケージ」だけでなく、上の patterns が表す範囲ごと
       #     覆えている必要がある (例えば "Npgsql*" のように広く書くのは可。逆に
-      #     "Microsoft.EntityFrameworkCore*" に対して末尾 '*' を落とすと、今の顔ぶれは
-      #     覆えていても将来増える同族が漏れるため通らない)
+      #     "Microsoft.EntityFrameworkCore*" から末尾 '*' を落とすと、今あるプロバイダ実装
+      #     (.Sqlite / .SqlServer / .Relational など)がその時点で漏れるため通らない)。
+      #     ただし広げすぎると、下記の .NET リリース列パッケージまで minor / patch の
+      #     束ねから外れてしまう。こちらも同テストが検出する
       #
       # 【束ねる範囲を「EF Core 本体＋プロバイダ実装」に限る理由】
       # 名前に EntityFrameworkCore を含んでいても、版の動き方が違うものがある。
