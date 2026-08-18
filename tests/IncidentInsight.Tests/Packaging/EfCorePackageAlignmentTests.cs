@@ -229,7 +229,9 @@ public class EfCorePackageAlignmentTests
         var resolvedIds = ResolvedPackages.Value
             .Select(package => package.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        // 除外一覧のうち、どのロックファイルにも現れない名前を集める
         var unknown = DotNetReleaseTrainPackages.Where(id => !resolvedIds.Contains(id)).ToList();
+        // 存在しない名前が無いこと(あれば、どれが宙に浮いているかを示す)
         Assert.True(unknown.Count == 0,
             $"{nameof(DotNetReleaseTrainPackages)} に、{LockFileName} のどこにも解決されていない"
             + $"パッケージがあります: [{string.Join(", ", unknown)}]\n"
@@ -345,12 +347,16 @@ public class EfCorePackageAlignmentTests
         // patterns へ先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れが
         // 導入時まで気付かれない。各パターンの「最短の一致例」(末尾 '*' を取り除いた文字列)も
         // 併せて見て、パターンを足した時点で除外漏れが分かるようにする
+        // minor / patch グループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
+        // 解決済みの EF Core 系 ID と、各パターンの最短の一致例を突き合わせ対象にする
         var leakedIntoMinorAndPatch = EfCorePackageIdsOf(EfCoreGroupName)
             .Concat(versionUpdatePatterns.Select(pattern => pattern.Replace("*", "")))
             .Distinct(StringComparer.OrdinalIgnoreCase)
+            // minor / patch グループに拾われてしまうものだけを残す
             .Where(minorAndPatchMatcher.Matches)
             .ToList();
+        // 紛れ込みが無いこと(あれば、どのパッケージが拾われているかを示す)
         Assert.True(leakedIntoMinorAndPatch.Count == 0,
             $"EF Core 系パッケージが dependabot.yml の {MinorAndPatchGroupName} に拾われています: "
             + $"[{string.Join(", ", leakedIntoMinorAndPatch)}]\n"
@@ -685,6 +691,14 @@ public class EfCorePackageAlignmentTests
         if (!ReadGroup(groupName).Children.TryGetValue(new YamlScalarNode(key), out var node)) return null;
         // 一覧として書かれていることを確かめる(単一値だった場合は設定ミスなので落とす)
         Assert.True(node is YamlSequenceNode, $"dependabot.yml の {groupName}.{key} が一覧ではありません。");
+        // 要素のうち、単一値として書かれていないものを集める。
+        // 【なぜ素のキャストで済ませないか】`- name: "Npgsql..."` のような書き間違いがあると
+        // InvalidCastException だけが飛び、どのファイルのどのキーが原因かが分からない。
+        // このファイルの他の異常系と同じく、場所を示して落とす
+        var malformed = ((YamlSequenceNode)node).Children.Where(item => item is not YamlScalarNode).ToList();
+        Assert.True(malformed.Count == 0,
+            $"dependabot.yml の {groupName}.{key} に、単一値でない要素が {malformed.Count} 個あります"
+            + "(一覧の各要素はパターン文字列などの単一値である必要があります)。");
         // 各要素を文字列として取り出す
         return ((YamlSequenceNode)node).Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
     }
