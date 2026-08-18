@@ -4,8 +4,9 @@ using System.Text.RegularExpressions;
 // このテストクラスが属する名前空間(検査対象の RepositoryPaths と同じなので using は不要)
 namespace IncidentInsight.Tests.Helpers;
 
-// Guard-rail test: リポジトリの構成(src/IncidentInsight.Web という配置)を知っているのが
-// <see cref="RepositoryPaths"/> だけであることを検査する。
+// Guard-rail test: Web プロジェクトの配置(src/IncidentInsight.Web)をパス文字列として
+// 書いているのが <see cref="RepositoryPaths"/> だけであることを検査する。
+// 「構成に関する知識すべて」ではなく、この目印 1 つに対象を限っている(下の「既知の限界」)。
 //
 // 背景: ビルド出力から親を遡ってソースツリーを探すロジックは、集約するまでに
 // テストプロジェクト内へ 5 箇所コピーされていた(issue #164)。しかも探す目印が
@@ -32,15 +33,20 @@ namespace IncidentInsight.Tests.Helpers;
 // (EfCorePackageAlignmentTests が正当な用途で同じ名前を書いているため、そちらは見ない)。
 public class RepositoryPathsUsageTests
 {
-    // 検査するパターン。目印が「文字列リテラルの中」に現れることを、直前の 1 文字で見分ける。
-    //   " の直後   … "IncidentInsight.Web" のように単独のセグメントとして書いた形
-    //   / や \ の直後 … "src/IncidentInsight.Web/Views" のように 1 つのリテラルへ繋げて書いた形
-    // 閉じ引用符まで求めると後者を取り逃がすため、前側だけで判定する。
-    // 一方 using IncidentInsight.Web.Models; のような名前空間参照は直前が空白なので巻き込まない
-    // (テストの大半がこの using を持つので、ここを外すと検出網が意味を失う)。
+    // 検査するパターン。目印が「パスの 1 区切り」として現れることを、前後の 1 文字で見分ける。
+    // 前後とも引用符かパス区切り(" / \)であることを求めるので、次のように切り分けられる。
+    //   検出する  "IncidentInsight.Web"          単独のセグメントとして書いた形
+    //   検出する  "src/IncidentInsight.Web/Views" 1 つのリテラルへ繋げて書いた形
+    //   検出する  @"src\IncidentInsight.Web"      逐語リテラルで区切りに \ を使った形
+    //   見送る    using IncidentInsight.Web.Models;  名前空間参照(前が空白)
+    //   見送る    <see cref="IncidentInsight.Web.Services.IClock"/>  型参照(後ろが . )
+    //   見送る    Type.GetType("IncidentInsight.Web.Models.Incident") 型名(後ろが . )
+    // 後ろ側も見るのは、CLAUDE.md §5 が求める XML ドキュメントの cref 参照を
+    // 違反にしないため。前側だけで判定すると、パス探索をしていない正しいファイルを
+    // 落としてしまい、逃げ道がファイル丸ごとの除外しか無くなる(除外は網に穴を開ける)。
     // 目印そのものは共有ヘルパーの定数から組み立て、リテラルを書き写さない
     private static readonly Regex LayoutMarkerRegex = new(
-        "[\"/\\\\]" + Regex.Escape(RepositoryPaths.WebProjectDirectoryName),
+        "[\"/\\\\]" + Regex.Escape(RepositoryPaths.WebProjectDirectoryName) + "[\"/\\\\]",
         RegexOptions.Compiled);
 
     // 検査対象から外すファイル(リポジトリルートからの相対パス)。
@@ -85,7 +91,9 @@ public class RepositoryPathsUsageTests
             // 除外対象(共有ヘルパー本体)は目印を書いてよい
             if (ExemptRelativePaths.Contains(relativePath, StringComparer.Ordinal))
             {
+                // 除外が 1 件適用されたことを数える(下で件数の一致を確認するため)
                 exemptionsApplied++;
+                // 除外対象なので中身は見ずに次のファイルへ進む
                 continue;
             }
 
