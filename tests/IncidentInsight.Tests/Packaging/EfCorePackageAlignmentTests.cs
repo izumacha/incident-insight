@@ -121,9 +121,11 @@ public class EfCorePackageAlignmentTests
     // 実際に効くのはこの配列だけで、散文は判断材料として読まれる場所にすぎない。
     // 配列へ追加したのに散文が古いままになるのを防ぐため、散文側にも名前が載っていることを
     // DotNetReleaseTrainPackages_AreDocumentedWhereBundlingIsDecided が機械的に固定する。
-    // 【固定できるのは追加方向だけ】逆に配列から名前を削ったとき、散文に残った説明を
-    // 機械的に検出することはできない(散文が名前に触れること自体は正当なため)。
-    // 束ねる側へ回す判断をしたときは、散文からの削除を手で行う
+    // 【この固定は「名前が載っていること」までしか言えない】検査は本文全体に対する部分文字列
+    // 照合なので、(a) 配列から名前を削ったとき散文に残った説明、(b) 名前は出てくるが
+    // 「束ねる側だ」と逆の説明をしている文、のどちらも検出できない。防げるのは
+    // 「配列にだけ足して散文に一言も書かない」という取りこぼしで、説明の中身が正しいかは
+    // レビューの仕事として残る。束ねる/束ねないの判断を変えたときは散文も手で直す
     private static readonly string[] DotNetReleaseTrainPackages =
     {
         "Microsoft.AspNetCore.Identity.EntityFrameworkCore",                // Identity の EF Core ストア
@@ -251,33 +253,35 @@ public class EfCorePackageAlignmentTests
     [Fact]
     public void DotNetReleaseTrainPackages_AreNotBundledWithEfCore()
     {
-        // 2 つの EF Core グループそれぞれについて、除外対象を拾っていないことを確認する
-        foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
-        {
+        // 2 つの EF Core グループそれぞれについて、除外対象を拾っていないか調べる。
+        // 【なぜループの中で Assert しないか】1 グループ目で throw すると 2 グループ目は
+        // 検証されず、片方を直して再実行して初めてもう片方の違反を知ることになる。
+        // 全グループ分を集めてから 1 度だけ落とし、1 回の実行で全体が分かるようにする
+        var bundled = new[] { EfCoreGroupName, EfCoreSecurityGroupName }
             // そのグループの patterns を 1 度だけ読み出す(§8)。
             // 【なぜ ReadGroupMatcher を使わないか】この 2 グループは AssertOnlyAllowedKeys により
             // exclude-patterns を書けない。除外込みで判定すると、仮に誰かが exclude-patterns を
             // 足したとき「除外されているから拾わない」と読んで静かに通ってしまい、
             // しかも失敗メッセージは patterns を名指しする形になって実態と食い違う。
             // このテストが言いたいのは「patterns が拾っていないこと」なので、patterns だけを見る
-            var patterns = ReadGroupList(groupName, PatternsKey);
-            // .NET のリリースに追随するパッケージのうち、束ねに拾われてしまうものを集める
-            var bundled = DotNetReleaseTrainPackages
-                .Where(id => MatchesAnyPattern(id, patterns))
-                .ToList();
+            .Select(groupName => (GroupName: groupName, Patterns: ReadGroupList(groupName, PatternsKey)))
+            // 「どのグループが・どのパッケージを」拾っているかの組を並べる
+            .SelectMany(group => DotNetReleaseTrainPackages
+                .Where(id => MatchesAnyPattern(id, group.Patterns))
+                .Select(id => $"{group.GroupName}.{PatternsKey}: {id}"))
+            .ToList();
 
-            // 拾われていないこと。【なぜこの向きの検査が要るか】既存の検査は
-            // 「EF Core 系がパターンから漏れていないか」しか見ておらず、逆に
-            // .NET リリース列のパッケージを patterns へ足す方向は素通りしていた。
-            // 束ねてしまうと「EF Core 9 へ上げる PR」が net9.0 専用パッケージを巻き込み、
-            // net8.0 のこのアプリでは復元できない PR になる(＝更新経路が塞がれる)
-            Assert.True(bundled.Count == 0,
-                $"dependabot.yml の {groupName}.{PatternsKey} が、EF Core とメジャー版を揃える必要の"
-                + $"ないパッケージを拾っています: [{string.Join(", ", bundled)}]\n"
-                + "これらは EF Core の公開 API しか使わず、メジャー版は .NET のリリース"
-                + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
-                + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
-        }
+        // 拾われていないこと。【なぜこの向きの検査が要るか】既存の検査は
+        // 「EF Core 系がパターンから漏れていないか」しか見ておらず、逆に
+        // .NET リリース列のパッケージを patterns へ足す方向は素通りしていた。
+        // 束ねてしまうと「EF Core 9 へ上げる PR」が net9.0 専用パッケージを巻き込み、
+        // net8.0 のこのアプリでは復元できない PR になる(＝更新経路が塞がれる)
+        Assert.True(bundled.Count == 0,
+            "dependabot.yml の EF Core 系グループが、EF Core とメジャー版を揃える必要の"
+            + $"ないパッケージを拾っています:\n{string.Join("\n", bundled.Select(entry => $"  {entry}"))}\n"
+            + "これらは EF Core の公開 API しか使わず、メジャー版は .NET のリリース"
+            + "(net8.0 → net9.0)に追随します。束ねに入れると EF Core 9 への更新 PR が"
+            + $"net9.0 専用パッケージを巻き込んで復元不能になります({nameof(DotNetReleaseTrainPackages)} 参照)。");
     }
 
     [Fact]
@@ -287,27 +291,29 @@ public class EfCorePackageAlignmentTests
         // 配列(正本)だけが増えて散文が古くなると、判断の入口が誤った一覧を示すことになる
         var documents = new[] { DependabotConfigPath, ClaudeGuideFileName };
 
-        // 各ドキュメントについて、除外一覧のパッケージ名が本文に載っていることを確かめる
-        foreach (var document in documents)
-        {
+        // 「どのドキュメントに・どの名前が無いか」の組を集める。
+        // 【なぜドキュメントごとに Assert しないか】1 つ目で throw すると 2 つ目は検証されず、
+        // 片方を直して再実行して初めてもう片方の漏れを知ることになる。
+        // 全ドキュメント分を集めてから 1 度だけ落とし、1 回の実行で全体が分かるようにする
+        var undocumented = documents
             // 本文を読み込む(判断材料として読まれるのは散文なので、書式は問わず名前の有無だけを見る)
-            var text = ReadRepositoryFile(document);
-            // 本文に名前が出てこないパッケージを集める。
+            .Select(document => (Document: document, Text: ReadRepositoryFile(document)))
+            // 本文に名前が出てこないパッケージを拾う。
             // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない
             // (散文側で綴りの大小が揺れただけで「説明がありません」と落ちるのは、
             // 規約違反ではなく検査が硬すぎる偽陽性。このファイルの他の比較とも揃える)
-            var undocumented = DotNetReleaseTrainPackages
-                .Where(id => !text.Contains(id, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            .SelectMany(source => DotNetReleaseTrainPackages
+                .Where(id => !source.Text.Contains(id, StringComparison.OrdinalIgnoreCase))
+                .Select(id => $"{source.Document}: {id}"))
+            .ToList();
 
-            // 漏れが無いこと(あれば、どの名前を書き足せばよいかを示す)
-            Assert.True(undocumented.Count == 0,
-                $"{document} に、束ねから除外しているパッケージの説明がありません: "
-                + $"[{string.Join(", ", undocumented)}]\n"
-                + $"実際に効くのは {nameof(DotNetReleaseTrainPackages)} だけですが、"
-                + "束ねる/束ねないの判断はこの散文を読んで行われます。"
-                + "配列へ追加したら、除外する理由も併せて書いてください。");
-        }
+        // 漏れが無いこと(あれば、どのファイルへどの名前を書き足せばよいかを示す)
+        Assert.True(undocumented.Count == 0,
+            "束ねから除外しているパッケージの説明が、判断のよりどころとなる文書にありません:\n"
+            + $"{string.Join("\n", undocumented.Select(entry => $"  {entry}"))}\n"
+            + $"実際に効くのは {nameof(DotNetReleaseTrainPackages)} だけですが、"
+            + "束ねる/束ねないの判断はこの散文を読んで行われます。"
+            + "配列へ追加したら、除外する理由も併せて書いてください。");
     }
 
     [Fact]
@@ -537,10 +543,11 @@ public class EfCorePackageAlignmentTests
         var representatives = new List<string> { pattern.Replace("*", WildcardPlaceholder) };
         // 末尾の '*' を取り除いた前置詞。「続きが何も無い」場合を表す
         var prefix = pattern.EndsWith('*') ? pattern[..^1] : null;
-        // その前置詞自体にワイルドカードが残らないときだけ代表に加える。
+        // 前置詞が空でなく、かつワイルドカードが残らないときだけ代表に加える。
         // 残る場合(例: "*EFCore*" → "*EFCore")は ID ではなくパターンに見えて読み手を惑わせるうえ、
-        // 目印へ置き換えた側が同じ集合をすでに代表している
-        if (prefix is not null && !prefix.Contains('*')) representatives.Add(prefix);
+        // 目印へ置き換えた側が同じ集合をすでに代表している。空になる場合(パターンが "*" だけ)は
+        // 失敗メッセージに空要素が並ぶだけで何も伝えないので載せない
+        if (prefix is { Length: > 0 } && !prefix.Contains('*')) representatives.Add(prefix);
         // 集めた代表値を返す
         return representatives;
     }

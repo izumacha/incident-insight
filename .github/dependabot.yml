@@ -33,9 +33,11 @@ updates:
       # 対象パッケージは 3 箇所 (下の 2 グループと nuget-minor-and-patch の除外) で辻褄が
       # 合っている必要があり、EfCorePackageAlignmentTests が次の 2 つを固定する。
       #   - 下の 2 グループの patterns は集合として一致していること (書き方の揺れは許す)
-      #   - nuget-minor-and-patch が EF Core 系を 1 つも拾わないこと。除外の書き方は問わず、
-      #     実際のパッケージ ID が拾われるかどうかで判定する (例えば "Npgsql*" のように
-      #     広く書いても、対象を覆えていれば通る)
+      #   - nuget-minor-and-patch が EF Core 系を 1 つも拾わないこと。除外の書き方は問わないが、
+      #     「今ロックファイルに在るパッケージ」だけでなく、上の patterns が表す範囲ごと
+      #     覆えている必要がある (例えば "Npgsql*" のように広く書くのは可。逆に
+      #     "Microsoft.EntityFrameworkCore*" に対して末尾 '*' を落とすと、今の顔ぶれは
+      #     覆えていても将来増える同族が漏れるため通らない)
       #
       # 【束ねる範囲を「EF Core 本体＋プロバイダ実装」に限る理由】
       # 名前に EntityFrameworkCore を含んでいても、版の動き方が違うものがある。
