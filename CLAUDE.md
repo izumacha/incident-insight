@@ -10,7 +10,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 1. プロジェクト概要
 
-IncidentInsight は医療インシデント管理システム（ASP.NET Core 8 MVC + EF Core 8）。報告 → なぜなぜ分析（5 Whys）→ 予防策立案 → 完了 → 効果評価 → 再発検知までのライフサイクルを扱う。UI 文字列とドメイン語彙は日本語（`重症度`, `なぜなぜ分析`, `再発防止策` 等）。
+IncidentInsight は医療インシデント管理システム（ASP.NET Core 8 MVC + EF Core 9）。報告 → なぜなぜ分析（5 Whys）→ 予防策立案 → 完了 → 効果評価 → 再発検知までのライフサイクルを扱う。UI 文字列とドメイン語彙は日本語（`重症度`, `なぜなぜ分析`, `再発防止策` 等）。
 
 アプリは**DB プロバイダ非依存**: SQLite（既定・単一ファイル）/ SQL Server（オンプレ Windows）/ PostgreSQL（Linux・クラウド・Supabase 等）を `Database:Provider` 設定で実行時切替する。モデル・クエリにプロバイダ固有 SQL／列型を持ち込まないため、同一コードベースでどこへでも配備できる。
 
