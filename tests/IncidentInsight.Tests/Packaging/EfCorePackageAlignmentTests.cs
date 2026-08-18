@@ -117,8 +117,11 @@ public class EfCorePackageAlignmentTests
     // 判断が付かないものは除外せず、束ねる側に入れる(見逃しより誤検出の方が安全)。
     // 【この配列が正本】同じ顔ぶれは dependabot.yml と CLAUDE.md の散文にも出てくるが、
     // 実際に効くのはこの配列だけで、散文は判断材料として読まれる場所にすぎない。
-    // 片方だけ増えて静かに古くなるのを防ぐため、散文側にも名前が載っていることを
-    // DotNetReleaseTrainPackages_AreDocumentedWhereBundlingIsDecided が機械的に固定する
+    // 配列へ追加したのに散文が古いままになるのを防ぐため、散文側にも名前が載っていることを
+    // DotNetReleaseTrainPackages_AreDocumentedWhereBundlingIsDecided が機械的に固定する。
+    // 【固定できるのは追加方向だけ】逆に配列から名前を削ったとき、散文に残った説明を
+    // 機械的に検出することはできない(散文が名前に触れること自体は正当なため)。
+    // 束ねる側へ回す判断をしたときは、散文からの削除を手で行う
     private static readonly string[] DotNetReleaseTrainPackages =
     {
         "Microsoft.AspNetCore.Identity.EntityFrameworkCore",                // Identity の EF Core ストア
@@ -221,11 +224,14 @@ public class EfCorePackageAlignmentTests
     }
 
     [Fact]
-    public void DotNetReleaseTrainPackages_AreNotBundledWithEfCore()
+    public void DotNetReleaseTrainPackages_AreAllResolved()
     {
         // 除外一覧が実在するパッケージを指していること。ロックファイルに無い名前が並んでいると、
         // 綴り違いや削除済みパッケージが「除外できているつもり」で残り、
-        // DependabotPatterns_CoverEveryEntityFrameworkCorePackage の網に穴を空けたまま気付けない
+        // DependabotPatterns_CoverEveryEntityFrameworkCorePackage の網に穴を空けたまま気付けない。
+        // 【なぜ束ね検査と分けるか】これは「配列の掃除漏れ」であって束ねの不変条件ではない。
+        // 同じ Fact に同居させると、参照をやめただけで先頭の Assert が throw し、
+        // 本来の不変条件(patterns が除外対象を拾っていないこと)がその実行では一切検証されない
         var resolvedIds = ResolvedPackages.Value
             .Select(package => package.Id)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -237,7 +243,11 @@ public class EfCorePackageAlignmentTests
             + $"パッケージがあります: [{string.Join(", ", unknown)}]\n"
             + "参照をやめたのなら配列からも削り、綴り違いなら直してください"
             + "(実在しない名前は何も除外せず、網羅性検査の穴になります)。");
+    }
 
+    [Fact]
+    public void DotNetReleaseTrainPackages_AreNotBundledWithEfCore()
+    {
         // 2 つの EF Core グループそれぞれについて、除外対象を拾っていないことを確認する
         foreach (var groupName in new[] { EfCoreGroupName, EfCoreSecurityGroupName })
         {
@@ -277,9 +287,12 @@ public class EfCorePackageAlignmentTests
 
             // 本文を読み込む(判断材料として読まれるのは散文なので、書式は問わず名前の有無だけを見る)
             var text = File.ReadAllText(path);
-            // 本文に名前が出てこないパッケージを集める
+            // 本文に名前が出てこないパッケージを集める。
+            // NuGet のパッケージ ID は大文字小文字を区別しないため、照合も区別しない
+            // (散文側で綴りの大小が揺れただけで「説明がありません」と落ちるのは、
+            // 規約違反ではなく検査が硬すぎる偽陽性。このファイルの他の比較とも揃える)
             var undocumented = DotNetReleaseTrainPackages
-                .Where(id => !text.Contains(id, StringComparison.Ordinal))
+                .Where(id => !text.Contains(id, StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
             // 漏れが無いこと(あれば、どの名前を書き足せばよいかを示す)
@@ -345,13 +358,13 @@ public class EfCorePackageAlignmentTests
         //
         // 判定対象はロックファイル上の ID だけでは足りない。まだ csproj へ足していないプロバイダを
         // patterns へ先に書いた場合、解決済み ID が 1 つも無いので検査が空振りし、除外の書き忘れが
-        // 導入時まで気付かれない。各パターンの「最短の一致例」(末尾 '*' を取り除いた文字列)も
-        // 併せて見て、パターンを足した時点で除外漏れが分かるようにする
+        // 導入時まで気付かれない。各パターンの「最短の一致例」も併せて見て、
+        // パターンを足した時点で除外漏れが分かるようにする
         // minor / patch グループの patterns / exclude-patterns を 1 度だけ読み出す(§8)
         var minorAndPatchMatcher = ReadGroupMatcher(MinorAndPatchGroupName);
         // 解決済みの EF Core 系 ID と、各パターンの最短の一致例を突き合わせ対象にする
-        var leakedIntoMinorAndPatch = EfCorePackageIdsOf(EfCoreGroupName)
-            .Concat(versionUpdatePatterns.Select(pattern => pattern.Replace("*", "")))
+        var leakedIntoMinorAndPatch = EfCorePackageIdsMatching(versionUpdatePatterns)
+            .Concat(versionUpdatePatterns.Select(ShortestMatchOf).OfType<string>())
             .Distinct(StringComparer.OrdinalIgnoreCase)
             // minor / patch グループに拾われてしまうものだけを残す
             .Where(minorAndPatchMatcher.Matches)
@@ -416,7 +429,8 @@ public class EfCorePackageAlignmentTests
         // そのパッケージの横取りを見逃す。2 つのパターンが一致していることは別のテストの責務で、
         // この検査がそれに依存すると防御が二重に効かなくなる
         // (パターンの読み出しはループの外で 1 度だけ行う。§8)
-        var efCorePackageIds = EfCorePackageIdsOf(groupName);
+        var efCorePatterns = ReadGroupList(groupName, PatternsKey);
+        var efCorePackageIds = EfCorePackageIdsMatching(efCorePatterns);
 
         // 先に定義されたグループのうち、EF Core 系を横取りしうるものを探す
         var shadowing = groupNames
@@ -480,19 +494,34 @@ public class EfCorePackageAlignmentTests
         // どちらのキーも「書かれていなければ null」で、その意味づけは GroupMatcher が持つ
         new(TryReadGroupList(groupName, PatternsKey), TryReadGroupList(groupName, ExcludePatternsKey));
 
-    // 指定グループの patterns に一致する、ロックファイル上のパッケージ ID を重複なく返す。
-    // 【なぜグループ名を引数に取るか】版更新側とセキュリティ側で patterns が食い違っていても
-    // 各検査がそれぞれ自分の対象を見られるようにするため(一致の確認は別テストの責務)
-    private static IReadOnlyList<string> EfCorePackageIdsOf(string groupName)
-    {
-        // そのグループが「EF Core 系」と定義しているパターンを 1 度だけ読み出す
-        var patterns = ReadGroupList(groupName, PatternsKey);
+    // 指定パターンに一致する、ロックファイル上のパッケージ ID を重複なく返す。
+    // 【なぜ読み出し済みのパターンを受け取るか】呼び出し側が既に patterns を読んでいる場面が
+    // あり、グループ名を渡す形にすると同じキーを 2 度読むことになるため(§8)
+    private static IReadOnlyList<string> EfCorePackageIdsMatching(IReadOnlyList<string> patterns) =>
         // 解決済みパッケージのうちパターンに当てはまるものを、ID の重複を除いて集める
-        return ResolvedPackages.Value
+        ResolvedPackages.Value
             .Where(package => MatchesAnyPattern(package.Id, patterns))
             .Select(package => package.Id)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
+
+    // パターンが表す集合の中で「最も短い一致例」を返す(表せない場合は null)。
+    //
+    // 【何のために使うか】まだロックファイルに現れていないパターンでも、除外の書き忘れを
+    // その場で検出できるようにするための代表値。パターンが表す集合の実際の要素なので、
+    // これが除外に当たらなければ集合の少なくとも 1 要素が漏れている＝本物の漏れになる。
+    // 【なぜ末尾以外の '*' を諦めるか】"*.EntityFrameworkCore.*" のようなパターンで
+    // 単純に '*' を除去すると ".EntityFrameworkCore." という実在しない ID が合成され、
+    // 不変条件は守られているのにその幽霊 ID だけが引っ掛かって落ちる(書き方に依存した偽陽性)。
+    // 代表値を作れないパターンは、解決済み ID 側の照合に任せて対象から外す
+    private static string? ShortestMatchOf(string pattern)
+    {
+        // ワイルドカードが無ければ、そのパターン自身がただ 1 つの一致例
+        if (!pattern.Contains('*')) return pattern;
+        // 末尾の 1 個だけがワイルドカードなら、それを取り除いた前置詞が最短の一致例
+        if (pattern.IndexOf('*') == pattern.Length - 1) return pattern[..^1];
+        // それ以外(途中や複数のワイルドカード)は実在する代表値を作れないので諦める
+        return null;
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
@@ -695,10 +724,16 @@ public class EfCorePackageAlignmentTests
         // 【なぜ素のキャストで済ませないか】`- name: "Npgsql..."` のような書き間違いがあると
         // InvalidCastException だけが飛び、どのファイルのどのキーが原因かが分からない。
         // このファイルの他の異常系と同じく、場所を示して落とす
-        var malformed = ((YamlSequenceNode)node).Children.Where(item => item is not YamlScalarNode).ToList();
+        // 何番目の要素かと YAML 上の行番号を添える(件数だけでは一覧を目視で追う羽目になる)
+        var malformed = ((YamlSequenceNode)node).Children
+            .Select((item, index) => (Item: item, Index: index))
+            .Where(entry => entry.Item is not YamlScalarNode)
+            .Select(entry => $"{entry.Index + 1} 番目(行 {entry.Item.Start.Line})")
+            .ToList();
         Assert.True(malformed.Count == 0,
-            $"dependabot.yml の {groupName}.{key} に、単一値でない要素が {malformed.Count} 個あります"
-            + "(一覧の各要素はパターン文字列などの単一値である必要があります)。");
+            $"dependabot.yml の {groupName}.{key} に、単一値でない要素があります: "
+            + $"[{string.Join(", ", malformed)}]\n"
+            + "一覧の各要素はパターン文字列などの単一値である必要があります。");
         // 各要素を文字列として取り出す
         return ((YamlSequenceNode)node).Children.Select(item => ((YamlScalarNode)item).Value ?? "").ToList();
     }
