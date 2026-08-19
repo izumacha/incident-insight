@@ -270,7 +270,7 @@ public static class DbSeeder
                 EffectivenessNote = "ダブルチェック定着率90%に向上。類似インシデント未発生。",
                 EffectivenessReviewedAt = now.AddDays(-30),
                 RecurrenceObserved = false,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
             new()
             {
@@ -281,7 +281,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "看護部",
                 DueDate = now.AddDays(30),
                 Status = MeasureStatus.InProgress,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
 
             // 転倒対策
@@ -300,7 +300,7 @@ public static class DbSeeder
                 EffectivenessNote = "説明実施率は向上したが、夜間の一人歩行は引き続き課題。",
                 EffectivenessReviewedAt = now.AddDays(-10),
                 RecurrenceObserved = false,
-                Priority = 2
+                Priority = MeasurePriorityScale.Medium
             },
             new()
             {
@@ -311,7 +311,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "医療安全室",
                 DueDate = now.AddDays(-5),
                 Status = MeasureStatus.Planned,
-                Priority = 2
+                Priority = MeasurePriorityScale.Medium
             },
 
             // CVCライン対策
@@ -330,7 +330,7 @@ public static class DbSeeder
                 EffectivenessNote = "改訂以降のライン自己抜去インシデントはゼロ。",
                 EffectivenessReviewedAt = now.AddDays(-7),
                 RecurrenceObserved = false,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
             new()
             {
@@ -341,7 +341,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "ICU",
                 DueDate = now.AddDays(60),
                 Status = MeasureStatus.InProgress,
-                Priority = 2
+                Priority = MeasurePriorityScale.Medium
             },
 
             // インスリン対策 (ハイリスク薬)
@@ -354,7 +354,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "医療安全室",
                 DueDate = now.AddDays(14),
                 Status = MeasureStatus.InProgress,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
             new()
             {
@@ -365,7 +365,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "情報管理部",
                 DueDate = now.AddDays(90),
                 Status = MeasureStatus.Planned,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
 
             // 患者確認ミス対策
@@ -378,7 +378,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "外来",
                 DueDate = now.AddDays(21),
                 Status = MeasureStatus.Planned,
-                Priority = 1
+                Priority = MeasurePriorityScale.High
             },
 
             // 期限超過サンプル（ダッシュボードアラートのデモ用）
@@ -391,7 +391,7 @@ public static class DbSeeder
                 ResponsibleDepartment = "外科病棟",
                 DueDate = now.AddDays(-10), // 期限超過
                 Status = MeasureStatus.Planned,
-                Priority = 3
+                Priority = MeasurePriorityScale.Low
             }
         };
 

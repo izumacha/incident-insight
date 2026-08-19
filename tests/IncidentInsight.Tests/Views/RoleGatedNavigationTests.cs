@@ -91,7 +91,7 @@ public class RoleGatedNavigationTests
         var totalMatches = 0;
 
         // Views 配下のすべての .cshtml を走査する
-        foreach (var file in Directory.EnumerateFiles(RepositoryPaths.Views, "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in RepositoryPaths.EnumerateViewFiles())
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);

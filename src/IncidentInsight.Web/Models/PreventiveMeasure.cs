@@ -119,10 +119,12 @@ public class PreventiveMeasure
     [Display(Name = "再発を確認したか")]
     public bool? RecurrenceObserved { get; set; }
 
-    // 優先度。1=高 / 2=中 / 3=低 の3段階。初期値は中
-    [Range(1, 3)]
-    [Display(Name = "優先度")]
-    public int Priority { get; set; } = 2; // 1=高, 2=中, 3=低
+    // 優先度。段階・既定値・許容範囲は MeasurePriorityScale(尺度の唯一の源)から引く。
+    // 以前はここに 1〜3 と既定値 2 を直書きしていたため、段階数を変えると
+    // 画面のドロップダウンとの整合が黙って崩れた(§6)
+    [Range(MeasurePriorityScale.Min, MeasurePriorityScale.Max)]
+    [Display(Name = MeasurePriorityScale.DisplayName)]
+    public int Priority { get; set; } = MeasurePriorityScale.Default;
 
     /// <summary>
     /// 楽観的同時実行制御トークン(全プロバイダ共通の Guid ベース)。
@@ -175,23 +177,12 @@ public class PreventiveMeasure
     // 対策種別に対応する Bootstrap カラー名
     public string MeasureTypeColor => EnumLabels.MeasureTypeColor(MeasureType);
 
-    // 優先度の日本語1文字ラベル
-    public string PriorityLabel => Priority switch
-    {
-        1 => "高",
-        2 => "中",
-        3 => "低",
-        _ => "-"
-    };
+    // 優先度の日本語1文字ラベル。語彙は MeasurePriorityScale(尺度の唯一の源)へ委譲する
+    public string PriorityLabel => MeasurePriorityScale.Label(Priority);
 
-    // 優先度に対応する Bootstrap カラー名(高=赤/中=黄/低=グレー)
-    public string PriorityColor => Priority switch
-    {
-        1 => "danger",
-        2 => "warning",
-        3 => "secondary",
-        _ => "secondary"
-    };
+    // 優先度に対応する Bootstrap カラー名(高=赤/中=黄/低=グレー)。
+    // 配色も MeasurePriorityScale へ委譲し、ラベルと配色が別々にずれないようにする
+    public string PriorityColor => MeasurePriorityScale.ColorName(Priority);
 
     // 有効性評価を ★★★☆☆ のような星記号で返す(未評価なら「未評価」)。
     // 星の並べ方と段階数は EffectivenessScale(尺度の唯一の源)へ委譲する。

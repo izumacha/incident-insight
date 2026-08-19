@@ -106,6 +106,49 @@ public static class EnumLabels
         ["orange"] = "#fd7e14"
     };
 
+    // Bootstrap 5.3 が .bg-* / .text-bg-* クラスを用意しているテーマ色の許可リスト。
+    //
+    // 上の BootstrapHexMap は「Chart.js で使う色の 16 進」を引くための表で、テーマ色ではない
+    // 拡張パレット(orange 等)も載せる前提になっている。そのため「変換表にあるか」で
+    // バッジ可否を判定すると、グラフ用の色を 1 つ足すたびにバッジ用途でも黙って通ってしまい
+    // (fail-open)、.bg-teal のような存在しないクラスで背景色の付かないバッジが描画される。
+    // 逆に light は .bg-light が実在するのに変換表には無い(グラフで使わないため)。
+    // 取り違えを防ぐため、判定は許可リスト方式にして「知らない色名は拒否」に倒す
+    // (CLAUDE.md §9 fail-closed)。
+    //
+    // 収録するのは「.bg-* クラスが実在し、かつ BootstrapHexMap にも 16 進を持つ」色に限る。
+    // 片方にしか無い色を許すと、バッジは正しく塗られるのに同じ色名を Chart.js へ回したときだけ
+    // Hex() のフォールバックで別の色(グレー)になる、という画面間のズレが生まれる
+    // (.bg-light は実在するが、グラフで使わないため変換表に無い。だからここにも入れない)。
+    // バッジで使える色を増やすときは、BootstrapHexMap と両方へ追加すること
+    private static readonly HashSet<string> BadgeUsableColorNames = new(StringComparer.Ordinal)
+    {
+        "primary",
+        "secondary",
+        "success",
+        "danger",
+        "warning",
+        "info",
+        "dark"
+    };
+
+    /// <summary>
+    /// 指定の Bootstrap カラー名が、バッジの <c>bg-*</c> クラスとして使えるかを返す。
+    /// 許可リストに無い色名(綴り間違い・テーマ色ではない拡張パレットの色)はすべて false。
+    /// </summary>
+    // 許可リストに載っている色名だけを使用可とする(未知は拒否)
+    public static bool IsBadgeUsable(string bootstrapColorName) =>
+        BadgeUsableColorNames.Contains(bootstrapColorName);
+
+    /// <summary>
+    /// バッジで使える色名の一覧(テスト専用)。「許可リストの色は BootstrapHexMap にも
+    /// 16 進を持つ」という上の不変条件を、テストが機械的に検査できるようにするために公開する。
+    /// コメントで宣言しただけでは、許可リストにだけ色を足して変換表を直し忘れても
+    /// 全テストが緑のまま通ってしまう。
+    /// </summary>
+    // 中身を書き換えられないよう読み取り専用の列挙として返す
+    public static IEnumerable<string> BadgeUsableColorNamesForTesting => BadgeUsableColorNames;
+
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();

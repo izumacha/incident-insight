@@ -82,12 +82,13 @@
                     <span asp-validation-for="DueDate" class="text-danger small"></span>
                 </div>
                 <div class="col-md-1">
-                    @* 優先度（1=高／2=中／3=低） *@
+                    @* 優先度。段階とラベルは MeasurePriorityScale(尺度の唯一の源)から生成する *@
                     <label asp-for="Priority" class="form-label fw-medium"></label>
                     <select asp-for="Priority" class="form-select">
-                        <option value="1">高</option>
-                        <option value="2">中</option>
-                        <option value="3">低</option>
+                        @foreach (var p in IncidentInsight.Web.Models.Enums.MeasurePriorityScale.All)
+                        {
+                            <option value="@p">@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.Label(p)</option>
+                        }
                     </select>
                 </div>
                 <div class="col-12">

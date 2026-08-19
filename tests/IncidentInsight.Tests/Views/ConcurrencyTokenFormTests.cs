@@ -37,8 +37,6 @@ public class ConcurrencyTokenFormTests
     [Fact]
     public void Forms_PostingToTokenPinningActions_IncludeConcurrencyTokenHiddenField()
     {
-        // リポジトリ内の Views ディレクトリを特定する
-        var viewsDir = RepositoryPaths.Views;
         // 検出した違反(ファイル名と該当フォームの冒頭)を集める
         var violations = new List<string>();
         // 検査したトークン必須フォームの数。0 件のまま終わると「違反なし」と区別が付かず、
@@ -47,7 +45,7 @@ public class ConcurrencyTokenFormTests
         var inspectedTargetForms = 0;
 
         // すべての Razor ビューを走査する
-        foreach (var file in Directory.EnumerateFiles(viewsDir, "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in RepositoryPaths.EnumerateViewFiles())
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);
