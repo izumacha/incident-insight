@@ -94,9 +94,13 @@
                     @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
                     <label class="form-label small" for="@(fieldIdPrefix)Priority">優先度</label>
                     <select id="@(fieldIdPrefix)Priority" name="Measures[@(index)].Priority" class="form-select form-select-sm">
-                        <option value="1" selected="@(m.Priority == 1)">高</option>
-                        <option value="2" selected="@(m.Priority == 2)">中</option>
-                        <option value="3" selected="@(m.Priority == 3)">低</option>
+                        @* 段階とラベルは MeasurePriorityScale(尺度の唯一の源)から生成する。
+                           直書きしていた頃は段階を増やしてもここだけ 3 択のまま残った(§6) *@
+                        @foreach (var p in IncidentInsight.Web.Models.Enums.MeasurePriorityScale.All)
+                        {
+                            @* 現在のモデル値と一致する段階にだけ selected を付ける *@
+                            <option value="@p" selected="@(m.Priority == p)">@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.Label(p)</option>
+                        }
                     </select>
                 </div>
                 <div class="col-12">

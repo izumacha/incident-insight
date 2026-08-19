@@ -493,9 +493,11 @@
                                (例: 高)と直書きの「中」の両方が selected になり、後者が勝って
                                選択値が黙って書き換わってしまう *@
                             <select asp-for="NewMeasure.Priority" class="form-select form-select-sm">
-                                <option value="1">高</option>
-                                <option value="2">中</option>
-                                <option value="3">低</option>
+                                @* 段階とラベルは MeasurePriorityScale(尺度の唯一の源)から生成する *@
+                                @foreach (var p in IncidentInsight.Web.Models.Enums.MeasurePriorityScale.All)
+                                {
+                                    <option value="@p">@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.Label(p)</option>
+                                }
                             </select>
                             @* 優先度の検証エラー(範囲外の値の送信など)をフィールド直下に表示する *@
                             <span asp-validation-for="NewMeasure.Priority" class="text-danger small"></span>

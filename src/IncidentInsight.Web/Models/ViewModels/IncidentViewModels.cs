@@ -289,13 +289,16 @@ public class MeasureFormViewModel
     [Display(Name = "実施期限")]
     public DateTime? DueDate { get; set; }
 
-    // 優先度(1=高/2=中/3=低、初期値2)
+    // 優先度(1=高/2=中/3=低、初期値は中)
     // EF Core は保存時に DataAnnotations を自動検証しないため、AddMeasure /
     // PreventiveMeasuresController.Create / Edit の3経路をすり抜けないよう、
     // ドメインモデル PreventiveMeasure.Priority と同じ範囲をここでも明示検証する。
-    [Range(1, 3, ErrorMessage = "優先度は1(高)〜3(低)の範囲で指定してください")]
-    [Display(Name = "優先度")]
-    public int Priority { get; set; } = 2;
+    // 範囲・既定値・文言はいずれも MeasurePriorityScale(尺度の唯一の源)から引くため、
+    // 段階を増やしてもこの ViewModel とドメインモデルの検証が食い違わない(§6)
+    [Range(MeasurePriorityScale.Min, MeasurePriorityScale.Max,
+        ErrorMessage = MeasurePriorityScale.RangeMessage)]
+    [Display(Name = MeasurePriorityScale.DisplayName)]
+    public int Priority { get; set; } = MeasurePriorityScale.Default;
 
     // 立案根拠・背景メモ(任意)
     [MaxLength(FieldLengths.FreeText, ErrorMessage = FieldLengths.MaxLengthMessage)]
