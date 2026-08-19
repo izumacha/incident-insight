@@ -25,13 +25,22 @@ public class MeasureFormViewModelTests
         Priority = priority
     };
 
+    // 全段階を xUnit のテストケースへ流し込む。段階を追加したら自動でケースが増えるよう
+    // MeasurePriorityScale.All(段階の唯一の源)から生成する。[InlineData] で段階を 1 つずつ
+    // 数え上げると、段階を増やしたときに新しい段階だけ検証されないまま緑になってしまう
+    public static TheoryData<int> AllPriorities()
+    {
+        // xUnit へ渡すケース集合を用意する
+        var data = new TheoryData<int>();
+        // 尺度が定義する全段階を 1 ケースずつ追加する
+        foreach (var priority in MeasurePriorityScale.All) data.Add(priority);
+        // 組み立てたケース集合を返す
+        return data;
+    }
+
     [Theory]
-    // ドメインモデル PreventiveMeasure.Priority と同じ許容範囲を検証する。
-    // 段階の数値は MeasurePriorityScale(尺度の唯一の源)から引き、段階を増やしたときに
-    // このテストだけ古い 3 段階を主張し続けないようにする
-    [InlineData(MeasurePriorityScale.High)]
-    [InlineData(MeasurePriorityScale.Medium)]
-    [InlineData(MeasurePriorityScale.Low)]
+    // ドメインモデル PreventiveMeasure.Priority と同じ許容範囲を、全段階について検証する
+    [MemberData(nameof(AllPriorities))]
     public void Priority_WithinRange_PassesValidation(int priority)
     {
         // 範囲内の優先度でフォームを作る

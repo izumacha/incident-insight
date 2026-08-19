@@ -60,11 +60,11 @@ public class MeasurePriorityScaleTests
     }
 
     [Theory]
-    // 下限より小さい値
-    [InlineData(0)]
-    // 上限より大きい値
-    [InlineData(4)]
-    // 負数
+    // 境界のすぐ外側は尺度から導出し、段階を増やしたときに「新しく有効になった段階」を
+    // 誤って範囲外扱いし続けないようにする(MeasureFormViewModelTests と同じ方針)
+    [InlineData(MeasurePriorityScale.Min - 1)]
+    [InlineData(MeasurePriorityScale.Max + 1)]
+    // 明らかに範囲外の値(境界に依存しないので直値のままでよい)
     [InlineData(-1)]
     public void Label_FallsBackForOutOfRangeValues(int priority)
     {
@@ -86,15 +86,40 @@ public class MeasurePriorityScaleTests
         Assert.Equal(hexes.Count, hexes.Distinct().Count());
     }
 
+    [Fact]
+    public void ColorName_ReturnsOnlyBadgeUsableColors()
+    {
+        // 優先度の配色は Details.cshtml / _MeasureCard.cshtml で
+        // <span class="badge bg-@m.PriorityColor"> として使う。Bootstrap のテーマ色でない
+        // 色名(拡張パレットの orange 等)を選ぶと .bg-orange クラスが存在せず、
+        // 背景色の付かないバッジが静かに描画される。16 進へ解決できるかどうかだけでは
+        // これを検出できない(EnumLabels.Hex は orange も解決してしまう)ため、
+        // バッジのクラス名として使えることを個別に検査する
+        foreach (var priority in MeasurePriorityScale.All)
+        {
+            // その段階の色名を取り出す
+            var colorName = MeasurePriorityScale.ColorName(priority);
+            // バッジの bg-* クラスとして成立する色名であること
+            Assert.True(
+                EnumLabels.IsBadgeUsable(colorName),
+                $"優先度 {priority} の配色 '{colorName}' は badge の bg-* クラスとして使えない");
+        }
+
+        // 範囲外のフォールバック色もバッジとして成立すること
+        // (壊れたデータの行だけバッジが透明になるのを防ぐ)
+        Assert.True(EnumLabels.IsBadgeUsable(MeasurePriorityScale.UnknownColorName));
+    }
+
     [Theory]
-    // 下限より小さい値
-    [InlineData(0)]
-    // 上限より大きい値
-    [InlineData(4)]
+    // 境界のすぐ外側は尺度から導出する(Label 側の同名検査と揃える)
+    [InlineData(MeasurePriorityScale.Min - 1)]
+    [InlineData(MeasurePriorityScale.Max + 1)]
     public void ColorName_FallsBackToNeutralForOutOfRangeValues(int priority)
     {
-        // 範囲外はグレーに倒し、配色から誤った緊急度を読み取らせないこと
-        Assert.Equal("secondary", MeasurePriorityScale.ColorName(priority));
+        // 範囲外はグレーに倒し、配色から誤った緊急度を読み取らせないこと。
+        // 期待値も尺度の定数から引き、フォールバック色を変えたときに
+        // ここだけ古い色名を主張し続けないようにする
+        Assert.Equal(MeasurePriorityScale.UnknownColorName, MeasurePriorityScale.ColorName(priority));
     }
 
     [Fact]

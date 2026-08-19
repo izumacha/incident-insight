@@ -97,6 +97,13 @@ public static class MeasurePriorityScale
     // どの段階にも当てはまらないことを示す記号
     public const string UnknownLabel = "-";
 
+    /// <summary>
+    /// 範囲外の値に割り当てる中立な Bootstrap カラー名。<see cref="UnknownLabel"/> の配色版で、
+    /// フォールバック色を変えたいときの参照元をここ 1 箇所にまとめる。
+    /// </summary>
+    // 意味を読み取らせないためのグレー
+    public const string UnknownColorName = "secondary";
+
     /// <summary>入力用 ViewModel / エンティティの <c>[Display(Name = ...)]</c> に使う表示名。</summary>
     // 画面上の項目名
     public const string DisplayName = "優先度";
@@ -149,8 +156,8 @@ public static class MeasurePriorityScale
         // 中は黄(通常の温度感)
         Medium => "warning",
         // 低はグレー(急がない)
-        Low => "secondary",
-        // 範囲外はグレーにして、配色から誤った意味を読み取らせない
-        _ => "secondary"
+        Low => UnknownColorName,
+        // 範囲外もグレーにして、配色から誤った意味を読み取らせない
+        _ => UnknownColorName
     };
 }

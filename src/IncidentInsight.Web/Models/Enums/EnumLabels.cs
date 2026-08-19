@@ -106,6 +106,24 @@ public static class EnumLabels
         ["orange"] = "#fd7e14"
     };
 
+    // バッジのクラス名(bg-*)として使えない色名。Chart.js 用に BootstrapHexMap へ載せてはいるが、
+    // Bootstrap のテーマ色ではないので .bg-orange のようなクラスは存在しない。
+    // バッジに使う配色(重症度・対策ステータス・優先度)がここへ落ちると、背景色の付かない
+    // バッジが静かに描画される。テストが機械的に検出できるよう IsBadgeUsable で公開する
+    private static readonly HashSet<string> NonBadgeColorNames = new(StringComparer.Ordinal)
+    {
+        "orange"
+    };
+
+    /// <summary>
+    /// 指定の Bootstrap カラー名が、バッジの <c>bg-*</c> クラスとして使えるかを返す。
+    /// 変換表に無い色名(綴り間違い)と、テーマ色ではない拡張パレットの色を共に false にする。
+    /// </summary>
+    // 変換表に存在し、かつバッジ非対応の色でなければ使える
+    public static bool IsBadgeUsable(string bootstrapColorName) =>
+        BootstrapHexMap.ContainsKey(bootstrapColorName)
+        && !NonBadgeColorNames.Contains(bootstrapColorName);
+
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();
