@@ -26,10 +26,12 @@ public class MeasureFormViewModelTests
     };
 
     [Theory]
-    // ドメインモデル PreventiveMeasure.Priority と同じ許容範囲(1=高〜3=低)を検証する
-    [InlineData(1)]
-    [InlineData(2)]
-    [InlineData(3)]
+    // ドメインモデル PreventiveMeasure.Priority と同じ許容範囲を検証する。
+    // 段階の数値は MeasurePriorityScale(尺度の唯一の源)から引き、段階を増やしたときに
+    // このテストだけ古い 3 段階を主張し続けないようにする
+    [InlineData(MeasurePriorityScale.High)]
+    [InlineData(MeasurePriorityScale.Medium)]
+    [InlineData(MeasurePriorityScale.Low)]
     public void Priority_WithinRange_PassesValidation(int priority)
     {
         // 範囲内の優先度でフォームを作る
@@ -48,9 +50,11 @@ public class MeasureFormViewModelTests
     }
 
     [Theory]
-    // 範囲外(0 や 99 など)は不正値としてすり抜けを防ぐべき
-    [InlineData(0)]
-    [InlineData(4)]
+    // 範囲外は不正値としてすり抜けを防ぐべき。境界のすぐ外側は尺度から導出し、
+    // 段階を増やしたときに「新しく有効になった値」を誤って不正扱いし続けないようにする
+    [InlineData(MeasurePriorityScale.Min - 1)]
+    [InlineData(MeasurePriorityScale.Max + 1)]
+    // 明らかに範囲外の値(境界に依存しないので直値のままでよい)
     [InlineData(99)]
     [InlineData(-1)]
     public void Priority_OutOfRange_FailsValidation(int priority)

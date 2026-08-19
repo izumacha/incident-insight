@@ -143,6 +143,12 @@ public class PreventiveMeasureTests
 
     // --- PriorityLabel / PriorityColor ---
 
+    // ここは意図的に具体値(1=高/danger …)をリテラルで釘付けする唯一の場所。
+    // MeasurePriorityScale へ委譲していることの確認は
+    // MeasurePriorityScaleTests.PreventiveMeasure_PriorityMembers_DelegateToTheScale が担うが、
+    // そちらは尺度と尺度を突き合わせる形なので、綴り間違いや配色の取り違えは検出できない。
+    // ラベル・配色を変更するときはこのテストも併せて更新すること
+    // (MeasurePriorityScale のクラスコメントにもこの方針を記載している)。
     [Theory]
     [InlineData(1, "高", "danger")]
     [InlineData(2, "中", "warning")]

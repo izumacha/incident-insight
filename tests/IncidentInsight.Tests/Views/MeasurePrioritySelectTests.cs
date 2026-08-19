@@ -38,6 +38,10 @@ public class MeasurePrioritySelectTests
     private static readonly Regex HardCodedOptionValueRegex =
         new(@"\bvalue\s*=\s*""\d+""", RegexOptions.IgnoreCase);
 
+    // value="" の空 option(絞り込みフォームの「すべて」行)を検出する正規表現
+    private static readonly Regex BlankOptionValueRegex =
+        new(@"\bvalue\s*=\s*""\s*""", RegexOptions.IgnoreCase);
+
     // ラベルを解決する唯一の入口。<option> の表示文言はここを通っていなければならない
     private const string LabelCallLiteral = nameof(MeasurePriorityScale) + "." + nameof(MeasurePriorityScale.Label) + "(";
 
@@ -84,8 +88,16 @@ public class MeasurePrioritySelectTests
                 // 別々に直書きされうるため、両方を個別に見る
                 foreach (Match option in OptionBlockRegex.Matches(body))
                 {
+                    // 属性部分(value がここに現れる)
+                    var optionAttrs = option.Groups["attrs"].Value;
+
+                    // 「未選択」を表す value="" の空 option は段階そのものではないので検査対象外。
+                    // 絞り込みフォームの先頭に置く <option value="">優先度(全て)</option> を
+                    // ラベル未経由として誤検出しないための除外
+                    if (BlankOptionValueRegex.IsMatch(optionAttrs)) continue;
+
                     // 値を数値リテラルで直書きしていないか
-                    if (HardCodedOptionValueRegex.IsMatch(option.Groups["attrs"].Value))
+                    if (HardCodedOptionValueRegex.IsMatch(optionAttrs))
                     {
                         violations.Add($"{relativePath}: 優先度の <option value=\"...\"> に段階の数値が直書きされている");
                     }
@@ -113,7 +125,11 @@ public class MeasurePrioritySelectTests
 
     // <select> の属性が再発防止策の優先度にバインドされているかを判定する。
     // asp-for="Priority" / asp-for="NewMeasure.Priority" / name="Measures[0].Priority" の
-    // いずれの書き方でも拾えるよう、プロパティ名で終わっているかを見る
+    // いずれの書き方でも拾えるよう、プロパティ名で終わっているかを見る。
+    // 比較は大文字小文字を無視する: 一覧の絞り込み <select> はクエリ文字列のパラメータ名に
+    // 合わせて name="priority" のような小文字始まりで書く慣習(Views/Incidents/Index.cshtml の
+    // name="incidentType" / name="severity" 等)があり、Ordinal 比較だと将来の優先度フィルタが
+    // まるごと検査対象から漏れてしまうため
     private static bool BindsToPriority(string attrs)
     {
         // 属性値(ダブルクォートで囲まれた部分)を順に取り出す
@@ -122,7 +138,8 @@ public class MeasurePrioritySelectTests
             // 属性値の中身を取り出す
             var text = value.Groups["v"].Value;
             // "Priority" そのもの、または "....Priority" の形なら優先度へのバインドとみなす
-            if (text == PriorityPropertyName || text.EndsWith("." + PriorityPropertyName, StringComparison.Ordinal))
+            if (text.Equals(PriorityPropertyName, StringComparison.OrdinalIgnoreCase)
+                || text.EndsWith("." + PriorityPropertyName, StringComparison.OrdinalIgnoreCase))
             {
                 return true;
             }
