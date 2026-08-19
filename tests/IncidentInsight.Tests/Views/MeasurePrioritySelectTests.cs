@@ -35,12 +35,19 @@ public class MeasurePrioritySelectTests
 
     // 値が数値リテラルで直書きされた <option>(例: <option value="1">)を検出する正規表現。
     // 尺度から生成していれば value は @p のような Razor 式になるので数字は現れない
+    // 属性値は HTML/Razor では単一引用符でも書けるため、どちらの引用符でも拾えるようにする。
+    // 二重引用符しか見ていないと、単一引用符で書かれた <select>/<option> がまるごと
+    // 検査対象から外れ、直書きの 3 択がそのまま出荷されてしまう
     private static readonly Regex HardCodedOptionValueRegex =
-        new(@"\bvalue\s*=\s*""\d+""", RegexOptions.IgnoreCase);
+        new(@"\bvalue\s*=\s*(""\d+""|'\d+')", RegexOptions.IgnoreCase);
 
     // value="" の空 option(絞り込みフォームの「すべて」行)を検出する正規表現
     private static readonly Regex BlankOptionValueRegex =
-        new(@"\bvalue\s*=\s*""\s*""", RegexOptions.IgnoreCase);
+        new(@"\bvalue\s*=\s*(""\s*""|'\s*')", RegexOptions.IgnoreCase);
+
+    // 属性値(二重引用符または単一引用符で囲まれた部分)を取り出す正規表現
+    private static readonly Regex AttributeValueRegex =
+        new(@"""(?<v>[^""]*)""|'(?<v>[^']*)'", RegexOptions.IgnoreCase);
 
     // ラベルを解決する唯一の入口。<option> の表示文言はここを通っていなければならない
     private const string LabelCallLiteral = nameof(MeasurePriorityScale) + "." + nameof(MeasurePriorityScale.Label) + "(";
@@ -132,8 +139,8 @@ public class MeasurePrioritySelectTests
     // まるごと検査対象から漏れてしまうため
     private static bool BindsToPriority(string attrs)
     {
-        // 属性値(ダブルクォートで囲まれた部分)を順に取り出す
-        foreach (Match value in Regex.Matches(attrs, "\"(?<v>[^\"]*)\""))
+        // 属性値(二重引用符・単一引用符いずれかで囲まれた部分)を順に取り出す
+        foreach (Match value in AttributeValueRegex.Matches(attrs))
         {
             // 属性値の中身を取り出す
             var text = value.Groups["v"].Value;

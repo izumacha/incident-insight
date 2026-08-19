@@ -98,6 +98,15 @@ public static class MeasurePriorityScale
     public const string UnknownLabel = "-";
 
     /// <summary>
+    /// 優先度「低」の Bootstrap カラー名。<see cref="UnknownColorName"/> と現状は同じグレーだが、
+    /// 「正規の段階の配色」と「壊れた値のフォールバック」は目的が違うので別の定数にしておく。
+    /// 同じ定数を共有すると、フォールバック色だけを変えて範囲外の行を目立たせたいときに、
+    /// 正常な「低」のバッジまで巻き添えで色が変わってしまう。
+    /// </summary>
+    // 急がないことを示すグレー
+    public const string LowColorName = "secondary";
+
+    /// <summary>
     /// 範囲外の値に割り当てる中立な Bootstrap カラー名。<see cref="UnknownLabel"/> の配色版で、
     /// フォールバック色を変えたいときの参照元をここ 1 箇所にまとめる。
     /// </summary>
@@ -156,7 +165,7 @@ public static class MeasurePriorityScale
         // 中は黄(通常の温度感)
         Medium => "warning",
         // 低はグレー(急がない)
-        Low => UnknownColorName,
+        Low => LowColorName,
         // 範囲外もグレーにして、配色から誤った意味を読み取らせない
         _ => UnknownColorName
     };

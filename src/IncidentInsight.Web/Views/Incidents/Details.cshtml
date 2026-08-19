@@ -492,9 +492,9 @@
                                [Display(Name = MeasurePriorityScale.DisplayName)] がそのまま項目名になる
                                (PreventiveMeasures/Create・Edit と同じ書き方) *@
                             <label class="form-label small" asp-for="NewMeasure.Priority"></label>
-                            @* selected は書かない: asp-for がモデル値(初期値 2=中)に一致する option へ
-                               selected を付与する。直書きすると検証失敗の再描画時にユーザーの選択
-                               (例: 高)と直書きの「中」の両方が selected になり、後者が勝って
+                            @* selected は書かない: asp-for がモデル値(初期値は MeasurePriorityScale.Default)に一致する option へ
+                               selected を付与する。直書きすると検証失敗の再描画時に、ユーザーが選んだ段階と
+                               直書きした既定の段階の両方が selected になり、後者が勝って
                                選択値が黙って書き換わってしまう *@
                             <select asp-for="NewMeasure.Priority" class="form-select form-select-sm">
                                 @* 段階とラベルは MeasurePriorityScale(尺度の唯一の源)から生成する *@
