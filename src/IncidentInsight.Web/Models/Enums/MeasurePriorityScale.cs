@@ -59,7 +59,13 @@ public static class MeasurePriorityScale
     /// <c>ArgumentOutOfRangeException</c> を投げ、[Range(3, 1)] は全ての値を弾く。
     /// 番号付けを反転させたい場合は Min / Max と <see cref="All"/> を並び順に依存しない形へ
     /// 書き換えること。取りこぼしは <c>MeasurePriorityScaleTests.All_EnumeratesEveryStepFromMinToMax</c>
-    /// が CI で落として気付けるようにしてある。</para>
+    /// が CI で落として気付けるようにしてある。
+    ///
+    /// <b>並び順に依存しているのはこのクラスの中だけではない。</b>
+    /// <c>Views/Incidents/Details.cshtml</c> の対策一覧は
+    /// <c>PreventiveMeasures.OrderBy(m =&gt; m.Priority)</c> で「高い優先度から」並べており、
+    /// これは数値が小さいほど優先度が高いことを前提にしている。番号付けを反転させると、
+    /// この並び替えはテストが緑のまま静かに「低」を先頭にしてしまうので、同時に直すこと。</para>
     /// </summary>
     // 数値としての最小値(= 高)。High が最小であることが前提
     public const int Min = High;

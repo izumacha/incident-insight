@@ -140,6 +140,15 @@ public static class EnumLabels
     public static bool IsBadgeUsable(string bootstrapColorName) =>
         BadgeUsableColorNames.Contains(bootstrapColorName);
 
+    /// <summary>
+    /// バッジで使える色名の一覧(テスト専用)。「許可リストの色は BootstrapHexMap にも
+    /// 16 進を持つ」という上の不変条件を、テストが機械的に検査できるようにするために公開する。
+    /// コメントで宣言しただけでは、許可リストにだけ色を足して変換表を直し忘れても
+    /// 全テストが緑のまま通ってしまう。
+    /// </summary>
+    // 中身を書き換えられないよう読み取り専用の列挙として返す
+    public static IEnumerable<string> BadgeUsableColorNamesForTesting => BadgeUsableColorNames;
+
     // 重症度を日本語ラベルに変換(辞書にない場合は enum 名をそのまま返す)
     public static string Japanese(IncidentSeverity v) =>
         SeverityJa.TryGetValue(v, out var s) ? s : v.ToString();
