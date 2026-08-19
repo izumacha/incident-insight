@@ -55,6 +55,22 @@ internal static class RepositoryPaths
     /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
 
+    /// <summary>
+    /// Razor ビュー(<c>Views</c> 配下の全 <c>.cshtml</c>)を再帰的に列挙する。
+    ///
+    /// View ソースを走査する guard-rail テスト(ChartAccessibilityTests /
+    /// ConcurrencyTokenFormTests / RoleGatedNavigationTests / MeasurePrioritySelectTests)が
+    /// 同じ列挙を各自で書いていたため、走査対象を変えるとき(例: Areas 配下の追加、
+    /// 生成物ディレクトリの除外)に直し漏れたテストだけが静かに検査範囲を取り違える状態だった。
+    /// 走査条件の唯一の源としてここに集約する(CLAUDE.md §6 DRY)。
+    /// </summary>
+    // Views 配下を再帰的に辿り .cshtml のパスを返す
+    public static IEnumerable<string> EnumerateViewFiles() =>
+        Directory.EnumerateFiles(Views, ViewFileSearchPattern, SearchOption.AllDirectories);
+
+    // Razor ビューのファイル名パターン(走査条件の唯一の源)
+    private const string ViewFileSearchPattern = "*.cshtml";
+
     // ビルド出力ディレクトリから上へ辿ってリポジトリルートを探す
     private static string FindRoot()
     {

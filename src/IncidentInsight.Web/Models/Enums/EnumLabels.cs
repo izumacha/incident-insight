@@ -113,8 +113,14 @@ public static class EnumLabels
     // バッジ可否を判定すると、グラフ用の色を 1 つ足すたびにバッジ用途でも黙って通ってしまい
     // (fail-open)、.bg-teal のような存在しないクラスで背景色の付かないバッジが描画される。
     // 逆に light は .bg-light が実在するのに変換表には無い(グラフで使わないため)。
-    // どちらの取り違えも防ぐため、判定は許可リスト方式にして「知らない色名は拒否」に倒す
-    // (CLAUDE.md §9 fail-closed)。バッジで使える色を増やすときはここへ明示的に追加する
+    // 取り違えを防ぐため、判定は許可リスト方式にして「知らない色名は拒否」に倒す
+    // (CLAUDE.md §9 fail-closed)。
+    //
+    // 収録するのは「.bg-* クラスが実在し、かつ BootstrapHexMap にも 16 進を持つ」色に限る。
+    // 片方にしか無い色を許すと、バッジは正しく塗られるのに同じ色名を Chart.js へ回したときだけ
+    // Hex() のフォールバックで別の色(グレー)になる、という画面間のズレが生まれる
+    // (.bg-light は実在するが、グラフで使わないため変換表に無い。だからここにも入れない)。
+    // バッジで使える色を増やすときは、BootstrapHexMap と両方へ追加すること
     private static readonly HashSet<string> BadgeUsableColorNames = new(StringComparer.Ordinal)
     {
         "primary",
@@ -123,7 +129,6 @@ public static class EnumLabels
         "danger",
         "warning",
         "info",
-        "light",
         "dark"
     };
 

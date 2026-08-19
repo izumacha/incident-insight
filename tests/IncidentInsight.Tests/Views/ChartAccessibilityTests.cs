@@ -93,7 +93,7 @@ public class ChartAccessibilityTests
         var totalCanvases = 0;
 
         // Views 配下のすべての .cshtml を走査する(特定ファイル固定だと将来の追加を見逃すため)
-        foreach (var file in Directory.EnumerateFiles(RepositoryPaths.Views, "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in RepositoryPaths.EnumerateViewFiles())
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);

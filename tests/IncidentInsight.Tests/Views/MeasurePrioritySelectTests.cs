@@ -34,10 +34,9 @@ public class MeasurePrioritySelectTests
         new(@"<option\b(?<attrs>[^>]*)>(?<body>.*?)</option>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
     // 値が数値リテラルで直書きされた <option>(例: <option value="1">)を検出する正規表現。
-    // 尺度から生成していれば value は @p のような Razor 式になるので数字は現れない
-    // 属性値は HTML/Razor では単一引用符でも書けるため、どちらの引用符でも拾えるようにする。
-    // 二重引用符しか見ていないと、単一引用符で書かれた <select>/<option> がまるごと
-    // 検査対象から外れ、直書きの 3 択がそのまま出荷されてしまう
+    // 尺度から生成していれば value は @p のような Razor 式になるので数字は現れない。
+    // 属性値は HTML/Razor では単一引用符でも書けるため、どちらの引用符でも拾う
+    // (二重引用符しか見ていないと、単一引用符で書かれた <option> が検査から外れてしまう)
     private static readonly Regex HardCodedOptionValueRegex =
         new(@"\bvalue\s*=\s*(""\d+""|'\d+')", RegexOptions.IgnoreCase);
 
@@ -45,9 +44,18 @@ public class MeasurePrioritySelectTests
     private static readonly Regex BlankOptionValueRegex =
         new(@"\bvalue\s*=\s*(""\s*""|'\s*')", RegexOptions.IgnoreCase);
 
-    // 属性値(二重引用符または単一引用符で囲まれた部分)を取り出す正規表現
-    private static readonly Regex AttributeValueRegex =
-        new(@"""(?<v>[^""]*)""|'(?<v>[^']*)'", RegexOptions.IgnoreCase);
+    // バインド先を指定する属性の値だけを取り出す正規表現。
+    // class / id / data-* まで含めて走査すると、<select class="priority"> のような無関係な
+    // ドロップダウンまで「優先度の select」と誤認して、この尺度の契約を課してしまう。
+    // モデルへのバインドを表す asp-for と name に限定する
+    private static readonly Regex BindingAttributeValueRegex =
+        new(@"\b(?:asp-for|name)\s*=\s*(?:""(?<v>[^""]*)""|'(?<v>[^']*)')", RegexOptions.IgnoreCase);
+
+    // <option> が value 属性を持つことを確認する正規表現。
+    // value を落とすとブラウザは表示文言(「高」)を送信し、int Priority への
+    // モデルバインドが失敗して「値 '高' は 優先度 として無効です」になる
+    private static readonly Regex OptionHasValueRegex =
+        new(@"\bvalue\s*=", RegexOptions.IgnoreCase);
 
     // ラベルを解決する唯一の入口。<option> の表示文言はここを通っていなければならない
     private const string LabelCallLiteral = nameof(MeasurePriorityScale) + "." + nameof(MeasurePriorityScale.Label) + "(";
@@ -58,15 +66,13 @@ public class MeasurePrioritySelectTests
     [Fact]
     public void PrioritySelects_BuildOptionsFromTheScale()
     {
-        // リポジトリ内の Views ディレクトリを特定する
-        var viewsDir = RepositoryPaths.Views;
         // 検出した違反(ファイル名と理由)を集める
         var violations = new List<string>();
         // 検査した優先度ドロップダウンの数を数える(空振り検知用)
         var inspectedSelects = 0;
 
         // すべての Razor ビューを走査する
-        foreach (var file in Directory.EnumerateFiles(viewsDir, "*.cshtml", SearchOption.AllDirectories))
+        foreach (var file in RepositoryPaths.EnumerateViewFiles())
         {
             // ビューのソースを読み込む
             var source = File.ReadAllText(file);
@@ -102,6 +108,12 @@ public class MeasurePrioritySelectTests
                     // 絞り込みフォームの先頭に置く <option value="">優先度(全て)</option> を
                     // ラベル未経由として誤検出しないための除外
                     if (BlankOptionValueRegex.IsMatch(optionAttrs)) continue;
+
+                    // そもそも value 属性を持っているか(落とすと表示文言が送信されバインドが壊れる)
+                    if (!OptionHasValueRegex.IsMatch(optionAttrs))
+                    {
+                        violations.Add($"{relativePath}: 優先度の <option> に value 属性が無い(表示文言が送信されモデルバインドが壊れる)");
+                    }
 
                     // 値を数値リテラルで直書きしていないか
                     if (HardCodedOptionValueRegex.IsMatch(optionAttrs))
@@ -139,8 +151,8 @@ public class MeasurePrioritySelectTests
     // まるごと検査対象から漏れてしまうため
     private static bool BindsToPriority(string attrs)
     {
-        // 属性値(二重引用符・単一引用符いずれかで囲まれた部分)を順に取り出す
-        foreach (Match value in AttributeValueRegex.Matches(attrs))
+        // バインドを表す属性(asp-for / name)の値だけを順に取り出す
+        foreach (Match value in BindingAttributeValueRegex.Matches(attrs))
         {
             // 属性値の中身を取り出す
             var text = value.Groups["v"].Value;

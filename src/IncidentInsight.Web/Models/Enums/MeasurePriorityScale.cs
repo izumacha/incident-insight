@@ -97,6 +97,14 @@ public static class MeasurePriorityScale
     // どの段階にも当てはまらないことを示す記号
     public const string UnknownLabel = "-";
 
+    /// <summary>優先度「高」の Bootstrap カラー名。すぐ着手すべきことを赤で示す。</summary>
+    // 緊急を示す赤
+    public const string HighColorName = "danger";
+
+    /// <summary>優先度「中」の Bootstrap カラー名。通常の温度感を黄で示す。</summary>
+    // 通常を示す黄
+    public const string MediumColorName = "warning";
+
     /// <summary>
     /// 優先度「低」の Bootstrap カラー名。<see cref="UnknownColorName"/> と現状は同じグレーだが、
     /// 「正規の段階の配色」と「壊れた値のフォールバック」は目的が違うので別の定数にしておく。
@@ -161,9 +169,9 @@ public static class MeasurePriorityScale
     public static string ColorName(int priority) => priority switch
     {
         // 高は赤(すぐ着手すべき)
-        High => "danger",
+        High => HighColorName,
         // 中は黄(通常の温度感)
-        Medium => "warning",
+        Medium => MediumColorName,
         // 低はグレー(急がない)
         Low => LowColorName,
         // 範囲外もグレーにして、配色から誤った意味を読み取らせない
