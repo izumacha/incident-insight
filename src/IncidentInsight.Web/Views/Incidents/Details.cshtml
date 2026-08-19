@@ -346,7 +346,8 @@
                             <th>種別</th>
                             <th>担当</th>
                             <th>期限</th>
-                            <th>優先度</th>
+                            @* 見出しも MeasurePriorityScale(項目名の唯一の源)から引き、フォームのラベルとずれないようにする *@
+                            <th>@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.DisplayName</th>
                             <th>ステータス</th>
                             <th>有効性</th>
                             <th>操作</th>
@@ -487,7 +488,7 @@
                             <span asp-validation-for="NewMeasure.DueDate" class="text-danger small"></span>
                         </div>
                         <div class="col-md-1">
-                            <label class="form-label small" asp-for="NewMeasure.Priority">優先度</label>
+                            <label class="form-label small" asp-for="NewMeasure.Priority">@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.DisplayName</label>
                             @* selected は書かない: asp-for がモデル値(初期値 2=中)に一致する option へ
                                selected を付与する。直書きすると検証失敗の再描画時にユーザーの選択
                                (例: 高)と直書きの「中」の両方が selected になり、後者が勝って

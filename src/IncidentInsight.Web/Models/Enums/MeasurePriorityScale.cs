@@ -14,10 +14,14 @@ namespace IncidentInsight.Web.Models.Enums;
 ///   - <c>Views/Incidents/Details.cshtml</c>           … 同上
 ///   - <c>Views/PreventiveMeasures/Create.cshtml</c>   … 同上
 ///   - <c>Views/PreventiveMeasures/Edit.cshtml</c>     … 同上
+///   - <c>Data/DbSeeder.cs</c>                         … デモデータの Priority に 1/2/3 を直書き
+/// 加えて項目名「優先度」も、ラベル・テーブル見出しとして Incidents 側の 3 箇所へ直書きされていた。
 /// この状態では、たとえば段階を 3 → 4 に増やしたり「中」の言い回しを変えたりしたときに、
 /// ドロップダウンだけ古い 3 段階のまま残る(= 新しい段階を画面から選べない)一方で
 /// [Range] だけが広がる、といった不整合が黙って発生する
 /// (CLAUDE.md §6 定数・ラベルの一元管理 / マジックナンバーを避ける)。
+/// 段階の番号付け自体(High=1 が最優先)を変えたときにデモデータだけが別の意味を持たないよう、
+/// シードの値も High / Medium / Low を経由させている。
 ///
 /// 構造は既存の <see cref="EffectivenessScale"/>(有効性評価 1〜5 の尺度)に合わせている。
 /// Bootstrap カラー名 → 16 進の解決は <see cref="EnumLabels.Hex"/> に委ねるという分担も同じで、

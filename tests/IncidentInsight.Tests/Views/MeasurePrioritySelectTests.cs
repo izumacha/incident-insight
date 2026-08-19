@@ -29,10 +29,20 @@ public class MeasurePrioritySelectTests
     private static readonly Regex SelectBlockRegex =
         new(@"<select\b(?<attrs>[^>]*)>(?<body>.*?)</select>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
 
+    // <option ...>本文</option> を 1 つずつ抜き出す正規表現(属性と表示文言を別々に検査するため)
+    private static readonly Regex OptionBlockRegex =
+        new(@"<option\b(?<attrs>[^>]*)>(?<body>.*?)</option>", RegexOptions.Singleline | RegexOptions.IgnoreCase);
+
     // 値が数値リテラルで直書きされた <option>(例: <option value="1">)を検出する正規表現。
     // 尺度から生成していれば value は @p のような Razor 式になるので数字は現れない
     private static readonly Regex HardCodedOptionValueRegex =
-        new(@"<option\b[^>]*\bvalue\s*=\s*""\d+""", RegexOptions.IgnoreCase);
+        new(@"\bvalue\s*=\s*""\d+""", RegexOptions.IgnoreCase);
+
+    // ラベルを解決する唯一の入口。<option> の表示文言はここを通っていなければならない
+    private const string LabelCallLiteral = nameof(MeasurePriorityScale) + "." + nameof(MeasurePriorityScale.Label) + "(";
+
+    // 段階を列挙する唯一の入口。<select> の本体はここを回していなければならない
+    private const string AllEnumerationLiteral = nameof(MeasurePriorityScale) + "." + nameof(MeasurePriorityScale.All);
 
     [Fact]
     public void PrioritySelects_BuildOptionsFromTheScale()
@@ -64,16 +74,29 @@ public class MeasurePrioritySelectTests
                 // リポジトリルートからの相対パス(違反メッセージを読みやすくするため)
                 var relativePath = Path.GetRelativePath(RepositoryPaths.Root, file);
 
-                // 尺度を参照せずに選択肢を組み立てていないか
-                if (!body.Contains(nameof(MeasurePriorityScale), StringComparison.Ordinal))
+                // 段階の列挙自体を尺度から回していないか(All を使わず option を並べていないか)
+                if (!body.Contains(AllEnumerationLiteral, StringComparison.Ordinal))
                 {
-                    violations.Add($"{relativePath}: 優先度の <select> が {nameof(MeasurePriorityScale)} を参照していない");
+                    violations.Add($"{relativePath}: 優先度の <select> が {AllEnumerationLiteral} で段階を列挙していない");
                 }
 
-                // 値を数値リテラルで直書きしていないか
-                if (HardCodedOptionValueRegex.IsMatch(body))
+                // <option> を 1 つずつ検査する。value(段階の数値)と本文(表示ラベル)は
+                // 別々に直書きされうるため、両方を個別に見る
+                foreach (Match option in OptionBlockRegex.Matches(body))
                 {
-                    violations.Add($"{relativePath}: 優先度の <option value=\"...\"> に段階の数値が直書きされている");
+                    // 値を数値リテラルで直書きしていないか
+                    if (HardCodedOptionValueRegex.IsMatch(option.Groups["attrs"].Value))
+                    {
+                        violations.Add($"{relativePath}: 優先度の <option value=\"...\"> に段階の数値が直書きされている");
+                    }
+
+                    // 表示ラベルを尺度から引かずに直書きしていないか。
+                    // value だけ @p に直しつつ本文を三項演算子で「高/中/低」と書くような
+                    // 書き換えは、数値の検査だけでは素通りしてしまう
+                    if (!option.Groups["body"].Value.Contains(LabelCallLiteral, StringComparison.Ordinal))
+                    {
+                        violations.Add($"{relativePath}: 優先度の <option> の表示ラベルが {LabelCallLiteral}…) を経由していない");
+                    }
                 }
             }
         }

@@ -91,8 +91,9 @@
                            value="@dueDateValue" />
                 </div>
                 <div class="col-md-1">
-                    @* 優先度（高=1／中=2／低=3）。投稿済みの選択値に selected を付けて復元する *@
-                    <label class="form-label small" for="@(fieldIdPrefix)Priority">優先度</label>
+                    @* 優先度。段階・ラベル・項目名はすべて MeasurePriorityScale(尺度の唯一の源)から引く。
+                       投稿済みの選択値には selected を付けて復元する *@
+                    <label class="form-label small" for="@(fieldIdPrefix)Priority">@IncidentInsight.Web.Models.Enums.MeasurePriorityScale.DisplayName</label>
                     <select id="@(fieldIdPrefix)Priority" name="Measures[@(index)].Priority" class="form-select form-select-sm">
                         @* 段階とラベルは MeasurePriorityScale(尺度の唯一の源)から生成する。
                            直書きしていた頃は段階を増やしてもここだけ 3 択のまま残った(§6) *@
