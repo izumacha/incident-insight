@@ -54,8 +54,89 @@ public class DashboardViewModel
     public List<PreventiveMeasure> OverdueMeasureList { get; set; } = new();
 
     // Recurrence alerts: incidents that share same department+type+cause as another recent incident
-    // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)
-    public List<RecurrenceAlert> RecurrenceAlerts { get; set; } = new();
+    // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)。
+    // パネルに描画する分だけを保持する。上限件数と並び順(類似件数の多い順)は
+    // HomeController.RecurrenceAlertLimit / SelectForAlertPanel が決める。
+    // 総数(RecurrenceAlertTotal)と必ず対で更新されるよう、設定経路は
+    // SetRecurrenceAlerts だけに絞る(private set)。
+    // 型を IReadOnlyList にし、中身も ReadOnlyCollection で包むのは、private set が防げるのが
+    // 「差し替え」だけで「中身の追加・削除」は防げないため。List のまま公開すると
+    // RecurrenceAlerts.RemoveAll(...) のような後からの操作(IReadOnlyList で公開しても
+    // List へダウンキャストすれば可能)で件数だけが動き、HiddenRecurrenceAlertCount が
+    // 実態とずれる(表示件数と総数の対応が壊れる)
+    public IReadOnlyList<RecurrenceAlert> RecurrenceAlerts { get; private set; } =
+        new List<RecurrenceAlert>().AsReadOnly();
+
+    // 検出された再発パターンの数(表示を上限で絞っても数え落とさないために別に持つ)。
+    // 表示分(RecurrenceAlerts)と総数を分ける役割分担は OverdueMeasureList(表示分)と
+    // OverdueMeasures(KPI)と同じだが、数え方の厳密さは異なる: OverdueMeasures は DB 側の
+    // CountAsync による実数なのに対し、こちらは IRecurrenceService が返したアラート件数
+    // そのもので、同サービスが候補読み込みに掛けている上限
+    // (RecurrenceService.MaxAlertCandidateRows)の影響を受ける。直近 90 日のインシデントが
+    // その上限を超える環境では検出自体が漏れるため、この値は「検出できた範囲での件数」
+    // であって全期間の厳密な再発パターン総数ではない
+    public int RecurrenceAlertTotal { get; private set; }
+
+    // パネルに載せきれなかった再発パターンの件数。View はこの値が正のときだけ
+    // 「ほか N 件」を表示する。差し引きが負になることは SetRecurrenceAlerts の
+    // 引数チェックで排除しているが、既定値(どちらも空/0)のときに 0 を返すため Max で下限を切る
+    public int HiddenRecurrenceAlertCount => Math.Max(0, RecurrenceAlertTotal - RecurrenceAlerts.Count);
+
+    /// <summary>
+    /// 再発アラートの「検出された全件」と「パネルに描画する分」をまとめて設定する。
+    /// </summary>
+    /// <remarks>
+    /// 表示分と総数を別々に代入できる形にしておくと、片方だけ設定した呼び出しで
+    /// <see cref="HiddenRecurrenceAlertCount"/> が 0 になり、残件があるのに「ほか N 件」が
+    /// 黙って消える(利用者は表示分で全部だと誤解する)。総数を引数から必ず導出することで、
+    /// その食い違い自体を起こせなくする。
+    /// </remarks>
+    /// <param name="allAlerts">検出された再発アラート全件(総数の算出元)。</param>
+    /// <param name="displayed">パネルへ描画する分(<paramref name="allAlerts"/> の部分集合)。</param>
+    public void SetRecurrenceAlerts(
+        IReadOnlyCollection<RecurrenceAlert> allAlerts,
+        IEnumerable<RecurrenceAlert> displayed)
+    {
+        // 引数が null なら、どちらが欠けているかが分かる形で弾く(NullReferenceException にしない)
+        ArgumentNullException.ThrowIfNull(allAlerts);
+        ArgumentNullException.ThrowIfNull(displayed);
+
+        // 表示分を確定させる(呼び出し側の遅延評価をここで打ち切る)
+        var displayedList = displayed.ToList();
+
+        // 表示分が全件の部分集合になっていなければ引数の取り違え。代入より前に弾き、
+        // 例外を握り潰す呼び出し側が現れても ViewModel が矛盾した状態で描画されないようにする
+        // (矛盾したまま描画されると HiddenRecurrenceAlertCount が「どの残件も指さない数」になり、
+        //  残件があるのに「ほか N 件」が消えたり、実在しない残件数を表示したりする)。
+        // 件数の大小だけでなく所属も確かめるのは、別スコープで組み立てた一覧を渡された場合
+        // (件数さえ少なければ素通りしてしまう)を弾くため。アラートは同じ検出結果から
+        // 組み立てられるので、同一インスタンスかどうか(参照の一致)で判定できる
+        var detected = new HashSet<object>(allAlerts, ReferenceEqualityComparer.Instance);
+        // 表示分から重複を除いた集合。所属チェックと「同じものを 2 度渡していないか」の
+        // 両方をこの 1 つの集合で見る
+        var displayedDistinct = new HashSet<object>(displayedList, ReferenceEqualityComparer.Instance);
+        if (!displayedDistinct.IsSubsetOf(detected))
+        {
+            throw new ArgumentException(
+                "表示する再発アラートが検出結果に含まれていません(allAlerts と displayed の取り違え)。",
+                nameof(displayed));
+        }
+        // 同じアラートを 2 度渡されると、パネルに同じ行が並んだうえ
+        // RecurrenceAlerts.Count が総数を超え、HiddenRecurrenceAlertCount が 0 に丸められて
+        // 「ほか N 件」が消える(所属チェックだけでは素通りする)
+        if (displayedDistinct.Count != displayedList.Count)
+        {
+            throw new ArgumentException(
+                "表示する再発アラートに同じものが重複して含まれています。",
+                nameof(displayed));
+        }
+
+        // ここまで来たら整合しているので、表示分と総数をまとめて確定させる。
+        // AsReadOnly でラップして、IReadOnlyList へダウンキャストして中身を書き換える経路も塞ぐ
+        RecurrenceAlerts = displayedList.AsReadOnly();
+        // 総数は必ず全件側から数える(表示分と食い違わないようにするための唯一の算出元)
+        RecurrenceAlertTotal = allAlerts.Count;
+    }
 
     // Monthly trend data for sparkline chart (bucket window varies by Period)
     // トレンドチャート用の件数バケット(期間 Period に応じて日別7件/月別4・6・12件)

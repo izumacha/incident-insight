@@ -54,6 +54,84 @@ public class HomeController : Controller
     // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
     private const int RecentIncidentsLimit = 5;
 
+    // ダッシュボードの「再発パターン」アラートパネルに列挙する最大件数。
+    // OverdueAlertLimit と同じく代表例を数件見せるだけのパネルで、Views/Home/Index.cshtml は
+    // 検出された再発パターンを 1 件 1 <li> で全件列挙していた。IRecurrenceService が返す
+    // アラート件数は「直近 90 日のインシデント(RecurrenceService.MaxAlertCandidateRows 件まで)」
+    // に比例して増えるため、再発が積み上がった病院ではログイン直後の着地ページに数百行の
+    // リストが伸び、KPI やトレンドが画面外へ押し出される(§8 一覧は必ず上限を持たせる)。
+    // 検出総数は RecurrenceAlertTotal として別に持ち、パネルには「ほか N 件」と件数だけ示す。
+    // テストが上限値と同期した件数でシードできるよう public にする(OverdueAlertLimit と同じ理由。
+    // ただし OverdueAlertLimit と違い View からは参照していない。§6)。
+    public const int RecurrenceAlertLimit = 5;
+
+    // 上限で絞り込むときの並び順(= 何を「代表例」とみなすか)。類似インシデントが多い
+    // パターンほど根本原因対策の見直しが急がれるため、件数の多い順を第 1 キーにする。
+    // 注意: ここで数える SimilarIncidents は「直近 90 日」ではなく全期間の類似案件
+    // (RecurrenceService の候補クエリが期間で絞っていないため。ただし
+    // MaxAlertCandidateRows による打ち切りは受ける)。パネルの見出しは 90 日窓の話をしているが、
+    // 順位付けは「そのパターンが通算で何回繰り返されているか」で行う
+    // (根本原因対策の優先度としては通算回数の方が妥当なため、意図的にこの定義を使う)。
+    // 単純に IRecurrenceService の戻り順(=直近の発生順)で打ち切ると、類似 12 件の
+    // 重大パターンが「発生日が少し古い」というだけで、類似 1 件のパターン 5 つに
+    // 押し出されて画面から消える。同数の場合は新しい発生を優先し、発生日時も同じなら
+    // Id の降順で決定的にする(リロードのたびに表示パターンが入れ替わらないようにするため)。
+    // 並び順をここで明示的に決めることで、サービス側の戻り順(契約では未規定)に
+    // 表示内容が依存しないようにもしている。
+    private static IEnumerable<RecurrenceAlert> RankForAlertPanel(IEnumerable<RecurrenceAlert> alerts) =>
+        alerts
+            .OrderByDescending(a => a.SimilarIncidents.Count)
+            .ThenByDescending(RecencyKey);
+
+    // 「どちらが新しいパターンか」の判定キー(発生日時 → 同時刻なら Id の大きい方)。
+    // 重大度が同点のときの副次キー(RankForAlertPanel)と、最新枠の選定(SelectForAlertPanel)の
+    // 両方がこれを使う。2 箇所へ書き写すと、片方だけ副次キーを変えたときに
+    // 「最新枠で確保したパターンが、同点内では先頭に来ない」といった食い違いが
+    // 静かに生まれるため、比較の定義はここ 1 か所に置く(§6 DRY)
+    private static (DateTime OccurredAt, int Id) RecencyKey(RecurrenceAlert alert) =>
+        (alert.CurrentIncident.OccurredAt, alert.CurrentIncident.Id);
+
+    /// <summary>
+    /// 再発アラートのうち、パネルに載せる分を選ぶ。重大度(類似件数)の高い順に
+    /// <paramref name="limit"/> 件を採るが、最後の 1 枠だけは「最も新しく発生した
+    /// パターン」に確保する。
+    /// </summary>
+    /// <remarks>
+    /// 重大度順だけで打ち切ると、類似 3 件以上の古いパターンが 5 つ居座っている環境で
+    /// 「今日初めて再発した」パターン(類似 1 件)が恒久的に画面へ出てこない。再発検知は
+    /// まさにこの「新しく現れたパターン」に気付くための機能なので、重大度の高いものと
+    /// 新しく現れたものの両方を必ず見せる。
+    /// トレードオフ: 最新枠の確保が働くとき、代わりに隠れるパターンは最新枠のものより
+    /// 必ず類似件数が多い(重大度が同点なら最新のものが同点内で先に並ぶため、そもそも
+    /// 差し替えが起きない)。つまり「隠れるのは常に最も軽微なもの」ではなく、実際の
+    /// 保証内容は "最も重大な上位 (limit - 1) 件と最新 1 件は必ず見せる" になる。
+    /// </remarks>
+    private static List<RecurrenceAlert> SelectForAlertPanel(List<RecurrenceAlert> alerts, int limit)
+    {
+        // 上限が 0 以下ならパネルには何も載せない(表示を止める設定。空リストで早期に返し、
+        // 下の selected[^1] が空リストを指して 500 になるのを防ぐ)
+        if (limit <= 0) return new List<RecurrenceAlert>();
+
+        // 上限以下なら選抜は不要。表示順(重大度順)だけ整えて返す
+        if (alerts.Count <= limit) return RankForAlertPanel(alerts).ToList();
+
+        // まず重大度の高い順に上限件数だけ採る
+        var selected = RankForAlertPanel(alerts).Take(limit).ToList();
+
+        // 最も新しく発生したパターン(同時刻なら Id の大きい方)を 1 件特定する。
+        // 上の重大度順ソートとは並べ方が違うので使い回せないが、必要なのは最大値 1 件だけなので
+        // 2 度目のソートはせず 1 走査で取る
+        var newest = alerts.MaxBy(RecencyKey)!;
+
+        // 重大度順の上位に既に入っていれば、そのままで両方の条件を満たしている
+        if (selected.Contains(newest)) return selected;
+
+        // 入っていなければ、選抜の最下位を最新パターンに差し替える
+        selected[^1] = newest;
+        // 差し替えで崩れた並びを重大度順へ戻してから返す(表示順は常に重大度順)
+        return RankForAlertPanel(selected).ToList();
+    }
+
     // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
     // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
     // 以前は呼び出し箇所に裸の 90 が直書きされ、ルール変更時に見落としやすかった(§6)。
@@ -239,9 +317,13 @@ public class HomeController : Controller
             FailedMeasures = failedMeasures,
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
-            RecurrenceAlerts = recurrenceAlerts,
             MonthlyCounts = monthlyCounts
         };
+
+        // 再発アラートは「検出全件」と「パネルに描画する分」を対で渡す。
+        // 描画分は重大な(類似件数の多い)パターン優先＋最新パターン 1 枠、残りは
+        // 「ほか N 件」として件数だけ伝わる(差分の算出は ViewModel 側が行う)
+        vm.SetRecurrenceAlerts(recurrenceAlerts, SelectForAlertPanel(recurrenceAlerts, RecurrenceAlertLimit));
 
         // ダッシュボードビューへモデルを渡して描画
         return View(vm);

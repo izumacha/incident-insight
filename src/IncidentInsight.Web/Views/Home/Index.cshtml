@@ -162,23 +162,44 @@
 
 <!-- Alert: Recurrence Warnings -->
 @* 再発パターン検出アラート(90 日以内に類似インシデントがある場合) *@
-@if (Model.RecurrenceAlerts.Any())
+@* パネルの表示条件は「検出できたパターンが 1 件でもあるか」であって「今表示する分があるか」
+   ではない。表示分(RecurrenceAlerts)だけで判定すると、表示上限が 0 の設定などで表示分が
+   空になったときにパネルごと消え、残件の存在を伝える「ほか N 件」まで一緒に消える *@
+@if (Model.RecurrenceAlertTotal > 0)
 {
     <div class="alert alert-warning alert-dismissible fade show shadow-sm" role="alert">
         <h6 class="alert-heading"><i class="bi bi-arrow-repeat me-2"></i>再発パターンが検出されました</h6>
         <p class="small mb-2">過去90日間に同じ部署・種別・原因で複数のインシデントが発生しています。根本原因対策の見直しが必要です。</p>
-        <ul class="mb-0">
-            @* 検出された再発パターンを全件列挙 *@
-            @foreach (var alert in Model.RecurrenceAlerts)
-            {
-                <li>
-                    <strong>@alert.PatternDescription</strong> —
-                    @alert.SimilarIncidents.Count 件の類似インシデント
-                    <a asp-controller="Incidents" asp-action="Details" asp-route-id="@alert.CurrentIncident.Id"
-                       class="ms-2 small">詳細 <i class="bi bi-arrow-right"></i></a>
-                </li>
-            }
-        </ul>
+        @* 検出された再発パターンのうち、コントローラが上限件数まで絞り込んだ分を列挙する。
+           全件列挙していた頃は、再発が積み上がるほどこのリストだけが伸びて
+           KPI やトレンドチャートを画面外へ押し出していた(§8)。
+           表示分が空のときは空の <ul> を出さない *@
+        @if (Model.RecurrenceAlerts.Any())
+        {
+            <ul class="mb-0">
+                @foreach (var alert in Model.RecurrenceAlerts)
+                {
+                    <li>
+                        <strong>@alert.PatternDescription</strong> —
+                        @alert.SimilarIncidents.Count 件の類似インシデント
+                        <a asp-controller="Incidents" asp-action="Details" asp-route-id="@alert.CurrentIncident.Id"
+                           class="ms-2 small">詳細 <i class="bi bi-arrow-right"></i></a>
+                    </li>
+                }
+            </ul>
+        }
+        @* 上限で載せきれなかった分は件数だけ伝える。件数を隠すと「表示されている分で全部」と
+           誤解されるため、残件があることを必ず明示する。期限超過パネルのような「全件確認」
+           リンクは、再発パターンだけを一覧する画面がアプリに無いため付けられない。
+           どのパターンを残すか(と、そのトレードオフ)は HomeController.SelectForAlertPanel の
+           remarks が正本。ここでは利用者向けの言い換えだけを置く *@
+        @if (Model.HiddenRecurrenceAlertCount > 0)
+        {
+            <p class="small mb-0 mt-2">
+                ほか <strong>@Model.HiddenRecurrenceAlertCount 件</strong>の再発パターンを検出しています（類似インシデントの多いパターンと最新のパターンを優先して @Model.RecurrenceAlerts.Count 件のみ表示）。
+                個別の再発状況は各インシデントの詳細画面で確認できます。
+            </p>
+        }
         <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
     </div>
 }
