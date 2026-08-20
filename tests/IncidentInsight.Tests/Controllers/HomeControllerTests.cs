@@ -37,6 +37,15 @@ public class HomeControllerTests : IDisposable
         _db.Dispose();
     }
 
+    // 再発アラートのテストは「1 部署 = 1 再発パターン」でシードするため、必要な数の部署が
+    // マスタ(Incident.Departments)に存在することが前提になる。上限値(RecurrenceAlertLimit)を
+    // 引き上げたときに IndexOutOfRangeException で理由不明に落ちるのを避け、
+    // 「何が足りないのか」が分かるメッセージで止める
+    private static void RequireDepartments(int required) =>
+        Assert.True(
+            Incident.Departments.Length >= required,
+            $"テストに必要な部署数が足りない(必要: {required} / 定義: {Incident.Departments.Length})");
+
     private Incident MakeIncident(string dept = "内科病棟",
         IncidentTypeKind type = IncidentTypeKind.Medication,
         IncidentSeverity severity = IncidentSeverity.Level2,
@@ -279,7 +288,7 @@ public class HomeControllerTests : IDisposable
         // 「類似件数が多い ＝ 添字が大きい部署」という検証しやすい並びを作る。
         // 発生日は逆に添字が小さい部署ほど新しくして、日付順で打ち切ると結果が変わるようにする
         // (以前の実装なら添字の小さい軽微なパターンが残っていた)
-        Assert.True(Incident.Departments.Length >= patternCount, "テストに必要な部署数が足りない");
+        RequireDepartments(patternCount);
         var incidentsByDept = new Dictionary<string, List<Incident>>();
         for (int i = 0; i < patternCount; i++)
         {
@@ -349,6 +358,9 @@ public class HomeControllerTests : IDisposable
         // 「今日初めて再発した」パターンが、類似件数の多い古いパターンに押し出されて
         // 恒久的に画面へ出てこない。再発検知はまさに新しく現れたパターンに気付くための
         // 機能なので、選抜の 1 枠は最新パターンに確保されることを固定する。
+        // 上限ぶんの部署 + 最新パターン用に 1 部署ぶん、計 上限 + 1 部署を使う
+        RequireDepartments(HomeController.RecurrenceAlertLimit + 1);
+
         var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
         _db.CauseCategories.Add(category);
         await _db.SaveChangesAsync();

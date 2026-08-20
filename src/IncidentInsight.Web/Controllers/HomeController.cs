@@ -76,8 +76,15 @@ public class HomeController : Controller
     private static IEnumerable<RecurrenceAlert> RankForAlertPanel(IEnumerable<RecurrenceAlert> alerts) =>
         alerts
             .OrderByDescending(a => a.SimilarIncidents.Count)
-            .ThenByDescending(a => a.CurrentIncident.OccurredAt)
-            .ThenByDescending(a => a.CurrentIncident.Id);
+            .ThenByDescending(RecencyKey);
+
+    // 「どちらが新しいパターンか」の判定キー(発生日時 → 同時刻なら Id の大きい方)。
+    // 重大度が同点のときの副次キー(RankForAlertPanel)と、最新枠の選定(SelectForAlertPanel)の
+    // 両方がこれを使う。2 箇所へ書き写すと、片方だけ副次キーを変えたときに
+    // 「最新枠で確保したパターンが、同点内では先頭に来ない」といった食い違いが
+    // 静かに生まれるため、比較の定義はここ 1 か所に置く(§6 DRY)
+    private static (DateTime OccurredAt, int Id) RecencyKey(RecurrenceAlert alert) =>
+        (alert.CurrentIncident.OccurredAt, alert.CurrentIncident.Id);
 
     /// <summary>
     /// 再発アラートのうち、パネルに載せる分を選ぶ。重大度(類似件数)の高い順に
@@ -88,26 +95,32 @@ public class HomeController : Controller
     /// 重大度順だけで打ち切ると、類似 3 件以上の古いパターンが 5 つ居座っている環境で
     /// 「今日初めて再発した」パターン(類似 1 件)が恒久的に画面へ出てこない。再発検知は
     /// まさにこの「新しく現れたパターン」に気付くための機能なので、重大度の高いものと
-    /// 新しく現れたものの両方を必ず見せる(打ち切りは軽微かつ古いものから)。
+    /// 新しく現れたものの両方を必ず見せる。
+    /// トレードオフ: 最新枠の確保が働くとき、重大度順で 1 つ下位に落ちたパターン
+    /// (最新枠のものより類似件数が多いことがある)が代わりに隠れる。「隠れるのは常に
+    /// 最も軽微なもの」という保証は無く、"最も重大な上位 (limit - 1) 件と最新 1 件は必ず見せる"
+    /// が実際の保証内容。
     /// </remarks>
     private static List<RecurrenceAlert> SelectForAlertPanel(List<RecurrenceAlert> alerts, int limit)
     {
+        // 上限が 0 以下ならパネルには何も載せない(表示を止める設定。空リストで早期に返し、
+        // 下の selected[^1] が空リストを指して 500 になるのを防ぐ)
+        if (limit <= 0) return new List<RecurrenceAlert>();
+
         // 上限以下なら選抜は不要。表示順(重大度順)だけ整えて返す
         if (alerts.Count <= limit) return RankForAlertPanel(alerts).ToList();
 
         // まず重大度の高い順に上限件数だけ採る
         var selected = RankForAlertPanel(alerts).Take(limit).ToList();
 
-        // 最も新しく発生したパターン(同時刻なら Id の大きい方)を 1 件特定する
-        var newest = alerts
-            .OrderByDescending(a => a.CurrentIncident.OccurredAt)
-            .ThenByDescending(a => a.CurrentIncident.Id)
-            .First();
+        // 最も新しく発生したパターン(同時刻なら Id の大きい方)を 1 件特定する。
+        // 全体を並べ替える必要は無いので、最大値だけを 1 走査で取る
+        var newest = alerts.MaxBy(RecencyKey)!;
 
         // 重大度順の上位に既に入っていれば、そのままで両方の条件を満たしている
         if (selected.Contains(newest)) return selected;
 
-        // 入っていなければ、選抜の最下位(= 最も軽微で古いもの)を最新パターンに差し替える
+        // 入っていなければ、選抜の最下位を最新パターンに差し替える
         selected[^1] = newest;
         // 差し替えで崩れた並びを重大度順へ戻してから返す(表示順は常に重大度順)
         return RankForAlertPanel(selected).ToList();

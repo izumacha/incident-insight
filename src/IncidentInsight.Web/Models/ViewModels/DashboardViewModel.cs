@@ -58,8 +58,12 @@ public class DashboardViewModel
     // パネルに描画する分だけを保持する。上限件数と並び順(類似件数の多い順)は
     // HomeController.RecurrenceAlertLimit / SelectForAlertPanel が決める。
     // 総数(RecurrenceAlertTotal)と必ず対で更新されるよう、設定経路は
-    // SetRecurrenceAlerts だけに絞る(private set)
-    public List<RecurrenceAlert> RecurrenceAlerts { get; private set; } = new();
+    // SetRecurrenceAlerts だけに絞る(private set)。
+    // 型を IReadOnlyList にするのは、private set が防げるのが「差し替え」だけで
+    // 「中身の追加・削除」は防げないため。List のまま公開すると
+    // RecurrenceAlerts.RemoveAll(...) のような後からの操作で件数だけが動き、
+    // HiddenRecurrenceAlertCount が実態とずれる(表示件数と総数の対応が壊れる)
+    public IReadOnlyList<RecurrenceAlert> RecurrenceAlerts { get; private set; } = new List<RecurrenceAlert>();
 
     // 検出された再発パターンの数(表示を上限で絞っても数え落とさないために別に持つ)。
     // 表示分(RecurrenceAlerts)と総数を分ける役割分担は OverdueMeasureList(表示分)と
@@ -91,17 +95,28 @@ public class DashboardViewModel
         IReadOnlyCollection<RecurrenceAlert> allAlerts,
         IEnumerable<RecurrenceAlert> displayed)
     {
+        // 引数が null なら、どちらが欠けているかが分かる形で弾く(NullReferenceException にしない)
+        ArgumentNullException.ThrowIfNull(allAlerts);
+        ArgumentNullException.ThrowIfNull(displayed);
+
         // 表示分を確定させる(呼び出し側の遅延評価をここで打ち切る)
-        RecurrenceAlerts = displayed.ToList();
-        // 総数は必ず全件側から数える(表示分と食い違わないようにするための唯一の算出元)
-        RecurrenceAlertTotal = allAlerts.Count;
-        // 表示分が全件を上回るのは呼び出し側の取り違え。黙って「ほか -N 件」にせず開発時に気付けるようにする
-        if (RecurrenceAlerts.Count > RecurrenceAlertTotal)
+        var displayedList = displayed.ToList();
+
+        // 表示分が全件を上回るのは引数の取り違え。代入より前に弾き、
+        // 例外を握り潰す呼び出し側が現れても ViewModel が矛盾した状態で描画されないようにする
+        // (矛盾したまま描画されると HiddenRecurrenceAlertCount が 0 になり、
+        //  残件があるのに「ほか N 件」が消えて「表示分で全部」と誤解させる)
+        if (displayedList.Count > allAlerts.Count)
         {
             throw new ArgumentException(
                 "表示する再発アラートが検出総数を超えています(allAlerts と displayed の取り違え)。",
                 nameof(displayed));
         }
+
+        // ここまで来たら整合しているので、表示分と総数をまとめて確定させる
+        RecurrenceAlerts = displayedList;
+        // 総数は必ず全件側から数える(表示分と食い違わないようにするための唯一の算出元)
+        RecurrenceAlertTotal = allAlerts.Count;
     }
 
     // Monthly trend data for sparkline chart (bucket window varies by Period)
