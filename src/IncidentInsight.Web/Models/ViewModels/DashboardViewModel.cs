@@ -54,8 +54,18 @@ public class DashboardViewModel
     public List<PreventiveMeasure> OverdueMeasureList { get; set; } = new();
 
     // Recurrence alerts: incidents that share same department+type+cause as another recent incident
-    // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)
+    // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)。
+    // パネルに描画する分だけを保持し、上限は HomeController.RecurrenceAlertLimit が決める
     public List<RecurrenceAlert> RecurrenceAlerts { get; set; } = new();
+
+    // 検出された再発パターンの総数(表示を上限で絞っても数え落とさないための実数)。
+    // OverdueMeasures(KPI)と OverdueMeasureList(表示分)の関係と同じ役割分担
+    public int RecurrenceAlertTotal { get; set; }
+
+    // パネルに載せきれなかった再発パターンの件数。View はこの値が正のときだけ
+    // 「ほか N 件」を表示する。総数を設定しない呼び出し(古いテスト等)でも負にならないよう
+    // 0 で下限を切る(表示側で条件を書き分けずに済ませるため)
+    public int HiddenRecurrenceAlertCount => Math.Max(0, RecurrenceAlertTotal - RecurrenceAlerts.Count);
 
     // Monthly trend data for sparkline chart (bucket window varies by Period)
     // トレンドチャート用の件数バケット(期間 Period に応じて日別7件/月別4・6・12件)

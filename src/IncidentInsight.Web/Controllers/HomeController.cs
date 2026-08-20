@@ -54,6 +54,16 @@ public class HomeController : Controller
     // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
     private const int RecentIncidentsLimit = 5;
 
+    // ダッシュボードの「再発パターン」アラートパネルに列挙する最大件数。
+    // OverdueAlertLimit と同じく代表例を数件見せるだけのパネルで、Views/Home/Index.cshtml は
+    // 検出された再発パターンを 1 件 1 <li> で全件列挙していた。IRecurrenceService が返す
+    // アラート件数は「直近 90 日のインシデント(RecurrenceService.MaxAlertCandidateRows 件まで)」
+    // に比例して増えるため、再発が積み上がった病院ではログイン直後の着地ページに数百行の
+    // リストが伸び、KPI やトレンドが画面外へ押し出される(§8 一覧は必ず上限を持たせる)。
+    // 検出総数は RecurrenceAlertTotal として別に持ち、パネルには「ほか N 件」と件数だけ示す。
+    // OverdueAlertLimit と同様、テストと View 双方から参照できるよう public にする(§6)。
+    public const int RecurrenceAlertLimit = 5;
+
     // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
     // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
     // 以前は呼び出し箇所に裸の 90 が直書きされ、ルール変更時に見落としやすかった(§6)。
@@ -239,7 +249,10 @@ public class HomeController : Controller
             FailedMeasures = failedMeasures,
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
-            RecurrenceAlerts = recurrenceAlerts,
+            // パネルに描画するのは新しい発生順に上限件数まで(残りは件数だけ伝える)
+            RecurrenceAlerts = recurrenceAlerts.Take(RecurrenceAlertLimit).ToList(),
+            // 検出できたパターンの総数(KPI と同じく、表示を絞っても数え落とさない)
+            RecurrenceAlertTotal = recurrenceAlerts.Count,
             MonthlyCounts = monthlyCounts
         };
 

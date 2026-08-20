@@ -248,6 +248,58 @@ public class HomeControllerTests : IDisposable
 
         Assert.NotEmpty(vm!.RecurrenceAlerts);
         Assert.Contains(vm.RecurrenceAlerts, a => a.PatternDescription.Contains("外科病棟"));
+        // 上限に達していないときは「ほか N 件」を出さない(総数 = 表示件数)
+        Assert.Equal(vm.RecurrenceAlerts.Count, vm.RecurrenceAlertTotal);
+        Assert.Equal(0, vm.HiddenRecurrenceAlertCount);
+    }
+
+    [Fact]
+    public async Task Index_RecurrenceAlerts_AreCappedButTotalReflectsFullCount()
+    {
+        // 回帰テスト: 以前は再発アラートに表示上限が無く、Views/Home/Index.cshtml が
+        // 検出されたパターンを全件 <li> で列挙していた。再発が積み上がった環境では
+        // ログイン直後の着地ページに長大なリストが伸び、KPI やトレンドが画面外へ押し出される
+        // (§8 一覧取得は必ず上限を持たせる)。ここでは上限を超える数の再発パターンを用意し、
+        // (1) RecurrenceAlerts が上限件数までしか含まれないこと、
+        // (2) RecurrenceAlertTotal は上限に関わらず検出総数を保持すること、
+        // (3) 差分が HiddenRecurrenceAlertCount(「ほか N 件」の表示元)になること、
+        // の 3 点を確認する。
+        const int patternCount = HomeController.RecurrenceAlertLimit + 3; // 上限より多いパターン数
+
+        // 原因分類は 1 つで足りる(パターンの区別は部署で付ける)
+        var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        // 部署ごとに「同部署・同種別・同原因」のインシデントを 2 件ずつ作り、
+        // 1 部署 = 1 再発パターンになるようにする(部署一覧は Incident 側の唯一の真実の源から取る)
+        Assert.True(Incident.Departments.Length >= patternCount, "テストに必要な部署数が足りない");
+        for (int i = 0; i < patternCount; i++)
+        {
+            var dept = Incident.Departments[i];
+            // 同じ部署・種別で 2 件(片方が「今回」、もう片方が「類似の過去案件」になる)
+            var first = MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-10));
+            var second = MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-20));
+            _db.Incidents.AddRange(first, second);
+            await _db.SaveChangesAsync();
+
+            // 両方に同じ原因分類を紐づけて再発条件(原因カテゴリの重複)を満たす
+            _db.CauseAnalyses.AddRange(
+                new CauseAnalysis { IncidentId = first.Id, CauseCategoryId = category.Id, Why1 = "原因1" },
+                new CauseAnalysis { IncidentId = second.Id, CauseCategoryId = category.Id, Why1 = "原因2" }
+            );
+            await _db.SaveChangesAsync();
+        }
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 検出総数は上限に関わらず全パターンを数える
+        Assert.Equal(patternCount, vm!.RecurrenceAlertTotal);
+        // パネルへ渡すのは上限件数まで
+        Assert.Equal(HomeController.RecurrenceAlertLimit, vm.RecurrenceAlerts.Count);
+        // 載せきれなかった件数が「ほか N 件」として表示される
+        Assert.Equal(patternCount - HomeController.RecurrenceAlertLimit, vm.HiddenRecurrenceAlertCount);
     }
 
     [Fact]
