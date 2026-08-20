@@ -289,26 +289,25 @@ public class HomeControllerTests : IDisposable
         // 発生日は逆に添字が小さい部署ほど新しくして、日付順で打ち切ると結果が変わるようにする
         // (以前の実装なら添字の小さい軽微なパターンが残っていた)
         RequireDepartments(patternCount);
-        var incidentsByDept = new Dictionary<string, List<Incident>>();
+        // 後で原因分析を紐づけられるよう、作ったインシデントを順に控えておく
+        // (部署ごとの引き当ては不要なので、姉妹テストと同じくフラットなリストで持つ)
+        var incidents = new List<Incident>();
         for (int i = 0; i < patternCount; i++)
         {
             var dept = Incident.Departments[i];
             // この部署の再発パターンを構成するインシデント群(i + 2 件)
-            var group = new List<Incident>();
             for (int n = 0; n < i + 2; n++)
             {
                 // 添字が小さい部署ほど新しい発生日にする(日付順の打ち切りとの差を出すため)
-                group.Add(MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-1 - i - n)));
+                incidents.Add(MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-1 - i - n)));
             }
-            // 後で原因分析を紐づけられるよう部署ごとに控えておく
-            incidentsByDept[dept] = group;
-            _db.Incidents.AddRange(group);
         }
+        _db.Incidents.AddRange(incidents);
         // Id を採番させるため、全部署分をまとめて 1 回だけ保存する
         await _db.SaveChangesAsync();
 
         // 各インシデントに同じ原因分類を紐づけて再発条件(原因カテゴリの重複)を満たす
-        foreach (var incident in incidentsByDept.Values.SelectMany(group => group))
+        foreach (var incident in incidents)
         {
             _db.CauseAnalyses.Add(new CauseAnalysis
             {

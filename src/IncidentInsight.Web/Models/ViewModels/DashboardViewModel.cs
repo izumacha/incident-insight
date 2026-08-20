@@ -59,11 +59,13 @@ public class DashboardViewModel
     // HomeController.RecurrenceAlertLimit / SelectForAlertPanel が決める。
     // 総数(RecurrenceAlertTotal)と必ず対で更新されるよう、設定経路は
     // SetRecurrenceAlerts だけに絞る(private set)。
-    // 型を IReadOnlyList にするのは、private set が防げるのが「差し替え」だけで
-    // 「中身の追加・削除」は防げないため。List のまま公開すると
-    // RecurrenceAlerts.RemoveAll(...) のような後からの操作で件数だけが動き、
-    // HiddenRecurrenceAlertCount が実態とずれる(表示件数と総数の対応が壊れる)
-    public IReadOnlyList<RecurrenceAlert> RecurrenceAlerts { get; private set; } = new List<RecurrenceAlert>();
+    // 型を IReadOnlyList にし、中身も ReadOnlyCollection で包むのは、private set が防げるのが
+    // 「差し替え」だけで「中身の追加・削除」は防げないため。List のまま公開すると
+    // RecurrenceAlerts.RemoveAll(...) のような後からの操作(IReadOnlyList で公開しても
+    // List へダウンキャストすれば可能)で件数だけが動き、HiddenRecurrenceAlertCount が
+    // 実態とずれる(表示件数と総数の対応が壊れる)
+    public IReadOnlyList<RecurrenceAlert> RecurrenceAlerts { get; private set; } =
+        new List<RecurrenceAlert>().AsReadOnly();
 
     // 検出された再発パターンの数(表示を上限で絞っても数え落とさないために別に持つ)。
     // 表示分(RecurrenceAlerts)と総数を分ける役割分担は OverdueMeasureList(表示分)と
@@ -110,15 +112,28 @@ public class DashboardViewModel
         // (件数さえ少なければ素通りしてしまう)を弾くため。アラートは同じ検出結果から
         // 組み立てられるので、同一インスタンスかどうか(参照の一致)で判定できる
         var detected = new HashSet<object>(allAlerts, ReferenceEqualityComparer.Instance);
-        if (displayedList.Exists(alert => !detected.Contains(alert)))
+        // 表示分から重複を除いた集合。所属チェックと「同じものを 2 度渡していないか」の
+        // 両方をこの 1 つの集合で見る
+        var displayedDistinct = new HashSet<object>(displayedList, ReferenceEqualityComparer.Instance);
+        if (!displayedDistinct.IsSubsetOf(detected))
         {
             throw new ArgumentException(
                 "表示する再発アラートが検出結果に含まれていません(allAlerts と displayed の取り違え)。",
                 nameof(displayed));
         }
+        // 同じアラートを 2 度渡されると、パネルに同じ行が並んだうえ
+        // RecurrenceAlerts.Count が総数を超え、HiddenRecurrenceAlertCount が 0 に丸められて
+        // 「ほか N 件」が消える(所属チェックだけでは素通りする)
+        if (displayedDistinct.Count != displayedList.Count)
+        {
+            throw new ArgumentException(
+                "表示する再発アラートに同じものが重複して含まれています。",
+                nameof(displayed));
+        }
 
-        // ここまで来たら整合しているので、表示分と総数をまとめて確定させる
-        RecurrenceAlerts = displayedList;
+        // ここまで来たら整合しているので、表示分と総数をまとめて確定させる。
+        // AsReadOnly でラップして、IReadOnlyList へダウンキャストして中身を書き換える経路も塞ぐ
+        RecurrenceAlerts = displayedList.AsReadOnly();
         // 総数は必ず全件側から数える(表示分と食い違わないようにするための唯一の算出元)
         RecurrenceAlertTotal = allAlerts.Count;
     }
