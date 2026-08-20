@@ -56,8 +56,10 @@ public class DashboardViewModel
     // Recurrence alerts: incidents that share same department+type+cause as another recent incident
     // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)。
     // パネルに描画する分だけを保持する。上限件数と並び順(類似件数の多い順)は
-    // HomeController.RecurrenceAlertLimit / RankForAlertPanel が決める
-    public List<RecurrenceAlert> RecurrenceAlerts { get; set; } = new();
+    // HomeController.RecurrenceAlertLimit / SelectForAlertPanel が決める。
+    // 総数(RecurrenceAlertTotal)と必ず対で更新されるよう、設定経路は
+    // SetRecurrenceAlerts だけに絞る(private set)
+    public List<RecurrenceAlert> RecurrenceAlerts { get; private set; } = new();
 
     // 検出された再発パターンの数(表示を上限で絞っても数え落とさないために別に持つ)。
     // 表示分(RecurrenceAlerts)と総数を分ける役割分担は OverdueMeasureList(表示分)と
@@ -67,12 +69,40 @@ public class DashboardViewModel
     // (RecurrenceService.MaxAlertCandidateRows)の影響を受ける。直近 90 日のインシデントが
     // その上限を超える環境では検出自体が漏れるため、この値は「検出できた範囲での件数」
     // であって全期間の厳密な再発パターン総数ではない
-    public int RecurrenceAlertTotal { get; set; }
+    public int RecurrenceAlertTotal { get; private set; }
 
     // パネルに載せきれなかった再発パターンの件数。View はこの値が正のときだけ
-    // 「ほか N 件」を表示する。総数を設定しない呼び出し(古いテスト等)でも負にならないよう
-    // 0 で下限を切る(表示側で条件を書き分けずに済ませるため)
+    // 「ほか N 件」を表示する。差し引きが負になることは SetRecurrenceAlerts の
+    // 引数チェックで排除しているが、既定値(どちらも空/0)のときに 0 を返すため Max で下限を切る
     public int HiddenRecurrenceAlertCount => Math.Max(0, RecurrenceAlertTotal - RecurrenceAlerts.Count);
+
+    /// <summary>
+    /// 再発アラートの「検出された全件」と「パネルに描画する分」をまとめて設定する。
+    /// </summary>
+    /// <remarks>
+    /// 表示分と総数を別々に代入できる形にしておくと、片方だけ設定した呼び出しで
+    /// <see cref="HiddenRecurrenceAlertCount"/> が 0 になり、残件があるのに「ほか N 件」が
+    /// 黙って消える(利用者は表示分で全部だと誤解する)。総数を引数から必ず導出することで、
+    /// その食い違い自体を起こせなくする。
+    /// </remarks>
+    /// <param name="allAlerts">検出された再発アラート全件(総数の算出元)。</param>
+    /// <param name="displayed">パネルへ描画する分(<paramref name="allAlerts"/> の部分集合)。</param>
+    public void SetRecurrenceAlerts(
+        IReadOnlyCollection<RecurrenceAlert> allAlerts,
+        IEnumerable<RecurrenceAlert> displayed)
+    {
+        // 表示分を確定させる(呼び出し側の遅延評価をここで打ち切る)
+        RecurrenceAlerts = displayed.ToList();
+        // 総数は必ず全件側から数える(表示分と食い違わないようにするための唯一の算出元)
+        RecurrenceAlertTotal = allAlerts.Count;
+        // 表示分が全件を上回るのは呼び出し側の取り違え。黙って「ほか -N 件」にせず開発時に気付けるようにする
+        if (RecurrenceAlerts.Count > RecurrenceAlertTotal)
+        {
+            throw new ArgumentException(
+                "表示する再発アラートが検出総数を超えています(allAlerts と displayed の取り違え)。",
+                nameof(displayed));
+        }
+    }
 
     // Monthly trend data for sparkline chart (bucket window varies by Period)
     // トレンドチャート用の件数バケット(期間 Period に応じて日別7件/月別4・6・12件)

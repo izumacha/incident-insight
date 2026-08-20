@@ -321,19 +321,74 @@ public class HomeControllerTests : IDisposable
         // 載せきれなかった件数が「ほか N 件」として表示される
         Assert.Equal(patternCount - HomeController.RecurrenceAlertLimit, vm.HiddenRecurrenceAlertCount);
 
-        // 残るのは類似件数が多い順(= 添字が大きい部署から)の上限件数分。
-        // 発生日順で打ち切っていると添字の小さい部署が残るため、この検証で並び順が固定される
+        // 残るのは (a) 類似件数が多い上位(= 添字が大きい部署)と、(b) 最新枠に確保される
+        // 「最も新しく発生したパターン」(= 添字 0 の部署)。発生日順だけで打ち切ると
+        // 添字の小さい軽微なパターンばかりが残り、重大度順だけで打ち切ると添字 0 が消えるため、
+        // この検証で「重大度優先＋最新 1 枠」という選抜規則が両方向に固定される。
+        // 表示順は重大度(類似件数)の降順
         var expectedDepartments = Enumerable
-            .Range(patternCount - HomeController.RecurrenceAlertLimit, HomeController.RecurrenceAlertLimit)
+            // 重大度上位は (上限 - 最新枠 1) 件分。添字の大きい部署から降順に並ぶ
+            .Range(patternCount - (HomeController.RecurrenceAlertLimit - 1), HomeController.RecurrenceAlertLimit - 1)
             .Reverse()
             .Select(i => Incident.Departments[i])
+            // 最新枠の 1 件(添字 0 の部署)は類似件数が最少なので末尾に並ぶ
+            .Append(Incident.Departments[0])
             .ToList();
         Assert.Equal(
             expectedDepartments,
             vm.RecurrenceAlerts.Select(a => a.CurrentIncident.Department).ToList());
-        // 類似件数も降順に並んでいることを確認する(同点時の副次キーに依存しない形で)
+        // 類似件数が降順に並んでいることも確認する(同点時の副次キーに依存しない形で)
         var similarCounts = vm.RecurrenceAlerts.Select(a => a.SimilarIncidents.Count).ToList();
         Assert.Equal(similarCounts.OrderByDescending(c => c).ToList(), similarCounts);
+    }
+
+    [Fact]
+    public async Task Index_RecurrenceAlerts_KeepsNewestPatternEvenWhenLeastSevere()
+    {
+        // /code-review ultra 指摘対応の回帰テスト: 重大度(類似件数)順だけで打ち切ると、
+        // 「今日初めて再発した」パターンが、類似件数の多い古いパターンに押し出されて
+        // 恒久的に画面へ出てこない。再発検知はまさに新しく現れたパターンに気付くための
+        // 機能なので、選抜の 1 枠は最新パターンに確保されることを固定する。
+        var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        // 上限ぶんの「類似件数が多い(3 件ずつ)・やや古い」パターンで枠を埋める
+        var incidents = new List<Incident>();
+        for (int i = 0; i < HomeController.RecurrenceAlertLimit; i++)
+        {
+            for (int n = 0; n < 3; n++)
+            {
+                incidents.Add(MakeIncident(dept: Incident.Departments[i], occurredAt: _clock.Today.AddDays(-30 - n)));
+            }
+        }
+        // そこへ「今日初めて再発した(類似 1 件だけ)・最も新しい」パターンを 1 つ足す
+        var newestDept = Incident.Departments[HomeController.RecurrenceAlertLimit];
+        incidents.Add(MakeIncident(dept: newestDept, occurredAt: _clock.Today));
+        incidents.Add(MakeIncident(dept: newestDept, occurredAt: _clock.Today.AddDays(-1)));
+
+        _db.Incidents.AddRange(incidents);
+        await _db.SaveChangesAsync();
+
+        // 全インシデントに同じ原因分類を紐づけて再発条件を満たす
+        foreach (var incident in incidents)
+        {
+            _db.CauseAnalyses.Add(new CauseAnalysis
+            {
+                IncidentId = incident.Id,
+                CauseCategoryId = category.Id,
+                Why1 = "原因"
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 上限件数までしか表示しないのは変わらない
+        Assert.Equal(HomeController.RecurrenceAlertLimit, vm!.RecurrenceAlerts.Count);
+        // 類似件数が最少でも、最新のパターンは必ず表示に残る
+        Assert.Contains(vm.RecurrenceAlerts, a => a.CurrentIncident.Department == newestDept);
     }
 
     [Fact]

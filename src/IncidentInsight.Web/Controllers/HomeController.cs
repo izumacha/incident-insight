@@ -61,7 +61,8 @@ public class HomeController : Controller
     // に比例して増えるため、再発が積み上がった病院ではログイン直後の着地ページに数百行の
     // リストが伸び、KPI やトレンドが画面外へ押し出される(§8 一覧は必ず上限を持たせる)。
     // 検出総数は RecurrenceAlertTotal として別に持ち、パネルには「ほか N 件」と件数だけ示す。
-    // OverdueAlertLimit と同様、テストと View 双方から参照できるよう public にする(§6)。
+    // テストが上限値と同期した件数でシードできるよう public にする(OverdueAlertLimit と同じ理由。
+    // ただし OverdueAlertLimit と違い View からは参照していない。§6)。
     public const int RecurrenceAlertLimit = 5;
 
     // 上限で絞り込むときの並び順(= 何を「代表例」とみなすか)。類似インシデントが多い
@@ -77,6 +78,40 @@ public class HomeController : Controller
             .OrderByDescending(a => a.SimilarIncidents.Count)
             .ThenByDescending(a => a.CurrentIncident.OccurredAt)
             .ThenByDescending(a => a.CurrentIncident.Id);
+
+    /// <summary>
+    /// 再発アラートのうち、パネルに載せる分を選ぶ。重大度(類似件数)の高い順に
+    /// <paramref name="limit"/> 件を採るが、最後の 1 枠だけは「最も新しく発生した
+    /// パターン」に確保する。
+    /// </summary>
+    /// <remarks>
+    /// 重大度順だけで打ち切ると、類似 3 件以上の古いパターンが 5 つ居座っている環境で
+    /// 「今日初めて再発した」パターン(類似 1 件)が恒久的に画面へ出てこない。再発検知は
+    /// まさにこの「新しく現れたパターン」に気付くための機能なので、重大度の高いものと
+    /// 新しく現れたものの両方を必ず見せる(打ち切りは軽微かつ古いものから)。
+    /// </remarks>
+    private static List<RecurrenceAlert> SelectForAlertPanel(List<RecurrenceAlert> alerts, int limit)
+    {
+        // 上限以下なら選抜は不要。表示順(重大度順)だけ整えて返す
+        if (alerts.Count <= limit) return RankForAlertPanel(alerts).ToList();
+
+        // まず重大度の高い順に上限件数だけ採る
+        var selected = RankForAlertPanel(alerts).Take(limit).ToList();
+
+        // 最も新しく発生したパターン(同時刻なら Id の大きい方)を 1 件特定する
+        var newest = alerts
+            .OrderByDescending(a => a.CurrentIncident.OccurredAt)
+            .ThenByDescending(a => a.CurrentIncident.Id)
+            .First();
+
+        // 重大度順の上位に既に入っていれば、そのままで両方の条件を満たしている
+        if (selected.Contains(newest)) return selected;
+
+        // 入っていなければ、選抜の最下位(= 最も軽微で古いもの)を最新パターンに差し替える
+        selected[^1] = newest;
+        // 差し替えで崩れた並びを重大度順へ戻してから返す(表示順は常に重大度順)
+        return RankForAlertPanel(selected).ToList();
+    }
 
     // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
     // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
@@ -263,13 +298,13 @@ public class HomeController : Controller
             FailedMeasures = failedMeasures,
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
-            // パネルに描画するのは重大な(類似件数の多い)パターンから上限件数まで。
-            // 残りは件数だけ伝える(RecurrenceAlertTotal との差分が「ほか N 件」になる)
-            RecurrenceAlerts = RankForAlertPanel(recurrenceAlerts).Take(RecurrenceAlertLimit).ToList(),
-            // 検出できたパターンの数(表示を絞っても数え落とさないための実数)
-            RecurrenceAlertTotal = recurrenceAlerts.Count,
             MonthlyCounts = monthlyCounts
         };
+
+        // 再発アラートは「検出全件」と「パネルに描画する分」を対で渡す。
+        // 描画分は重大な(類似件数の多い)パターン優先＋最新パターン 1 枠、残りは
+        // 「ほか N 件」として件数だけ伝わる(差分の算出は ViewModel 側が行う)
+        vm.SetRecurrenceAlerts(recurrenceAlerts, SelectForAlertPanel(recurrenceAlerts, RecurrenceAlertLimit));
 
         // ダッシュボードビューへモデルを渡して描画
         return View(vm);
