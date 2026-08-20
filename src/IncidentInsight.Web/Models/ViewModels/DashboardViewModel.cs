@@ -55,11 +55,18 @@ public class DashboardViewModel
 
     // Recurrence alerts: incidents that share same department+type+cause as another recent incident
     // 再発アラート(同じ部署・種別・原因で類似案件があるインシデント)。
-    // パネルに描画する分だけを保持し、上限は HomeController.RecurrenceAlertLimit が決める
+    // パネルに描画する分だけを保持する。上限件数と並び順(類似件数の多い順)は
+    // HomeController.RecurrenceAlertLimit / RankForAlertPanel が決める
     public List<RecurrenceAlert> RecurrenceAlerts { get; set; } = new();
 
-    // 検出された再発パターンの総数(表示を上限で絞っても数え落とさないための実数)。
-    // OverdueMeasures(KPI)と OverdueMeasureList(表示分)の関係と同じ役割分担
+    // 検出された再発パターンの数(表示を上限で絞っても数え落とさないために別に持つ)。
+    // 表示分(RecurrenceAlerts)と総数を分ける役割分担は OverdueMeasureList(表示分)と
+    // OverdueMeasures(KPI)と同じだが、数え方の厳密さは異なる: OverdueMeasures は DB 側の
+    // CountAsync による実数なのに対し、こちらは IRecurrenceService が返したアラート件数
+    // そのもので、同サービスが候補読み込みに掛けている上限
+    // (RecurrenceService.MaxAlertCandidateRows)の影響を受ける。直近 90 日のインシデントが
+    // その上限を超える環境では検出自体が漏れるため、この値は「検出できた範囲での件数」
+    // であって全期間の厳密な再発パターン総数ではない
     public int RecurrenceAlertTotal { get; set; }
 
     // パネルに載せきれなかった再発パターンの件数。View はこの値が正のときだけ

@@ -64,6 +64,20 @@ public class HomeController : Controller
     // OverdueAlertLimit と同様、テストと View 双方から参照できるよう public にする(§6)。
     public const int RecurrenceAlertLimit = 5;
 
+    // 上限で絞り込むときの並び順(= 何を「代表例」とみなすか)。類似インシデントが多い
+    // パターンほど根本原因対策の見直しが急がれるため、件数の多い順を第 1 キーにする。
+    // 単純に IRecurrenceService の戻り順(=直近の発生順)で打ち切ると、類似 12 件の
+    // 重大パターンが「発生日が少し古い」というだけで、類似 1 件のパターン 5 つに
+    // 押し出されて画面から消える。同数の場合は新しい発生を優先し、発生日時も同じなら
+    // Id の降順で決定的にする(リロードのたびに表示パターンが入れ替わらないようにするため)。
+    // 並び順をここで明示的に決めることで、サービス側の戻り順(契約では未規定)に
+    // 表示内容が依存しないようにもしている。
+    private static IEnumerable<RecurrenceAlert> RankForAlertPanel(IEnumerable<RecurrenceAlert> alerts) =>
+        alerts
+            .OrderByDescending(a => a.SimilarIncidents.Count)
+            .ThenByDescending(a => a.CurrentIncident.OccurredAt)
+            .ThenByDescending(a => a.CurrentIncident.Id);
+
     // 再発アラートの検索時間窓(日数)。「同部署+同種別+同原因カテゴリの類似案件が直近 90 日以内に
     // あれば警告する」という業務ルール(CLAUDE.md §3。period フィルタからは独立)の正本。
     // 以前は呼び出し箇所に裸の 90 が直書きされ、ルール変更時に見落としやすかった(§6)。
@@ -249,9 +263,10 @@ public class HomeController : Controller
             FailedMeasures = failedMeasures,
             RecentIncidents = recentIncidents,
             OverdueMeasureList = overdueMeasureList,
-            // パネルに描画するのは新しい発生順に上限件数まで(残りは件数だけ伝える)
-            RecurrenceAlerts = recurrenceAlerts.Take(RecurrenceAlertLimit).ToList(),
-            // 検出できたパターンの総数(KPI と同じく、表示を絞っても数え落とさない)
+            // パネルに描画するのは重大な(類似件数の多い)パターンから上限件数まで。
+            // 残りは件数だけ伝える(RecurrenceAlertTotal との差分が「ほか N 件」になる)
+            RecurrenceAlerts = RankForAlertPanel(recurrenceAlerts).Take(RecurrenceAlertLimit).ToList(),
+            // 検出できたパターンの数(表示を絞っても数え落とさないための実数)
             RecurrenceAlertTotal = recurrenceAlerts.Count,
             MonthlyCounts = monthlyCounts
         };

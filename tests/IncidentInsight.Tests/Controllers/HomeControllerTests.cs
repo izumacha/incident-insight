@@ -264,6 +264,8 @@ public class HomeControllerTests : IDisposable
         // (2) RecurrenceAlertTotal は上限に関わらず検出総数を保持すること、
         // (3) 差分が HiddenRecurrenceAlertCount(「ほか N 件」の表示元)になること、
         // の 3 点を確認する。
+        // さらに (4) 打ち切りで残るのが「類似インシデントの多い」重大パターンであること
+        // (発生日が新しいだけの軽微なパターンに押し出されないこと)も固定する。
         const int patternCount = HomeController.RecurrenceAlertLimit + 3; // 上限より多いパターン数
 
         // 原因分類は 1 つで足りる(パターンの区別は部署で付ける)
@@ -271,25 +273,43 @@ public class HomeControllerTests : IDisposable
         _db.CauseCategories.Add(category);
         await _db.SaveChangesAsync();
 
-        // 部署ごとに「同部署・同種別・同原因」のインシデントを 2 件ずつ作り、
-        // 1 部署 = 1 再発パターンになるようにする(部署一覧は Incident 側の唯一の真実の源から取る)
+        // 部署ごとに「同部署・同種別・同原因」のインシデント群を作り、1 部署 = 1 再発パターンにする
+        // (部署一覧は Incident 側の唯一の真実の源から取る)。
+        // 群のサイズを部署ごとに変え(i 番目は i + 2 件 → 類似件数は i + 1 件)、
+        // 「類似件数が多い ＝ 添字が大きい部署」という検証しやすい並びを作る。
+        // 発生日は逆に添字が小さい部署ほど新しくして、日付順で打ち切ると結果が変わるようにする
+        // (以前の実装なら添字の小さい軽微なパターンが残っていた)
         Assert.True(Incident.Departments.Length >= patternCount, "テストに必要な部署数が足りない");
+        var incidentsByDept = new Dictionary<string, List<Incident>>();
         for (int i = 0; i < patternCount; i++)
         {
             var dept = Incident.Departments[i];
-            // 同じ部署・種別で 2 件(片方が「今回」、もう片方が「類似の過去案件」になる)
-            var first = MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-10));
-            var second = MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-20));
-            _db.Incidents.AddRange(first, second);
-            await _db.SaveChangesAsync();
-
-            // 両方に同じ原因分類を紐づけて再発条件(原因カテゴリの重複)を満たす
-            _db.CauseAnalyses.AddRange(
-                new CauseAnalysis { IncidentId = first.Id, CauseCategoryId = category.Id, Why1 = "原因1" },
-                new CauseAnalysis { IncidentId = second.Id, CauseCategoryId = category.Id, Why1 = "原因2" }
-            );
-            await _db.SaveChangesAsync();
+            // この部署の再発パターンを構成するインシデント群(i + 2 件)
+            var group = new List<Incident>();
+            for (int n = 0; n < i + 2; n++)
+            {
+                // 添字が小さい部署ほど新しい発生日にする(日付順の打ち切りとの差を出すため)
+                group.Add(MakeIncident(dept: dept, occurredAt: _clock.Today.AddDays(-1 - i - n)));
+            }
+            // 後で原因分析を紐づけられるよう部署ごとに控えておく
+            incidentsByDept[dept] = group;
+            _db.Incidents.AddRange(group);
         }
+        // Id を採番させるため、全部署分をまとめて 1 回だけ保存する
+        await _db.SaveChangesAsync();
+
+        // 各インシデントに同じ原因分類を紐づけて再発条件(原因カテゴリの重複)を満たす
+        foreach (var incident in incidentsByDept.Values.SelectMany(group => group))
+        {
+            _db.CauseAnalyses.Add(new CauseAnalysis
+            {
+                IncidentId = incident.Id,
+                CauseCategoryId = category.Id,
+                Why1 = "原因"
+            });
+        }
+        // なぜなぜ分析側もまとめて 1 回だけ保存する
+        await _db.SaveChangesAsync();
 
         var result = await _controller.Index(null) as ViewResult;
         var vm = result?.Model as DashboardViewModel;
@@ -300,6 +320,20 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(HomeController.RecurrenceAlertLimit, vm.RecurrenceAlerts.Count);
         // 載せきれなかった件数が「ほか N 件」として表示される
         Assert.Equal(patternCount - HomeController.RecurrenceAlertLimit, vm.HiddenRecurrenceAlertCount);
+
+        // 残るのは類似件数が多い順(= 添字が大きい部署から)の上限件数分。
+        // 発生日順で打ち切っていると添字の小さい部署が残るため、この検証で並び順が固定される
+        var expectedDepartments = Enumerable
+            .Range(patternCount - HomeController.RecurrenceAlertLimit, HomeController.RecurrenceAlertLimit)
+            .Reverse()
+            .Select(i => Incident.Departments[i])
+            .ToList();
+        Assert.Equal(
+            expectedDepartments,
+            vm.RecurrenceAlerts.Select(a => a.CurrentIncident.Department).ToList());
+        // 類似件数も降順に並んでいることを確認する(同点時の副次キーに依存しない形で)
+        var similarCounts = vm.RecurrenceAlerts.Select(a => a.SimilarIncidents.Count).ToList();
+        Assert.Equal(similarCounts.OrderByDescending(c => c).ToList(), similarCounts);
     }
 
     [Fact]
