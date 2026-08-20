@@ -404,6 +404,61 @@ public class HomeControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_RecurrenceAlerts_DoesNotDuplicateWhenNewestIsAlsoMostSevere()
+    {
+        // 最新パターンが重大度上位にも入っている場合、最新枠の差し替えは不要
+        // (差し替えてしまうと同じパターンが 2 行並び、代わりに別のパターンが 1 つ黙って消える)。
+        // 上限より多いパターンを用意し、最新かつ最も類似件数の多いパターンを 1 つ混ぜて、
+        // 表示に重複が無いこと・件数どおり別々のパターンが並ぶことを確認する。
+        const int patternCount = HomeController.RecurrenceAlertLimit + 2;
+        RequireDepartments(patternCount);
+
+        var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        _db.CauseCategories.Add(category);
+        await _db.SaveChangesAsync();
+
+        var incidents = new List<Incident>();
+        // 添字 0 の部署は「最新かつ最多(4 件 = 類似 3 件)」にして、重大度上位にも最新枠にも該当させる
+        for (int n = 0; n < 4; n++)
+        {
+            incidents.Add(MakeIncident(dept: Incident.Departments[0], occurredAt: _clock.Today.AddDays(-n)));
+        }
+        // 残りの部署は「やや古い・類似 2 件(3 件ずつ)」で埋める
+        for (int i = 1; i < patternCount; i++)
+        {
+            for (int n = 0; n < 3; n++)
+            {
+                incidents.Add(MakeIncident(dept: Incident.Departments[i], occurredAt: _clock.Today.AddDays(-20 - n)));
+            }
+        }
+
+        _db.Incidents.AddRange(incidents);
+        await _db.SaveChangesAsync();
+
+        foreach (var incident in incidents)
+        {
+            _db.CauseAnalyses.Add(new CauseAnalysis
+            {
+                IncidentId = incident.Id,
+                CauseCategoryId = category.Id,
+                Why1 = "原因"
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 上限件数ぶんが表示される
+        Assert.Equal(HomeController.RecurrenceAlertLimit, vm!.RecurrenceAlerts.Count);
+        // 同じパターンが 2 度並んでいない(最新枠の差し替えが不要な場合に差し替えていないこと)
+        var displayedIds = vm.RecurrenceAlerts.Select(a => a.CurrentIncident.Id).ToList();
+        Assert.Equal(displayedIds.Distinct().Count(), displayedIds.Count);
+        // 最新かつ最多のパターンは当然表示に含まれる
+        Assert.Contains(vm.RecurrenceAlerts, a => a.CurrentIncident.Department == Incident.Departments[0]);
+    }
+
+    [Fact]
     public async Task Index_WeekPeriod_MonthlyCounts_Has7DailyLabels()
     {
         var result = await _controller.Index("week") as ViewResult;

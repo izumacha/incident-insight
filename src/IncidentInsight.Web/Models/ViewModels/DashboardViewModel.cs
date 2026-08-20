@@ -102,14 +102,18 @@ public class DashboardViewModel
         // 表示分を確定させる(呼び出し側の遅延評価をここで打ち切る)
         var displayedList = displayed.ToList();
 
-        // 表示分が全件を上回るのは引数の取り違え。代入より前に弾き、
+        // 表示分が全件の部分集合になっていなければ引数の取り違え。代入より前に弾き、
         // 例外を握り潰す呼び出し側が現れても ViewModel が矛盾した状態で描画されないようにする
-        // (矛盾したまま描画されると HiddenRecurrenceAlertCount が 0 になり、
-        //  残件があるのに「ほか N 件」が消えて「表示分で全部」と誤解させる)
-        if (displayedList.Count > allAlerts.Count)
+        // (矛盾したまま描画されると HiddenRecurrenceAlertCount が「どの残件も指さない数」になり、
+        //  残件があるのに「ほか N 件」が消えたり、実在しない残件数を表示したりする)。
+        // 件数の大小だけでなく所属も確かめるのは、別スコープで組み立てた一覧を渡された場合
+        // (件数さえ少なければ素通りしてしまう)を弾くため。アラートは同じ検出結果から
+        // 組み立てられるので、同一インスタンスかどうか(参照の一致)で判定できる
+        var detected = new HashSet<object>(allAlerts, ReferenceEqualityComparer.Instance);
+        if (displayedList.Exists(alert => !detected.Contains(alert)))
         {
             throw new ArgumentException(
-                "表示する再発アラートが検出総数を超えています(allAlerts と displayed の取り違え)。",
+                "表示する再発アラートが検出結果に含まれていません(allAlerts と displayed の取り違え)。",
                 nameof(displayed));
         }
 
