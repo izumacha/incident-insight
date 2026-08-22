@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 // InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
 using Microsoft.EntityFrameworkCore.Diagnostics;
+// テストでは何も出力しないロガー(NullLogger)を使うため
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -103,7 +104,7 @@ public class ConcurrencyTests : IDisposable
     public async Task IncidentsEdit_OnConcurrencyConflict_RedirectsToEditWithWarning()
     {
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel
@@ -135,7 +136,7 @@ public class ConcurrencyTests : IDisposable
         // 引き続きインシデント詳細画面("Details" on "Incidents" controller)。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id);
-        var controller = new IncidentMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock()), NullLogger<IncidentMeasuresController>.Instance);
+        var controller = new IncidentMeasuresController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
@@ -181,7 +182,7 @@ public class ConcurrencyTests : IDisposable
     {
         // 削除中に他ユーザーの更新と衝突した場合、未処理例外にせず詳細画面へ警告付きで戻す。
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
@@ -254,7 +255,7 @@ public class ConcurrencyTests : IDisposable
         };
         _db.CauseAnalyses.Add(analysis);
         await _db.SaveChangesAsync();
-        var controller = new CauseAnalysesController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock()), NullLogger<CauseAnalysesController>.Instance);
+        var controller = new CauseAnalysesController(_db, UserContextHelper.BuildAuthService(), new SystemClock(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), NullLogger<CauseAnalysesController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         _db.ThrowOnNextSave = true;
@@ -273,7 +274,7 @@ public class ConcurrencyTests : IDisposable
     {
         // Baseline happy-path check: without forcing a conflict, Edit should succeed.
         var incident = await SeedIncidentAsync();
-        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+        var controller = new IncidentsController(_db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), new SystemClock(), NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
         var vm = new IncidentCreateEditViewModel
@@ -346,7 +347,7 @@ public class ConcurrencyTests : IDisposable
 
             await using var db = new ApplicationDbContext(
                 new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(connectionString).Options);
-            var controller = new IncidentsController(db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock()), new SystemClock(), NullLogger<IncidentsController>.Instance);
+            var controller = new IncidentsController(db, UserContextHelper.BuildAuthService(), new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance), new SystemClock(), NullLogger<IncidentsController>.Instance);
             UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
             // 画面表示時点の(今はもう古い)トークンで削除を試みる

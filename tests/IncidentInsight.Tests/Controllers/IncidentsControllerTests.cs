@@ -9,6 +9,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 // InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
 using Microsoft.EntityFrameworkCore.Diagnostics;
+// テストでは何も出力しないロガー(NullLogger)を使うため
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -31,7 +32,7 @@ public class IncidentsControllerTests : IDisposable
         _controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new RecurrenceService(new SystemClock()),
+            new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance),
             new SystemClock(),
             NullLogger<IncidentsController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
@@ -447,7 +448,7 @@ public class IncidentsControllerTests : IDisposable
         var controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new RecurrenceService(clock),
+            new RecurrenceService(clock, NullLogger<RecurrenceService>.Instance),
             clock,
             NullLogger<IncidentsController>.Instance);
         // 既定の Admin ユーザーと TempData を配線する

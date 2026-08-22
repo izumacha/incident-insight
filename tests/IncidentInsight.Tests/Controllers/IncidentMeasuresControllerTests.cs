@@ -7,6 +7,7 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// テストでは何も出力しないロガー(NullLogger)を使うため
 using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
@@ -28,7 +29,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             _db,
             UserContextHelper.BuildAuthService(),
             new SystemClock(),
-            new RecurrenceService(new SystemClock()),
+            new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance),
             NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }

@@ -8,6 +8,8 @@ using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Services;
 // EF Core の InMemory プロバイダを使えるようにする
 using Microsoft.EntityFrameworkCore;
+// テストでは何も出力しないロガー(NullLogger)を使うため
+using Microsoft.Extensions.Logging.Abstractions;
 
 // テストクラスが所属する名前空間（テストプロジェクトの Services フォルダ配下）
 namespace IncidentInsight.Tests.Services;
@@ -37,7 +39,7 @@ public class RecurrenceServiceTests : IDisposable
         // DbContext を生成する（InMemory なので実際の DB 接続は不要）
         _db = new ApplicationDbContext(options);
         // RecurrenceService を生成する（SystemClock を渡して現在日時を取得させる）
-        _svc = new RecurrenceService(new SystemClock());
+        _svc = new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance);
     }
 
     /// <summary>

@@ -73,9 +73,17 @@ public static class RecurrenceDetector
 
     /// <summary>
     /// インシデントが持つ原因分類 ID の集合を取り出す(重複は除去する)。
-    /// 再発判定の「重なり」を数える単位を 1 か所に定める内部ヘルパー。
+    /// 再発判定の「重なり」を数える単位を 1 か所に定めるヘルパー。
     /// </summary>
-    private static HashSet<int> CauseCategoryIdsOf(Incident incident) =>
+    /// <remarks>
+    /// 「重なりの単位」を変える（例: 親分類へ丸めて突き合わせる）ときに、この 1 か所だけを
+    /// 直せば全経路が追随するようにするため public にしている。ダッシュボード側
+    /// （<see cref="FindSimilar"/> / <see cref="FindSharedCauseCategoryIds"/>）だけでなく、
+    /// インシデント詳細の類似一覧を組み立てる <see cref="RecurrenceService"/> からも呼ぶ。
+    /// </remarks>
+    /// <param name="incident">分類 ID を取り出す対象のインシデント。</param>
+    /// <returns>そのインシデントが指す原因分類 ID の集合。</returns>
+    public static HashSet<int> CauseCategoryIdsOf(Incident incident) =>
         // なぜなぜ分析それぞれが指す原因分類 ID を集めて集合にする(Hash で照合を高速化)
         incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
 }

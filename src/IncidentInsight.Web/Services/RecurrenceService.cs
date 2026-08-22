@@ -14,6 +14,9 @@ public class RecurrenceService : IRecurrenceService
     // 時刻源(テストで差し替えるために注入で受け取る)
     private readonly IClock _clock;
 
+    // ログ出力用(見出し用の分類名を引けなかったときの警告)
+    private readonly ILogger<RecurrenceService> _logger;
+
     // ダッシュボードの再発アラート候補として一度に読み込む過去インシデントの上限件数。
     // 候補クエリは「最近90日に登場した部署×種別×原因分類」に一致する全期間のインシデントを
     // 対象にするため、運用年数が長くなると条件がテーブルの大部分に一致し、上限が無いと
@@ -32,13 +35,19 @@ public class RecurrenceService : IRecurrenceService
     // 1 件のインシデントにぶら下がるなぜなぜ分析(CauseAnalysis)の数に制限は無く、
     // 分析ごとに別の原因分類を選べるため、上限が無いとダッシュボードのアラート 1 行が
     // 分類名の羅列で際限なく横に伸びる(§8 の「一覧は必ず上限を持たせる」を 1 行の中にも適用)。
-    // 超えた分は件数だけ「ほか N 件」と添えて、分類が他にもあること自体は隠さない。
+    // 超えた分は件数だけ「ほか N 分類」と添えて、分類が他にもあること自体は隠さない。
     // (public にしているのはテストが上限値と同期した件数でシードするため。
     //  MaxAlertCandidateRows と同じ理由)
     public const int MaxPatternCauseNames = 3;
 
-    // コンストラクタ: DI コンテナから IClock が渡ってくる
-    public RecurrenceService(IClock clock) { _clock = clock; }
+    // コンストラクタ: DI コンテナから IClock と ILogger が渡ってくる
+    public RecurrenceService(IClock clock, ILogger<RecurrenceService> logger)
+    {
+        // 時刻源を保持する
+        _clock = clock;
+        // ロガーを保持する
+        _logger = logger;
+    }
 
     /// <inheritdoc />
     public async Task<List<Incident>> FindRecurrencesForIncidentAsync(
@@ -47,8 +56,10 @@ public class RecurrenceService : IRecurrenceService
         TimeSpan? within = null,
         CancellationToken ct = default)
     {
-        // 対象インシデントの原因分類IDをハッシュ集合にまとめる(判定用)
-        var catIds = incident.CauseAnalyses.Select(ca => ca.CauseCategoryId).ToHashSet();
+        // 対象インシデントの原因分類IDをハッシュ集合にまとめる(判定用)。
+        // 取り出し方はマッチャ側に集約してあるものを使う(「重なりの単位」の定義が
+        // ダッシュボード側と詳細ページ側で食い違わないようにするため。§6 DRY)
+        var catIds = RecurrenceDetector.CauseCategoryIdsOf(incident);
         // 原因分類が1件もなければ再発判定はできないので空リストを返す
         if (catIds.Count == 0) return new List<Incident>();
 
@@ -175,12 +186,12 @@ public class RecurrenceService : IRecurrenceService
         // 候補を (部署, 種別) のキーでグルーピングして高速検索できるようにする
         var candidatesByKey = candidatePool.ToLookup(i => (i.Department, i.IncidentType));
 
-        // 結果の再発アラートを溜めるリスト
-        var alerts = new List<RecurrenceAlert>();
-        // アラートごとに「重なった原因分類 ID(重なりの強い順)」を控えておく箱。
+        // 結果の再発アラートと、その「重なった原因分類 ID(重なりの強い順)」を対で溜めるリスト。
         // 見出しの組み立ては分類名の引き当て(DB アクセス)を待つ必要があるため、
-        // 巡回中は判定結果だけを持ち、文字列にするのはループを抜けてから行う
-        var sharedCategoryIdsByAlert = new List<(RecurrenceAlert Alert, List<int> SharedCategoryIds)>();
+        // 巡回中は判定結果だけを持ち、文字列にするのはループを抜けてから行う。
+        // アラートと判定結果を別々のリストにすると、片方だけ追加する変更が入ったときに
+        // 件数がずれて「見出しが差し替わらないアラート」が黙って混ざるので、1 本にまとめている
+        var pendingAlerts = new List<(RecurrenceAlert Alert, List<int> SharedCategoryIds)>();
         // 重複アラートを防ぐため、すでに処理したインシデントIDを覚えておく集合
         var processed = new HashSet<int>();
         // 新しい順に最近インシデントを巡回
@@ -206,11 +217,9 @@ public class RecurrenceService : IRecurrenceService
                     // 縮退表示(§9 fail-safe)と同じ値なので、この後の差し替えが失敗しても破綻しない
                     PatternDescription = FormatDepartmentAndType(incident)
                 };
-                // 組み立てたアラートを結果リストに追加する
-                alerts.Add(alert);
-                // 見出しに使う「重なった原因分類」をこの場で判定して控える
+                // 組み立てたアラートと、見出しに使う「重なった原因分類」を対で控える
                 // (ループを抜けたあとに再判定すると、同じ規則を 2 度走らせることになる)
-                sharedCategoryIdsByAlert.Add((alert, RecurrenceDetector.FindSharedCauseCategoryIds(incident, similar)));
+                pendingAlerts.Add((alert, RecurrenceDetector.FindSharedCauseCategoryIds(incident, similar)));
                 // 処理済みとして記録(以降の巡回で再び採用しないようにする)
                 processed.Add(incident.Id);
                 // 類似側も処理済み扱いにして重複アラートを防ぐ
@@ -219,28 +228,35 @@ public class RecurrenceService : IRecurrenceService
         }
 
         // アラートが 1 件も無ければ見出し用の分類名は要らないので、DB アクセスを省いて返す
-        if (alerts.Count == 0) return alerts;
+        if (pendingAlerts.Count == 0) return new List<RecurrenceAlert>();
 
         // 見出しに載り得る分類 ID だけを集める(アラートにならなかったインシデントの分類は引かない)
-        var neededCategoryIds = sharedCategoryIdsByAlert
+        var neededCategoryIds = pendingAlerts
             .SelectMany(x => x.SharedCategoryIds)
             .ToHashSet();
         // 分類名を引く範囲を、実際にアラートになったインシデントだけに絞る
-        // (件数は最大でも alerts.Count = recentList の件数以下なので、
-        //  このファイルの他のクエリと同じく MaxAlertCandidateRows で頭打ちになる)
-        var alertIncidentIds = alerts.Select(a => a.CurrentIncident.Id).ToList();
-        // 分類 ID → 表示名 の対応表を 1 回のクエリで作る
+        // (件数は最大でも recentList の件数以下なので、このファイルの他のクエリと同じく
+        //  MaxAlertCandidateRows で頭打ちになる)
+        var alertIncidentIds = pendingAlerts.Select(x => x.Alert.CurrentIncident.Id).ToList();
+        // 分類 ID → 表示名 の対応表を 1 回のクエリで作る。
+        // 見出しは検出した全アラートぶん組み立てる(画面に出るのは呼び出し側が絞った数件だけだが、
+        // 「何件見せるか」はダッシュボードの都合であってサービスの契約ではないため、
+        // ここでは表示件数を知らないまま完結した戻り値を返す。組み立て自体は文字列連結だけで、
+        // クエリは 1 回・走査量も上記の上限に収まる)
         var causeCategoryNameById =
             await LoadCauseCategoryDisplayNamesAsync(scope, alertIncidentIds, neededCategoryIds, ct);
 
         // 控えておいた判定結果と対応表を突き合わせて、各アラートの見出しを確定させる
-        foreach (var (alert, sharedCategoryIds) in sharedCategoryIdsByAlert)
+        foreach (var (alert, sharedCategoryIds) in pendingAlerts)
         {
             // 「部署 / 種別（重なった原因分類）」の形に組み立て直す。
             // 組み立て規則は BuildPatternDescription が唯一の源(下の private メソッド)
             alert.PatternDescription =
                 BuildPatternDescription(alert.CurrentIncident, sharedCategoryIds, causeCategoryNameById);
         }
+
+        // 見出しまで確定したアラートを取り出して返す
+        var alerts = pendingAlerts.Select(x => x.Alert).ToList();
 
         // 集まった再発アラートのリストを返す
         return alerts;
@@ -271,7 +287,7 @@ public class RecurrenceService : IRecurrenceService
     /// <param name="categoryIds">表示名が必要な原因分類の ID。</param>
     /// <param name="ct">キャンセル用トークン。</param>
     /// <returns>分類 ID から表示名を引く対応表（引けなかった分類はキーごと存在しない）。</returns>
-    private static async Task<Dictionary<int, string>> LoadCauseCategoryDisplayNamesAsync(
+    private async Task<Dictionary<int, string>> LoadCauseCategoryDisplayNamesAsync(
         IQueryable<Incident> scope,
         IReadOnlyCollection<int> incidentIds,
         IReadOnlyCollection<int> categoryIds,
@@ -280,27 +296,45 @@ public class RecurrenceService : IRecurrenceService
         // 対象のインシデントか必要な分類が 1 つも無ければ、クエリを投げずに空の対応表を返す
         if (incidentIds.Count == 0 || categoryIds.Count == 0) return new Dictionary<int, string>();
 
-        // 対象インシデントのなぜなぜ分析だけを辿り、必要な分類の名前と親分類名を投影して取り出す。
-        // 親は省略可能な関連なので、親を持たない分類では ParentName が null になる
-        var rows = await scope
-            .AsNoTracking()
-            .Where(i => incidentIds.Contains(i.Id))
-            .SelectMany(i => i.CauseAnalyses)
-            .Where(ca => categoryIds.Contains(ca.CauseCategoryId))
-            .Select(ca => new
-            {
-                ca.CauseCategoryId,
-                ca.CauseCategory.Name,
-                ParentName = ca.CauseCategory.Parent != null ? ca.CauseCategory.Parent.Name : null
-            })
-            // 同じ分類を指す分析が何件あっても対応表には 1 行あればよいので DB 側で重複を落とす
-            .Distinct()
-            .ToListAsync(ct);
+        // クエリ結果を受け取る変数(失敗したときは空のままにする)
+        List<CauseCategoryNameRow> rows;
+        try
+        {
+            // 対象インシデントのなぜなぜ分析だけを辿り、必要な分類の名前と親分類名を投影して取り出す。
+            // 親は省略可能な関連なので、親を持たない分類では ParentName が null になる
+            rows = await scope
+                .AsNoTracking()
+                .Where(i => incidentIds.Contains(i.Id))
+                .SelectMany(i => i.CauseAnalyses)
+                .Where(ca => categoryIds.Contains(ca.CauseCategoryId))
+                .Select(ca => new CauseCategoryNameRow(
+                    ca.CauseCategoryId,
+                    ca.CauseCategory.Name,
+                    ca.CauseCategory.Parent != null ? ca.CauseCategory.Parent.Name : null))
+                // 同じ分類を指す分析が何件あっても対応表には 1 行あればよいので DB 側で重複を落とす
+                .Distinct()
+                .ToListAsync(ct);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // ここで取っているのは見出しに添える表示専用の情報でしかない。タイムアウトや
+            // 一時的な接続断でこれが取れないだけで、既に組み上がっている再発アラート
+            // (ダッシュボードの主機能)ごと 500 にしてしまうのは過剰なので、警告を残して
+            // 空の対応表で続行し、見出しを「部署 / 種別」へ縮退させる(§9 fail-safe)。
+            // 握り潰さずログに文脈を残す点は §6 の「エラーを握り潰さない」に従う。
+            // 呼び出し側のキャンセル(OperationCanceledException)は利用者が画面を離れた等の
+            // 正常な打ち切りなので、縮退させず今までどおり伝播させる
+            _logger.LogWarning(ex, "再発アラートの見出し用に原因分類名を取得できませんでした。分類名なしで表示します。");
+            // 空の対応表で続行する
+            return new Dictionary<int, string>();
+        }
 
-        // 分類 ID ごとに 1 行だけ残す（Distinct 済みなので、同じ分類 ID の行は本来 1 行しかない）
+        // 分類 ID ごとに 1 行だけ残す。上の Distinct は (分類 ID, 分類名, 親分類名) の組で
+        // 重複を落とすので、同じ分類 ID の行はこの時点で既に 1 行のはず。それでも
+        // DistinctBy を通すのは、プロバイダ差で Distinct が期待どおり効かなかったときに
+        // ToDictionary が「キー重複」の例外でダッシュボードごと落ちるのを防ぐため(§9 fail-safe)
         return rows
-            .GroupBy(r => r.CauseCategoryId)
-            .Select(g => g.First())
+            .DistinctBy(r => r.CauseCategoryId)
             // 「親 > 子」形式の表示名を組み立てて対応表にする
             // (組み立て規則は CauseCategory.FormatFullName が唯一の源。FullName と同じ表記になる)
             .ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
@@ -381,4 +415,17 @@ public class RecurrenceService : IRecurrenceService
     private static string FormatDepartmentAndType(Incident incident) =>
         // 部署名と日本語のインシデント種別ラベルを「 / 」で連結する
         $"{incident.Department} / {incident.IncidentTypeLabel}";
+
+    /// <summary>
+    /// 分類名の引き当てクエリが返す 1 行分（分類 ID・分類名・親分類名）。
+    /// </summary>
+    /// <remarks>
+    /// 匿名型ではなく名前付きの record にしているのは、クエリを try/catch で囲むために
+    /// 結果を受ける変数を try の外で宣言する必要があり、匿名型では型名を書けないため。
+    /// record にすると値の等価比較が自動で入るので、<c>Distinct()</c> の意味も匿名型と変わらない。
+    /// </remarks>
+    /// <param name="CauseCategoryId">原因分類の ID。</param>
+    /// <param name="Name">原因分類の名前。</param>
+    /// <param name="ParentName">親分類の名前（親が無ければ null）。</param>
+    private sealed record CauseCategoryNameRow(int CauseCategoryId, string Name, string? ParentName);
 }
