@@ -99,8 +99,9 @@ public class RecurrenceService : IRecurrenceService
 
         // DB から候補をまとめて取得する
         var candidates = await query.ToListAsync(ct);
-        // 候補の中から実際に原因分類が重なるものだけを抽出して返す
-        return RecurrenceDetector.FindSimilar(incident, candidates);
+        // 候補の中から実際に原因分類が重なるものだけを抽出して返す。
+        // 上で作った分類 ID 集合をそのまま渡し、同じ HashSet を 2 度組み立てない
+        return RecurrenceDetector.FindSimilar(incident, candidates, catIds);
     }
 
     /// <inheritdoc />
@@ -306,9 +307,11 @@ public class RecurrenceService : IRecurrenceService
 
             // 分類 ID をキーに表示名を引ける対応表にする。
             // 「親 > 子」形式の組み立て規則は CauseCategory.FormatFullName が唯一の源。
-            // 対応表の組み立ても try の内側に置く: 呼び出し側が(主キーで一意にならない)
-            // 別の分類クエリを渡すと ToDictionary がキー重複で投げるため、
-            // 外に出すと下の縮退経路を素通りして 500 になる
+            // DistinctBy を通すのは、呼び出し側が主キーで一意にならない分類クエリ
+            // (例: なぜなぜ分析から辿った分類の集合)を渡してくる場合に、
+            // ToDictionary をキー重複で落とさず正しい見出しを出すため。
+            // 対応表の組み立て自体も try の内側に置くのは、この防御を将来外したときや
+            // 別の想定外が起きたときに、下の縮退経路を素通りして 500 にならないようにするため
             return rows
                 .DistinctBy(r => r.CauseCategoryId)
                 .ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
@@ -382,8 +385,10 @@ public class RecurrenceService : IRecurrenceService
         // 除かないと「ヒューマンエラー > 確認不足」が 2 枠を占め、その裏で別の分類が
         // 「ほか N 分類」に押し出される(見出しを区別可能にするという目的に反する)
         var shownNames = sharedCategoryIds
-            .Where(categoryNameById.ContainsKey)
-            .Select(id => categoryNameById[id])
+            // 対応表の引きは 1 回で済ませる(ContainsKey と添字で 2 回引かない)。
+            // 引けなかった分類は null にして、次の Where で落とす
+            .Select(id => categoryNameById.TryGetValue(id, out var name) ? name : null)
+            .Where(name => name is not null)
             .Distinct()
             .Take(MaxPatternCauseNames)
             .ToList();
@@ -398,7 +403,7 @@ public class RecurrenceService : IRecurrenceService
         var hiddenCount = sharedCategoryIds.Count - shownNames.Count;
 
         // 上限件数までの分類名を「、」で連結する
-        var causeText = string.Join("、", shownNames);
+        var causeText = string.Join("、", shownNames);  // 中身は上の Where で null を除いてある
         // 載せきれなかった分があれば件数だけ添えて、分類が他にもあることを隠さない。
         // 単位を「分類」と明示するのは、同じアラートパネルに「ほか N 件の再発パターン」
         // (Views/Home/Index.cshtml)と「N 件の類似インシデント」が並ぶため。

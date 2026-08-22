@@ -46,7 +46,10 @@ public interface IRecurrenceService
     /// インシデントと違い部署スコープの対象ではない（分類マスタは非 PHI で、
     /// 原因分類ドロップダウンでも全ユーザーに絞り込み無しで見せている）。
     /// DbContext を保持しない設計を保つため、<paramref name="scope"/> と同じく
-    /// クエリを呼び出し側から受け取る。
+    /// クエリを呼び出し側から受け取る。実運用の呼び出し側は常に
+    /// <c>db.CauseCategories</c> を渡すが、引数にしておくことで
+    /// 「分類名を引けなかったときに見出しだけを縮退させる」fail-safe 経路を
+    /// テストから直接検証できる（実装側に握らせると、失敗を起こす手立てが無くなる）。
     /// </param>
     /// <param name="recentWindow">再発とみなす時間窓。</param>
     /// <param name="ct">キャンセル用トークン。</param>

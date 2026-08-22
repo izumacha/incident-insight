@@ -23,6 +23,9 @@ public class RecurrenceServiceTests : IDisposable
 {
     // テスト専用の InMemory データベースコンテキスト（テストごとに独立した DB を持つ）
     private readonly ApplicationDbContext _db;
+    // 同じ InMemory DB を指す DbContext をもう 1 つ作るためのオプション
+    // （fail-safe の検証で「破棄済みの DbContext から取ったクエリ」を用意するのに使う）
+    private readonly DbContextOptions<ApplicationDbContext> _options;
     // テスト対象のサービス（SystemClock を注入して今日の日付を取得させる）
     private readonly RecurrenceService _svc;
 
@@ -33,11 +36,11 @@ public class RecurrenceServiceTests : IDisposable
     public RecurrenceServiceTests()
     {
         // テスト専用の InMemory DB オプションを構築する（毎回ユニークな名前を使う）
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+        _options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString()) // テストごとに独立した DB を作る
             .Options;
         // DbContext を生成する（InMemory なので実際の DB 接続は不要）
-        _db = new ApplicationDbContext(options);
+        _db = new ApplicationDbContext(_options);
         // RecurrenceService を生成する（SystemClock を渡して現在日時を取得させる）
         _svc = new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance);
     }
@@ -1056,5 +1059,77 @@ public class RecurrenceServiceTests : IDisposable
         var alert = Assert.Single(alerts);
         // 分類名も従来どおり見出しに載ることを確認する（縮退もしていない）
         Assert.Contains("確認不足", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 分類名の取得が失敗しても、再発アラート自体は返り、見出しが「部署 / 種別」へ
+    /// 縮退することを検証する（§9 fail-safe）。表示専用の付加情報の取得失敗で
+    /// ダッシュボードの主機能ごと落としてはいけない。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_DegradesHeading_WhenCategoryQueryThrows()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // カテゴリを追加する
+        _db.CauseCategories.Add(cat);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に同じカテゴリでなぜなぜ分析を紐づける（これで再発と判定される）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = cat.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = cat.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 失敗する分類クエリを作る: 破棄済みの DbContext から取った DbSet は
+        // 実行時に ObjectDisposedException を投げるので、DB 障害の代わりに使える
+        var disposedDb = new ApplicationDbContext(_options);
+        // 破棄する前にクエリだけ取り出しておく
+        var failingCategories = disposedDb.CauseCategories;
+        // ここで破棄する（以降このクエリを実行すると例外になる）
+        await disposedDb.DisposeAsync();
+
+        // 失敗するクエリを渡して再発アラートを取得する（例外にならないこと自体が検証対象）
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, failingCategories, TimeSpan.FromDays(90));
+
+        // 分類名が取れなくてもアラートは 1 件生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 見出しが「部署 / 種別」だけへ縮退していることを確認する
+        Assert.Equal("外科病棟 / 投薬ミス", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 呼び出し側がキャンセルした場合、結果を返さずキャンセルがそのまま伝播することを検証する。
+    /// 利用者が画面を離れた等の正常な打ち切りを「取得失敗」として握り潰さないための回帰テスト。
+    /// </summary>
+    /// <remarks>
+    /// キャンセル済みトークンでは最初のクエリ（直近インシデントの読み込み）で打ち切られるため、
+    /// このテストが固定するのは「メソッド全体がキャンセルを飲み込まないこと」まで。
+    /// 分類名クエリの catch にある <c>when (ex is not OperationCanceledException)</c> だけを
+    /// 狙って発火させる手立ては無く、そこは実装のガードに委ねている。
+    /// </remarks>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PropagatesCancellation_WithoutDegrading()
+    {
+        // 既にキャンセル済みのトークンを用意する
+        using var cts = new CancellationTokenSource();
+        // 呼び出す前にキャンセルしておく
+        await cts.CancelAsync();
+
+        // キャンセル済みトークンを渡すと OperationCanceledException が伝播することを確認する
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90), cts.Token));
     }
 }
