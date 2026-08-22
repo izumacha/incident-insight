@@ -283,7 +283,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する（a が b の再発アラートをトリガー）
         Assert.Single(alerts);
@@ -335,7 +335,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートは最新インシデント a をトリガーに 1 件だけ生成されること
         Assert.Single(alerts);
@@ -386,7 +386,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // x は recentList 自身の打ち切りで除外されるため、候補クエリにすら到達せず
         // (recentDepts に「被害部署」が含まれない)、x・partner のパターンからは
@@ -444,7 +444,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 同一パターン(同部署・同種別・同原因分類)のアラートは 1 件に集約されること
         // (b が打ち切りで漏れて 2 件目のアラートを作る回帰が起きないこと)
@@ -488,7 +488,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件生成されることを確認する
         Assert.Single(alerts);
@@ -527,7 +527,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する（両者とも窓外なのでアラートなし）
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 窓外のみ存在する場合はアラートが 0 件であることを確認する
         Assert.Empty(alerts);
@@ -567,7 +567,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 3 件が互いに類似していても、重複を省いて 1 件のアラートだけが生成されることを確認する
         Assert.Single(alerts);
@@ -620,7 +620,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 原因分類ごとに 1 件ずつ、合計 2 件のアラートが生成されることを確認する
         Assert.Equal(2, alerts.Count);
@@ -673,7 +673,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する
         Assert.Single(alerts);
@@ -721,7 +721,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する
         Assert.Single(alerts);
@@ -773,7 +773,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する
         Assert.Single(alerts);
@@ -829,7 +829,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 3 件は互いに類似するので、重複を省いて 1 件のアラートに集約される
         var alert = Assert.Single(alerts);
@@ -870,7 +870,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する（例外にならないこと自体も検証対象）
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 分類名が引けなくてもアラートは 1 件生成されることを確認する
         var alert = Assert.Single(alerts);
@@ -916,7 +916,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する
         var alert = Assert.Single(alerts);
@@ -924,5 +924,89 @@ public class RecurrenceServiceTests : IDisposable
         Assert.Contains("確認不足", alert.PatternDescription);
         // 名前を引けなかった 1 件が残件として数えられていることを確認する
         Assert.Contains("ほか1分類", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 表示名が同じになる分類が複数あっても、見出しの枠を重複表示で消費しないことを検証する。
+    /// 分類名には一意制約が無く、同じ親の下に同名の子を作れるため実際に起こり得る。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_DeduplicatesIdenticalCauseNames()
+    {
+        // 親カテゴリ（大分類）を作成する
+        var parent = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        // 親を DB に追加する
+        _db.CauseCategories.Add(parent);
+        // 親の Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 同じ親の下に「確認不足」という同名の子を 2 つ作る（表示名が衝突する）
+        var duplicateA = new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 1 };
+        // 2 つ目の同名分類（別レコードだが FullName は同じ文字列になる）
+        var duplicateB = new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 2 };
+        // 表示名が衝突しない分類（重複除去が効かないと「ほか N 分類」へ押し出される側）
+        var distinct = new CauseCategory { Name = "手順不遵守", ParentId = parent.Id, DisplayOrder = 3 };
+        // 3 つの分類をまとめて DB に追加する
+        _db.CauseCategories.AddRange(duplicateA, duplicateB, distinct);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件それぞれに 3 分類ぶんのなぜなぜ分析を紐づける（重なりは 3 分類）
+        foreach (var category in new[] { duplicateA, duplicateB, distinct })
+        {
+            // 新しい方に 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = category.Id, Why1 = "w" });
+            // 古い方にも同じ分類で 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = category.Id, Why1 = "w" });
+        }
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 同名の分類が 2 回並んでいないことを確認する（重複除去が効いている）
+        Assert.Equal(1, CountOccurrences(alert.PatternDescription, "ヒューマンエラー > 確認不足"));
+        // 重複に枠を奪われず、別の分類も見出しに載っていることを確認する
+        Assert.Contains("ヒューマンエラー > 手順不遵守", alert.PatternDescription);
+        // 1 行にまとまった分類は残件として数えられることを確認する
+        // (重なった分類は 3 件、見出しに載る表示名は 2 種類)
+        Assert.Contains("ほか1分類", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 文字列 <paramref name="text"/> に <paramref name="value"/> が何回現れるかを数える。
+    /// 「同じ分類名が 2 回並んでいないこと」を確かめるためだけのテスト用ヘルパー。
+    /// </summary>
+    /// <param name="text">検索対象の文字列。</param>
+    /// <param name="value">数えたい部分文字列。</param>
+    /// <returns>出現回数。</returns>
+    private static int CountOccurrences(string text, string value)
+    {
+        // 見つけた回数を数えるカウンタ
+        var count = 0;
+        // 次に検索を始める位置
+        var index = 0;
+        // 見つからなくなるまで前から順に探す
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            // 1 件見つかったので数える
+            count++;
+            // 見つかった分の長さだけ進めて、続きから探す
+            index += value.Length;
+        }
+        // 数え終わった回数を返す
+        return count;
     }
 }

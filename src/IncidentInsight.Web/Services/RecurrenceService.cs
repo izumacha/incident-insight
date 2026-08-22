@@ -104,6 +104,7 @@ public class RecurrenceService : IRecurrenceService
     /// <inheritdoc />
     public async Task<List<RecurrenceAlert>> FindRecurrenceAlertsAsync(
         IQueryable<Incident> scope,
+        IQueryable<CauseCategory> causeCategories,
         TimeSpan recentWindow,
         CancellationToken ct = default)
     {
@@ -208,14 +209,12 @@ public class RecurrenceService : IRecurrenceService
             // 類似が1件以上ある場合のみアラートとして採用
             if (similar.Count > 0)
             {
-                // アラートを1件組み立てる(見出しは分類名を引いたあとで入れ直す)
+                // アラートを1件組み立てる。見出し(PatternDescription)は分類名を引いたあとで
+                // 下のループがまとめて入れるので、ここでは設定しない
                 var alert = new RecurrenceAlert
                 {
                     CurrentIncident = incident,
-                    SimilarIncidents = similar,
-                    // まずは分類名なしの「部署 / 種別」で埋めておく。分類名を引けなかった場合の
-                    // 縮退表示(§9 fail-safe)と同じ値なので、この後の差し替えが失敗しても破綻しない
-                    PatternDescription = FormatDepartmentAndType(incident)
+                    SimilarIncidents = similar
                 };
                 // 組み立てたアラートと、見出しに使う「重なった原因分類」を対で控える
                 // (ループを抜けたあとに再判定すると、同じ規則を 2 度走らせることになる)
@@ -234,17 +233,13 @@ public class RecurrenceService : IRecurrenceService
         var neededCategoryIds = pendingAlerts
             .SelectMany(x => x.SharedCategoryIds)
             .ToHashSet();
-        // 分類名を引く範囲を、実際にアラートになったインシデントだけに絞る
-        // (件数は最大でも recentList の件数以下なので、このファイルの他のクエリと同じく
-        //  MaxAlertCandidateRows で頭打ちになる)
-        var alertIncidentIds = pendingAlerts.Select(x => x.Alert.CurrentIncident.Id).ToList();
         // 分類 ID → 表示名 の対応表を 1 回のクエリで作る。
         // 見出しは検出した全アラートぶん組み立てる(画面に出るのは呼び出し側が絞った数件だけだが、
         // 「何件見せるか」はダッシュボードの都合であってサービスの契約ではないため、
         // ここでは表示件数を知らないまま完結した戻り値を返す。組み立て自体は文字列連結だけで、
-        // クエリは 1 回・走査量も上記の上限に収まる)
+        // クエリは 1 回・読む行数も分類マスタの該当行だけに収まる)
         var causeCategoryNameById =
-            await LoadCauseCategoryDisplayNamesAsync(scope, alertIncidentIds, neededCategoryIds, ct);
+            await LoadCauseCategoryDisplayNamesAsync(causeCategories, neededCategoryIds, ct);
 
         // 控えておいた判定結果と対応表を突き合わせて、各アラートの見出しを確定させる
         foreach (var (alert, sharedCategoryIds) in pendingAlerts)
@@ -273,46 +268,39 @@ public class RecurrenceService : IRecurrenceService
     /// <b>読み込み結果からまるごと落ちる</b>。落ちた分は原因分類の重なり判定にも使われなくなるため、
     /// 「見出しに分類名を出したかっただけ」の変更が再発アラートの検出漏れに化ける。
     /// 別クエリなら、引けなかったときに縮退するのは見出しの表記だけで済む（§9 fail-safe）。
-    /// 読み取り範囲は <paramref name="incidentIds"/>（アラートになったインシデント）に絞る。
-    /// <paramref name="scope"/> は呼び出し側が部署スコープを掛けただけの全期間クエリなので、
-    /// ここで絞らないと 1 回のダッシュボード表示で全期間の <c>CauseAnalyses</c> を走査してしまい、
-    /// このファイルが他のクエリすべてに掛けている行数上限（<see cref="MaxAlertCandidateRows"/>）
-    /// だけが素通しになる（§8「一覧取得は必ず上限を持たせる」）。インシデント ID で絞れば
-    /// 走査は最大でも同じ上限に収まり、返る行数も原因分類マスタの行数で頭打ちになる。
-    /// <paramref name="scope"/> 経由で引くのは、呼び出し側が掛けている
-    /// 部署スコープ（認可）の外にあるデータを覗かないため。
+    /// インシデント側を経由せず分類マスタを直接引くのは、経由すると
+    /// 「なぜなぜ分析ぶんに増えた行を <c>Distinct</c> で畳み直す」「走査量を抑えるために
+    /// インシデント ID でも絞る」という余分な手当てが要るため。主キーで引けば行は元から
+    /// 一意で、読む行数も該当分類ぶんだけになる。分類マスタは非 PHI で、原因分類
+    /// ドロップダウン（<c>IncidentControllerHelpers.BuildCauseCategoryOptionsAsync</c>）が
+    /// 既に全ユーザーへ絞り込み無しで見せているため、部署スコープを通さなくても
+    /// 新たに露出するものは無い。
     /// </remarks>
-    /// <param name="scope">呼び出し側がスコープを絞ったインシデントのクエリ。</param>
-    /// <param name="incidentIds">分類名を引く対象のインシデント ID（アラートの基点）。</param>
+    /// <param name="causeCategories">原因分類マスタのクエリ。</param>
     /// <param name="categoryIds">表示名が必要な原因分類の ID。</param>
     /// <param name="ct">キャンセル用トークン。</param>
     /// <returns>分類 ID から表示名を引く対応表（引けなかった分類はキーごと存在しない）。</returns>
     private async Task<Dictionary<int, string>> LoadCauseCategoryDisplayNamesAsync(
-        IQueryable<Incident> scope,
-        IReadOnlyCollection<int> incidentIds,
+        IQueryable<CauseCategory> causeCategories,
         IReadOnlyCollection<int> categoryIds,
         CancellationToken ct)
     {
-        // 対象のインシデントか必要な分類が 1 つも無ければ、クエリを投げずに空の対応表を返す
-        if (incidentIds.Count == 0 || categoryIds.Count == 0) return new Dictionary<int, string>();
+        // 必要な分類が 1 つも無ければ、クエリを投げずに空の対応表を返す
+        if (categoryIds.Count == 0) return new Dictionary<int, string>();
 
-        // クエリ結果を受け取る変数(失敗したときは空のままにする)
+        // クエリ結果を受け取る変数(失敗したときは空の対応表で返す)
         List<CauseCategoryNameRow> rows;
         try
         {
-            // 対象インシデントのなぜなぜ分析だけを辿り、必要な分類の名前と親分類名を投影して取り出す。
+            // 必要な分類だけを主キーで引き、分類名と親分類名を投影して取り出す。
             // 親は省略可能な関連なので、親を持たない分類では ParentName が null になる
-            rows = await scope
+            rows = await causeCategories
                 .AsNoTracking()
-                .Where(i => incidentIds.Contains(i.Id))
-                .SelectMany(i => i.CauseAnalyses)
-                .Where(ca => categoryIds.Contains(ca.CauseCategoryId))
-                .Select(ca => new CauseCategoryNameRow(
-                    ca.CauseCategoryId,
-                    ca.CauseCategory.Name,
-                    ca.CauseCategory.Parent != null ? ca.CauseCategory.Parent.Name : null))
-                // 同じ分類を指す分析が何件あっても対応表には 1 行あればよいので DB 側で重複を落とす
-                .Distinct()
+                .Where(c => categoryIds.Contains(c.Id))
+                .Select(c => new CauseCategoryNameRow(
+                    c.Id,
+                    c.Name,
+                    c.Parent != null ? c.Parent.Name : null))
                 .ToListAsync(ct);
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -329,15 +317,9 @@ public class RecurrenceService : IRecurrenceService
             return new Dictionary<int, string>();
         }
 
-        // 分類 ID ごとに 1 行だけ残す。上の Distinct は (分類 ID, 分類名, 親分類名) の組で
-        // 重複を落とすので、同じ分類 ID の行はこの時点で既に 1 行のはず。それでも
-        // DistinctBy を通すのは、プロバイダ差で Distinct が期待どおり効かなかったときに
-        // ToDictionary が「キー重複」の例外でダッシュボードごと落ちるのを防ぐため(§9 fail-safe)
-        return rows
-            .DistinctBy(r => r.CauseCategoryId)
-            // 「親 > 子」形式の表示名を組み立てて対応表にする
-            // (組み立て規則は CauseCategory.FormatFullName が唯一の源。FullName と同じ表記になる)
-            .ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
+        // 分類 ID をキーに表示名を引ける対応表にする(主キーで引いているので ID は元から一意)。
+        // 「親 > 子」形式の組み立て規則は CauseCategory.FormatFullName が唯一の源
+        return rows.ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
     }
 
     /// <summary>
@@ -373,19 +355,25 @@ public class RecurrenceService : IRecurrenceService
         // 「部署 / 種別」の部分(分類名を 1 つも出せないときの縮退表示もこれと同じ)
         var departmentAndType = FormatDepartmentAndType(incident);
 
-        // 重なりの強い順に、名前を引けた分類だけを上限件数まで採る
+        // 重なりの強い順に、名前を引けた分類だけを上限件数まで採る。
+        // 同じ表示名になる分類が複数あり得る(分類名に一意制約は無く、同じ親の下に
+        // 同名の子を作れる)ため、表示名で重複を除いてから上限を適用する。
+        // 除かないと「ヒューマンエラー > 確認不足」が 2 枠を占め、その裏で別の分類が
+        // 「ほか N 分類」に押し出される(見出しを区別可能にするという目的に反する)
         var shownNames = sharedCategoryIds
             .Where(categoryNameById.ContainsKey)
-            .Take(MaxPatternCauseNames)
             .Select(id => categoryNameById[id])
+            .Distinct()
+            .Take(MaxPatternCauseNames)
             .ToList();
 
         // 名前が 1 つも引けなければ、従来どおり「部署 / 種別」だけを返す
         if (shownNames.Count == 0) return departmentAndType;
 
-        // 載せきれなかった分類の件数。基準は「重なった分類の総数」なので、上限で切り捨てた分だけでなく
-        // 名前を引けずに載せられなかった分類もここに数えられる(名前が引けない分を残件から
-        // 落とすと、実際には重なっている分類が黙って消えて「これで全部」と誤読させてしまう)
+        // 載せきれなかった分類の件数。基準は「重なった分類の総数」なので、上限で切り捨てた分だけでなく、
+        // 名前を引けずに載せられなかった分類や、別の分類と表示名が重なって 1 行にまとまった分類も
+        // ここに数えられる(これらを残件から落とすと、実際には重なっている分類が黙って消えて
+        // 「これで全部」と誤読させてしまう)
         var hiddenCount = sharedCategoryIds.Count - shownNames.Count;
 
         // 上限件数までの分類名を「、」で連結する
@@ -422,7 +410,6 @@ public class RecurrenceService : IRecurrenceService
     /// <remarks>
     /// 匿名型ではなく名前付きの record にしているのは、クエリを try/catch で囲むために
     /// 結果を受ける変数を try の外で宣言する必要があり、匿名型では型名を書けないため。
-    /// record にすると値の等価比較が自動で入るので、<c>Distinct()</c> の意味も匿名型と変わらない。
     /// </remarks>
     /// <param name="CauseCategoryId">原因分類の ID。</param>
     /// <param name="Name">原因分類の名前。</param>
