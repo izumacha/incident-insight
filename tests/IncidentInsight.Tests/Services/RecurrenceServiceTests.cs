@@ -8,6 +8,8 @@ using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Services;
 // EF Core の InMemory プロバイダを使えるようにする
 using Microsoft.EntityFrameworkCore;
+// テストでは何も出力しないロガー(NullLogger)を使うため
+using Microsoft.Extensions.Logging.Abstractions;
 
 // テストクラスが所属する名前空間（テストプロジェクトの Services フォルダ配下）
 namespace IncidentInsight.Tests.Services;
@@ -21,6 +23,9 @@ public class RecurrenceServiceTests : IDisposable
 {
     // テスト専用の InMemory データベースコンテキスト（テストごとに独立した DB を持つ）
     private readonly ApplicationDbContext _db;
+    // 同じ InMemory DB を指す DbContext をもう 1 つ作るためのオプション
+    // （fail-safe の検証で「破棄済みの DbContext から取ったクエリ」を用意するのに使う）
+    private readonly DbContextOptions<ApplicationDbContext> _options;
     // テスト対象のサービス（SystemClock を注入して今日の日付を取得させる）
     private readonly RecurrenceService _svc;
 
@@ -31,13 +36,13 @@ public class RecurrenceServiceTests : IDisposable
     public RecurrenceServiceTests()
     {
         // テスト専用の InMemory DB オプションを構築する（毎回ユニークな名前を使う）
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
+        _options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString()) // テストごとに独立した DB を作る
             .Options;
         // DbContext を生成する（InMemory なので実際の DB 接続は不要）
-        _db = new ApplicationDbContext(options);
+        _db = new ApplicationDbContext(_options);
         // RecurrenceService を生成する（SystemClock を渡して現在日時を取得させる）
-        _svc = new RecurrenceService(new SystemClock());
+        _svc = new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance);
     }
 
     /// <summary>
@@ -281,7 +286,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件だけ生成されることを確認する（a が b の再発アラートをトリガー）
         Assert.Single(alerts);
@@ -333,7 +338,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートは最新インシデント a をトリガーに 1 件だけ生成されること
         Assert.Single(alerts);
@@ -384,7 +389,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // x は recentList 自身の打ち切りで除外されるため、候補クエリにすら到達せず
         // (recentDepts に「被害部署」が含まれない)、x・partner のパターンからは
@@ -442,7 +447,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync(); // まとめて DB に保存する
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 同一パターン(同部署・同種別・同原因分類)のアラートは 1 件に集約されること
         // (b が打ち切りで漏れて 2 件目のアラートを作る回帰が起きないこと)
@@ -486,7 +491,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // アラートが 1 件生成されることを確認する
         Assert.Single(alerts);
@@ -525,7 +530,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する（両者とも窓外なのでアラートなし）
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 窓外のみ存在する場合はアラートが 0 件であることを確認する
         Assert.Empty(alerts);
@@ -565,7 +570,7 @@ public class RecurrenceServiceTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 直近 90 日を時間窓として再発アラートを取得する
-        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, TimeSpan.FromDays(90));
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
 
         // 3 件が互いに類似していても、重複を省いて 1 件のアラートだけが生成されることを確認する
         Assert.Single(alerts);
@@ -574,5 +579,557 @@ public class RecurrenceServiceTests : IDisposable
         Assert.Equal(a.Id, alerts[0].CurrentIncident.Id);
         // SimilarIncidents が 2 件（b と c）含まれることを確認する
         Assert.Equal(2, alerts[0].SimilarIncidents.Count);
+    }
+
+    /// <summary>
+    /// 同じ部署・同じ種別で原因分類だけが違う 2 つの再発パターンが、
+    /// PatternDescription で区別できることを検証する。
+    /// 説明文が「部署 / 種別」だけだった頃は、この 2 件がダッシュボードに
+    /// まったく同じ文字列で 2 行並び、どちらの根本原因の話か分からなかった。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_DistinguishesAlertsSharingDeptAndType()
+    {
+        // 1 つ目の原因分類（このカテゴリで再発する組を作る）
+        var confirmation = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // 2 つ目の原因分類（別カテゴリで再発する組を作る）
+        var handover = new CauseCategory { Name = "申し送り漏れ", DisplayOrder = 2 };
+        // 2 つの分類を DB に追加する
+        _db.CauseCategories.AddRange(confirmation, handover);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 「申し送り漏れ」で再発する組（新しい方: 5 日前）
+        var handoverNewer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 「申し送り漏れ」で再発する組（古い方: 10 日前）
+        var handoverOlder = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 「確認不足」で再発する組（新しい方: 20 日前）
+        var confirmationNewer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-20));
+        // 「確認不足」で再発する組（古い方: 30 日前）
+        var confirmationOlder = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-30));
+        // 4 件すべて同じ部署・同じ種別なので、区別できるのは原因分類だけになる
+        _db.Incidents.AddRange(handoverNewer, handoverOlder, confirmationNewer, confirmationOlder);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 各インシデントに、組ごとの原因分類でなぜなぜ分析を紐づける
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = handoverNewer.Id, CauseCategoryId = handover.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = handoverOlder.Id, CauseCategoryId = handover.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = confirmationNewer.Id, CauseCategoryId = confirmation.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = confirmationOlder.Id, CauseCategoryId = confirmation.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // 原因分類ごとに 1 件ずつ、合計 2 件のアラートが生成されることを確認する
+        Assert.Equal(2, alerts.Count);
+        // 2 件の説明文が同じ文字列にならない（＝画面で区別できる）ことを確認する
+        Assert.Equal(2, alerts.Select(a => a.PatternDescription).Distinct().Count());
+        // 「申し送り漏れ」側のアラートに、その分類名が説明文へ入っていることを確認する
+        Assert.Contains(alerts, a => a.CurrentIncident.Id == handoverNewer.Id && a.PatternDescription.Contains("申し送り漏れ"));
+        // 「確認不足」側のアラートに、その分類名が説明文へ入っていることを確認する
+        Assert.Contains(alerts, a => a.CurrentIncident.Id == confirmationNewer.Id && a.PatternDescription.Contains("確認不足"));
+        // 従来からの「部署 / 種別」表記が失われていないことを確認する（見出しの互換性）
+        Assert.All(alerts, a => Assert.Contains("外科病棟 / 投薬ミス", a.PatternDescription));
+    }
+
+    /// <summary>
+    /// 説明文の原因分類名が「親 &gt; 子」形式（CauseCategory.FullName）になることを検証する。
+    /// 子カテゴリ名は親をまたぐと重複し得るため、親名まで出さないと区別できない。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_UsesParentQualifiedCategoryName()
+    {
+        // 親カテゴリ（大分類）を作成する
+        var parent = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        // 親を DB に追加する
+        _db.CauseCategories.Add(parent);
+        // 親の Id を確定させる（子の ParentId に使うため）
+        await _db.SaveChangesAsync();
+
+        // 親にぶら下がる子カテゴリ（小分類）を作成する
+        var child = new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 1 };
+        // 子を DB に追加する
+        _db.CauseCategories.Add(child);
+        // 子を保存する
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に同じ子カテゴリでなぜなぜ分析を紐づける（これで再発と判定される）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = child.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = child.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        Assert.Single(alerts);
+        // 説明文の分類名が「親 > 子」形式になっていることを確認する
+        Assert.Contains("ヒューマンエラー > 確認不足", alerts[0].PatternDescription);
+    }
+
+    /// <summary>
+    /// 重なった原因分類が MaxPatternCauseNames を超えるとき、説明文が上限件数までで
+    /// 打ち切られ、残りは「ほか N 件」として件数だけ示されることを検証する。
+    /// 上限が無いと、なぜなぜ分析の数だけアラート 1 行が横に伸びる（§8）。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_TruncatesCauseNames_AtLimit()
+    {
+        // 上限を 1 件だけ超える数の原因分類を用意する（上限値を変えてもテストが追随するよう定数から導く）
+        var categoryCount = RecurrenceService.MaxPatternCauseNames + 1;
+        // 連番の名前を持つ原因分類を必要な数だけ作る
+        var categories = Enumerable.Range(1, categoryCount)
+            .Select(n => new CauseCategory { Name = $"分類{n}", DisplayOrder = n })
+            .ToList();
+        // 作った分類をまとめて DB に追加する
+        _db.CauseCategories.AddRange(categories);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件それぞれに、全分類ぶんのなぜなぜ分析を紐づける（重なりが分類の数だけ生まれる）
+        foreach (var category in categories)
+        {
+            // 新しい方のインシデントに 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = category.Id, Why1 = "w" });
+            // 古い方のインシデントにも同じ分類で 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = category.Id, Why1 = "w" });
+        }
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        Assert.Single(alerts);
+        // 説明文を取り出す
+        var description = alerts[0].PatternDescription;
+        // 上限件数ぶんの分類名は載っていることを確認する（Id 昇順＝作成順なので先頭から）
+        Assert.Contains($"分類{RecurrenceService.MaxPatternCauseNames}", description);
+        // 上限を超えた分類名そのものは載っていないことを確認する
+        Assert.DoesNotContain($"分類{categoryCount}", description);
+        // 載せきれなかった件数が「ほか N 分類」として示されることを確認する
+        // (同じパネルの「ほか N 件の再発パターン」「N 件の類似インシデント」と取り違えないよう単位を明示している)
+        Assert.Contains($"ほか{categoryCount - RecurrenceService.MaxPatternCauseNames}分類", description);
+    }
+
+    /// <summary>
+    /// 説明文に載るのは「類似インシデントと重なった原因分類」だけで、
+    /// 基点インシデントにしか無い分類は載らないことを検証する。
+    /// 重ならなかった分類まで並べると、実際には再発していない原因を
+    /// 再発パターンとして読ませてしまう。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_ListsOnlySharedCategories()
+    {
+        // 両方のインシデントが持つ（＝重なる）原因分類
+        var shared = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // 基点インシデントだけが持つ（＝重ならない）原因分類
+        var unshared = new CauseCategory { Name = "機器不具合・故障", DisplayOrder = 2 };
+        // 2 つの分類を DB に追加する
+        _db.CauseCategories.AddRange(shared, unshared);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 基点になる新しいインシデント
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 類似側になる古いインシデント
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 基点には重なる分類と重ならない分類の 2 件、類似側には重なる分類だけを紐づける
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = shared.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = unshared.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = shared.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        Assert.Single(alerts);
+        // 重なった分類は説明文に載ることを確認する
+        Assert.Contains("確認不足", alerts[0].PatternDescription);
+        // 重ならなかった分類は説明文に載らないことを確認する
+        Assert.DoesNotContain("機器不具合・故障", alerts[0].PatternDescription);
+    }
+
+    /// <summary>
+    /// 重なった原因分類が複数あるとき、説明文に載る順番が「重なりの強い順」
+    /// （その分類を共有する類似インシデントが多い順）になることを検証する。
+    /// 上限で打ち切る以上、切り捨てるのは共有の弱い分類でなければならない。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_OrdersCauseNames_ByShareStrength()
+    {
+        // 類似インシデント 1 件だけが共有する分類（＝重なりが弱い方）。
+        // 「Id 昇順ではなく共有数順」であることを確かめたいので、弱い方に小さい Id を与える
+        var weak = new CauseCategory { Name = "共有が弱い分類", DisplayOrder = 1 };
+        // 弱い方を先に DB へ追加して、小さい Id を割り当てる
+        _db.CauseCategories.Add(weak);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 類似インシデント 2 件が共有する分類（＝重なりが強い方）。後から作るので Id は大きくなる
+        var strong = new CauseCategory { Name = "共有が強い分類", DisplayOrder = 2 };
+        // 強い方を後から追加して、大きい Id を割り当てる
+        _db.CauseCategories.Add(strong);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // アラートの基点になる新しいインシデント
+        var current = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 類似側 1 件目（10 日前）
+        var similarA = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 類似側 2 件目（15 日前）
+        var similarB = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-15));
+        // 3 件を DB に追加する
+        _db.Incidents.AddRange(current, similarA, similarB);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 基点は両方の分類を持つ。類似側は strong を 2 件、weak を 1 件だけ共有する
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = current.Id, CauseCategoryId = strong.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = current.Id, CauseCategoryId = weak.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = similarA.Id, CauseCategoryId = strong.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = similarA.Id, CauseCategoryId = weak.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = similarB.Id, CauseCategoryId = strong.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // 3 件は互いに類似するので、重複を省いて 1 件のアラートに集約される
+        var alert = Assert.Single(alerts);
+        // 説明文を取り出す
+        var description = alert.PatternDescription;
+        // Id は weak の方が小さいが、共有数が多い strong が先に並ぶことを確認する
+        Assert.True(
+            description.IndexOf("共有が強い分類", StringComparison.Ordinal) < description.IndexOf("共有が弱い分類", StringComparison.Ordinal),
+            $"共有数の多い分類が先に並ぶはずが、実際の説明文は「{description}」でした。");
+    }
+
+    /// <summary>
+    /// 原因分類マスタが解決できない（分類名を引けない）ときに、説明文が従来どおり
+    /// 「部署 / 種別」だけへ縮退し、例外にならないことを検証する（§9 fail-safe）。
+    /// 表示のためだけの情報が欠けていることでアラート自体を落としてはいけない。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_FallsBackToDeptAndType_WhenCategoryUnresolvable()
+    {
+        // 分類マスタに存在しない ID を使う（CauseCategories には 1 件も入れない）
+        const int missingCategoryId = 999;
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に、マスタが存在しない同じ分類 ID でなぜなぜ分析を紐づける（再発判定自体は成立する）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = missingCategoryId, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = missingCategoryId, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する（例外にならないこと自体も検証対象）
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // 分類名が引けなくてもアラートは 1 件生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 説明文が従来どおり「部署 / 種別」だけになることを確認する
+        Assert.Equal("外科病棟 / 投薬ミス", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 重なった分類のうち一部だけ名前を引けるとき、名前を引けなかった分類も
+    /// 「ほか N 件」に数えられることを検証する。残件から落とすと、実際には重なっている
+    /// 分類が黙って消えて「これで全部」と誤読させてしまう。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_CountsUnresolvableCategories_AsHidden()
+    {
+        // 名前を引ける分類（マスタに登録する）
+        var named = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // マスタへ追加する
+        _db.CauseCategories.Add(named);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 分類マスタに存在しない ID（名前を引けない分類）
+        const int missingCategoryId = 999;
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件とも「名前を引ける分類」と「引けない分類」の両方を持つ（重なりは 2 件）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = named.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = missingCategoryId, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = named.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = missingCategoryId, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 名前を引けた分類は説明文に載ることを確認する
+        Assert.Contains("確認不足", alert.PatternDescription);
+        // 名前を引けなかった 1 件が残件として数えられていることを確認する
+        Assert.Contains("ほか1分類", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 表示名が同じになる分類が複数あっても、見出しの枠を重複表示で消費しないことを検証する。
+    /// 分類名には一意制約が無く、同じ親の下に同名の子を作れるため実際に起こり得る。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PatternDescription_DeduplicatesIdenticalCauseNames()
+    {
+        // 親カテゴリ（大分類）を作成する
+        var parent = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
+        // 親を DB に追加する
+        _db.CauseCategories.Add(parent);
+        // 親の Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 同じ親の下に「確認不足」という同名の子を 2 つ作る（表示名が衝突する）
+        var duplicateA = new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 1 };
+        // 2 つ目の同名分類（別レコードだが FullName は同じ文字列になる）
+        var duplicateB = new CauseCategory { Name = "確認不足", ParentId = parent.Id, DisplayOrder = 2 };
+        // 表示名が衝突しない分類（重複除去が効かないと「ほか N 分類」へ押し出される側）
+        var distinct = new CauseCategory { Name = "手順不遵守", ParentId = parent.Id, DisplayOrder = 3 };
+        // 3 つの分類をまとめて DB に追加する
+        _db.CauseCategories.AddRange(duplicateA, duplicateB, distinct);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件それぞれに 3 分類ぶんのなぜなぜ分析を紐づける（重なりは 3 分類）
+        foreach (var category in new[] { duplicateA, duplicateB, distinct })
+        {
+            // 新しい方に 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = category.Id, Why1 = "w" });
+            // 古い方にも同じ分類で 1 件
+            _db.CauseAnalyses.Add(new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = category.Id, Why1 = "w" });
+        }
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 直近 90 日を時間窓として再発アラートを取得する
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 同名の分類が 2 回並んでいないことを確認する（重複除去が効いている）
+        Assert.Equal(1, CountOccurrences(alert.PatternDescription, "ヒューマンエラー > 確認不足"));
+        // 重複に枠を奪われず、別の分類も見出しに載っていることを確認する
+        Assert.Contains("ヒューマンエラー > 手順不遵守", alert.PatternDescription);
+        // 1 行にまとまった分類は残件として数えられることを確認する
+        // (重なった分類は 3 件、見出しに載る表示名は 2 種類)
+        Assert.Contains("ほか1分類", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 文字列 <paramref name="text"/> に <paramref name="value"/> が何回現れるかを数える。
+    /// 「同じ分類名が 2 回並んでいないこと」を確かめるためだけのテスト用ヘルパー。
+    /// </summary>
+    /// <param name="text">検索対象の文字列。</param>
+    /// <param name="value">数えたい部分文字列。</param>
+    /// <returns>出現回数。</returns>
+    private static int CountOccurrences(string text, string value)
+    {
+        // 見つけた回数を数えるカウンタ
+        var count = 0;
+        // 次に検索を始める位置
+        var index = 0;
+        // 見つからなくなるまで前から順に探す
+        while ((index = text.IndexOf(value, index, StringComparison.Ordinal)) >= 0)
+        {
+            // 1 件見つかったので数える
+            count++;
+            // 見つかった分の長さだけ進めて、続きから探す
+            index += value.Length;
+        }
+        // 数え終わった回数を返す
+        return count;
+    }
+
+    /// <summary>
+    /// 分類マスタとして「同じ分類が複数回現れるクエリ」を渡されても、例外にならず
+    /// 見出しが組み立てられることを検証する。
+    /// </summary>
+    /// <remarks>
+    /// 引数の型は IQueryable&lt;CauseCategory&gt; なので、呼び出し側は主キーで一意にならない
+    /// クエリ（例: なぜなぜ分析から辿った分類の集合）も渡せてしまう。対応表の組み立てが
+    /// キー重複で落ちると、表示専用の情報のためにダッシュボードごと 500 になる。
+    /// </remarks>
+    [Fact]
+    public async Task FindRecurrenceAlerts_DoesNotThrow_WhenCategoryQueryYieldsDuplicates()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // カテゴリを追加する
+        _db.CauseCategories.Add(cat);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に同じカテゴリでなぜなぜ分析を紐づける（これで再発と判定される）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = cat.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = cat.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // なぜなぜ分析から辿った分類のクエリ（分析の件数だけ同じ分類が並ぶ = 主キーで一意にならない）
+        var duplicatedCategories = _db.CauseAnalyses.Select(ca => ca.CauseCategory);
+
+        // 重複を含むクエリを渡して再発アラートを取得する（例外にならないこと自体が検証対象）
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, duplicatedCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 分類名も従来どおり見出しに載ることを確認する（縮退もしていない）
+        Assert.Contains("確認不足", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 分類名の取得が失敗しても、再発アラート自体は返り、見出しが「部署 / 種別」へ
+    /// 縮退することを検証する（§9 fail-safe）。表示専用の付加情報の取得失敗で
+    /// ダッシュボードの主機能ごと落としてはいけない。
+    /// </summary>
+    [Fact]
+    public async Task FindRecurrenceAlerts_DegradesHeading_WhenCategoryQueryThrows()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // カテゴリを追加する
+        _db.CauseCategories.Add(cat);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に同じカテゴリでなぜなぜ分析を紐づける（これで再発と判定される）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = cat.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = cat.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // 失敗する分類クエリを作る: 破棄済みの DbContext から取った DbSet は
+        // 実行時に ObjectDisposedException を投げるので、DB 障害の代わりに使える
+        var disposedDb = new ApplicationDbContext(_options);
+        // 破棄する前にクエリだけ取り出しておく
+        var failingCategories = disposedDb.CauseCategories;
+        // ここで破棄する（以降このクエリを実行すると例外になる）
+        await disposedDb.DisposeAsync();
+
+        // 失敗するクエリを渡して再発アラートを取得する（例外にならないこと自体が検証対象）
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, failingCategories, TimeSpan.FromDays(90));
+
+        // 分類名が取れなくてもアラートは 1 件生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 見出しが「部署 / 種別」だけへ縮退していることを確認する
+        Assert.Equal("外科病棟 / 投薬ミス", alert.PatternDescription);
+    }
+
+    /// <summary>
+    /// 呼び出し側がキャンセルした場合、結果を返さずキャンセルがそのまま伝播することを検証する。
+    /// 利用者が画面を離れた等の正常な打ち切りを「取得失敗」として握り潰さないための回帰テスト。
+    /// </summary>
+    /// <remarks>
+    /// キャンセル済みトークンでは最初のクエリ（直近インシデントの読み込み）で打ち切られるため、
+    /// このテストが固定するのは「メソッド全体がキャンセルを飲み込まないこと」まで。
+    /// 分類名クエリの catch にある <c>when (ex is not OperationCanceledException)</c> だけを
+    /// 狙って発火させる手立ては無く、そこは実装のガードに委ねている。
+    /// </remarks>
+    [Fact]
+    public async Task FindRecurrenceAlerts_PropagatesCancellation_WithoutDegrading()
+    {
+        // 既にキャンセル済みのトークンを用意する
+        using var cts = new CancellationTokenSource();
+        // 呼び出す前にキャンセルしておく
+        await cts.CancelAsync();
+
+        // キャンセル済みトークンを渡すと OperationCanceledException が伝播することを確認する
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            _svc.FindRecurrenceAlertsAsync(_db.Incidents, _db.CauseCategories, TimeSpan.FromDays(90), cts.Token));
     }
 }

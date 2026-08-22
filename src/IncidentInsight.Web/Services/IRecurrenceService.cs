@@ -37,9 +37,26 @@ public interface IRecurrenceService
     /// ダッシュボード用のバッチ検出。<paramref name="recentWindow"/> 以内に発生した
     /// インシデント群から再発アラートを組み立てる。候補抽出は 1 クエリに集約される。
     /// </summary>
+    /// <param name="scope">
+    /// 検索対象となるインシデントの集合。呼び出し側で <c>ScopedByUser</c> などの
+    /// 部署スコープを済ませた <see cref="IQueryable{Incident}"/> を渡す。
+    /// </param>
+    /// <param name="causeCategories">
+    /// 原因分類マスタ。アラート見出しに出す分類名（「親 &gt; 子」）を引くためだけに使う。
+    /// インシデントと違い部署スコープの対象ではない（分類マスタは非 PHI で、
+    /// 原因分類ドロップダウンでも全ユーザーに絞り込み無しで見せている）。
+    /// DbContext を保持しない設計を保つため、<paramref name="scope"/> と同じく
+    /// クエリを呼び出し側から受け取る。実運用の呼び出し側は常に
+    /// <c>db.CauseCategories</c> を渡すが、引数にしておくことで
+    /// 「分類名を引けなかったときに見出しだけを縮退させる」fail-safe 経路を
+    /// テストから直接検証できる（実装側に握らせると、失敗を起こす手立てが無くなる）。
+    /// </param>
+    /// <param name="recentWindow">再発とみなす時間窓。</param>
+    /// <param name="ct">キャンセル用トークン。</param>
     // ダッシュボード用に、最近発生したインシデント群から再発アラートを一括生成する
     Task<List<RecurrenceAlert>> FindRecurrenceAlertsAsync(
         IQueryable<Incident> scope,
+        IQueryable<CauseCategory> causeCategories,
         TimeSpan recentWindow,
         CancellationToken ct = default);
 }

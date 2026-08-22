@@ -9,6 +9,8 @@ using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+// テストでは何も出力しないロガー(NullLogger)を使うため
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace IncidentInsight.Tests.Controllers;
 
@@ -27,7 +29,7 @@ public class HomeControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new HomeController(_db, new RecurrenceService(_clock), _clock);
+        _controller = new HomeController(_db, new RecurrenceService(_clock, NullLogger<RecurrenceService>.Instance), _clock);
         // Existing tests assume a privileged viewer; Staff-scope tests build their own.
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }

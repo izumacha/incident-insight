@@ -303,7 +303,7 @@ public class HomeController : Controller
         // 再発検出はサービスに集約。90 日ウィンドウは IncidentsController.Details (無制限) と
         // 業務ルールを揃えたまま、ダッシュボードでのみ時間窓を適用する。
         // 90 日以内の再発アラートを再発サービスから取得
-        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, RecurrenceAlertWindow);
+        var recurrenceAlerts = await _recurrence.FindRecurrenceAlertsAsync(incidents, _db.CauseCategories, RecurrenceAlertWindow);
 
         // ビュー用モデルに全ての KPI とリストを詰め込む
         var vm = new DashboardViewModel
