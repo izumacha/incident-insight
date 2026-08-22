@@ -89,7 +89,7 @@ public class RecurrenceDetectorTests
         var similar = new[] { MakeIncident(2, "内科病棟", IncidentTypeKind.Medication, 10) };
 
         // 重なった分類 ID を取り出す
-        var result = RecurrenceDetector.FindSharedCauseCategoryIds(target, similar);
+        var result = RecurrenceDetector.FindSharedCauseCategoryIds(RecurrenceDetector.CauseCategoryIdsOf(target), similar);
 
         // 基点に分類が無いので重なりようが無く、空になる
         Assert.Empty(result);
@@ -107,7 +107,7 @@ public class RecurrenceDetectorTests
         var similar = new[] { MakeIncident(2, "内科病棟", IncidentTypeKind.Medication, 11) };
 
         // 重なった分類 ID を取り出す
-        var result = RecurrenceDetector.FindSharedCauseCategoryIds(target, similar);
+        var result = RecurrenceDetector.FindSharedCauseCategoryIds(RecurrenceDetector.CauseCategoryIdsOf(target), similar);
 
         // 重なった 11 だけが返ることを確認する
         Assert.Equal(new[] { 11 }, result);
@@ -130,7 +130,7 @@ public class RecurrenceDetectorTests
         };
 
         // 重なった分類 ID を取り出す
-        var result = RecurrenceDetector.FindSharedCauseCategoryIds(target, similar);
+        var result = RecurrenceDetector.FindSharedCauseCategoryIds(RecurrenceDetector.CauseCategoryIdsOf(target), similar);
 
         // 共有数 2 の 30 が先頭、残りは共有数 1 で同数なので ID 昇順（10 → 20）
         Assert.Equal(new[] { 30, 10, 20 }, result);
@@ -154,7 +154,7 @@ public class RecurrenceDetectorTests
         };
 
         // 重なった分類 ID を取り出す
-        var result = RecurrenceDetector.FindSharedCauseCategoryIds(target, similar);
+        var result = RecurrenceDetector.FindSharedCauseCategoryIds(RecurrenceDetector.CauseCategoryIdsOf(target), similar);
 
         // どちらも共有インシデント数は 1 なので、ID 昇順（10 → 20）に並ぶ
         Assert.Equal(new[] { 10, 20 }, result);

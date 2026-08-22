@@ -1009,4 +1009,52 @@ public class RecurrenceServiceTests : IDisposable
         // 数え終わった回数を返す
         return count;
     }
+
+    /// <summary>
+    /// 分類マスタとして「同じ分類が複数回現れるクエリ」を渡されても、例外にならず
+    /// 見出しが組み立てられることを検証する。
+    /// </summary>
+    /// <remarks>
+    /// 引数の型は IQueryable&lt;CauseCategory&gt; なので、呼び出し側は主キーで一意にならない
+    /// クエリ（例: なぜなぜ分析から辿った分類の集合）も渡せてしまう。対応表の組み立てが
+    /// キー重複で落ちると、表示専用の情報のためにダッシュボードごと 500 になる。
+    /// </remarks>
+    [Fact]
+    public async Task FindRecurrenceAlerts_DoesNotThrow_WhenCategoryQueryYieldsDuplicates()
+    {
+        // テスト用の原因分類カテゴリを作成して DB に保存する
+        var cat = new CauseCategory { Name = "確認不足", DisplayOrder = 1 };
+        // カテゴリを追加する
+        _db.CauseCategories.Add(cat);
+        // 保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 再発する 2 件のインシデントを作る（新しい方）
+        var newer = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-5));
+        // 再発する 2 件のインシデントを作る（古い方）
+        var older = MakeIncident("外科病棟", IncidentTypeKind.Medication, DateTime.Today.AddDays(-10));
+        // 2 件を DB に追加する
+        _db.Incidents.AddRange(newer, older);
+        // DB に保存して Id を確定させる
+        await _db.SaveChangesAsync();
+
+        // 2 件に同じカテゴリでなぜなぜ分析を紐づける（これで再発と判定される）
+        _db.CauseAnalyses.AddRange(
+            new CauseAnalysis { IncidentId = newer.Id, CauseCategoryId = cat.Id, Why1 = "w" },
+            new CauseAnalysis { IncidentId = older.Id, CauseCategoryId = cat.Id, Why1 = "w" }
+        );
+        // 原因分析を DB に保存する
+        await _db.SaveChangesAsync();
+
+        // なぜなぜ分析から辿った分類のクエリ（分析の件数だけ同じ分類が並ぶ = 主キーで一意にならない）
+        var duplicatedCategories = _db.CauseAnalyses.Select(ca => ca.CauseCategory);
+
+        // 重複を含むクエリを渡して再発アラートを取得する（例外にならないこと自体が検証対象）
+        var alerts = await _svc.FindRecurrenceAlertsAsync(_db.Incidents, duplicatedCategories, TimeSpan.FromDays(90));
+
+        // アラートが 1 件だけ生成されることを確認する
+        var alert = Assert.Single(alerts);
+        // 分類名も従来どおり見出しに載ることを確認する（縮退もしていない）
+        Assert.Contains("確認不足", alert.PatternDescription);
+    }
 }

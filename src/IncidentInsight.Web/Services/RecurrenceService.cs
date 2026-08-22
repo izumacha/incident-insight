@@ -1,3 +1,5 @@
+// DbException(DB プロバイダ共通の例外基底)を使えるようにする
+using System.Data.Common;
 // モデル(Incidentなど)を使えるようにする
 using IncidentInsight.Web.Models;
 // ViewModel(RecurrenceAlertなど)を使えるようにする
@@ -203,8 +205,12 @@ public class RecurrenceService : IRecurrenceService
 
             // 同じ部署・種別の候補バケットを取得
             var bucket = candidatesByKey[(incident.Department, incident.IncidentType)];
+            // 基点インシデントの原因分類 ID 集合を 1 度だけ作る。
+            // 類似抽出と「重なった分類」の判定が同じ集合を使い回せるようにするため
+            // (別々に作ると同じ HashSet をアラート 1 件につき 2 度組み立てることになる)
+            var targetCatIds = RecurrenceDetector.CauseCategoryIdsOf(incident);
             // バケットから類似(原因分類が重なる)インシデントを抽出
-            var similar = RecurrenceDetector.FindSimilar(incident, bucket);
+            var similar = RecurrenceDetector.FindSimilar(incident, bucket, targetCatIds);
 
             // 類似が1件以上ある場合のみアラートとして採用
             if (similar.Count > 0)
@@ -218,7 +224,7 @@ public class RecurrenceService : IRecurrenceService
                 };
                 // 組み立てたアラートと、見出しに使う「重なった原因分類」を対で控える
                 // (ループを抜けたあとに再判定すると、同じ規則を 2 度走らせることになる)
-                pendingAlerts.Add((alert, RecurrenceDetector.FindSharedCauseCategoryIds(incident, similar)));
+                pendingAlerts.Add((alert, RecurrenceDetector.FindSharedCauseCategoryIds(targetCatIds, similar)));
                 // 処理済みとして記録(以降の巡回で再び採用しないようにする)
                 processed.Add(incident.Id);
                 // 類似側も処理済み扱いにして重複アラートを防ぐ
@@ -251,10 +257,7 @@ public class RecurrenceService : IRecurrenceService
         }
 
         // 見出しまで確定したアラートを取り出して返す
-        var alerts = pendingAlerts.Select(x => x.Alert).ToList();
-
-        // 集まった再発アラートのリストを返す
-        return alerts;
+        return pendingAlerts.Select(x => x.Alert).ToList();
     }
 
     /// <summary>
@@ -288,13 +291,11 @@ public class RecurrenceService : IRecurrenceService
         // 必要な分類が 1 つも無ければ、クエリを投げずに空の対応表を返す
         if (categoryIds.Count == 0) return new Dictionary<int, string>();
 
-        // クエリ結果を受け取る変数(失敗したときは空の対応表で返す)
-        List<CauseCategoryNameRow> rows;
         try
         {
             // 必要な分類だけを主キーで引き、分類名と親分類名を投影して取り出す。
             // 親は省略可能な関連なので、親を持たない分類では ParentName が null になる
-            rows = await causeCategories
+            var rows = await causeCategories
                 .AsNoTracking()
                 .Where(c => categoryIds.Contains(c.Id))
                 .Select(c => new CauseCategoryNameRow(
@@ -302,24 +303,44 @@ public class RecurrenceService : IRecurrenceService
                     c.Name,
                     c.Parent != null ? c.Parent.Name : null))
                 .ToListAsync(ct);
+
+            // 分類 ID をキーに表示名を引ける対応表にする。
+            // 「親 > 子」形式の組み立て規則は CauseCategory.FormatFullName が唯一の源。
+            // 対応表の組み立ても try の内側に置く: 呼び出し側が(主キーで一意にならない)
+            // 別の分類クエリを渡すと ToDictionary がキー重複で投げるため、
+            // 外に出すと下の縮退経路を素通りして 500 になる
+            return rows
+                .DistinctBy(r => r.CauseCategoryId)
+                .ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
         {
             // ここで取っているのは見出しに添える表示専用の情報でしかない。タイムアウトや
             // 一時的な接続断でこれが取れないだけで、既に組み上がっている再発アラート
-            // (ダッシュボードの主機能)ごと 500 にしてしまうのは過剰なので、警告を残して
+            // (ダッシュボードの主機能)ごと 500 にしてしまうのは過剰なので、ログを残して
             // 空の対応表で続行し、見出しを「部署 / 種別」へ縮退させる(§9 fail-safe)。
             // 握り潰さずログに文脈を残す点は §6 の「エラーを握り潰さない」に従う。
             // 呼び出し側のキャンセル(OperationCanceledException)は利用者が画面を離れた等の
-            // 正常な打ち切りなので、縮退させず今までどおり伝播させる
-            _logger.LogWarning(ex, "再発アラートの見出し用に原因分類名を取得できませんでした。分類名なしで表示します。");
+            // 正常な打ち切りなので、縮退させず今までどおり伝播させる。
+            //
+            // 捕捉範囲を広く取るのは可用性のため(表示用の付加情報のために主機能を落とさない)だが、
+            // 広い catch は「一時障害」と「実装の誤り(SQL へ翻訳できない投影など)」を同じ扱いにして
+            // しまう。後者は縮退が恒久化し、ログだけが唯一の手掛かりになるため、
+            // DB 由来の一時障害は警告、それ以外は異常としてログレベルを分けて気付けるようにする
+            // (翻訳可否そのものは RecurrenceServiceSqliteTests が CI で固定している)
+            if (ex is DbException or TimeoutException)
+            {
+                // DB 側の一時的な失敗。運用上は再試行で解消し得るので警告に留める
+                _logger.LogWarning(ex, "再発アラートの見出し用に原因分類名を取得できませんでした(DB 側の一時的な失敗)。分類名なしで表示します。");
+            }
+            else
+            {
+                // 一時障害では説明の付かない失敗。縮退したまま放置されないよう異常として記録する
+                _logger.LogError(ex, "再発アラートの見出し用に原因分類名を取得できませんでした(想定外の失敗)。分類名なしで表示します。");
+            }
             // 空の対応表で続行する
             return new Dictionary<int, string>();
         }
-
-        // 分類 ID をキーに表示名を引ける対応表にする(主キーで引いているので ID は元から一意)。
-        // 「親 > 子」形式の組み立て規則は CauseCategory.FormatFullName が唯一の源
-        return rows.ToDictionary(r => r.CauseCategoryId, r => CauseCategory.FormatFullName(r.ParentName, r.Name));
     }
 
     /// <summary>

@@ -17,19 +17,38 @@ public static class RecurrenceDetector
     /// <paramref name="target"/> と再発関係にある候補を <paramref name="candidates"/> から抽出する。
     /// target.CauseAnalyses と各 candidate.CauseAnalyses が事前にロードされている必要がある。
     /// </summary>
-    public static List<Incident> FindSimilar(Incident target, IEnumerable<Incident> candidates)
+    public static List<Incident> FindSimilar(Incident target, IEnumerable<Incident> candidates) =>
+        // 分類 ID の集合をこの場で作って、集合を受け取る側の実装へ委ねる
+        FindSimilar(target, candidates, CauseCategoryIdsOf(target));
+
+    /// <summary>
+    /// <paramref name="target"/> と再発関係にある候補を <paramref name="candidates"/> から抽出する。
+    /// 対象の原因分類 ID 集合を既に持っている呼び出し側向けに、それを受け取る版。
+    /// </summary>
+    /// <remarks>
+    /// ダッシュボードの巡回は 1 件のインシデントについて <see cref="FindSimilar(Incident, IEnumerable{Incident})"/> と
+    /// <see cref="FindSharedCauseCategoryIds"/> を続けて呼ぶ。集合を毎回作り直すと同じ
+    /// <see cref="HashSet{T}"/> を 2 度組み立てることになるため、呼び出し側が 1 度だけ作って
+    /// 両方へ渡せるようにしている。
+    /// </remarks>
+    /// <param name="target">再発判定の基点インシデント。</param>
+    /// <param name="candidates">突き合わせる候補インシデント。</param>
+    /// <param name="targetCauseCategoryIds"><paramref name="target"/> の原因分類 ID 集合。</param>
+    /// <returns>再発関係にある候補のリスト。</returns>
+    public static List<Incident> FindSimilar(
+        Incident target,
+        IEnumerable<Incident> candidates,
+        IReadOnlySet<int> targetCauseCategoryIds)
     {
-        // 対象インシデントが持つ原因分類IDの集合を作る(Hashで照合を高速化)
-        var catIds = CauseCategoryIdsOf(target);
         // 原因分類が1件もないなら再発判定はできないので空リストを返す
-        if (catIds.Count == 0) return new List<Incident>();
+        if (targetCauseCategoryIds.Count == 0) return new List<Incident>();
 
         // 候補の中から「自分自身を除く/同部署/同種別/原因分類が1つでも重なる」ものを抽出
         return candidates
             .Where(o => o.Id != target.Id
                 && o.Department == target.Department
                 && o.IncidentType == target.IncidentType
-                && o.CauseAnalyses.Any(ca => catIds.Contains(ca.CauseCategoryId)))
+                && o.CauseAnalyses.Any(ca => targetCauseCategoryIds.Contains(ca.CauseCategoryId)))
             .ToList();
     }
 
@@ -38,7 +57,7 @@ public static class RecurrenceDetector
     /// 「重なりの強い順」(その分類を共有する類似インシデントが多い順、同数なら ID の昇順)で返す。
     /// </summary>
     /// <remarks>
-    /// 「何をもって重なりとみなすか」は <see cref="FindSimilar"/> と同じ規則でなければならない
+    /// 「何をもって重なりとみなすか」は <see cref="FindSimilar(Incident, IEnumerable{Incident})"/> と同じ規則でなければならない
     /// (説明文だけが古い規則のまま取り残されると、画面が「重なった分類」を誤って示す)。
     /// そのため判定に使う分類 ID の取り出しは <see cref="CauseCategoryIdsOf"/> に集約し、
     /// この 2 つのメソッドが同じ 1 つの定義を共有する形にしている(§6 DRY)。
@@ -47,15 +66,19 @@ public static class RecurrenceDetector
     /// 同数のときの副次キーを ID にするのは、表示のたびに順番が入れ替わらないようにする
     /// (名前順にしないのは、文字列比較の結果が実行環境のロケール設定で変わり得るため)。
     /// </remarks>
-    /// <param name="target">再発アラートの基点インシデント。</param>
-    /// <param name="similar"><see cref="FindSimilar"/> が返した類似インシデント。</param>
+    /// <param name="targetCauseCategoryIds">
+    /// 基点インシデントの原因分類 ID 集合（<see cref="CauseCategoryIdsOf"/> の戻り値）。
+    /// 直前の <see cref="FindSimilar(Incident, IEnumerable{Incident}, IReadOnlySet{int})"/> と
+    /// 同じ集合を使い回せるよう、インシデントではなく集合を受け取る。
+    /// </param>
+    /// <param name="similar"><see cref="FindSimilar(Incident, IEnumerable{Incident})"/> が返した類似インシデント。</param>
     /// <returns>重なった原因分類の ID(重なりの強い順)。重なりが無ければ空リスト。</returns>
-    public static List<int> FindSharedCauseCategoryIds(Incident target, IEnumerable<Incident> similar)
+    public static List<int> FindSharedCauseCategoryIds(
+        IReadOnlySet<int> targetCauseCategoryIds,
+        IEnumerable<Incident> similar)
     {
-        // 基点インシデントが持つ原因分類 ID の集合(FindSimilar と同じ取り出し方)
-        var catIds = CauseCategoryIdsOf(target);
         // 原因分類が1件もないなら重なりようが無いので空リストを返す
-        if (catIds.Count == 0) return new List<int>();
+        if (targetCauseCategoryIds.Count == 0) return new List<int>();
 
         // 類似インシデントごとに分類 ID を重複除去してから並べ、基点と重なるものだけを残す。
         // インシデント単位で重複除去してから数えることで、グループの件数が
@@ -63,7 +86,7 @@ public static class RecurrenceDetector
         // (同じ分類のなぜなぜ分析を 1 件のインシデントが複数持っていても二重に数えない)
         return similar
             .SelectMany(s => CauseCategoryIdsOf(s))
-            .Where(id => catIds.Contains(id))
+            .Where(targetCauseCategoryIds.Contains)
             .GroupBy(id => id)
             .OrderByDescending(g => g.Count())
             .ThenBy(g => g.Key)
@@ -78,7 +101,7 @@ public static class RecurrenceDetector
     /// <remarks>
     /// 「重なりの単位」を変える（例: 親分類へ丸めて突き合わせる）ときに、この 1 か所だけを
     /// 直せば全経路が追随するようにするため public にしている。ダッシュボード側
-    /// （<see cref="FindSimilar"/> / <see cref="FindSharedCauseCategoryIds"/>）だけでなく、
+    /// （<see cref="FindSimilar(Incident, IEnumerable{Incident})"/> / <see cref="FindSharedCauseCategoryIds"/>）だけでなく、
     /// インシデント詳細の類似一覧を組み立てる <see cref="RecurrenceService"/> からも呼ぶ。
     /// </remarks>
     /// <param name="incident">分類 ID を取り出す対象のインシデント。</param>
