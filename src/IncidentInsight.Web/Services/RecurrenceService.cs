@@ -107,16 +107,13 @@ public class RecurrenceService : IRecurrenceService
         // MaxAlertCandidateRows・同じ並び順(発生日の新しい順、同時刻は Id 降順で決定的に)
         // で打ち切る。打ち切りの影響は「上限を超えた古いインシデントがアラート対象から
         // 漏れる」ことに限定される(candidates 側と同じ意図的なトレードオフ)。
-        // 原因分類(CauseCategory)とその親も一緒に読み込むのは、再発パターンの説明文
-        // (PatternDescription)に「どの原因分類で重なったか」を載せるため。CauseCategory.FullName が
-        // 「親 > 子」の表記に親名を使うので Parent まで辿る(Incidents/Details.cshtml と同じ表記)。
-        // 追加でロードするのは recentList 側だけでよい: 説明文に出す分類名は必ず基点インシデント
-        // (= CurrentIncident)が持つ分類のうち類似側と重なったものなので、候補(candidates)側は
-        // 従来どおり CauseCategoryId(重なり判定に使う数値)だけあれば足りる。候補クエリまで
-        // 分類マスタを結合すると、MaxAlertCandidateRows 件ぶんの余計な結合が増える(§8)
+        // 読み込むのは CauseAnalyses まで。分類マスタ(CauseCategory)はここでは結合しない。
+        // 見出し用の分類名は LoadCauseCategoryDisplayNamesAsync が別クエリで引く
+        // (理由は同メソッドの remarks。ここに ThenInclude を足すと再発検知そのものが
+        //  表示用データの結合可否に左右される)
         var recentList = await scope
             .AsNoTracking()
-            .Include(i => i.CauseAnalyses).ThenInclude(ca => ca.CauseCategory).ThenInclude(cc => cc!.Parent)
+            .Include(i => i.CauseAnalyses)
             .Where(i => i.OccurredAt >= since)
             .OrderByDescending(i => i.OccurredAt)
             .ThenByDescending(i => i.Id)
@@ -134,6 +131,11 @@ public class RecurrenceService : IRecurrenceService
         var recentCatIds = recentList
             .SelectMany(i => i.CauseAnalyses.Select(ca => ca.CauseCategoryId))
             .ToHashSet();
+
+        // アラートの見出しに出す分類名を、分類 ID から引ける対応表として先に用意しておく。
+        // 見出しに載り得るのは基点インシデント(recentList 由来)が持つ分類だけなので、
+        // recentCatIds をそのまま引数にすれば必要な分を過不足なく覆える
+        var causeCategoryNameById = await LoadCauseCategoryDisplayNamesAsync(scope, recentCatIds, ct);
 
         // Over-fetches slightly (superset of dept × type) but collapses the loop's
         // per-iteration queries into one. Final matching is done in-memory below.
@@ -203,7 +205,7 @@ public class RecurrenceService : IRecurrenceService
                     SimilarIncidents = similar,
                     // パターンの説明文は「部署 / 種別（重なった原因分類）」で組み立てる。
                     // 組み立て規則は BuildPatternDescription が唯一の源(下の private メソッド)
-                    PatternDescription = BuildPatternDescription(incident, similar)
+                    PatternDescription = BuildPatternDescription(incident, similar, causeCategoryNameById)
                 });
                 // 処理済みとして記録(以降の巡回で再び採用しないようにする)
                 processed.Add(incident.Id);
@@ -217,6 +219,56 @@ public class RecurrenceService : IRecurrenceService
     }
 
     /// <summary>
+    /// 指定された原因分類 ID について、見出し用の表示名（「親 &gt; 子」形式）を引く対応表を作る。
+    /// </summary>
+    /// <remarks>
+    /// 分類マスタをインシデント側のクエリに <c>ThenInclude</c> で結合せず、別クエリで引くのは
+    /// <b>再発検知そのものを表示用データから切り離すため</b>。<c>CauseAnalysis.CauseCategory</c> は
+    /// 必須ナビゲーション（<c>CauseCategoryId</c> が非 null）なので、これを結合すると EF Core が
+    /// 内部結合として扱い、分類マスタ側の行が引けない <c>CauseAnalysis</c> は
+    /// <b>読み込み結果からまるごと落ちる</b>。落ちた分は原因分類の重なり判定にも使われなくなるため、
+    /// 「見出しに分類名を出したかっただけ」の変更が再発アラートの検出漏れに化ける。
+    /// 別クエリなら、引けなかったときに縮退するのは見出しの表記だけで済む（§9 fail-safe）。
+    /// 対応表は分類 ID をキーにするので、件数は原因分類マスタの行数が上限（インシデント件数に
+    /// 比例しては増えない）。<paramref name="scope"/> 経由で引くのは、呼び出し側が掛けている
+    /// 部署スコープ（認可）の外にあるデータを覗かないため。
+    /// </remarks>
+    /// <param name="scope">呼び出し側がスコープを絞ったインシデントのクエリ。</param>
+    /// <param name="categoryIds">表示名が必要な原因分類の ID。</param>
+    /// <param name="ct">キャンセル用トークン。</param>
+    /// <returns>分類 ID から表示名を引く対応表（引けなかった分類はキーごと存在しない）。</returns>
+    private static async Task<Dictionary<int, string>> LoadCauseCategoryDisplayNamesAsync(
+        IQueryable<Incident> scope,
+        IReadOnlyCollection<int> categoryIds,
+        CancellationToken ct)
+    {
+        // 必要な分類が 1 つも無ければクエリを投げずに空の対応表を返す
+        if (categoryIds.Count == 0) return new Dictionary<int, string>();
+
+        // 必要な分類 ID ぶんだけ、分類名と親分類名を投影して取り出す。
+        // 親は省略可能な関連なので、親を持たない分類では ParentName が null になる
+        var rows = await scope
+            .AsNoTracking()
+            .SelectMany(i => i.CauseAnalyses)
+            .Where(ca => categoryIds.Contains(ca.CauseCategoryId))
+            .Select(ca => new
+            {
+                ca.CauseCategoryId,
+                ca.CauseCategory.Name,
+                ParentName = ca.CauseCategory.Parent != null ? ca.CauseCategory.Parent.Name : null
+            })
+            // 同じ分類を指す分析が何件あっても対応表には 1 行あればよいので DB 側で重複を落とす
+            .Distinct()
+            .ToListAsync(ct);
+
+        // 分類 ID ごとに 1 件へまとめ、「親 > 子」形式の表示名を組み立てて対応表にする
+        // (組み立て規則は CauseCategory.FormatFullName が唯一の源。FullName と同じ表記になる)
+        return rows
+            .GroupBy(r => r.CauseCategoryId)
+            .ToDictionary(g => g.Key, g => CauseCategory.FormatFullName(g.First().ParentName, g.First().Name));
+    }
+
+    /// <summary>
     /// 再発パターンの説明文（ダッシュボードのアラート 1 行に出る見出し）を組み立てる。
     /// 「部署 / 種別（重なった原因分類）」の形にする。
     /// </summary>
@@ -227,52 +279,59 @@ public class RecurrenceService : IRecurrenceService
     /// ダッシュボードに同じ文字列で 2 行並び、利用者にはなぜ同じパターンが重複しているのか、
     /// どちらの根本原因を見直すべきかが分からなかった。判定条件の 3 つ目を説明文にも出して
     /// 行同士を区別できるようにする。
-    /// 分類名が 1 つも取れないとき（呼び出し側が原因分類マスタを eager-load していない等）は
+    /// 分類名が 1 つも引けないとき（対応表に名前が無い＝分類マスタの行が読めない等）は
     /// 従来どおり「部署 / 種別」だけを返す。表示のためだけの情報が欠けていることで
     /// アラート自体を落とすのは過剰なので、機能を縮退させて続行する（§9 fail-safe）。
+    /// 残るトレードオフ: 重なった分類が <see cref="MaxPatternCauseNames"/> 件を超える 2 つの
+    /// パターンで、上位の分類が偶然すべて一致すると、打ち切り後の見出しは再び同じ文字列になる。
+    /// 見出しの長さに上限を置く以上これは避けられないので、切り捨てるのが「重なりの弱い分類」に
+    /// なるよう <see cref="RecurrenceDetector.FindSharedCauseCategoryIds"/> の並び（重なりの強い順）
+    /// をそのまま使い、衝突が起きにくい側に倒している。衝突しても各行の類似件数と詳細リンクは
+    /// 別なので、見分けが付かなくなるのは見出しだけ。
     /// </remarks>
     /// <param name="incident">アラートの基点インシデント（CurrentIncident）。</param>
     /// <param name="similar">基点と再発関係にある類似インシデント。</param>
+    /// <param name="categoryNameById">分類 ID から表示名を引く対応表（<see cref="LoadCauseCategoryDisplayNamesAsync"/> の戻り値）。</param>
     /// <returns>アラート 1 行分の見出し文字列。</returns>
-    private static string BuildPatternDescription(Incident incident, List<Incident> similar)
+    private static string BuildPatternDescription(
+        Incident incident,
+        List<Incident> similar,
+        IReadOnlyDictionary<int, string> categoryNameById)
     {
         // 「部署 / 種別」の部分。種別は enum の英語名ではなく日本語ラベル(IncidentTypeLabel)で表示する。
         // 生の enum を文字列化すると "Medication" 等が医療現場の日本語UIに漏れるため、
         // 既存の計算プロパティ(唯一のラベル変換元)を再利用して表記を統一する
         var departmentAndType = $"{incident.Department} / {incident.IncidentTypeLabel}";
 
-        // 類似インシデント側が持っている原因分類 ID を集合にまとめる(重なり判定を高速にするため)
-        var similarCategoryIds = similar
-            .SelectMany(s => s.CauseAnalyses.Select(ca => ca.CauseCategoryId))
-            .ToHashSet();
+        // 実際に重なった原因分類を「重なりの強い順」で取り出す。重なりの規則は
+        // 再発判定そのものと同じでなければならないので、判定を持つマッチャ側に問い合わせる
+        // (説明文だけが古い規則のまま取り残されるのを防ぐ。§6 DRY)
+        var sharedCategoryIds = RecurrenceDetector.FindSharedCauseCategoryIds(incident, similar);
 
-        // 基点インシデントの分析のうち、類似側と分類が重なったものだけを取り出して分類名にする。
-        // 同じ分類に複数の分析がぶら下がることがあるので分類 ID でグループ化して重複を除き、
-        // 並びは分類 Id の昇順に固定する(表示のたびに順番が入れ替わらないようにするため。
-        // 名前順にしないのは、文字列比較の結果が実行環境のロケール設定で変わり得るのを避けるため)
-        var sharedCategoryNames = incident.CauseAnalyses
-            .Where(ca => similarCategoryIds.Contains(ca.CauseCategoryId))
-            .GroupBy(ca => ca.CauseCategoryId)
-            .OrderBy(g => g.Key)
-            // 同じ分類 ID のうち、分類マスタが読み込めている分析から名前を取る(1 件も無ければ null)
-            .Select(g => g.Select(ca => ca.CauseCategory).FirstOrDefault(cc => cc is not null))
-            // 名前が取れなかった分類は説明文に出せないので落とす
-            .Where(cc => cc is not null)
-            // 「親 > 子」形式の表示名にする(親が読み込めていなければ子の名前だけになる)
-            .Select(cc => cc!.FullName)
+        // 重なった分類が 1 つも無ければ(理論上はアラートにならないが)従来どおり「部署 / 種別」だけを返す
+        if (sharedCategoryIds.Count == 0) return departmentAndType;
+
+        // 重なりの強い順に、名前を引けた分類だけを上限件数まで採る
+        var shownNames = sharedCategoryIds
+            .Where(categoryNameById.ContainsKey)
+            .Take(MaxPatternCauseNames)
+            .Select(id => categoryNameById[id])
             .ToList();
 
-        // 分類名が 1 つも取れなければ、従来どおり「部署 / 種別」だけを返す
-        if (sharedCategoryNames.Count == 0) return departmentAndType;
+        // 名前が 1 つも引けなければ、従来どおり「部署 / 種別」だけを返す
+        if (shownNames.Count == 0) return departmentAndType;
+
+        // 載せきれなかった分類の件数。基準は「重なった分類の総数」なので、上限で切り捨てた分だけでなく
+        // 名前を引けずに載せられなかった分類もここに数えられる(名前が引けない分を残件から
+        // 落とすと、実際には重なっている分類が黙って消えて「これで全部」と誤読させてしまう)
+        var hiddenCount = sharedCategoryIds.Count - shownNames.Count;
 
         // 上限件数までの分類名を「、」で連結する
-        var shownNames = string.Join("、", sharedCategoryNames.Take(MaxPatternCauseNames));
-        // 上限に収まらなかった分類の件数(上限以下なら 0 か負になるので、下の if で使うときに判定する)
-        var hiddenCount = sharedCategoryNames.Count - MaxPatternCauseNames;
+        var causeText = string.Join("、", shownNames);
         // 載せきれなかった分があれば件数だけ添えて、分類が他にもあることを隠さない
-        if (hiddenCount > 0) shownNames = $"{shownNames} ほか{hiddenCount}件";
+        if (hiddenCount > 0) causeText = $"{causeText} ほか{hiddenCount}件";
 
         // 「部署 / 種別（分類名…）」の形にして返す
-        return $"{departmentAndType}（{shownNames}）";
+        return $"{departmentAndType}（{causeText}）";
     }
 }

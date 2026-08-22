@@ -41,5 +41,21 @@ public class CauseCategory
     // 親かどうか(ParentIdがnullなら自分が親=大分類)
     public bool IsParent => ParentId == null;
     // 「親名 > 自分の名前」の形式の表示文字列(親がなければ自分の名前だけ)
-    public string FullName => Parent != null ? $"{Parent.Name} > {Name}" : Name;
+    public string FullName => FormatFullName(Parent?.Name, Name);
+
+    /// <summary>
+    /// 「親名 &gt; 自分の名前」形式の表示名を組み立てる規則。親が無ければ自分の名前だけを返す。
+    /// </summary>
+    /// <remarks>
+    /// エンティティを丸ごと読まずに「分類名」と「親の分類名」だけを投影して取得する場面
+    /// （<see cref="Services.RecurrenceService"/> のアラート見出し用の名前引き）でも
+    /// <see cref="FullName"/> と同じ表記を使えるように、組み立て規則をここに切り出している。
+    /// 書き写すと片方だけ区切り文字を変えたときに画面ごとに表記が食い違う（§6 DRY）。
+    /// </remarks>
+    /// <param name="parentName">親分類の名前。親がなければ null。</param>
+    /// <param name="name">自分の分類名。</param>
+    /// <returns>表示用の分類名。</returns>
+    public static string FormatFullName(string? parentName, string name) =>
+        // 親名があれば「親 > 子」、無ければ子の名前だけを返す
+        parentName != null ? $"{parentName} > {name}" : name;
 }
