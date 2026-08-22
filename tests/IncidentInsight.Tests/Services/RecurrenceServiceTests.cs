@@ -729,8 +729,9 @@ public class RecurrenceServiceTests : IDisposable
         Assert.Contains($"分類{RecurrenceService.MaxPatternCauseNames}", description);
         // 上限を超えた分類名そのものは載っていないことを確認する
         Assert.DoesNotContain($"分類{categoryCount}", description);
-        // 載せきれなかった件数が「ほか N 件」として示されることを確認する
-        Assert.Contains($"ほか{categoryCount - RecurrenceService.MaxPatternCauseNames}件", description);
+        // 載せきれなかった件数が「ほか N 分類」として示されることを確認する
+        // (同じパネルの「ほか N 件の再発パターン」「N 件の類似インシデント」と取り違えないよう単位を明示している)
+        Assert.Contains($"ほか{categoryCount - RecurrenceService.MaxPatternCauseNames}分類", description);
     }
 
     /// <summary>
@@ -788,15 +789,15 @@ public class RecurrenceServiceTests : IDisposable
     [Fact]
     public async Task FindRecurrenceAlerts_PatternDescription_OrdersCauseNames_ByShareStrength()
     {
-        // 2 件の類似インシデントが共有する分類（＝重なりが強い方）。
-        // Id が後になるよう先に弱い方を保存し、「Id 昇順ではなく共有数順」であることを確かめられるようにする
+        // 類似インシデント 1 件だけが共有する分類（＝重なりが弱い方）。
+        // 「Id 昇順ではなく共有数順」であることを確かめたいので、弱い方に小さい Id を与える
         var weak = new CauseCategory { Name = "共有が弱い分類", DisplayOrder = 1 };
         // 弱い方を先に DB へ追加して、小さい Id を割り当てる
         _db.CauseCategories.Add(weak);
         // 保存して Id を確定させる
         await _db.SaveChangesAsync();
 
-        // 1 件の類似インシデントだけが共有する分類（＝重なりが弱い方）より後に作る強い方
+        // 類似インシデント 2 件が共有する分類（＝重なりが強い方）。後から作るので Id は大きくなる
         var strong = new CauseCategory { Name = "共有が強い分類", DisplayOrder = 2 };
         // 強い方を後から追加して、大きい Id を割り当てる
         _db.CauseCategories.Add(strong);
@@ -920,6 +921,6 @@ public class RecurrenceServiceTests : IDisposable
         // 名前を引けた分類は説明文に載ることを確認する
         Assert.Contains("確認不足", alert.PatternDescription);
         // 名前を引けなかった 1 件が残件として数えられていることを確認する
-        Assert.Contains("ほか1件", alert.PatternDescription);
+        Assert.Contains("ほか1分類", alert.PatternDescription);
     }
 }
