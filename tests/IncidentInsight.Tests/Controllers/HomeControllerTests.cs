@@ -237,6 +237,90 @@ public class HomeControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task Index_RecentIncidents_SameOccurredAt_TruncatesByIdDescending()
+    {
+        // 回帰テスト: 「最近のインシデント」カードのクエリは OccurredAt の降順だけで並べて
+        // 上限件数で打ち切っていた。OccurredAt は日付入力から作られるため同一日時の行が普通に
+        // 並ぶが、DB は同値行の並び順を保証しないため、どの 5 件がカードに出るかがリロードの
+        // たびに変わり得た。主キー Id を第 2 キー(第 1 キーと同じ降順)に置いて境界を決定的にする。
+        // 期待値は「同一日時なら後から登録された(Id の大きい)ものが先」= インシデント一覧の
+        // 既定並び順(OccurredAt 降順 → Id 降順)と一致する並び。
+        const int incidentCount = HomeController.RecentIncidentsLimit + 3; // 上限より多く用意する
+
+        // 全件まったく同じ発生日時にして、第 2 キーだけが順序を決める状況を作る
+        var sameOccurredAt = _clock.Now;
+        for (int i = 0; i < incidentCount; i++)
+        {
+            _db.Incidents.Add(MakeIncident(occurredAt: sameOccurredAt));
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // カードは上限件数までしか返らない
+        Assert.Equal(HomeController.RecentIncidentsLimit, vm!.RecentIncidents.Count);
+        // 採用されるのは Id の大きい方から上限件数ぶんで、並びも Id の降順になる
+        var expectedIds = _db.Incidents
+            .Select(i => i.Id)
+            .OrderByDescending(id => id)
+            .Take(HomeController.RecentIncidentsLimit)
+            .ToList();
+        Assert.Equal(expectedIds, vm.RecentIncidents.Select(i => i.Id).ToList());
+    }
+
+    [Fact]
+    public async Task Index_OverdueMeasureList_SameDueDate_TruncatesByIdAscending()
+    {
+        // 回帰テスト: 「期限超過の対策」パネルのクエリは DueDate の昇順だけで並べて上限件数で
+        // 打ち切っていた。DueDate は日付単位で入力されるため「同じ期限日の対策」は大量に生まれ、
+        // 第 2 キーが無いとパネルに出る 5 件が実行のたびに入れ替わって消し込みを追えなくなる。
+        // 主キー Id を第 2 キー(第 1 キーと同じ昇順)に置いて、同じ期限日なら先に登録された
+        // = より長く放置されている対策が出ることを固定する。
+        // 注意: EF Core の InMemory プロバイダは同値キーの並びが投入順で安定するため、この
+        // 期待値は第 2 キーを足す前でも満たされる(=このテスト単体では修正前に落ちない)。
+        // 揺れるのは並び順を保証しない実プロバイダ(PostgreSQL / SQL Server の並列スキャン等)側で、
+        // ここで固定しているのは「どの 5 件が代表例か」という表示契約そのもの。
+        // 上の Index_OverdueMeasureList_IsCappedButKpiCountReflectsFullTotal が期限日を
+        // バラけさせて上限だけを見ているのに対し、こちらは同値の場合を受け持つ。
+        const int overdueCountInDb = HomeController.OverdueAlertLimit + 3; // 上限より多く用意する
+
+        var incident = MakeIncident();
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // 全件まったく同じ期限日(かつ期限超過)にして、第 2 キーだけが順序を決める状況を作る
+        var sameDueDate = _clock.Today.AddDays(-1);
+        for (int i = 0; i < overdueCountInDb; i++)
+        {
+            _db.PreventiveMeasures.Add(new PreventiveMeasure
+            {
+                IncidentId = incident.Id,
+                Description = $"対策{i}",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当者",
+                ResponsibleDepartment = "内科",
+                Status = MeasureStatus.Planned,
+                DueDate = sameDueDate
+            });
+        }
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(null) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // パネルは上限件数までしか返らない
+        Assert.Equal(HomeController.OverdueAlertLimit, vm!.OverdueMeasureList.Count);
+        // 採用されるのは Id の小さい方から上限件数ぶんで、並びも Id の昇順になる
+        var expectedIds = _db.PreventiveMeasures
+            .Select(m => m.Id)
+            .OrderBy(id => id)
+            .Take(HomeController.OverdueAlertLimit)
+            .ToList();
+        Assert.Equal(expectedIds, vm.OverdueMeasureList.Select(m => m.Id).ToList());
+    }
+
+    [Fact]
     public async Task Index_RecurrenceDetection_AlertsForSameDeptTypeCategory()
     {
         var category = new CauseCategory { Name = "ヒューマンエラー", DisplayOrder = 1 };
