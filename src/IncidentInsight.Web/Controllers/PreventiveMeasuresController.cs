@@ -114,13 +114,27 @@ public class PreventiveMeasuresController : Controller
 
         // 絞り込み後・上限適用前の総件数(KPI の「全対策数」と、上限に達したかどうかの判定に使う)
         var totalMatchingCount = await query.CountAsync();
-        // 期限日の昇順で取得。MaxKanbanRows で上限を設け、際限のない取得を防ぐ(§8/§9)
-        var measures = await query.OrderBy(m => m.DueDate).Take(MaxKanbanRows).ToListAsync();
+        // 期限日の昇順で取得。MaxKanbanRows で上限を設け、際限のない取得を防ぐ(§8/§9)。
+        // 主キー Id を第 2 キーに置くのは、DueDate が日付単位で同値の行が大量に並び、DB が
+        // 同値行の並び順を保証しないため。第 2 キーが無いと上限で切り捨てられる対策が実行の
+        // たびに変わり、(1) カンバンから見える対策が同じ絞り込み条件でもリロードごとに
+        // 入れ替わる、(2) 上限超過時に表示される期限超過数・完了率などの統計値も一緒に揺れる
+        // (IncidentsController.Index のページングと同じ対策)。
+        // 向きは第 1 キーに合わせて昇順にし、同じ期限日なら先に登録された対策を残す
+        var measures = await query.OrderBy(m => m.DueDate).ThenBy(m => m.Id).Take(MaxKanbanRows).ToListAsync();
         // 上限に達して切り詰められたかどうか(true の場合、以下で算出する期限超過数・
         // 再発確認数・完了率は上限分のみを反映し全件の値ではなくなる)
         var truncated = totalMatchingCount > MaxKanbanRows;
 
-        // カンバン3レーン分に分割(計画中/進行中/完了)
+        // カンバン3レーン分に分割(計画中/進行中/完了)。
+        // ここの並べ替えは LINQ to Objects(メモリ上)で、同値キーの相対順を保つ安定ソートになる。
+        // 元の measures が上の (DueDate, Id) で決定的に並んでいるため、同じ期限日・同じ完了日時が
+        // 並んでもレーン内の順序は実行ごとに揺れない。だから各レーンに第 2 キーを足していない。
+        // 注意: これは「足しても同じ結果になる」という意味ではない。同じ第 1 キー(DueDate)で
+        // 並べる計画中/進行中の 2 レーンは Id を足しても結果が変わらないが、完了レーンは
+        // 第 1 キーが CompletedAt なので、完了日時が同じ行の並びは (DueDate, Id) 由来の順序に
+        // なり、Id だけの第 2 キーを足すと並びが変わる。「一貫性のため」と足すと表示順を
+        // 黙って変えてしまうので、変えるなら意図した並びかを確かめること
         var planned = measures.Where(m => m.Status == MeasureStatus.Planned).OrderBy(m => m.DueDate).ToList();
         var inProgress = measures.Where(m => m.Status == MeasureStatus.InProgress).OrderBy(m => m.DueDate).ToList();
         var completed = measures.Where(m => m.Status == MeasureStatus.Completed).OrderByDescending(m => m.CompletedAt).ToList();

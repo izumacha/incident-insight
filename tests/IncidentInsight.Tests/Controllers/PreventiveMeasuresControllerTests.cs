@@ -778,33 +778,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
     [Fact]
     public async Task Index_ExceedsMaxKanbanRows_TruncatesRowsButReportsTrueTotalCount()
     {
-        // MaxKanbanRows をわずかに超える件数を1回の SaveChangesAsync でまとめて投入する
-        // (SeedMeasureAsync を件数分呼ぶと保存が都度発生し遅くなるため、ここだけ直接構築する)
-        const int seedCount = PreventiveMeasuresController.MaxKanbanRows + 5;
-        for (var i = 0; i < seedCount; i++)
-        {
-            var incident = new Incident
-            {
-                Department = "内科病棟",
-                IncidentType = IncidentTypeKind.Fall,
-                Severity = IncidentSeverity.Level2,
-                Description = "上限検証用",
-                ReporterName = "担当",
-                OccurredAt = DateTime.Now
-            };
-            incident.PreventiveMeasures.Add(new PreventiveMeasure
-            {
-                Incident = incident,
-                Description = $"対策{i}",
-                MeasureType = MeasureTypeKind.ShortTerm,
-                ResponsiblePerson = "担当A",
-                ResponsibleDepartment = "内科病棟",
-                DueDate = DateTime.Today.AddDays(30),
-                Priority = 2
-            });
-            _db.Incidents.Add(incident);
-        }
-        await _db.SaveChangesAsync();
+        // 上限をわずかに超える件数を投入する(投入手順は下のヘルパーに集約)
+        var seedCount = await SeedMeasuresExceedingKanbanLimitAsync();
 
         var result = await _controller.Index(null, null, null, null, null);
 
@@ -818,6 +793,92 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var inProgressCount = ((List<PreventiveMeasure>)_controller.ViewBag.InProgress).Count;
         var completedCount = ((List<PreventiveMeasure>)_controller.ViewBag.Completed).Count;
         Assert.Equal(PreventiveMeasuresController.MaxKanbanRows, plannedCount + inProgressCount + completedCount);
+    }
+
+    // 回帰テスト: カンバンの取得クエリは DueDate の昇順だけで並べて MaxKanbanRows で
+    // 打ち切っていた。DueDate は日付単位で入力されるため同値の行が大量に並ぶが、DB は
+    // 同値行の並び順を保証しないため、上限を超えたときに「どの対策が画面から消えるか」が
+    // 実行のたびに変わり得た。さらにこの打ち切りは Truncated 時の統計値(期限超過数・
+    // 完了率など)にも波及するため、同じ絞り込み条件でリロードしただけで数字が揺れる。
+    // 主キー Id を第 2 キー(第 1 キーと同じ昇順)に置いて、残るのが「先に登録された分」に
+    // 固定されることを確認する。
+    // 第 2 キーを外すと落ちるように、Id を降順で明示して「投入順」と「Id の昇順」を
+    // 意図的にずらしてある。こうしないと InMemory プロバイダでは投入順 = Id 昇順になり、
+    // 第 2 キーの有無で結果が変わらず回帰を検出できない。
+    [Fact]
+    public async Task Index_ExceedsMaxKanbanRows_KeepsLowestIdsWhenDueDatesTie()
+    {
+        // 上限をわずかに超える件数を、Id が投入順と逆になるように投入する
+        // (すべて同じ期限日なので第 2 キーだけが順序を決める)
+        await SeedMeasuresExceedingKanbanLimitAsync(assignDescendingIds: true);
+
+        var result = await _controller.Index(null, null, null, null, null);
+
+        Assert.IsType<ViewResult>(result);
+        // 投入した対策はすべて Planned なので、打ち切り後の全件が Planned レーンに入る
+        var planned = (List<PreventiveMeasure>)_controller.ViewBag.Planned;
+        // 残るのは Id の小さい方から MaxKanbanRows 件で、レーン内の並びも Id の昇順になる
+        var expectedIds = _db.PreventiveMeasures
+            .Select(m => m.Id)
+            .OrderBy(id => id)
+            .Take(PreventiveMeasuresController.MaxKanbanRows)
+            .ToList();
+        Assert.Equal(expectedIds, planned.Select(m => m.Id).ToList());
+    }
+
+    /// <summary>
+    /// <see cref="PreventiveMeasuresController.MaxKanbanRows"/> をわずかに超える件数の対策を投入する。
+    /// 期限日は全件同じにしてあり、上限で打ち切られる境界が第 2 キー（Id）だけで決まる。
+    /// </summary>
+    /// <remarks>
+    /// 上限まわりの 2 つのテスト（件数の打ち切りと、期限日が同値のときの打ち切り境界）が同じ
+    /// 母集団を使うため、投入手順をここへ集約する（§6 DRY）。
+    /// <c>SeedMeasureAsync</c> を件数分呼ぶと保存が都度発生して遅くなるため、ここだけ
+    /// エンティティを直接組み立てて 1 回の <c>SaveChangesAsync</c> でまとめて投入する。
+    /// </remarks>
+    /// <param name="assignDescendingIds">
+    /// true なら対策の Id を降順で明示的に割り当て、投入順と Id の昇順を逆にする。
+    /// タイブレーカーが実際に効いているかを検出するテストだけがこれを使う
+    /// (false のときは DB 側の採番に任せ、投入順 = Id 昇順になる)。
+    /// </param>
+    /// <returns>実際に投入した対策の件数（呼び出し側が期待値に使う）。</returns>
+    private async Task<int> SeedMeasuresExceedingKanbanLimitAsync(bool assignDescendingIds = false)
+    {
+        // 上限をわずかに超える件数
+        const int seedCount = PreventiveMeasuresController.MaxKanbanRows + 5;
+        // 全件で共有する期限日(同値にして第 2 キーの効きを見る)
+        var sharedDueDate = DateTime.Today.AddDays(30);
+        // 対策 1 件につきインシデント 1 件をぶら下げて組み立てる
+        for (var i = 0; i < seedCount; i++)
+        {
+            var incident = new Incident
+            {
+                Department = "内科病棟",
+                IncidentType = IncidentTypeKind.Fall,
+                Severity = IncidentSeverity.Level2,
+                Description = "上限検証用",
+                ReporterName = "担当",
+                OccurredAt = DateTime.Now
+            };
+            var measure = new PreventiveMeasure
+            {
+                Incident = incident,
+                Description = $"対策{i}",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当A",
+                ResponsibleDepartment = "内科病棟",
+                DueDate = sharedDueDate,
+                Priority = 2
+            };
+            // 指定があれば Id を降順(大きい方から)で明示し、投入順と Id の昇順を逆にする
+            if (assignDescendingIds) measure.Id = seedCount - i;
+            incident.PreventiveMeasures.Add(measure);
+            _db.Incidents.Add(incident);
+        }
+        // 1 回のまとめ保存で投入する
+        await _db.SaveChangesAsync();
+        // 呼び出し側が総件数を期待値に使えるよう返す
+        return seedCount;
     }
 
     // ダッシュボードの期限超過アラートの「全件確認」リンク(overdue=true)が、

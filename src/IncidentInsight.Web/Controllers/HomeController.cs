@@ -50,9 +50,9 @@ public class HomeController : Controller
     // OverdueAlertLimit と同様に代表例を数件見せるだけの用途で、全件はインシデント一覧
     // (IncidentsController.Index、PageSize でページング済み)への導線に任せる。
     // 意味の読み取れない裸の「5」をクエリに直書きしないための名前付き定数(§6)。
-    // View やテストから件数を参照する箇所は現状ないため private に留める
-    // (外部参照が必要になったら OverdueAlertLimit と同様に public 化する)
-    private const int RecentIncidentsLimit = 5;
+    // 打ち切り境界の決定性を確かめるテストが「上限を超える件数」をシードするため、
+    // OverdueAlertLimit と同じ理由で public にしている(テスト側へ値を書き写さないため)
+    public const int RecentIncidentsLimit = 5;
 
     // ダッシュボードの「再発パターン」アラートパネルに列挙する最大件数。
     // OverdueAlertLimit と同じく代表例を数件見せるだけのパネルで、Views/Home/Index.cshtml は
@@ -216,9 +216,18 @@ public class HomeController : Controller
         // CauseAnalyses は Include しない: ダッシュボード(Views/Home/Index.cshtml)の
         // 「最近のインシデント」カードは PreventiveMeasures(期限超過の強調表示)しか参照せず、
         // 再発アラートは下の IRecurrenceService が自前でデータを読むため不要(§8 過剰取得の回避)
+        // 主キー Id を第 2 キーに置いて打ち切り境界を決定的にする。OccurredAt は日付入力から
+        // 作られるため同一日時の行が普通に並び、DB は同値行の並び順を保証しない。第 2 キーが
+        // 無いと「同じ発生日時のインシデントのうちどの 5 件がカードに出るか」が実行のたびに
+        // 変わり、リロードするだけで一覧の中身が入れ替わる(IncidentsController.Index の
+        // ページングや RecurrenceService の候補クエリと同じ対策)。
+        // 向きは第 1 キーに合わせる(降順の並びには降順の Id)。こうすると同一日時の中では
+        // 後から登録された行が先に来て、既定の並び順で開いたインシデント一覧
+        // (OccurredAt 降順 → Id 降順)の先頭 5 件とカードの中身が一致する
         var recentIncidents = await incidents
             .Include(i => i.PreventiveMeasures)
             .OrderByDescending(i => i.OccurredAt)
+            .ThenByDescending(i => i.Id)
             .Take(RecentIncidentsLimit)
             .ToListAsync();
 
@@ -227,10 +236,17 @@ public class HomeController : Controller
         // 上限を超える分は DB 側で切り捨てる(§8 一覧取得は必ず上限を持たせる)。
         // KPI の「期限超過対策」件数(OverdueMeasures)は上のCountAsyncで別途正確に数えているため、
         // ここで件数を絞っても KPI 表示の正確さには影響しない。
+        // ここも主キー Id を第 2 キーに置いて打ち切り境界を決定的にする。DueDate は日付単位で
+        // 入力されるため「同じ期限日の対策」は大量に生まれ、第 2 キーが無いとパネルに出る
+        // 5 件が実行のたびに入れ替わる。利用者が同じ画面を開き直すたび別の対策が並ぶと、
+        // 期限超過対策の消し込みを画面で追えなくなる。
+        // 向きは第 1 キー(期限日の古い順)に合わせて昇順にする。同じ期限日なら先に登録された
+        // (＝より長く放置されている)対策を先に見せる方がアラートの用途に合う
         var overdueMeasureList = await measures
             .Include(m => m.Incident)
             .Where(PreventiveMeasure.OverdueOn(today))
             .OrderBy(m => m.DueDate)
+            .ThenBy(m => m.Id)
             .Take(OverdueAlertLimit)
             .ToListAsync();
 
