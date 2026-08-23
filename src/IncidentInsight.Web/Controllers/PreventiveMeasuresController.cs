@@ -129,8 +129,12 @@ public class PreventiveMeasuresController : Controller
         // カンバン3レーン分に分割(計画中/進行中/完了)。
         // ここの並べ替えは LINQ to Objects(メモリ上)で、同値キーの相対順を保つ安定ソートになる。
         // 元の measures が上の (DueDate, Id) で決定的に並んでいるため、同じ期限日・同じ完了日時が
-        // 並んでもレーン内の順序は実行ごとに揺れない。各レーンに Id の第 2 キーを足していないのは
-        // このため(足しても結果は変わらない)
+        // 並んでもレーン内の順序は実行ごとに揺れない。だから各レーンに第 2 キーを足していない。
+        // 注意: これは「足しても同じ結果になる」という意味ではない。同じ第 1 キー(DueDate)で
+        // 並べる計画中/進行中の 2 レーンは Id を足しても結果が変わらないが、完了レーンは
+        // 第 1 キーが CompletedAt なので、完了日時が同じ行の並びは (DueDate, Id) 由来の順序に
+        // なり、Id だけの第 2 キーを足すと並びが変わる。「一貫性のため」と足すと表示順を
+        // 黙って変えてしまうので、変えるなら意図した並びかを確かめること
         var planned = measures.Where(m => m.Status == MeasureStatus.Planned).OrderBy(m => m.DueDate).ToList();
         var inProgress = measures.Where(m => m.Status == MeasureStatus.InProgress).OrderBy(m => m.DueDate).ToList();
         var completed = measures.Where(m => m.Status == MeasureStatus.Completed).OrderByDescending(m => m.CompletedAt).ToList();
