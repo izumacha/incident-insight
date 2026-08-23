@@ -826,15 +826,22 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Equal(expectedIds, planned.Select(m => m.Id).ToList());
     }
 
-    // MaxKanbanRows をわずかに超える件数の対策を1回の SaveChangesAsync でまとめて投入する。
-    // (SeedMeasureAsync を件数分呼ぶと保存が都度発生し遅くなるため、ここだけ直接構築する)
-    // 期限日は全件同じにしてあり、上限で打ち切られる境界が第 2 キー(Id)だけで決まる。
-    // 上限まわりの 2 つのテストが同じ母集団を使うため、投入手順はここに集約する(§6 DRY)
+    /// <summary>
+    /// <see cref="PreventiveMeasuresController.MaxKanbanRows"/> をわずかに超える件数の対策を投入する。
+    /// 期限日は全件同じにしてあり、上限で打ち切られる境界が第 2 キー（Id）だけで決まる。
+    /// </summary>
+    /// <remarks>
+    /// 上限まわりの 2 つのテスト（件数の打ち切りと、期限日が同値のときの打ち切り境界）が同じ
+    /// 母集団を使うため、投入手順をここへ集約する（§6 DRY）。
+    /// <c>SeedMeasureAsync</c> を件数分呼ぶと保存が都度発生して遅くなるため、ここだけ
+    /// エンティティを直接組み立てて 1 回の <c>SaveChangesAsync</c> でまとめて投入する。
+    /// </remarks>
     /// <param name="assignDescendingIds">
     /// true なら対策の Id を降順で明示的に割り当て、投入順と Id の昇順を逆にする。
     /// タイブレーカーが実際に効いているかを検出するテストだけがこれを使う
     /// (false のときは DB 側の採番に任せ、投入順 = Id 昇順になる)。
     /// </param>
+    /// <returns>実際に投入した対策の件数（呼び出し側が期待値に使う）。</returns>
     private async Task<int> SeedMeasuresExceedingKanbanLimitAsync(bool assignDescendingIds = false)
     {
         // 上限をわずかに超える件数
