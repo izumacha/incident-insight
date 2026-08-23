@@ -23,7 +23,7 @@
          古いサービシングパッチ。オンプレ SQL Server 配備が本番ターゲットのため、
          セキュリティ更新のバージョンを後退させないよう直接依存として床値をピン留めする。
          EF Core 側の 5.1.6 要求とは互換で、Relational は上位版を採用する。 -->
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.7" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="7.0.2" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.30" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
