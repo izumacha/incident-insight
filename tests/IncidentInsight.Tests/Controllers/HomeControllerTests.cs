@@ -212,20 +212,12 @@ public class HomeControllerTests : IDisposable
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
 
-        for (int i = 0; i < overdueCountInDb; i++)
-        {
-            _db.PreventiveMeasures.Add(new PreventiveMeasure
-            {
-                IncidentId = incident.Id,
-                Description = $"対策{i}",
-                MeasureType = MeasureTypeKind.ShortTerm,
-                ResponsiblePerson = "担当者",
-                ResponsibleDepartment = "内科",
-                Status = MeasureStatus.Planned,
-                DueDate = _clock.Today.AddDays(-1 - i) // すべて期限超過、期限日はバラける
-            });
-        }
-        await _db.SaveChangesAsync();
+        // すべて期限超過。期限日はバラけさせる(同値の場合は別テストが受け持つ)
+        await SeedOverdueMeasuresAsync(
+            incident.Id,
+            Enumerable.Range(0, overdueCountInDb)
+                .Select(i => (Id: (int?)null, DueDate: _clock.Today.AddDays(-1 - i)))
+                .ToList());
 
         var result = await _controller.Index(null) as ViewResult;
         var vm = result?.Model as DashboardViewModel;
@@ -277,10 +269,9 @@ public class HomeControllerTests : IDisposable
         // 第 2 キーが無いとパネルに出る 5 件が実行のたびに入れ替わって消し込みを追えなくなる。
         // 主キー Id を第 2 キー(第 1 キーと同じ昇順)に置いて、同じ期限日なら先に登録された
         // = より長く放置されている対策が出ることを固定する。
-        // 注意: EF Core の InMemory プロバイダは同値キーの並びが投入順で安定するため、この
-        // 期待値は第 2 キーを足す前でも満たされる(=このテスト単体では修正前に落ちない)。
-        // 揺れるのは並び順を保証しない実プロバイダ(PostgreSQL / SQL Server の並列スキャン等)側で、
-        // ここで固定しているのは「どの 5 件が代表例か」という表示契約そのもの。
+        // 第 2 キーを外すと落ちるように、Id を降順で明示して「投入順」と「Id の昇順」を
+        // 意図的にずらしてある。こうしないと InMemory プロバイダでは投入順 = Id 昇順に
+        // なってしまい、第 2 キーの有無で結果が変わらず回帰を検出できない。
         // 上の Index_OverdueMeasureList_IsCappedButKpiCountReflectsFullTotal が期限日を
         // バラけさせて上限だけを見ているのに対し、こちらは同値の場合を受け持つ。
         const int overdueCountInDb = HomeController.OverdueAlertLimit + 3; // 上限より多く用意する
@@ -291,20 +282,12 @@ public class HomeControllerTests : IDisposable
 
         // 全件まったく同じ期限日(かつ期限超過)にして、第 2 キーだけが順序を決める状況を作る
         var sameDueDate = _clock.Today.AddDays(-1);
-        for (int i = 0; i < overdueCountInDb; i++)
-        {
-            _db.PreventiveMeasures.Add(new PreventiveMeasure
-            {
-                IncidentId = incident.Id,
-                Description = $"対策{i}",
-                MeasureType = MeasureTypeKind.ShortTerm,
-                ResponsiblePerson = "担当者",
-                ResponsibleDepartment = "内科",
-                Status = MeasureStatus.Planned,
-                DueDate = sameDueDate
-            });
-        }
-        await _db.SaveChangesAsync();
+        // Id は降順(大きい方から)に割り当てる = 投入順と Id の昇順が逆になる
+        await SeedOverdueMeasuresAsync(
+            incident.Id,
+            Enumerable.Range(0, overdueCountInDb)
+                .Select(i => (Id: (int?)(overdueCountInDb - i), DueDate: sameDueDate))
+                .ToList());
 
         var result = await _controller.Index(null) as ViewResult;
         var vm = result?.Model as DashboardViewModel;
@@ -318,6 +301,47 @@ public class HomeControllerTests : IDisposable
             .Take(HomeController.OverdueAlertLimit)
             .ToList();
         Assert.Equal(expectedIds, vm.OverdueMeasureList.Select(m => m.Id).ToList());
+    }
+
+    /// <summary>
+    /// 期限超過の対策をまとめて投入する共通ヘルパー。
+    /// </summary>
+    /// <remarks>
+    /// 上限まわりの 2 つのテスト(件数の打ち切りと、期限日が同値のときの打ち切り境界)が
+    /// 同じ形の対策を投入するため、投入手順をここへ集約する(§6 DRY)。
+    /// 違うのは「期限日をどう散らすか」と「Id を明示するか」の 2 点だけなので、
+    /// その 2 つを要素ごとに受け取る。
+    /// </remarks>
+    /// <param name="incidentId">対策をぶら下げるインシデントの ID。</param>
+    /// <param name="specs">
+    /// 対策 1 件ぶんの指定。Id を明示すると投入順と Id の昇順を意図的にずらせる
+    /// (タイブレーカーが効いているかを検出するために必要)。null なら DB 側の採番に任せる。
+    /// </param>
+    private async Task SeedOverdueMeasuresAsync(
+        int incidentId,
+        IReadOnlyList<(int? Id, DateTime DueDate)> specs)
+    {
+        // 指定された件数ぶん対策を組み立てる
+        for (var i = 0; i < specs.Count; i++)
+        {
+            // 期限超過(Planned のまま期限日が過去)の対策を 1 件作る
+            var measure = new PreventiveMeasure
+            {
+                IncidentId = incidentId,
+                Description = $"対策{i}",
+                MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "担当者",
+                ResponsibleDepartment = "内科",
+                Status = MeasureStatus.Planned,
+                DueDate = specs[i].DueDate
+            };
+            // Id の指定があれば明示的に割り当てる(投入順と Id 順をずらすため)
+            if (specs[i].Id is { } explicitId) measure.Id = explicitId;
+            // 追跡対象に加える
+            _db.PreventiveMeasures.Add(measure);
+        }
+        // まとめて 1 回で保存する
+        await _db.SaveChangesAsync();
     }
 
     [Fact]

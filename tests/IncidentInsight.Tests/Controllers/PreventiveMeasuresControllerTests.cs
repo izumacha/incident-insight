@@ -802,15 +802,15 @@ public class PreventiveMeasuresControllerTests : IDisposable
     // 完了率など)にも波及するため、同じ絞り込み条件でリロードしただけで数字が揺れる。
     // 主キー Id を第 2 キー(第 1 キーと同じ昇順)に置いて、残るのが「先に登録された分」に
     // 固定されることを確認する。
-    // 注意: EF Core の InMemory プロバイダは同値キーの並びが投入順で安定するため、この
-    // 期待値は第 2 キーを足す前でも満たされる(=このテスト単体では修正前に落ちない)。
-    // 揺れるのは並び順を保証しない実プロバイダ側で、ここで固定しているのは
-    // 「打ち切りで何が残るか」という契約そのもの。
+    // 第 2 キーを外すと落ちるように、Id を降順で明示して「投入順」と「Id の昇順」を
+    // 意図的にずらしてある。こうしないと InMemory プロバイダでは投入順 = Id 昇順になり、
+    // 第 2 キーの有無で結果が変わらず回帰を検出できない。
     [Fact]
     public async Task Index_ExceedsMaxKanbanRows_KeepsLowestIdsWhenDueDatesTie()
     {
-        // 上限をわずかに超える件数を投入する(すべて同じ期限日なので第 2 キーだけが順序を決める)
-        await SeedMeasuresExceedingKanbanLimitAsync();
+        // 上限をわずかに超える件数を、Id が投入順と逆になるように投入する
+        // (すべて同じ期限日なので第 2 キーだけが順序を決める)
+        await SeedMeasuresExceedingKanbanLimitAsync(assignDescendingIds: true);
 
         var result = await _controller.Index(null, null, null, null, null);
 
@@ -830,7 +830,12 @@ public class PreventiveMeasuresControllerTests : IDisposable
     // (SeedMeasureAsync を件数分呼ぶと保存が都度発生し遅くなるため、ここだけ直接構築する)
     // 期限日は全件同じにしてあり、上限で打ち切られる境界が第 2 キー(Id)だけで決まる。
     // 上限まわりの 2 つのテストが同じ母集団を使うため、投入手順はここに集約する(§6 DRY)
-    private async Task<int> SeedMeasuresExceedingKanbanLimitAsync()
+    /// <param name="assignDescendingIds">
+    /// true なら対策の Id を降順で明示的に割り当て、投入順と Id の昇順を逆にする。
+    /// タイブレーカーが実際に効いているかを検出するテストだけがこれを使う
+    /// (false のときは DB 側の採番に任せ、投入順 = Id 昇順になる)。
+    /// </param>
+    private async Task<int> SeedMeasuresExceedingKanbanLimitAsync(bool assignDescendingIds = false)
     {
         // 上限をわずかに超える件数
         const int seedCount = PreventiveMeasuresController.MaxKanbanRows + 5;
@@ -848,7 +853,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 ReporterName = "担当",
                 OccurredAt = DateTime.Now
             };
-            incident.PreventiveMeasures.Add(new PreventiveMeasure
+            var measure = new PreventiveMeasure
             {
                 Incident = incident,
                 Description = $"対策{i}",
@@ -857,7 +862,10 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 ResponsibleDepartment = "内科病棟",
                 DueDate = sharedDueDate,
                 Priority = 2
-            });
+            };
+            // 指定があれば Id を降順(大きい方から)で明示し、投入順と Id の昇順を逆にする
+            if (assignDescendingIds) measure.Id = seedCount - i;
+            incident.PreventiveMeasures.Add(measure);
             _db.Incidents.Add(incident);
         }
         // 1 回のまとめ保存で投入する
