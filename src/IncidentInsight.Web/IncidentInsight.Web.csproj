@@ -36,7 +36,9 @@
          ここに書かれた値ではないため、この行を「冗長だから」と消しても床値検査は素通りする
          （解決版が 5.1.6 まで落ちても 5.1.6 >= 5.1.6 は成立する）。削除だけは
          SqlClientPin_StaysADirectReference がロックファイルの type で捕まえる。
-         残る穴は「値を 5.1.6 ちょうどまで下げる」変更だけで、これはレビューでしか止まらない。 -->
+         残る穴は「この値を 5.1.6 以上・現在のピン未満へ下げる」変更（例: この更新を revert して
+         5.1.7 に戻す）で、5.1.7 >= 5.1.6 が成立するため検査は全て緑のまま通る。
+         下げ幅の大小によらずレビューでしか止まらない。 -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.30" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />

@@ -582,9 +582,7 @@ public class EfCorePackageAlignmentTests
     public void SqlClientPin_StaysADirectReference()
     {
         // 全ロックファイルから、このドライバの記録(どのプロジェクトが・直接か推移か)を集める
-        var entries = ResolvedPackages.Value
-            .Where(package => string.Equals(package.Id, SqlClientPackageId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var entries = LockEntriesFor(SqlClientPackageId);
 
         // 1 件も無いのは、参照そのものが消えたか検出網が劣化したかのどちらか(fail-closed)
         Assert.True(entries.Count > 0,
@@ -1007,8 +1005,7 @@ public class EfCorePackageAlignmentTests
     private static string ReadResolvedVersion(string packageId)
     {
         // 全ロックファイルから、その ID で解決されている版を集める
-        var versions = ResolvedPackages.Value
-            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+        var versions = LockEntriesFor(packageId)
             .Select(package => package.Version)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -1023,6 +1020,16 @@ public class EfCorePackageAlignmentTests
         // 一意に定まった解決版を返す
         return versions[0];
     }
+
+    // 指定パッケージが全ロックファイルでどう記録されているかを集める。
+    // 【なぜ切り出すか】「ID で照合して該当行を集める」は解決版の読み出しと
+    // 直接参照の検査の 2 箇所で必要になる。照合規則(大文字小文字を無視する等)を
+    // 書き写すと、片方だけ直したときにもう片方の検査が静かに意味を変える(§6 DRY)
+    private static IReadOnlyList<ResolvedPackage> LockEntriesFor(string packageId) =>
+        // ID が一致する行だけを残して一覧にする
+        ResolvedPackages.Value
+            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
     // 版文字列からメジャー版(最初のドットまで)を取り出す
     private static int MajorOf(string version)
