@@ -113,6 +113,7 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 ### 注意点（固有の不変条件）
 
 - **マイグレーションは起動時 `Database.Migrate()` で自動適用** — モデル変更は同一変更セットでマイグレーションを追加する。
+- **ロックファイルは全プロジェクト分を同時に再生成する** — `packages.lock.json` は `src/IncidentInsight.Web` と `tests/IncidentInsight.Tests` の 2 つある。テストプロジェクトは web を `ProjectReference` で参照しているため、**web の依存が動くとテスト側の解決結果も動く**。片方だけ更新すると CI の `dotnet restore --locked-mode` が `NU1004: The project references incidentinsight.web whose dependencies has changed` で落ちる。**とくに Dependabot の nuget PR は `src/` 側しか更新しないので、そのままではマージできない**（実例: PR #180 → #181 で手当て）。取り込むときは `dotnet restore` を流して 2 ファイルとも再生成し、同一コミットに含める。ロックファイルを持つプロジェクトを増やしたときも同じ（`RestorePackagesWithLockFile` を宣言し忘れたプロジェクトは locked-mode restore も `EfCorePackageAlignmentTests` の検査もすり抜けるため、同テストが宣言漏れ自体を検出する）。
 - **`HasAtLeastOneValidMeasure` をバイパスしない**（インシデントは予防策が最低 1 件ないと登録不可）。
 - **重症度/部署/インシデント種別の enum は `Incident` クラス上**（DB ではない）。値追加は static 辞書/配列＋それを回す View を更新（マイグレーション不要）。enum の日本語ラベルと Bootstrap カラーは `Models/Enums/EnumLabels.cs` に集約し、`EnumLabels.Japanese()` と `EnumLabels.Color()` の両方を更新。`IncidentTypeMapping.cs` が日本語↔DB 文字列の双方向変換を担う。
 - **再発ロジックは `IRecurrenceService`**（`Services/RecurrenceService.cs`）に集約。`HomeController.Index`（90 日窓 `FindRecurrenceAlertsAsync`）と `IncidentsController.Details`（時間無制限 `FindRecurrencesForIncidentAsync`）が委譲。マッチャ `RecurrenceDetector.FindSimilar` は純粋関数。ルール変更時はサービスとそのテストを更新。

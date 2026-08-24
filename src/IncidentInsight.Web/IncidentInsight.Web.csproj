@@ -23,13 +23,22 @@
          オンプレ SQL Server 配備が本番ターゲットのため、セキュリティ更新のバージョンを
          後退させないよう直接依存として床値をピン留めしている。床値そのもの（現在 5.2.3、
          付随する SNI.runtime は 5.2.0）は Dependabot の minor / patch 更新で引き上げていく
-         ——止めているのは下の理由で major だけ。
-         EF Core 側の 5.1.6 要求とは互換で、Relational は上位版を採用する。
+         ——止めているのは下の理由で major だけ。ただし Dependabot は
+         src/IncidentInsight.Web/packages.lock.json しか更新せず、tests 側のロックファイルが
+         取り残されて CI が NU1004 で落ちる。取り込む際は必ず 2 つを同時に再生成すること
+         （CLAUDE.md §3「ロックファイルは全プロジェクト分を同時に再生成する」）。
+         実際に 5.2.3 が採用されるのは、EF Core SqlServer の 5.1.6 要求とこの直接参照の
+         [5.2.3, ) 要求を NuGet が突き合わせて上位を採る（highest-wins）ため。
          【メジャー版は EF Core の SqlServer プロバイダに合わせる】このドライバはプロバイダの
          実体で、動作保証があるのはプロバイダが宣言したメジャー版に対してだけ。ここだけを
          別メジャーへ上げても、テストは InMemory / SQLite しか触らないため全て緑のまま通り、
          SQL Server 配備でだけ実行時に壊れる。dependabot.yml の ignore が major 更新を保留し、
-         EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。 -->
+         EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。
+         【検出網の限界】その床値検査が比べる相手は EF Core の宣言（現在 5.1.6）であって、
+         いま書いてあるピンの値ではない。つまりこのピンを 5.1.6 まで下げる／丸ごと消す変更は
+         検査を素通りする（テストは緑のまま、SQL Server 配備だけが 1 マイナー分古いドライバに
+         戻る）。期待値をテストに書かない方針（CLAUDE.md §3）と引き換えの穴なので、
+         この行を下げる・消す変更は必ずレビューで理由を確認すること。 -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.30" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
