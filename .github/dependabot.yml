@@ -98,8 +98,10 @@ updates:
       # Microsoft.EntityFrameworkCore.SqlServer へ同じ変更セットで上げる
       # (この ignore は残したままでよい)。
       #
-      # 解決版と EF Core の宣言版のメジャー一致・床値の後退・この保留の消失や効きすぎは、
-      # いずれも EfCorePackageAlignmentTests が機械的に検出する。
+      # この保留と対になる検査は EfCorePackageAlignmentTests にある。
+      # 【何を検出し、何が漏れるか】は CLAUDE.md §3 の同名の節を唯一の一覧とする
+      # (ここに書き写すと検査を足したとき片方だけ古くなる。実際 SqlClientPin_StaysADirectReference
+      #  を足したときに、この行が 1 件少ないまま取り残された)。
       - dependency-name: "Microsoft.Data.SqlClient"
         update-types: ["version-update:semver-major"]
 
