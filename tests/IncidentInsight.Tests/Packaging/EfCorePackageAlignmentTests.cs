@@ -170,6 +170,10 @@ public class EfCorePackageAlignmentTests
     // ロックファイルで、実際に解決された版を表す JSON キー
     private const string ResolvedKey = "resolved";
 
+    // ロックファイルの type が「csproj に直接書かれた参照」を表すときの値
+    // (推移依存なら "Transitive"、ProjectReference なら "Project" になる)
+    private const string DirectPackageKind = "Direct";
+
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
 
@@ -575,6 +579,41 @@ public class EfCorePackageAlignmentTests
     }
 
     [Fact]
+    public void SqlClientPin_StaysADirectReference()
+    {
+        // 全ロックファイルから、このドライバの記録(どのプロジェクトが・直接か推移か)を集める
+        var entries = LockEntriesFor(SqlClientPackageId);
+
+        // 1 件も無いのは、参照そのものが消えたか検出網が劣化したかのどちらか(fail-closed)
+        Assert.True(entries.Count > 0,
+            $"{LockFileName} に {SqlClientPackageId} の記録がありません。参照が外れた可能性があります。");
+
+        // csproj に直接書かれた参照として記録しているプロジェクトを取り出す
+        var direct = entries
+            .Where(package => string.Equals(package.Kind, DirectPackageKind, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // 【なぜ「直接参照であること」まで固定するのか】
+        // 上の SqlClientPin_StaysWithinEfCoreDeclaredMajor が床値の比較相手にするのは
+        // EF Core SqlServer の宣言(現在 5.1.6)であって、csproj に書かれたピンの値ではない。
+        // そのためピンを「冗長だから」と削除すると、解決版が EF Core の宣言どおりに落ちても
+        // 5.1.6 >= 5.1.6 で床値検査を素通りし、ビルドもテストも緑のまま SQL Server 配備だけが
+        // 古いドライバに戻る(このリポジトリで最も起きやすい形の無言の後退)。
+        // ここで type が Direct であることを見ておけば、削除も「推移依存に戻す」リファクタも
+        // 検出できる。期待する版をテストに書かずに済むので、期待値を宣言側から読む方針とも両立する
+        Assert.True(direct.Count > 0,
+            $"{SqlClientPackageId} が {LockFileName} のどこにも {DirectPackageKind} として記録されていません。"
+            + "csproj の直接参照(床値のピン)が外れた可能性があります。\n"
+            + "このピンは、EF Core SqlServer が推移的に引く版が古いサービシングパッチであるために"
+            + "置かれています。外すと解決版はその古い版まで落ちますが、床値検査の比較相手が"
+            + "EF Core の宣言そのものであるため検査は素通りし、SQL Server 配備でだけ古いドライバが"
+            + "読み込まれます。\n"
+            + "意図して外すのであれば、EF Core SqlServer の宣言版が十分新しくなったことを確認し、"
+            + "csproj のコメントと本テストを同じ変更セットで畳んでください。\n"
+            + "現在の記録:\n" + Describe(entries));
+    }
+
+    [Fact]
     public void DependabotConfig_HoldsSqlClientMajorUpdates()
     {
         // nuget エコシステムの ignore: からドライバの保留エントリを集める
@@ -966,8 +1005,7 @@ public class EfCorePackageAlignmentTests
     private static string ReadResolvedVersion(string packageId)
     {
         // 全ロックファイルから、その ID で解決されている版を集める
-        var versions = ResolvedPackages.Value
-            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+        var versions = LockEntriesFor(packageId)
             .Select(package => package.Version)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -982,6 +1020,16 @@ public class EfCorePackageAlignmentTests
         // 一意に定まった解決版を返す
         return versions[0];
     }
+
+    // 指定パッケージが全ロックファイルでどう記録されているかを集める。
+    // 【なぜ切り出すか】「ID で照合して該当行を集める」は解決版の読み出しと
+    // 直接参照の検査の 2 箇所で必要になる。照合規則(大文字小文字を無視する等)を
+    // 書き写すと、片方だけ直したときにもう片方の検査が静かに意味を変える(§6 DRY)
+    private static IReadOnlyList<ResolvedPackage> LockEntriesFor(string packageId) =>
+        // ID が一致する行だけを残して一覧にする
+        ResolvedPackages.Value
+            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
 
     // 版文字列からメジャー版(最初のドットまで)を取り出す
     private static int MajorOf(string version)

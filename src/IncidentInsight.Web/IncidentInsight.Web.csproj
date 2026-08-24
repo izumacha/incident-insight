@@ -19,16 +19,31 @@
     <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.19" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.19" />
     <!-- EF Core SqlServer 9.0.19 が推移的にピンする Microsoft.Data.SqlClient 5.1.6 は、
-         直前まで 8.0.29 経由で解決されていた 5.1.7（および付随する SNI.runtime 5.1.2）より
-         古いサービシングパッチ。オンプレ SQL Server 配備が本番ターゲットのため、
-         セキュリティ更新のバージョンを後退させないよう直接依存として床値をピン留めする。
-         EF Core 側の 5.1.6 要求とは互換で、Relational は上位版を採用する。
+         直前まで 8.0.29 経由で解決されていた 5.1.7 より古いサービシングパッチだった。
+         オンプレ SQL Server 配備が本番ターゲットのため、セキュリティ更新のバージョンを
+         後退させないよう直接依存として床値をピン留めしている。床値そのもの（現在 5.2.3、
+         付随する SNI.runtime は 5.2.0）は Dependabot の minor / patch 更新で引き上げていく
+         ——止めているのは下の理由で major だけ。その更新 PR をそのままマージすると CI が
+         NU1004 で落ちる（手順は CLAUDE.md §3「ロックファイルは全プロジェクト分を同時に再生成する」）。
+         実際に 5.2.3 が採用されるのは、EF Core SqlServer の 5.1.6 要求とこの直接参照の
+         [5.2.3, ) 要求を NuGet が突き合わせて上位を採るため。
+         【5.2.3 で 1 件だけ版が下がる】5.1.7 が要求していた System.Security.Cryptography.Cng
+         5.0.0 は 5.2.3 では要求されなくなり、残る要求元（Microsoft.IdentityModel.Tokens 6.35.0）
+         の 4.5.0 に落ちる。net8.0 では共有フレームワーク側の実装が優先されるためこのパッケージ版に
+         実行時の意味は無く、確認のうえ許容している（この床値ピンが守る対象はドライバ本体）。
          【メジャー版は EF Core の SqlServer プロバイダに合わせる】このドライバはプロバイダの
          実体で、動作保証があるのはプロバイダが宣言したメジャー版に対してだけ。ここだけを
          別メジャーへ上げても、テストは InMemory / SQLite しか触らないため全て緑のまま通り、
          SQL Server 配備でだけ実行時に壊れる。dependabot.yml の ignore が major 更新を保留し、
-         EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。 -->
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.7" />
+         EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。
+         【この行を消さない】床値検査が比べる相手は EF Core の宣言（現在 5.1.6）であって
+         ここに書かれた値ではないため、この行を「冗長だから」と消しても床値検査は素通りする
+         （解決版が 5.1.6 まで落ちても 5.1.6 >= 5.1.6 は成立する）。削除だけは
+         SqlClientPin_StaysADirectReference がロックファイルの type で捕まえる。
+         残る穴は「この値を 5.1.6 以上・現在のピン未満へ下げる」変更（例: この更新を revert して
+         5.1.7 に戻す）で、5.1.7 >= 5.1.6 が成立するため検査は全て緑のまま通る。
+         下げ幅の大小によらずレビューでしか止まらない。 -->
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.30" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
