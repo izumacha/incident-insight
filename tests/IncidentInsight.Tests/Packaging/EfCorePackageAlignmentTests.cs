@@ -170,6 +170,10 @@ public class EfCorePackageAlignmentTests
     // ロックファイルで、実際に解決された版を表す JSON キー
     private const string ResolvedKey = "resolved";
 
+    // ロックファイルの type が「csproj に直接書かれた参照」を表すときの値
+    // (推移依存なら "Transitive"、ProjectReference なら "Project" になる)
+    private const string DirectPackageKind = "Direct";
+
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
 
@@ -572,6 +576,43 @@ public class EfCorePackageAlignmentTests
             + $"{declared} を下回っています。\n"
             + "この直接参照は、推移的に引かれる版が古いサービシングパッチであるために"
             + "セキュリティ更新を後退させない床値として置かれています。下げないでください。");
+    }
+
+    [Fact]
+    public void SqlClientPin_StaysADirectReference()
+    {
+        // 全ロックファイルから、このドライバの記録(どのプロジェクトが・直接か推移か)を集める
+        var entries = ResolvedPackages.Value
+            .Where(package => string.Equals(package.Id, SqlClientPackageId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // 1 件も無いのは、参照そのものが消えたか検出網が劣化したかのどちらか(fail-closed)
+        Assert.True(entries.Count > 0,
+            $"{LockFileName} に {SqlClientPackageId} の記録がありません。参照が外れた可能性があります。");
+
+        // csproj に直接書かれた参照として記録しているプロジェクトを取り出す
+        var direct = entries
+            .Where(package => string.Equals(package.Kind, DirectPackageKind, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+        // 【なぜ「直接参照であること」まで固定するのか】
+        // 上の SqlClientPin_StaysWithinEfCoreDeclaredMajor が床値の比較相手にするのは
+        // EF Core SqlServer の宣言(現在 5.1.6)であって、csproj に書かれたピンの値ではない。
+        // そのためピンを「冗長だから」と削除すると、解決版が EF Core の宣言どおりに落ちても
+        // 5.1.6 >= 5.1.6 で床値検査を素通りし、ビルドもテストも緑のまま SQL Server 配備だけが
+        // 古いドライバに戻る(このリポジトリで最も起きやすい形の無言の後退)。
+        // ここで type が Direct であることを見ておけば、削除も「推移依存に戻す」リファクタも
+        // 検出できる。期待する版をテストに書かずに済むので、期待値を宣言側から読む方針とも両立する
+        Assert.True(direct.Count > 0,
+            $"{SqlClientPackageId} が {LockFileName} のどこにも {DirectPackageKind} として記録されていません。"
+            + "csproj の直接参照(床値のピン)が外れた可能性があります。\n"
+            + "このピンは、EF Core SqlServer が推移的に引く版が古いサービシングパッチであるために"
+            + "置かれています。外すと解決版はその古い版まで落ちますが、床値検査の比較相手が"
+            + "EF Core の宣言そのものであるため検査は素通りし、SQL Server 配備でだけ古いドライバが"
+            + "読み込まれます。\n"
+            + "意図して外すのであれば、EF Core SqlServer の宣言版が十分新しくなったことを確認し、"
+            + "csproj のコメントと本テストを同じ変更セットで畳んでください。\n"
+            + "現在の記録:\n" + Describe(entries));
     }
 
     [Fact]
