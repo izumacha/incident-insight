@@ -75,6 +75,33 @@ updates:
         exclude-patterns:
           - "Microsoft.EntityFrameworkCore*"
           - "Npgsql.EntityFrameworkCore.PostgreSQL"
+    ignore:
+      # SQL Server 用 ADO.NET ドライバのメジャー更新を意図的に止めている。
+      #
+      # 【なぜ止めるのか】Microsoft.Data.SqlClient は EF Core の SqlServer プロバイダが
+      # 内部で使う実体で、プロバイダが動作保証するのは「自分が宣言したメジャー版」の
+      # ドライバに対してだけ。ところが名前に EntityFrameworkCore / EFCore を含まないため、
+      # 上の nuget-ef-core グループには入らず、メジャー更新が単独 PR として現れる。
+      #
+      # これは上のグループが防いでいるものとまったく同じ無言の破壊で、違うのは壊れる層が
+      # ドライバだという点だけ。このリポジトリのテストは InMemory / SQLite しか触らないので、
+      # ドライバだけを別メジャーへ上げてもビルドも全テストも緑のまま通り、
+      # 「SQL Server 配備でだけ実行時に壊れる」状態になる。実際 PR #178
+      # (5.1.7 → 7.0.2) がこの形で出ていた。
+      #
+      # 【止めるのは major だけ】この直接参照は、EF Core が推移的に引く版が古いサービシング
+      # パッチであるためにセキュリティ更新を後退させない「床値」として置かれている
+      # (csproj のコメント参照)。同じメジャー内の minor / patch はその床値を上げる更新なので
+      # 止めない。update-types を省くと全更新の無視になり、床値を上げる経路まで塞がる。
+      #
+      # 【上げるときの手順】ドライバのメジャーを上げたいときは、それを宣言する版の
+      # Microsoft.EntityFrameworkCore.SqlServer へ同じ変更セットで上げる
+      # (この ignore は残したままでよい)。
+      #
+      # 解決版と EF Core の宣言版のメジャー一致・床値の後退・この保留の消失や効きすぎは、
+      # いずれも EfCorePackageAlignmentTests が機械的に検出する。
+      - dependency-name: "Microsoft.Data.SqlClient"
+        update-types: ["version-update:semver-major"]
 
   # package.json の npm 依存 (TypeScript ビルドツール)
   - package-ecosystem: "npm"

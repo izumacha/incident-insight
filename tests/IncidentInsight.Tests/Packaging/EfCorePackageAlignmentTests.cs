@@ -137,6 +137,27 @@ public class EfCorePackageAlignmentTests
         "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" // DbContext ヘルスチェック
     };
 
+    // SQL Server 用の ADO.NET ドライバ。EF Core の SqlServer プロバイダが内部で使う実体
+    private const string SqlClientPackageId = "Microsoft.Data.SqlClient";
+
+    // 上のドライバを推移的に要求する EF Core の SqlServer プロバイダ
+    private const string EfCoreSqlServerPackageId = "Microsoft.EntityFrameworkCore.SqlServer";
+
+    // Dependabot 設定で、更新を無視する対象を並べるキー
+    private const string IgnoreKey = "ignore";
+
+    // ignore の各エントリで、対象パッケージを指定するキー
+    private const string DependencyNameKey = "dependency-name";
+
+    // ignore の各エントリで、無視する更新の種別を並べるキー
+    private const string IgnoreUpdateTypesKey = "update-types";
+
+    // ignore の各エントリで、版の範囲を絞り込むキー(保留の範囲を静かに変えるので置かせない)
+    private const string IgnoreVersionsKey = "versions";
+
+    // Dependabot で「メジャー更新」を表す update-type の名前
+    private const string SemverMajorUpdateType = "version-update:semver-major";
+
     // NuGet が解決済みの版を記録するロックファイルの名前
     private const string LockFileName = "packages.lock.json";
 
@@ -516,6 +537,83 @@ public class EfCorePackageAlignmentTests
     }
 
     [Fact]
+    public void SqlClientPin_StaysWithinEfCoreDeclaredMajor()
+    {
+        // EF Core の SqlServer プロバイダが「自分はこの版のドライバを前提にしている」と
+        // 宣言している版を、ロックファイルの dependencies から読み出す
+        var declared = ReadDeclaredDependencyVersion(EfCoreSqlServerPackageId, SqlClientPackageId);
+        // 実際に解決されている(= 実行時に読み込まれる)ドライバの版を読み出す
+        var resolved = ReadResolvedVersion(SqlClientPackageId);
+
+        // メジャー版が一致していること。
+        // 【なぜメジャーを固定するのか】EF Core の SqlServer プロバイダはドライバの内部挙動に
+        // 結び付いており、動作保証があるのは自分が宣言したメジャー版に対してだけ。ところが
+        // このリポジトリのテストは InMemory / SQLite しか触らないため、ドライバだけを別メジャーへ
+        // 上げても「ビルドも全テストも緑のまま、SQL Server 配備でだけ実行時に壊れる」。
+        // これは EF Core 本体とプロバイダ実装を 1 本の PR に束ねている理由(このファイル冒頭)と
+        // まったく同じ無言の破壊で、違うのは壊れる層がドライバだという点だけ。
+        // dependabot.yml の ignore で major を保留しているのはこの検査と対になっている
+        Assert.True(MajorOf(resolved) == MajorOf(declared),
+            $"{SqlClientPackageId} の解決版 {resolved} が、{EfCoreSqlServerPackageId} の宣言する "
+            + $"{declared} と別のメジャー版になっています。\n"
+            + "EF Core の SqlServer プロバイダが動作保証するのは、自身が宣言したメジャー版の"
+            + "ドライバに対してだけです。テストは InMemory / SQLite しか触らないため、ここがずれても"
+            + "ビルドもテストも緑のまま、SQL Server 配備でだけ実行時に壊れます。\n"
+            + $"ドライバのメジャーを上げたいときは、それを宣言する版の {EfCoreSqlServerPackageId} へ"
+            + "同じ変更セットで上げてください(この検査は期待値を宣言側から読むので自動で追随します)。");
+
+        // 解決版が宣言版を下回らないこと(csproj の直接参照は「床値のピン留め」が目的)。
+        // 【なぜ下限も見るのか】この直接参照は、EF Core が推移的に引く版が古いサービシング
+        // パッチだったため、セキュリティ更新を後退させない床値として置かれている(csproj の
+        // コメント参照)。同じメジャーの中で下げる変更はメジャー一致の検査を素通りするため、
+        // 「なぜこのピンがあるのか」の側もここで固定する
+        Assert.True(CompareVersions(resolved, declared) >= 0,
+            $"{SqlClientPackageId} の解決版 {resolved} が、{EfCoreSqlServerPackageId} の宣言する "
+            + $"{declared} を下回っています。\n"
+            + "この直接参照は、推移的に引かれる版が古いサービシングパッチであるために"
+            + "セキュリティ更新を後退させない床値として置かれています。下げないでください。");
+    }
+
+    [Fact]
+    public void DependabotConfig_HoldsSqlClientMajorUpdates()
+    {
+        // nuget エコシステムの ignore: からドライバの保留エントリを集める
+        var entries = ReadIgnoreEntriesFor(SqlClientPackageId);
+
+        // エントリがちょうど 1 件あること。
+        // 0 件なら保留が消えて major の単独 PR が再び作られる。2 件以上は Dependabot が
+        // すべて適用するため、意図より広い範囲が止まる(minor / patch のセキュリティ修正まで
+        // 届かなくなる)。どちらも静かに壊れるので件数まで固定する
+        Assert.True(entries.Count == 1,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} の {IgnoreKey}: に "
+            + $"{SqlClientPackageId} の保留がちょうど 1 件あることを期待しましたが {entries.Count} 件でした。\n"
+            + $"0 件なら保留の消失({nameof(SqlClientPin_StaysWithinEfCoreDeclaredMajor)} が守る不変条件を"
+            + "破る PR が毎週作られます)。2 件以上は Dependabot が全て適用するため効きすぎです。");
+
+        // 唯一のエントリを取り出して中身を検査する
+        var entry = entries[0];
+
+        // update-types が書かれていること。省くと「全ての更新を無視」になり、
+        // 同じメジャー内のセキュリティ修正(床値を上げる更新)まで届かなくなる
+        Assert.True(entry.Children.TryGetValue(new YamlScalarNode(IgnoreUpdateTypesKey), out var updateTypesNode)
+            && updateTypesNode is YamlSequenceNode,
+            $"dependabot.yml の {SqlClientPackageId} の保留に {IgnoreUpdateTypesKey}: がありません。"
+            + "省くと全ての更新の無視になり、同じメジャー内のセキュリティ修正まで止まります。");
+
+        // 止めるのは major だけであること(他の種別まで並べると効きすぎる)
+        var updateTypes = ((YamlSequenceNode)updateTypesNode!).Children
+            .OfType<YamlScalarNode>()
+            .Select(node => node.Value ?? "")
+            .ToList();
+        Assert.Equal(new[] { SemverMajorUpdateType }, updateTypes);
+
+        // versions による追加の絞り込みが無いこと(保留の範囲を静かに変えるため置かせない)
+        Assert.False(entry.Children.ContainsKey(new YamlScalarNode(IgnoreVersionsKey)),
+            $"dependabot.yml の {SqlClientPackageId} の保留に {IgnoreVersionsKey}: を足さないでください。"
+            + $"{IgnoreUpdateTypesKey} だけでメジャー更新を止めます。");
+    }
+
+    [Fact]
     public void DependabotConfig_BundlesEfCorePackagesForVersionAndSecurityUpdates()
     {
         // 通常の版更新を束ねるグループの対象一覧
@@ -796,6 +894,135 @@ public class EfCorePackageAlignmentTests
         return representatives;
     }
 
+    // 指定パッケージについて、nuget エコシステムの ignore: に書かれたエントリを集める。
+    // ignore: 自体が無ければ空一覧を返す(「保留が消えた」ことは呼び出し側が件数で報告する)
+    private static IReadOnlyList<YamlMappingNode> ReadIgnoreEntriesFor(string packageId)
+    {
+        // エントリ直下の ignore: を引く。無ければ保留が 1 つも無い状態
+        if (!NuGetEcosystemEntry.Value.Children.TryGetValue(new YamlScalarNode(IgnoreKey), out var ignore))
+            return Array.Empty<YamlMappingNode>();
+        // 一覧として書かれていることを確かめる(単一値なら設定ミスなので場所を示して落とす)
+        Assert.True(ignore is YamlSequenceNode,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} の {IgnoreKey}: が一覧ではありません。");
+        // 対象パッケージ名が一致するエントリだけを集める。
+        // NuGet のパッケージ ID は大文字小文字を区別しないので比較も区別しない
+        return ((YamlSequenceNode)ignore!).Children
+            .OfType<YamlMappingNode>()
+            .Where(entry => entry.Children.TryGetValue(new YamlScalarNode(DependencyNameKey), out var name)
+                && string.Equals((name as YamlScalarNode)?.Value, packageId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+    }
+
+    // あるパッケージが「自分はこの版を前提にしている」と宣言している依存の版を、
+    // ロックファイルの dependencies から読み出す。
+    // 【なぜ resolved ではなく宣言側を読むのか】期待値をテストへ書き写すと、EF Core を
+    // 上げたときに 2 か所を直す必要が生まれ、直し忘れた側が静かに古い前提を主張し続ける。
+    // 宣言側から読めば、EF Core の更新に検査が自動で追随する(§6 の唯一の真実の源)
+    private static string ReadDeclaredDependencyVersion(string dependentId, string dependencyId)
+    {
+        // 見つかった宣言を溜める入れ物(プロジェクトごとに別々に書かれうるので集めて突き合わせる)
+        var declarations = new List<string>();
+        // 各プロジェクトの隣にあるロックファイルを 1 つずつ読む
+        foreach (var projectFile in SolutionProjects.Value)
+        {
+            // プロジェクトと同じディレクトリのロックファイルを指す
+            var lockFile = LockFilePathOf(projectFile);
+            // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するので飛ばす
+            if (!File.Exists(lockFile)) continue;
+            // ロックファイルを JSON として解析する
+            using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
+            // 解決結果が無い書式変更は ReadAllResolvedPackages が報告するのでここでは飛ばす
+            if (!document.RootElement.TryGetProperty(DependenciesKey, out var frameworks)) continue;
+            // ターゲットフレームワークごとに解決結果を見る
+            foreach (var framework in frameworks.EnumerateObject())
+            {
+                // 対象パッケージの項目が無ければ、このフレームワークには宣言が無い
+                if (!framework.Value.TryGetProperty(dependentId, out var dependent)) continue;
+                // その項目が持つ依存の一覧を引く(依存を持たないパッケージもある)
+                if (!dependent.TryGetProperty(DependenciesKey, out var declared)) continue;
+                // 探している依存の版が書かれていれば控える
+                if (declared.TryGetProperty(dependencyId, out var version))
+                    declarations.Add(version.GetString() ?? "");
+            }
+        }
+
+        // 宣言が 1 つも読めないのは検出網の劣化(パッケージ名の変更・書式変更)なので落とす
+        Assert.True(declarations.Count > 0,
+            $"{LockFileName} から {dependentId} が宣言する {dependencyId} の版を読み取れませんでした。"
+            + "パッケージ名かロックファイルの書式が変わった可能性があります"
+            + "(読み取れないまま素通りさせると、検査があるのに何も見ていない状態になります)。");
+
+        // 複数のプロジェクトで宣言が食い違う場合、どれを正とするか決められないので落とす(fail-closed)
+        var distinct = declarations.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Assert.True(distinct.Count == 1,
+            $"{dependentId} が宣言する {dependencyId} の版がロックファイル間で食い違っています: "
+            + $"[{string.Join(", ", distinct)}]");
+
+        // 一意に定まった宣言版を返す
+        return distinct[0];
+    }
+
+    // 指定パッケージの解決済みの版を読み出す(複数プロジェクトで食い違えば落とす)
+    private static string ReadResolvedVersion(string packageId)
+    {
+        // 全ロックファイルから、その ID で解決されている版を集める
+        var versions = ResolvedPackages.Value
+            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+            .Select(package => package.Version)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 1 件も無いのは、参照が消えたか検出網が劣化したかのどちらか
+        Assert.True(versions.Count > 0,
+            $"{LockFileName} に {packageId} の解決済みの版がありません。参照が外れた可能性があります。");
+        // 食い違う版が同居しているとどれが読み込まれるか決まらないので落とす
+        Assert.True(versions.Count == 1,
+            $"{packageId} の解決済みの版がロックファイル間で食い違っています: [{string.Join(", ", versions)}]");
+
+        // 一意に定まった解決版を返す
+        return versions[0];
+    }
+
+    // 版文字列からメジャー版(最初のドットまで)を取り出す
+    private static int MajorOf(string version)
+    {
+        // 先頭からドットまでを切り出す(ドットが無ければ全体をメジャーとみなす)
+        var dot = version.IndexOf('.');
+        var head = dot < 0 ? version : version[..dot];
+        // 数値として読めなければ、版の書式が想定外なので落とす(fail-closed)
+        Assert.True(int.TryParse(head, out var major),
+            $"版 \"{version}\" からメジャー版を読み取れませんでした。");
+        // 読み取ったメジャー版を返す
+        return major;
+    }
+
+    // 2 つの版文字列を数値として比較する(左が大きければ正、等しければ 0、小さければ負)。
+    // 【なぜ文字列比較にしないか】"5.1.10" と "5.1.7" を文字列で比べると前者が小さくなり、
+    // 床値が下がったことを見逃す
+    private static int CompareVersions(string left, string right)
+    {
+        // プレリリース表記(-preview 等)を落としてから数値部分だけを比べる
+        static int[] Parts(string version) => version.Split('-')[0]
+            .Split('.')
+            .Select(part => int.TryParse(part, out var value) ? value : 0)
+            .ToArray();
+
+        // 左右それぞれの数値列を得る
+        var l = Parts(left);
+        var r = Parts(right);
+        // 長い方の桁数まで、上位から順に比べる(足りない桁は 0 として扱う)
+        for (var i = 0; i < Math.Max(l.Length, r.Length); i++)
+        {
+            // その桁の値を取り出す(範囲外は 0)
+            var a = i < l.Length ? l[i] : 0;
+            var b = i < r.Length ? r[i] : 0;
+            // 差があればその時点で大小が決まる
+            if (a != b) return a.CompareTo(b);
+        }
+        // すべての桁が等しければ同じ版
+        return 0;
+    }
+
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
     private static void AssertOnlyAllowedKeys(string groupName)
     {
@@ -1033,6 +1260,9 @@ public class EfCorePackageAlignmentTests
     // (b) 正しい設定なのに CI が赤くなる、のどちらかが起きた。構造として読めば、
     // 「どう書かれているか」ではなく「何が設定されているか」だけを見られる。
     // 依存は YamlDotNet(MIT・.NET の標準的な YAML ライブラリ)をテストプロジェクトにのみ追加する
+    private static readonly Lazy<YamlMappingNode> NuGetEcosystemEntry = new(ReadNuGetEcosystemEntry);
+
+    // nuget エコシステムの groups: 定義。解析結果を複数のテストで共有する(§8)
     private static readonly Lazy<YamlMappingNode> NuGetGroups = new(ReadNuGetGroups);
 
     // グループ名を定義順に並べた一覧(Dependabot は「最初に一致したグループ」に入れるため順序に意味がある)
@@ -1151,6 +1381,28 @@ public class EfCorePackageAlignmentTests
     // dependabot.yml を構造として読み込み、nuget エコシステムの groups: を取り出す
     private static YamlMappingNode ReadNuGetGroups()
     {
+        // nuget エコシステムの設定エントリを取り出し、そこから groups: を読む
+        var nugetEntry = NuGetEcosystemEntry.Value;
+        // そのエントリの groups: を取り出す
+        Assert.True(nugetEntry.Children.TryGetValue(new YamlScalarNode(GroupsKey), out var groups)
+            && groups is YamlMappingNode,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリに {GroupsKey}: がありません。");
+        // 中身が空なら束ねが 1 つも無い状態なので、何が起きているかを示して落とす
+        var groupsNode = (YamlMappingNode)groups!;
+        Assert.True(groupsNode.Children.Count > 0,
+            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリの {GroupsKey}: に"
+            + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
+        // 読み取ったグループ定義を返す
+        return groupsNode;
+    }
+
+    // dependabot.yml から nuget エコシステムの設定エントリそのものを読み出す。
+    // 【なぜ groups: の取り出しと分けるか】エントリ直下には groups: のほかに ignore: も置かれ、
+    // 後者は SqlClient の major 保留(SqlClientPin_StaysWithinEfCoreDeclaredMajor 参照)が読む。
+    // 以前はこの関数が groups: だけを返してエントリを捨てていたため、同じ YAML を
+    // もう一度解析しないと ignore: へ辿り着けなかった(§6 DRY)
+    private static YamlMappingNode ReadNuGetEcosystemEntry()
+    {
         // YAML として解析する。同名キーの重複などで解析できない場合は、原因を添えて落とす
         // (重複キーは YAML では後勝ちで、検査と Dependabot が別の定義を見る食い違いの元になる)
         var stream = new YamlStream();
@@ -1189,16 +1441,7 @@ public class EfCorePackageAlignmentTests
             + "本テストは 1 つ目しか検査しないため、2 つ目以降は束ねが無いまま見逃されます。"
             + "エントリを増やすときは先に本テストを複数エントリ対応へ広げてください。");
 
-        // そのエントリの groups: を取り出す
-        Assert.True(nugetEntries[0].Children.TryGetValue(new YamlScalarNode(GroupsKey), out var groups)
-            && groups is YamlMappingNode,
-            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリに {GroupsKey}: がありません。");
-        // 中身が空なら束ねが 1 つも無い状態なので、何が起きているかを示して落とす
-        var groupsNode = (YamlMappingNode)groups!;
-        Assert.True(groupsNode.Children.Count > 0,
-            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} エントリの {GroupsKey}: に"
-            + "グループが 1 つも定義されていません。束ねが全て失われた状態です。");
-        // 読み取ったグループ定義を返す
-        return groupsNode;
+        // 読み取ったエントリを返す(groups: / ignore: の取り出しは呼び出し側が行う)
+        return nugetEntries[0];
     }
 }
