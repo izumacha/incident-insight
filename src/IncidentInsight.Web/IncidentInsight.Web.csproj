@@ -28,7 +28,7 @@
          別メジャーへ上げても、テストは InMemory / SQLite しか触らないため全て緑のまま通り、
          SQL Server 配備でだけ実行時に壊れる。dependabot.yml の ignore が major 更新を保留し、
          EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。 -->
-    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.1.7" />
+    <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.30" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
