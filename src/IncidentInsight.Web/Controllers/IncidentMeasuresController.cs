@@ -205,9 +205,12 @@ public class IncidentMeasuresController : Controller
 
         // 評価値の範囲チェック。他の失敗経路と同じく TempData["Warning"] + Details への
         // リダイレクトで通知する(生の BadRequest は詳細画面のモーダル/コンテキストを失わせてしまうため)
-        if (effectivenessRating < 1 || effectivenessRating > 5)
+        // 範囲は EffectivenessScale(尺度の唯一の源)から引く。ここに 1〜5 を直書きすると、
+        // 段階数を変えたとき詳細画面のラジオ(EffectivenessScale.All から生成)は新しい段階を
+        // 描くのに、この経路だけが古い上限で弾いて評価が黙って捨てられる(§6)
+        if (effectivenessRating < EffectivenessScale.Min || effectivenessRating > EffectivenessScale.Max)
         {
-            TempData["Warning"] = "有効性評価は1〜5の値を指定してください。";
+            TempData["Warning"] = $"有効性評価は{EffectivenessScale.Min}〜{EffectivenessScale.Max}の値を指定してください。";
             return RedirectToAction("Details", "Incidents", new { id = measure.IncidentId });
         }
 

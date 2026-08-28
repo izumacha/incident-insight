@@ -618,14 +618,16 @@ public class PreventiveMeasuresController : Controller
     [Authorize(Policy = Policies.CanDeleteIncident)]
     public async Task<IActionResult> Delete(int id, Guid concurrencyToken)
     {
-        // Incident を Include して部署スコープの認可判定(SameDepartmentHandler)に
-        // 必要なナビゲーションを確実にロードする。
-        // 対象対策をインシデント付きで取得(認可判定に Incident が必要)
+        // 対象対策をインシデント付きで取得する。Include を外さないのは、将来 CanDeleteIncident へ
+        // 部署要件を足したときに SameDepartmentHandler が Incident を読めず fail-closed で
+        // 拒否してしまわないようにするため(下のコメントのとおり、現時点では部署一致は見ていない)
         var measure = await _db.PreventiveMeasures
             .Include(m => m.Incident)
             .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
-        // 削除権限(部署一致/管理者系)の確認
+        // 削除権限の確認。CanDeleteIncident は Admin/RiskManager のロール判定だけで、部署一致は
+        // 見ない(Program.cs のポリシー定義を参照。CanEditIncident / CanViewIncident と違い
+        // SameDepartmentRequirement を持たない)
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanDeleteIncident)) return Forbid();
 
         // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を

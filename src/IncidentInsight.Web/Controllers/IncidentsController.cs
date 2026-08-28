@@ -679,7 +679,10 @@ public class IncidentsController : Controller
             .FirstOrDefaultAsync(i => i.Id == id);
         // 無ければ 404
         if (incident == null) return NotFound();
-        // 削除権限がなければ 403(部署スコープも考慮)
+        // 削除権限がなければ 403。CanDeleteIncident は Admin/RiskManager のロール判定だけで、
+        // CanEditIncident / CanViewIncident と違い SameDepartmentRequirement を持たない
+        // (Program.cs のポリシー定義を参照)。リソースを渡しているのは、将来ポリシーへ部署要件を
+        // 足したときにこの経路が自動で追随するようにするため
         if (!await IsAuthorizedFor(incident, Policies.CanDeleteIncident)) return Forbid();
 
         // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を

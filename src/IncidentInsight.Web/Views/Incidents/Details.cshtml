@@ -620,8 +620,9 @@
                     <div class="mb-3">
                         <label class="form-label fw-bold">有効性評価 <span class="text-danger">*</span></label>
                         <div class="d-flex gap-2">
-                            @* 1〜5の5段階ラジオボタン（デフォルトは中央の3） *@
-                            @* 段階の一覧は EffectivenessScale(段階数の唯一の源)から引く *@
+                            @* 段階の一覧は EffectivenessScale(段階数の唯一の源)から引く。
+                               ここに「1〜5の5段階（デフォルトは中央の3）」と書き添えていたが、
+                               尺度を変えると描画だけが追随して説明文が取り残されるため数値は書かない *@
                             @foreach (int i in IncidentInsight.Web.Models.Enums.EffectivenessScale.All)
                             {
                                 <div class="form-check">
