@@ -92,9 +92,11 @@ public class PreventiveMeasure
     public string? CompletionNote { get; set; }
 
     // Effectiveness review (post-implementation)
-    // 実施後の有効性評価。1〜5の範囲で、評価前はnull
-    [Range(1, 5)]
-    [Display(Name = "有効性評価(1〜5)")]
+    // 実施後の有効性評価。評価前は null。範囲・表示名は EffectivenessScale(尺度の唯一の源)から
+    // 引く。すぐ下の Priority と同じ理由で、ここに段階数を直書きすると尺度を変えたときに
+    // この属性だけが古い範囲・古い文言のまま取り残される(§6)
+    [Range(EffectivenessScale.Min, EffectivenessScale.Max, ErrorMessage = EffectivenessScale.RangeMessage)]
+    [Display(Name = EffectivenessScale.DisplayName)]
     public int? EffectivenessRating { get; set; }
 
     // 有効性評価のコメント(省略可、上限は FieldLengths.FreeText)

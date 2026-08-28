@@ -625,7 +625,9 @@ public class PreventiveMeasuresController : Controller
             .Include(m => m.Incident)
             .FirstOrDefaultAsync(m => m.Id == id);
         if (measure == null) return NotFound();
-        // 削除権限(部署一致/管理者系)の確認
+        // 削除権限の確認。CanDeleteIncident は Admin/RiskManager のロール判定だけで、部署一致は
+        // 見ない(Program.cs のポリシー定義を参照)。.Include(m => m.Incident) を外さないのは、
+        // 将来ポリシーへ部署要件を足したとき SameDepartmentHandler が fail-closed で拒否しないため
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanDeleteIncident)) return Forbid();
 
         // 同時編集検知のトークン固定(画面表示後に他ユーザーが更新した内容を

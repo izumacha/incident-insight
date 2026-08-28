@@ -230,8 +230,13 @@ public class IncidentMeasuresControllerTests : IDisposable
         Assert.Null(unchanged.CompletionNote);
     }
 
-    [Fact]
-    public async Task RateMeasure_OutOfRange_RedirectsWithWarning_AndDoesNotPersist()
+    // 下限側・上限側の両方を回す。以前は下限側(0)しか無かったため、この経路が
+    // EffectivenessScale ではなく 1〜5 を直書きしていた不備を検出できなかった
+    // (尺度の上限を広げても、このテストは緑のまま通ってしまっていた)
+    [Theory]
+    [InlineData(EffectivenessScale.Min - 1)]
+    [InlineData(EffectivenessScale.Max + 1)]
+    public async Task RateMeasure_OutOfRange_RedirectsWithWarning_AndDoesNotPersist(int outOfRangeRating)
     {
         // 認可チェックが評価値の範囲検証より先に行われる設計のため、
         // 未認可扱い(403)ではなく検証エラーを確認するには実在の対策をシードする必要がある。
@@ -240,12 +245,14 @@ public class IncidentMeasuresControllerTests : IDisposable
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
-        var result = await _controller.RateMeasure(measure.Id, 0, null, false, measure.ConcurrencyToken);
+        var result = await _controller.RateMeasure(measure.Id, outOfRangeRating, null, false, measure.ConcurrencyToken);
 
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal("Details", redirect.ActionName);
         Assert.Equal("Incidents", redirect.ControllerName);
-        Assert.Contains("1〜5", _controller.TempData["Warning"] as string);
+        // 期待する範囲も尺度から組み立てる(ここに 1〜5 を直書きすると、尺度を変えたときに
+        // 本体とテストが同時に古いままになり、写経の検出網として働かなくなる)
+        Assert.Contains($"{EffectivenessScale.Min}〜{EffectivenessScale.Max}", _controller.TempData["Warning"] as string);
         // 範囲外の評価値が保存されていないこと
         var unchanged = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
         Assert.Null(unchanged.EffectivenessRating);
@@ -298,10 +305,16 @@ public class IncidentMeasuresControllerTests : IDisposable
         // 有効性評価は完了済み対策にのみ許可されるため、完了状態でシードする
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
-        var result = await _controller.RateMeasure(measure.Id, 5, "効果あり", false, measure.ConcurrencyToken);
+        // 上限ちょうどの評価値で成功することを尺度から引いて確かめる。ここを 5 と直書きすると、
+        // 尺度の上限を広げたときに「上限まで受け付ける」ことを誰も検証しなくなる
+        // (範囲外テストは弾かれる側しか見ないため、受け付ける側の写経漏れはこの経路でしか捕まらない)
+        var result = await _controller.RateMeasure(measure.Id, EffectivenessScale.Max, "効果あり", false, measure.ConcurrencyToken);
 
         Assert.IsType<RedirectToActionResult>(result);
         Assert.NotNull(_controller.TempData["Success"]);
+        // 上限の評価値がそのまま保存されていること(弾かれていれば null のまま残る)
+        var updated = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(EffectivenessScale.Max, updated.EffectivenessRating);
     }
 
     [Fact]
