@@ -298,23 +298,27 @@ public class IncidentMeasuresControllerTests : IDisposable
         Assert.True(updated.RecurrenceObserved);
     }
 
-    [Fact]
-    public async Task RateMeasure_NoRecurrence_SetsSuccess()
+    // 受け付ける側の境界を下限・上限の両方で固定する。ここを 5 と直書きすると、尺度の上限を
+    // 広げたときに「上限まで受け付ける」ことを誰も検証しなくなる。下限側も同じで、範囲外テストは
+    // 弾かれる側(Min-1)しか見ないため、下限を 1 つ内側へずらす取り違え(< を <= にする等)は
+    // どのテストにも観測されないまま通ってしまう。そのとき捨てられるのは ★1「効果なし」
+    // ＝対策が効かなかったことを示す評価で、再発検知の KPI に直接効く値なので必ず押さえる
+    [Theory]
+    [InlineData(EffectivenessScale.Min)]
+    [InlineData(EffectivenessScale.Max)]
+    public async Task RateMeasure_NoRecurrence_SetsSuccess(int boundaryRating)
     {
         var incident = await SeedIncidentAsync();
         // 有効性評価は完了済み対策にのみ許可されるため、完了状態でシードする
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
 
-        // 上限ちょうどの評価値で成功することを尺度から引いて確かめる。ここを 5 と直書きすると、
-        // 尺度の上限を広げたときに「上限まで受け付ける」ことを誰も検証しなくなる
-        // (範囲外テストは弾かれる側しか見ないため、受け付ける側の写経漏れはこの経路でしか捕まらない)
-        var result = await _controller.RateMeasure(measure.Id, EffectivenessScale.Max, "効果あり", false, measure.ConcurrencyToken);
+        var result = await _controller.RateMeasure(measure.Id, boundaryRating, "効果あり", false, measure.ConcurrencyToken);
 
         Assert.IsType<RedirectToActionResult>(result);
         Assert.NotNull(_controller.TempData["Success"]);
-        // 上限の評価値がそのまま保存されていること(弾かれていれば null のまま残る)
+        // 境界の評価値がそのまま保存されていること(弾かれていれば null のまま残る)
         var updated = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
-        Assert.Equal(EffectivenessScale.Max, updated.EffectivenessRating);
+        Assert.Equal(boundaryRating, updated.EffectivenessRating);
     }
 
     [Fact]
