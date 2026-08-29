@@ -1,11 +1,9 @@
-// エンティティ(Incident / CauseAnalysis / PreventiveMeasure)を使うために取り込む
-using IncidentInsight.Web.Models;
 // PHI マスキング指示([Sensitive])と明示的除外([NotPhi])の定義を使うために取り込む
 using IncidentInsight.Web.Models.Auditing;
-// ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
+// 監査対象エンティティ名の唯一の真実の源(AuditSaveChangesInterceptor)を参照するために取り込む
 using IncidentInsight.Web.Data;
-// DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
-using Microsoft.EntityFrameworkCore;
+// 監査対象エンティティの導出と列の取り出しを行う共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
 // リフレクション(プロパティに付いた属性を調べる仕組み)を使うために取り込む
 using System.Reflection;
 
@@ -29,74 +27,36 @@ namespace IncidentInsight.Tests.Models;
 // (helpdesk-hub の AUTH_AUDIT_EVENT_IS_FAILURE が Set ではなく網羅的な Record である理由と同じ)。
 public class AuditedEntityPhiClassificationTests
 {
-    // 検査対象のエンティティ型一覧(AuditSaveChangesInterceptor.AuditedEntities と同じ 3 集約)。
-    // ここを CLR 型で持つのは、下で EF のモデルを引く際のキーに使うため
-    public static TheoryData<Type> AuditedEntityTypes => new()
+    // 検査対象のエンティティ型一覧。**ここに型を書き並べない**のが要点で、
+    // AuditSaveChangesInterceptor.AuditedEntities(唯一の真実の源)から導出する。
+    // テスト側が独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
+    // 新しいエンティティの列が誰にも見られないまま平文で ChangesJson へ書かれる
+    // ——「付け忘れを検出する」ためのこの検出網自身が、同じ形で穴を空けることになる
+    public static TheoryData<Type> AuditedEntityTypes
     {
-        typeof(Incident),
-        typeof(CauseAnalysis),
-        typeof(PreventiveMeasure),
-    };
-
-    // 検査に使う EF Core のモデル(どの CLR プロパティが実際に列として永続化されるか)を組み立てる。
-    // リフレクションで型のプロパティを直接数えないのは、それだと実態とずれるため:
-    // 計算プロパティ(SeverityLabel / DeepestWhy など setter を持たない表示用プロパティ)は
-    // 列にならないのに拾ってしまい、逆に将来 [NotMapped] や shadow property を使うと取りこぼす。
-    // インターセプタが走査するのは EntityEntry.Properties(= EF のモデル)なので、検査もそこへ揃える
-    private static AuditedModelProbe BuildModel()
-    {
-        // 実 DB へ接続せずにモデルだけを組み立てたいので InMemory プロバイダを使う
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        // OnModelCreating を通したモデルを持つコンテキストを作る
-        var db = new ApplicationDbContext(options);
-        // モデルだけを取り出し、コンテキストは呼び出し側で破棄できるよう包んで返す
-        return new AuditedModelProbe(db);
-    }
-
-    // DbContext の後始末を確実に行うための小さな入れ物(using で破棄する)
-    private sealed class AuditedModelProbe : IDisposable
-    {
-        // 破棄対象のコンテキスト
-        private readonly ApplicationDbContext _db;
-
-        // コンテキストを受け取って保持する
-        public AuditedModelProbe(ApplicationDbContext db) => _db = db;
-
-        // 指定 CLR 型に対応する「永続化される string 列」の CLR プロパティ名を返す。
-        // 主キーは除外する(インターセプタ側も IsPrimaryKey() のとき ChangesJson へ書かずに読み飛ばす)
-        public IReadOnlyList<string> PersistedStringPropertyNames(Type entityType)
+        get
         {
-            // EF のモデルから対象エンティティの定義を引く(見つからなければ後続で落ちる)
-            var entity = _db.Model.FindEntityType(entityType);
-            // モデルに載っていない型を渡した場合は検査の前提が崩れるので、その場で失敗させる
-            Assert.NotNull(entity);
-
-            // 列として永続化されるプロパティのうち、主キー以外の string 型だけを名前で返す
-            return entity!
-                .GetProperties()
-                .Where(p => !p.IsPrimaryKey())
-                .Where(p => p.ClrType == typeof(string))
-                .Select(p => p.Name)
-                .ToList();
+            // xUnit の [MemberData] へ渡す形に詰め替えるための入れ物
+            var data = new TheoryData<Type>();
+            // インターセプタの宣言から導出した CLR 型を 1 つずつ積む
+            foreach (var entityType in AuditedEntityModel.ResolveAuditedClrTypes())
+            {
+                // 1 ケース分として追加する
+                data.Add(entityType);
+            }
+            // 組み上がったケース一覧を返す
+            return data;
         }
-
-        // 保持しているコンテキストを破棄する
-        public void Dispose() => _db.Dispose();
     }
 
     [Theory]
     [MemberData(nameof(AuditedEntityTypes))]
     public void PersistedStringColumns_MustBeClassifiedAsSensitiveOrExplicitlyNotPhi(Type entityType)
     {
-        // EF のモデルを組み立て、検査が終わったら確実に破棄する
-        using var model = BuildModel();
-
         // このエンティティで実際に列になる string プロパティ名を取り出す
-        var columnNames = model.PersistedStringPropertyNames(entityType);
+        var columnNames = AuditedEntityModel.PersistedStringColumnNames(entityType);
 
-        // 前提確認: 監査対象の 3 集約はいずれも文字列列を最低 1 つ持つはず。
+        // 前提確認: 監査対象の各集約はいずれも文字列列を最低 1 つ持つはず。
         // 0 件だと「全部分類済み」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
         Assert.NotEmpty(columnNames);
 
@@ -118,11 +78,8 @@ public class AuditedEntityPhiClassificationTests
     [MemberData(nameof(AuditedEntityTypes))]
     public void SensitiveAndNotPhi_MustNotBeAppliedToTheSameColumn(Type entityType)
     {
-        // EF のモデルを組み立て、検査が終わったら確実に破棄する
-        using var model = BuildModel();
-
         // このエンティティで実際に列になる string プロパティ名を取り出す
-        var columnNames = model.PersistedStringPropertyNames(entityType);
+        var columnNames = AuditedEntityModel.PersistedStringColumnNames(entityType);
 
         // 両方付いている列を集める。両立は「マスクする」と「平文でよい」を同時に主張しており、
         // 実際にはインターセプタが [Sensitive] を優先してマスクするため [NotPhi] の理由文だけが
@@ -136,6 +93,32 @@ public class AuditedEntityPhiClassificationTests
         Assert.True(conflicting.Count == 0,
             $"[Sensitive] と [NotPhi] が同じ列に付いています(どちらか一方にしてください): " +
             $"{string.Join(", ", conflicting.Select(n => $"{entityType.Name}.{n}"))}");
+    }
+
+    [Fact]
+    public void AuditedEntityTypes_AreDerivedFromInterceptorDeclaration()
+    {
+        // 導出された CLR 型の名前を取り出す
+        var derived = AuditedEntityModel.ResolveAuditedClrTypes()
+            .Select(t => t.Name)
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        // インターセプタが宣言している監査対象名を同じ順序に整える
+        var declared = AuditSaveChangesInterceptor.AuditedEntities
+            .OrderBy(n => n, StringComparer.Ordinal)
+            .ToList();
+
+        // 導出結果が宣言と 1 対 1 で対応していることを確認する。
+        // ここがずれるのは「宣言にある名前が EF のモデルに無い」ときだけで、
+        // その場合 ResolveAuditedClrTypes が先に落ちる。二重の確認に見えるが、
+        // 将来 ResolveAuditedClrTypes に絞り込み(除外リスト等)が入ったときに、
+        // 検査対象が黙って減ったことをここが捕まえる
+        Assert.Equal(declared, derived);
+
+        // 監査対象が 0 件だと上の 2 つの Theory が 1 ケースも実行されず、
+        // 「失敗が無い＝緑」になってしまうので、最低 1 件あることを固定する(fail-closed)
+        Assert.NotEmpty(derived);
     }
 
     // 指定した列が [Sensitive] か [NotPhi] のどちらかで分類済みかを返す
