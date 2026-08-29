@@ -2,7 +2,7 @@
 using System.ComponentModel.DataAnnotations;
 // 文字数上限の唯一の真実の源(FieldLengths)を使う
 using IncidentInsight.Web.Models.Validation;
-// 監査ログ用の Sensitive 属性(PHI マスキング指示)を使う
+// 監査ログ用の PHI 分類属性(Sensitive = マスキング指示 / NotPhi = 平文で残す明示的な判断)を使う
 using IncidentInsight.Web.Models.Auditing;
 // 自プロジェクトの enum 群(重症度などの定義)を使えるようにする
 using IncidentInsight.Web.Models.Enums;
@@ -25,6 +25,9 @@ public class Incident
     [Required(ErrorMessage = "部署は必須です")]
     [MaxLength(FieldLengths.ShortText)]
     [Display(Name = "発生部署")]
+    // 監査ログに平文で残してよい列であることを明示する(判断を残さないと「付け忘れ」と区別できないため)。
+    // 値は Incident.Departments の固定候補から選ぶ閉じた語彙で、患者に紐づく情報を含まない
+    [NotPhi("部署名は Incident.Departments の固定候補から選ぶ閉じた語彙で、自由記述でも個人名でもないため患者を特定しない。監査ログ上でも部署名が読めた方が追跡しやすい")]
     public string Department { get; set; } = "";
 
     // インシデントの種別。必須で、初期値は「その他」

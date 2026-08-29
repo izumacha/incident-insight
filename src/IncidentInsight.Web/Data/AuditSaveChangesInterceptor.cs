@@ -44,8 +44,14 @@ namespace IncidentInsight.Web.Data;
 /// </summary>
 public class AuditSaveChangesInterceptor : SaveChangesInterceptor
 {
-    // 監査対象となるエンティティ名の集合
-    private static readonly HashSet<string> AuditedEntities = new()
+    // 監査対象となるエンティティ名の集合。
+    // 「どのエンティティを監査するか」の唯一の真実の源であり、監査の不変条件を検査する
+    // テスト側(AuditedEntityPhiClassificationTests / FreeTextMaxLengthAttributeTests)も
+    // ここから読む。テストが独自に一覧を持つと、監査対象を足したときに実装だけが増えて
+    // 検査が追随せず、新しいエンティティの列が「誰にも見られないまま」ChangesJson へ
+    // 平文で書かれる — 検出網が黙って穴を空ける(この repo が各所で避けている fail-open)。
+    // 書き換えを防ぐため IReadOnlySet で公開する(可変のまま出すと 1 行の代入で監査対象を消せる)
+    public static readonly IReadOnlySet<string> AuditedEntities = new HashSet<string>
     {
         nameof(Incident),
         nameof(CauseAnalysis),

@@ -4,6 +4,8 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Auditing;
 // 文字数上限の唯一の真実の源(FieldLengths)を期待値として使うために取り込む
 using IncidentInsight.Web.Models.Validation;
+// 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
 // [MaxLength] 等の DataAnnotations 属性を参照するために取り込む
 using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報からプロパティや属性を調べる仕組み)を使うために取り込む
@@ -20,13 +22,26 @@ namespace IncidentInsight.Tests.Models;
 // という多層防御の不変条件を機械的に担保する(付け漏れを CI で検知する)。
 public class FreeTextMaxLengthAttributeTests
 {
-    // 検査対象のエンティティ型一覧(監査インターセプタの対象と同じ 3 集約)
-    public static TheoryData<Type> AuditedEntityTypes => new()
+    // 検査対象のエンティティ型一覧。型を書き並べず、監査インターセプタの宣言
+    // (AuditSaveChangesInterceptor.AuditedEntities = 唯一の真実の源)から導出する。
+    // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
+    // 新しいエンティティの自由記述列が上限なしのまま素通りする
+    public static TheoryData<Type> AuditedEntityTypes
     {
-        typeof(Incident),
-        typeof(CauseAnalysis),
-        typeof(PreventiveMeasure),
-    };
+        get
+        {
+            // xUnit の [MemberData] へ渡す形に詰め替えるための入れ物
+            var data = new TheoryData<Type>();
+            // インターセプタの宣言から導出した CLR 型を 1 つずつ積む
+            foreach (var entityType in AuditedEntityModel.ResolveAuditedClrTypes())
+            {
+                // 1 ケース分として追加する
+                data.Add(entityType);
+            }
+            // 組み上がったケース一覧を返す
+            return data;
+        }
+    }
 
     [Theory]
     [MemberData(nameof(AuditedEntityTypes))]
