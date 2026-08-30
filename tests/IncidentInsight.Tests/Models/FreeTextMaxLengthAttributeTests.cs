@@ -1,7 +1,5 @@
 // エンティティ(Incident / CauseAnalysis / PreventiveMeasure)を使うために取り込む
 using IncidentInsight.Web.Models;
-// [Sensitive] 属性(PHI マスキング指示)の定義を使うために取り込む
-using IncidentInsight.Web.Models.Auditing;
 // 文字数上限の唯一の真実の源(FieldLengths)を期待値として使うために取り込む
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
@@ -14,12 +12,22 @@ using System.Reflection;
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
 
-// 監査対象エンティティの自由記述カラムに対する長さ上限の不変条件テスト。
+// 監査対象エンティティの string カラムに対する長さ上限の不変条件テスト。
 // EF Core は保存時に DataAnnotations を自動検証しないため、ViewModel 側の検証だけに頼ると
-// 将来 ViewModel を経由しない書き込み経路(API 追加等)が生えた瞬間に無制限の自由記述
-// (PHI 混入リスクのある列)がそのまま永続化されてしまう。
-// この回帰テストは「[Sensitive] が付いた string プロパティには必ず [MaxLength] も付いている」
-// という多層防御の不変条件を機械的に担保する(付け漏れを CI で検知する)。
+// 将来 ViewModel を経由しない書き込み経路(API 追加等)が生えた瞬間に無制限の文字列が
+// そのまま永続化されてしまう。しかも監査対象エンティティでは同じ値が AuditLog.ChangesJson へも
+// 積まれるため、1 列ぶんの書き込みが行と監査ログの二重に効く(AuditLog は追記専用で消せない)。
+//
+// 検査対象を「[Sensitive] 付きの列」ではなく**永続化される string 列すべて**にしているのが要点。
+// 以前は [Sensitive] 付きだけを見ていたが、PHI 分類に [NotPhi] という 2 つ目の正当な選択肢が
+// 増えた時点で、その形が検出網の穴になった —— 新しい string 列に [NotPhi("...")] だけ付けて
+// [MaxLength] を書き忘れると、PHI 分類テストも本テストも緑のまま無制限の列が通ってしまう。
+// しかも [NotPhi] 列は定義上マスクされないので、無制限の値が監査ログへ**平文で**積まれる。
+// 「エスケープハッチを足したら、既存の検出網がその分だけ黙って狭くなる」という形の後退なので、
+// 分類の種類に依存しない「列であること」を条件にして、将来の分類が増えても穴が空かないようにする。
+//
+// 列の一覧は CLR のリフレクションではなく EF Core のモデルから引く(PHI 分類テストと同じ源)。
+// リフレクションだと計算プロパティ(SeverityLabel 等)を誤検出し、逆に shadow property を取りこぼす。
 public class FreeTextMaxLengthAttributeTests
 {
     // 検査対象のエンティティ型一覧。型を書き並べず、監査インターセプタの宣言
@@ -45,27 +53,29 @@ public class FreeTextMaxLengthAttributeTests
 
     [Theory]
     [MemberData(nameof(AuditedEntityTypes))]
-    public void SensitiveStringProperties_MustHaveMaxLength(Type entityType)
+    public void PersistedStringColumns_MustHaveMaxLength(Type entityType)
     {
-        // 対象エンティティの公開プロパティのうち、[Sensitive] 付きの string 型だけを抽出する
-        var sensitiveStrings = entityType
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Where(p => p.PropertyType == typeof(string)
-                        && p.GetCustomAttribute<SensitiveAttribute>(inherit: false) != null)
+        // 対象エンティティで実際に列になり、かつ属性を付けられる string 列を EF のモデルから取り出す
+        // (列名と CLR プロパティの組)。shadow property は AuditedEntityPhiClassificationTests が
+        // 専用の対処法で落とすので、ここでは対象から外れている
+        var columns = AuditedEntityModel.ClrBackedStringColumns(entityType);
+
+        // 前提確認: 各エンティティに検査対象の string 列が最低 1 つは存在するはず。
+        // 0 件だと「全部上限付き」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
+        Assert.NotEmpty(columns);
+
+        // [MaxLength] が無い列を探す(あれば付け漏れ)。継承元に付けた指定も EF が読むので inherit: true
+        var missing = columns
+            .Where(c => c.Property.GetCustomAttribute<MaxLengthAttribute>(inherit: true) == null)
+            .Select(c => $"{entityType.Name}.{c.Name}")
             .ToList();
 
-        // 前提確認: 各エンティティに検査対象(自由記述/個人名カラム)が最低 1 つは存在するはず
-        Assert.NotEmpty(sensitiveStrings);
-
-        // [Sensitive] 付きなのに [MaxLength] が無いプロパティを探す(あれば付け漏れ)
-        var missing = sensitiveStrings
-            .Where(p => p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) == null)
-            .Select(p => $"{entityType.Name}.{p.Name}")
-            .ToList();
-
-        // 付け漏れが 1 件も無いことを確認する(失敗時はどのプロパティかをメッセージで示す)
+        // 付け漏れが 1 件も無いことを確認する(失敗時はどの列かをメッセージで示す)
         Assert.True(missing.Count == 0,
-            $"[Sensitive] 付き string プロパティに [MaxLength] がありません: {string.Join(", ", missing)}");
+            $"監査対象エンティティの永続化 string 列に [MaxLength] がありません: {string.Join(", ", missing)}。" +
+            $"入力経路と同じ上限({nameof(FieldLengths)} の定数)を [MaxLength] で明示してください " +
+            "(EF Core は保存時に DataAnnotations を検証しないため、ViewModel を経由しない書き込み経路が " +
+            "生えた瞬間に無制限の文字列がそのまま永続化され、同じ値が AuditLog.ChangesJson にも積まれます)。");
     }
 
     [Theory]

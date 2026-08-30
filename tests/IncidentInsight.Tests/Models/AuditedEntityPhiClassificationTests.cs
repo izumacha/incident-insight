@@ -53,8 +53,9 @@ public class AuditedEntityPhiClassificationTests
     [MemberData(nameof(AuditedEntityTypes))]
     public void PersistedStringColumns_MustBeClassifiedAsSensitiveOrExplicitlyNotPhi(Type entityType)
     {
-        // このエンティティで実際に列になる string プロパティ名を取り出す
-        var columnNames = AuditedEntityModel.PersistedStringColumnNames(entityType);
+        // このエンティティで実際に列になり、かつ属性を付けられる(CLR プロパティを持つ)string 列を取り出す。
+        // shadow property を除くのは PersistedStringColumns_MustHaveBackingClrProperty が担当するため
+        var columnNames = AuditedEntityModel.ClrBackedStringColumnNames(entityType);
 
         // 前提確認: 監査対象の各集約はいずれも文字列列を最低 1 つ持つはず。
         // 0 件だと「全部分類済み」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
@@ -78,8 +79,9 @@ public class AuditedEntityPhiClassificationTests
     [MemberData(nameof(AuditedEntityTypes))]
     public void SensitiveAndNotPhi_MustNotBeAppliedToTheSameColumn(Type entityType)
     {
-        // このエンティティで実際に列になる string プロパティ名を取り出す
-        var columnNames = AuditedEntityModel.PersistedStringColumnNames(entityType);
+        // このエンティティで実際に列になり、かつ属性を付けられる string 列を取り出す
+        // (shadow property は属性を持ちえないので、そもそも矛盾のしようがない)
+        var columnNames = AuditedEntityModel.ClrBackedStringColumnNames(entityType);
 
         // 両方付いている列を集める。両立は「マスクする」と「平文でよい」を同時に主張しており、
         // 実際にはインターセプタが [Sensitive] を優先してマスクするため [NotPhi] の理由文だけが
@@ -93,6 +95,31 @@ public class AuditedEntityPhiClassificationTests
         Assert.True(conflicting.Count == 0,
             $"[Sensitive] と [NotPhi] が同じ列に付いています(どちらか一方にしてください): " +
             $"{string.Join(", ", conflicting.Select(n => $"{entityType.Name}.{n}"))}");
+    }
+
+    [Theory]
+    [MemberData(nameof(AuditedEntityTypes))]
+    public void PersistedStringColumns_MustHaveBackingClrProperty(Type entityType)
+    {
+        // 対応する CLR プロパティを持たない string 列(= shadow property)を集める
+        var shadowColumns = AuditedEntityModel.ShadowStringColumnNames(entityType);
+
+        // shadow property を禁じる理由は「属性を付けられないから」ではなく、
+        // **インターセプタが原理的にマスクできないから**。LookupSensitiveMask は CLR プロパティに付いた
+        // [Sensitive] を読むため、shadow property は必ず mask なし = 平文で ChangesJson へ書かれる。
+        // つまり shadow string 列は「PHI が混じった瞬間に、追記専用テーブルへ平文で流れ込み、
+        // 後から消せない」経路そのもので、[Sensitive] を付けて塞ぐことができない。
+        //
+        // この検査を分けているのは対処法が他の 2 つと違うため。分類漏れの答えは「属性を付ける」だが、
+        // shadow property の答えは「CLR プロパティへ昇格させる(そのうえで分類する)」で、
+        // 上の分類テストのメッセージ(「[Sensitive] か [NotPhi] を付けてください」)は実行不能な指示になる。
+        // 実行不能な指示を出す検出網は、いずれ「直せないので検査を緩める」方向へ倒れる
+        Assert.True(shadowColumns.Count == 0,
+            $"監査対象エンティティに CLR プロパティを持たない string 列(shadow property)があります: " +
+            $"{string.Join(", ", shadowColumns.Select(n => $"{entityType.Name}.{n}"))}。" +
+            "shadow property には [Sensitive] を付けられないため、インターセプタは値を必ず平文で " +
+            "AuditLog.ChangesJson へ書きます。通常の CLR プロパティへ昇格させたうえで " +
+            "[Sensitive(...)] か [NotPhi(\"...\")] で分類してください。");
     }
 
     [Fact]
@@ -136,9 +163,10 @@ public class AuditedEntityPhiClassificationTests
     // インターセプタの LookupSensitiveMask と同じく inherit: true で基底クラスの指定も拾う
     private static T? FindAttribute<T>(Type entityType, string propertyName) where T : Attribute
     {
-        // 対象のプロパティ情報を取り出す(public インスタンスプロパティのみ)
-        var property = entityType.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Instance);
-        // EF の列名に対応する CLR プロパティが見つからない場合(shadow property)は属性を持ちえない
+        // 対象のプロパティ情報を共有ヘルパー経由で取り出す(探索条件を検査ごとにばらけさせない)
+        var property = AuditedEntityModel.FindClrProperty(entityType, propertyName);
+        // CLR プロパティが無い列(shadow property)は属性を持ちえない
+        // (この状態は PersistedStringColumns_MustHaveBackingClrProperty が専用のメッセージで落とす)
         if (property is null) return null;
         // 属性を取得して返す(継承元クラスに付けられた指定も対象にする)
         return property.GetCustomAttribute<T>(inherit: true);

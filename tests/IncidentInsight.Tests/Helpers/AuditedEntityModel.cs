@@ -2,6 +2,8 @@
 using IncidentInsight.Web.Data;
 // DbContextOptionsBuilder / UseInMemoryDatabase / IModel を使うために取り込む
 using Microsoft.EntityFrameworkCore;
+// PropertyInfo / BindingFlags(CLR プロパティの探索)を使うために取り込む
+using System.Reflection;
 
 // テスト共通のヘルパーが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -84,6 +86,62 @@ internal static class AuditedEntityModel
             .Where(p => !p.IsPrimaryKey())
             .Where(p => p.ClrType == typeof(string))
             .Select(p => p.Name)
+            .ToList();
+    }
+
+    /// <summary>
+    /// EF の列名に対応する CLR プロパティを返す(見つからなければ <c>null</c> = shadow property)。
+    ///
+    /// 列の一覧は EF のモデルから引くのに対し、<c>[Sensitive]</c> / <c>[NotPhi]</c> / <c>[MaxLength]</c> は
+    /// CLR プロパティに付く属性なので、両者を突き合わせる場所がここ 1 か所に要る。
+    /// 検査側が個別に <c>GetProperty</c> を書くと、BindingFlags や inherit の指定が食い違ったときに
+    /// 「片方の検査だけ属性を見つけられない」という気付きにくいずれが生まれる。
+    /// </summary>
+    public static PropertyInfo? FindClrProperty(Type entityType, string columnName)
+    {
+        // public なインスタンスプロパティから列名と同名のものを探す(EF の既定の対応付けと同じ土俵)
+        return entityType.GetProperty(columnName, BindingFlags.Public | BindingFlags.Instance);
+    }
+
+    /// <summary>
+    /// 指定エンティティの永続化 <c>string</c> 列のうち、CLR プロパティに対応するものだけを名前で返す。
+    ///
+    /// 属性ベースの検査(<c>[Sensitive]</c> / <c>[NotPhi]</c> / <c>[MaxLength]</c>)は、そもそも属性を
+    /// 付けられる CLR プロパティが無ければ成立しない。shadow property をここで除くのは見逃しではなく、
+    /// 「shadow property は属性で分類できないので存在自体を禁じる」という別の検査
+    /// (<c>AuditedEntityPhiClassificationTests.PersistedStringColumns_MustHaveBackingClrProperty</c>)へ
+    /// 責務を渡しているため。1 つの原因に対して各検査がそれぞれ的外れな対処法を案内するのを避ける。
+    /// </summary>
+    public static IReadOnlyList<(string Name, PropertyInfo Property)> ClrBackedStringColumns(Type entityType)
+    {
+        // 永続化される string 列を、対応する CLR プロパティと組にする(無い列は null が入る)
+        return PersistedStringColumnNames(entityType)
+            .Select(name => (Name: name, Property: FindClrProperty(entityType, name)))
+            // CLR プロパティを持つ列だけに絞る。ここで絞った結果を組で返すことで、
+            // 呼び出し側が「絞ったのだから null ではない」を null 免除演算子(!)で主張せずに済む
+            .Where(pair => pair.Property != null)
+            .Select(pair => (pair.Name, Property: pair.Property!))
+            .ToList();
+    }
+
+    /// <summary>
+    /// <see cref="ClrBackedStringColumns"/> の列名だけが要る呼び出し側のための薄い射影。
+    /// </summary>
+    public static IReadOnlyList<string> ClrBackedStringColumnNames(Type entityType)
+    {
+        // 組から列名だけを取り出して返す
+        return ClrBackedStringColumns(entityType).Select(pair => pair.Name).ToList();
+    }
+
+    /// <summary>
+    /// 指定エンティティの永続化 <c>string</c> 列のうち、CLR プロパティを持たない(= shadow property)
+    /// ものを名前で返す。上の <see cref="ClrBackedStringColumnNames"/> の補集合。
+    /// </summary>
+    public static IReadOnlyList<string> ShadowStringColumnNames(Type entityType)
+    {
+        // 永続化される string 列のうち、対応する CLR プロパティが無いものだけを返す
+        return PersistedStringColumnNames(entityType)
+            .Where(name => FindClrProperty(entityType, name) == null)
             .ToList();
     }
 
