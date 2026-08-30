@@ -58,6 +58,9 @@ public class FieldLengthsTests
         }
     }
 
+    // EF のモデル側の上限を検査する対象(監査対象の集約のみ。ViewModel は EF のモデルを持たない)
+    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
+
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
@@ -79,6 +82,41 @@ public class FieldLengthsTests
         Assert.True(offenders.Count == 0,
             "[MaxLength] に FieldLengths 以外の裸の数値が使われています " +
             $"(FieldLengths.FreeText={FieldLengths.FreeText} / FieldLengths.ShortText={FieldLengths.ShortText}): "
+            + string.Join(", ", offenders));
+    }
+
+    [Theory]
+    [MemberData(nameof(AuditedEntityTypes))]
+    public void EveryModelMaxLength_UsesAFieldLengthsConstant(Type entityType)
+    {
+        // FieldLengths が定める許容値の集合(上の属性検査と同じ土俵)
+        var allowed = new[]
+        {
+            FieldLengths.FreeText,
+            FieldLengths.ShortText,
+            FieldLengths.EnumCode,
+            FieldLengths.EnumCodeJapanese,
+        };
+
+        // 上の EveryMaxLength_UsesAFieldLengthsConstant は CLR の [MaxLength] 属性しか見えない。
+        // ところが FreeTextMaxLengthAttributeTests は上限の充足を EF のモデル(GetMaxLength())で
+        // 判定するようになり、fluent の HasMaxLength() も「上限あり」として通るようになった。
+        // 属性側だけを検査したままだと、その fluent 経路が裸の数値の抜け道になる
+        // ——「長さ上限はある(緑)」「でもその値は FieldLengths 由来ではない(誰も見ていない)」。
+        // エスケープハッチを足したぶん検出網が狭くなるのを防ぐため、モデル側の値も同じ集合で見る
+        var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
+            // 上限が設定されている列だけが対象(未設定は FreeTextMaxLengthAttributeTests が落とす)
+            .Where(c => c.MaxLength != null)
+            // 許容値のいずれとも一致しない上限を違反として拾う
+            .Where(c => !allowed.Contains(c.MaxLength!.Value))
+            .Select(c => $"{entityType.Name}.{c.Name} = {c.MaxLength}")
+            .ToList();
+
+        // 違反ゼロであること(あればどの列が裸の数値かをメッセージで示す)
+        Assert.True(offenders.Count == 0,
+            "EF のモデルに FieldLengths 以外の裸の数値が長さ上限として設定されています " +
+            $"(FreeText={FieldLengths.FreeText} / ShortText={FieldLengths.ShortText} / " +
+            $"EnumCode={FieldLengths.EnumCode} / EnumCodeJapanese={FieldLengths.EnumCodeJapanese}): "
             + string.Join(", ", offenders));
     }
 

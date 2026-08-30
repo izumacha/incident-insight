@@ -158,7 +158,11 @@ internal static class AuditedEntityModel
             .Select(c => c.Name)
             .ToList();
 
-        // 2 つに分けた結果をまとめて返す(呼び出し側が同じ走査を 2 回しないで済む)
+        // 2 つに分けた結果をまとめて返す。
+        // 両方が要る呼び出し側はこれを 1 回呼べば済む(薄い射影 ClrBackedStringColumns /
+        // ShadowStringColumnNames はそれぞれ独立にここを呼ぶので、両方使うと走査は 2 回になる)。
+        // 監査対象は 3 集約・各 20 列程度でリフレクションも属性読みだけなので、
+        // メモ化して無効化のタイミングを抱えるより素直に再計算する方が安全と判断した
         return (clrBacked, shadow);
     }
 

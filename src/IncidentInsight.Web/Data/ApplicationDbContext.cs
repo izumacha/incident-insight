@@ -1,5 +1,7 @@
 // 自プロジェクトのモデル群を使う
 using IncidentInsight.Web.Models;
+// 文字数上限の唯一の真実の源(FieldLengths)を使うために取り込む
+using IncidentInsight.Web.Models.Validation;
 // enum 変換ヘルパーを使う
 using IncidentInsight.Web.Models.Enums;
 // Identity + EF Core の DbContext 基底を使う
@@ -76,7 +78,7 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
         modelBuilder.Entity<Incident>()
             .Property(i => i.Severity)
             .HasConversion<string>()
-            .HasMaxLength(20);
+            .HasMaxLength(FieldLengths.EnumCode);
 
         // インシデント種別は日本語文字列との双方向変換を挟む(既存DB互換)
         modelBuilder.Entity<Incident>()
@@ -84,19 +86,19 @@ public class ApplicationDbContext : IdentityDbContext<ApplicationUser>
             .HasConversion(
                 v => IncidentTypeMapping.ToDbString(v),
                 v => IncidentTypeMapping.FromDbString(v))
-            .HasMaxLength(50);
+            .HasMaxLength(FieldLengths.EnumCodeJapanese);
 
         // 対策ステータスは enum 名文字列で保存
         modelBuilder.Entity<PreventiveMeasure>()
             .Property(pm => pm.Status)
             .HasConversion<string>()
-            .HasMaxLength(20);
+            .HasMaxLength(FieldLengths.EnumCode);
 
         // 対策種別(短期/長期)も enum 名文字列で保存
         modelBuilder.Entity<PreventiveMeasure>()
             .Property(pm => pm.MeasureType)
             .HasConversion<string>()
-            .HasMaxLength(20);
+            .HasMaxLength(FieldLengths.EnumCode);
 
         // Indexes for analytics queries
         // 発生日時で検索・並べ替えを行うためのインデックス
