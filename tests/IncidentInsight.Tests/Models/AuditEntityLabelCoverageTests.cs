@@ -26,10 +26,14 @@ public class AuditEntityLabelCoverageTests
     [Fact]
     public void EveryAuditedEntity_HasJapaneseLabel()
     {
-        // ラベルが引けなかった(= フォールバックで元の値がそのまま返ってきた)監査対象を集める
+        // ラベル表に定義済みのキー(変換結果ではなく辞書のキーそのものを見る)。
+        // 変換結果と入力の一致で判定すると、ラベルを意図的に型名と同じにしたときに
+        // 「未定義」と区別できず、実在するのに直しようのない失敗になる
+        var definedKeys = EnumLabels.AuditEntityLabelKeys.ToHashSet(StringComparer.Ordinal);
+
+        // ラベルが定義されていない監査対象を集める
         var missing = AuditSaveChangesInterceptor.AuditedEntities
-            // 変換結果が入力と同一なら、辞書に無くてフォールバックしたということ
-            .Where(name => EnumLabels.JapaneseAuditEntity(name) == name)
+            .Where(name => !definedKeys.Contains(name))
             // 失敗メッセージの並びを実行ごとに揺らさないため序数順に整える
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();

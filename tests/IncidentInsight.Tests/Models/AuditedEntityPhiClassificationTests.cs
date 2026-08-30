@@ -40,17 +40,17 @@ public class AuditedEntityPhiClassificationTests
     {
         // このエンティティで実際に列になり、かつ属性を付けられる(CLR プロパティを持つ)string 列を取り出す。
         // shadow property を除くのは PersistedStringColumns_MustHaveBackingClrProperty が担当するため
-        var columnNames = AuditedEntityModel.ClrBackedStringColumns(entityType)
-            .Select(c => c.Name)
-            .ToList();
+        var columns = AuditedEntityModel.ClrBackedStringColumns(entityType);
 
         // 前提確認: 監査対象の各集約はいずれも文字列列を最低 1 つ持つはず。
         // 0 件だと「全部分類済み」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
-        Assert.NotEmpty(columnNames);
+        Assert.NotEmpty(columns);
 
-        // [Sensitive] も [NotPhi] も付いていない = 分類し忘れの列を集める
-        var unclassified = columnNames
-            .Where(name => !IsClassified(entityType, name))
+        // [Sensitive] も [NotPhi] も付いていない = 分類し忘れの列を集める。
+        // 属性は解決済みの PropertyInfo から直接読む(同じ列名でもう一度リフレクション探索をしない)
+        var unclassified = columns
+            .Where(c => !IsClassified(c.Property))
+            .Select(c => c.Name)
             .ToList();
 
         // 分類漏れが 1 件も無いことを確認する(失敗時は列名と対処法をメッセージで示す)
@@ -68,16 +68,15 @@ public class AuditedEntityPhiClassificationTests
     {
         // このエンティティで実際に列になり、かつ属性を付けられる string 列を取り出す
         // (shadow property は属性を持ちえないので、そもそも矛盾のしようがない)
-        var columnNames = AuditedEntityModel.ClrBackedStringColumns(entityType)
-            .Select(c => c.Name)
-            .ToList();
+        var columns = AuditedEntityModel.ClrBackedStringColumns(entityType);
 
         // 両方付いている列を集める。両立は「マスクする」と「平文でよい」を同時に主張しており、
         // 実際にはインターセプタが [Sensitive] を優先してマスクするため [NotPhi] の理由文だけが
         // 残る — 読んだ人が「この列は平文で出る」と誤解する矛盾した状態になる
-        var conflicting = columnNames
-            .Where(name => FindAttribute<SensitiveAttribute>(entityType, name) != null
-                        && FindAttribute<NotPhiAttribute>(entityType, name) != null)
+        var conflicting = columns
+            .Where(c => c.Property.GetCustomAttribute<SensitiveAttribute>(inherit: true) != null
+                     && c.Property.GetCustomAttribute<NotPhiAttribute>(inherit: true) != null)
+            .Select(c => c.Name)
             .ToList();
 
         // 矛盾した指定が 1 件も無いことを確認する
@@ -157,27 +156,15 @@ public class AuditedEntityPhiClassificationTests
             $"{string.Join(", ", duplicates)}。1 エンティティにつき 1 度だけ書いてください。");
     }
 
-    // 指定した列が [Sensitive] か [NotPhi] のどちらかで分類済みかを返す
-    private static bool IsClassified(Type entityType, string propertyName)
+    // 指定した CLR プロパティが [Sensitive] か [NotPhi] のどちらかで分類済みかを返す。
+    // インターセプタの LookupSensitiveMask と同じく inherit: true で基底クラスの指定も拾う
+    private static bool IsClassified(PropertyInfo property)
     {
         // マスク指定があれば分類済み
-        if (FindAttribute<SensitiveAttribute>(entityType, propertyName) != null) return true;
+        if (property.GetCustomAttribute<SensitiveAttribute>(inherit: true) != null) return true;
         // 明示的な除外があれば分類済み
-        if (FindAttribute<NotPhiAttribute>(entityType, propertyName) != null) return true;
+        if (property.GetCustomAttribute<NotPhiAttribute>(inherit: true) != null) return true;
         // どちらも無ければ分類し忘れ
         return false;
-    }
-
-    // 指定した CLR プロパティに付いた属性を取得する(無ければ null)。
-    // インターセプタの LookupSensitiveMask と同じく inherit: true で基底クラスの指定も拾う
-    private static T? FindAttribute<T>(Type entityType, string propertyName) where T : Attribute
-    {
-        // 対象のプロパティ情報を共有ヘルパー経由で取り出す(探索条件を検査ごとにばらけさせない)
-        var property = AuditedEntityModel.FindClrProperty(entityType, propertyName);
-        // CLR プロパティが無い列(shadow property)は属性を持ちえない
-        // (この状態は PersistedStringColumns_MustHaveBackingClrProperty が専用のメッセージで落とす)
-        if (property is null) return null;
-        // 属性を取得して返す(継承元クラスに付けられた指定も対象にする)
-        return property.GetCustomAttribute<T>(inherit: true);
     }
 }

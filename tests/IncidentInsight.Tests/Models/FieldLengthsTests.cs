@@ -45,48 +45,43 @@ public class FieldLengthsTests
         types.Add(typeof(MeasureFormViewModel));
         types.Add(typeof(ReviewViewModel));
 
-        // 一覧を返す(TheoryData への詰め替えは呼び出し側が行う)
-        return types;
+        // 重複を除いて返す。監査対象に CauseCategory 等を足すと導出側と直書き側の両方に
+        // 現れ、同じ型のテストケースが 2 つできてしまう(TheoryData は重複を畳まない)
+        return types.Distinct().ToList();
     }
 
-    // 型の一覧を xUnit の [MemberData] へ渡す形に詰め替える
-    private static TheoryData<Type> ToTheoryData(IEnumerable<Type> types)
-    {
-        // xUnit へ渡す入れ物を用意する
-        var data = new TheoryData<Type>();
-        foreach (var type in types)
-        {
-            // 1 ケース分として追加する
-            data.Add(type);
-        }
-        return data;
-    }
+    public static TheoryData<Type> LengthGovernedTypes => AuditedEntityModel.ToTheoryData(GovernedTypes());
 
-    public static TheoryData<Type> LengthGovernedTypes => ToTheoryData(GovernedTypes());
-
-    // FieldLengths が定める文字数上限の許容値。属性側とモデル側の両方の検査がこの 1 つを使う。
-    // 2 つの検査が別々の配列を持つと、片方だけに定数を足したときに「FieldLengths の定数なのに
-    // 裸の数値だと言われる」矛盾したメッセージが出る(実際 EnumCode を足したときに起きた)
-    private static readonly int[] AllowedLengths =
+    // [MaxLength] 属性に書いてよい上限。利用者が入力する項目の上限だけを許す。
+    //
+    // ここに EnumCode / EnumCodeJapanese を混ぜてはいけない。混ぜると ViewModel の入力欄に
+    // 裸の [MaxLength(20)] / [MaxLength(50)] を書いても「FieldLengths の定数だ」として通り、
+    // 対応するエンティティ側の列は ShortText(100) のまま——FieldLengths が防ぐために作られた
+    // 層またぎのずれがそのまま復活する(この 2 つは値変換した enum 列にしか意味を持たない)
+    private static readonly int[] AttributeAllowedLengths =
     {
         FieldLengths.FreeText,
         FieldLengths.ShortText,
-        FieldLengths.EnumCode,
-        FieldLengths.EnumCodeJapanese,
     };
+
+    // EF のモデルに設定してよい上限。上に加えて、値変換した enum 列専用の 2 つを許す。
+    // 属性側と意図的に別集合にしている(理由は上のコメント)。共有すると片方が黙って緩む
+    private static readonly int[] ModelAllowedLengths = AttributeAllowedLengths
+        .Concat(new[] { FieldLengths.EnumCode, FieldLengths.EnumCodeJapanese })
+        .ToArray();
 
     // EF のモデル側の上限を検査する対象。LengthGovernedTypes のうちモデルを持つ型に絞る
     // (ViewModel は EF のモデルを持たないので除く)。監査対象だけに絞ると、監査対象ではない
     // CauseCategory の fluent 設定が属性側にもモデル側にも見られない穴になる
     public static TheoryData<Type> ModelBackedTypes =>
-        ToTheoryData(GovernedTypes().Where(AuditedEntityModel.IsMappedEntity));
+        AuditedEntityModel.ToTheoryData(GovernedTypes().Where(AuditedEntityModel.IsMappedEntity));
 
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
     {
-        // FieldLengths が定める許容値の集合(ここに無い値は裸のマジックナンバーとみなす)
-        var allowed = AllowedLengths;
+        // 属性に書いてよい上限の集合(ここに無い値は裸のマジックナンバーとみなす)
+        var allowed = AttributeAllowedLengths;
 
         // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
         var offenders = type
@@ -108,8 +103,8 @@ public class FieldLengthsTests
     [MemberData(nameof(ModelBackedTypes))]
     public void EveryModelMaxLength_UsesAFieldLengthsConstant(Type entityType)
     {
-        // FieldLengths が定める許容値の集合(上の属性検査とまったく同じ配列を使う)
-        var allowed = AllowedLengths;
+        // モデルに設定してよい上限の集合(属性側 + 値変換した enum 列専用の 2 つ)
+        var allowed = ModelAllowedLengths;
 
         // 上の EveryMaxLength_UsesAFieldLengthsConstant は CLR の [MaxLength] 属性しか見えない。
         // ところが FreeTextMaxLengthAttributeTests は上限の充足を EF のモデル(GetMaxLength())で
@@ -117,7 +112,10 @@ public class FieldLengthsTests
         // 属性側だけを検査したままだと、その fluent 経路が裸の数値の抜け道になる
         // ——「長さ上限はある(緑)」「でもその値は FieldLengths 由来ではない(誰も見ていない)」。
         // エスケープハッチを足したぶん検出網が狭くなるのを防ぐため、モデル側の値も同じ集合で見る
-        var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
+        // CLR プロパティの有無を問わず全 string 列を見る。属性を読まない検査なので shadow 列も
+        // 対象にできる —— ClrBacked に絞ると、fluent で裸の数値を設定した shadow 列が
+        // 「属性を付けられないから対象外」という無関係な理由で素通りする
+        var offenders = AuditedEntityModel.AllStringColumnLengths(entityType)
             // 上限が設定されている列だけが対象(未設定は FreeTextMaxLengthAttributeTests が落とす)
             .Where(c => c.MaxLength != null)
             // 許容値のいずれとも一致しない上限を違反として拾う

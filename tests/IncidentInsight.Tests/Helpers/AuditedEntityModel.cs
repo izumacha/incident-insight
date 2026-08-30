@@ -77,14 +77,24 @@ internal static class AuditedEntityModel
     /// </summary>
     public static TheoryData<Type> AuditedEntityTheoryData()
     {
+        // 導出した監査対象をそのままケース一覧に詰め替える
+        return ToTheoryData(ResolveAuditedClrTypes());
+    }
+
+    /// <summary>
+    /// 型の一覧を xUnit の <c>[MemberData]</c> へ渡す形に詰め替える。
+    /// 各テストクラスがこのループを書き写さないよう、ここ 1 か所に置く。
+    /// </summary>
+    public static TheoryData<Type> ToTheoryData(IEnumerable<Type> types)
+    {
         // xUnit へ渡す入れ物を用意する
         var data = new TheoryData<Type>();
 
-        // インターセプタの宣言から導出した CLR 型を 1 つずつ積む
-        foreach (var entityType in ResolveAuditedClrTypes())
+        // 渡された型を 1 つずつ積む
+        foreach (var type in types)
         {
             // 1 ケース分として追加する
-            data.Add(entityType);
+            data.Add(type);
         }
 
         // 組み上がったケース一覧を返す
@@ -118,7 +128,7 @@ internal static class AuditedEntityModel
     /// CLR プロパティを持つもの／持たないもの(shadow property)に分けて返す。
     /// 主キーは除外する(インターセプタ側も <c>IsPrimaryKey()</c> のとき ChangesJson へ書かず読み飛ばす)。
     /// </summary>
-    public static (IReadOnlyList<StringColumn> ClrBacked, IReadOnlyList<string> Shadow)
+    public static (IReadOnlyList<StringColumn> ClrBacked, IReadOnlyList<ShadowColumn> Shadow)
         PartitionStringColumns(Type entityType)
     {
         // EF のモデルから対象エンティティの定義を引く
@@ -152,10 +162,12 @@ internal static class AuditedEntityModel
             .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength))
             .ToList();
 
-        // CLR プロパティを持たない列(= 属性を付けようがない列)
+        // CLR プロパティを持たない列(= 属性を付けようがない列)。
+        // 上限は持たせる —— 属性は付けられなくても fluent で長さは設定できるため、
+        // 「裸の数値が設定されていないか」の検査は shadow 列にも掛ける必要がある
         var shadow = columns
             .Where(c => c.Property == null)
-            .Select(c => c.Name)
+            .Select(c => new ShadowColumn(c.Name, c.MaxLength))
             .ToList();
 
         // 2 つに分けた結果をまとめて返す。
@@ -196,8 +208,25 @@ internal static class AuditedEntityModel
     /// </summary>
     public static IReadOnlyList<string> ShadowStringColumnNames(Type entityType)
     {
-        // 分割済みの結果から shadow property 側だけを返す
-        return PartitionStringColumns(entityType).Shadow;
+        // 分割済みの結果から shadow property 側の列名だけを返す
+        return PartitionStringColumns(entityType).Shadow.Select(c => c.Name).ToList();
+    }
+
+    /// <summary>
+    /// 「列名と長さ上限」だけが要る検査のために、CLR プロパティの有無を問わず
+    /// すべての文字列列を返す。
+    ///
+    /// 長さ上限の検査は属性を読まないので shadow property も対象にできる。ここで
+    /// <see cref="ClrBackedStringColumns"/> を使ってしまうと、fluent で裸の数値を設定した
+    /// shadow 列が「属性を付けられないから対象外」という無関係な理由で素通りする。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int? MaxLength)> AllStringColumnLengths(Type entityType)
+    {
+        // 2 つに分けた結果を、検査に必要な「名前と上限」だけの形へそろえて連結する
+        var (clrBacked, shadow) = PartitionStringColumns(entityType);
+        return clrBacked.Select(c => (c.Name, c.MaxLength))
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
+            .ToList();
     }
 
     /// <summary>
@@ -208,6 +237,14 @@ internal static class AuditedEntityModel
     /// <param name="Property">列に対応する CLR プロパティ(属性はここから読む)</param>
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
     public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength);
+
+    /// <summary>
+    /// CLR プロパティを持たない文字列列(shadow property)1 つぶんの情報。
+    /// 属性は付けられないが、fluent で長さ上限だけは設定できるので保持する。
+    /// </summary>
+    /// <param name="Name">EF のモデル上の列名</param>
+    /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
+    public sealed record ShadowColumn(string Name, int? MaxLength);
 
     // その列を検査対象の「文字列列」とみなすかを判定する。
     //

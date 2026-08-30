@@ -66,6 +66,15 @@ public static class EnumLabels
         ["PreventiveMeasure"] = "再発防止策"
     };
 
+    /// <summary>
+    /// 監査ログのエンティティ名ラベルが定義済みのキー一覧。
+    ///
+    /// 網羅性の検査(<c>AuditEntityLabelCoverageTests</c>)が使う。変換結果と入力の一致で
+    /// 判定すると、ラベルを意図的に型名と同じにしたときに「未定義」と区別できず、
+    /// 実在するのに直しようのない失敗になるため、キーそのものを公開する。
+    /// </summary>
+    public static IReadOnlyCollection<string> AuditEntityLabelKeys => AuditEntityJa.Keys;
+
     // 監査ログの操作種別(string) → 日本語ラベルへの変換表
     private static readonly Dictionary<string, string> AuditOperationJa = new()
     {
