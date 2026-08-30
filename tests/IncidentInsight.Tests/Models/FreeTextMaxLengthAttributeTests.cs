@@ -34,22 +34,7 @@ public class FreeTextMaxLengthAttributeTests
     // (AuditSaveChangesInterceptor.AuditedEntities = 唯一の真実の源)から導出する。
     // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
     // 新しいエンティティの自由記述列が上限なしのまま素通りする
-    public static TheoryData<Type> AuditedEntityTypes
-    {
-        get
-        {
-            // xUnit の [MemberData] へ渡す形に詰め替えるための入れ物
-            var data = new TheoryData<Type>();
-            // インターセプタの宣言から導出した CLR 型を 1 つずつ積む
-            foreach (var entityType in AuditedEntityModel.ResolveAuditedClrTypes())
-            {
-                // 1 ケース分として追加する
-                data.Add(entityType);
-            }
-            // 組み上がったケース一覧を返す
-            return data;
-        }
-    }
+    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
 
     [Theory]
     [MemberData(nameof(AuditedEntityTypes))]
@@ -64,16 +49,17 @@ public class FreeTextMaxLengthAttributeTests
         // 0 件だと「全部上限付き」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
         Assert.NotEmpty(columns);
 
-        // [MaxLength] が無い列を探す(あれば付け漏れ)。継承元に付けた指定も EF が読むので inherit: true
+        // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
+        // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る
         var missing = columns
-            .Where(c => c.Property.GetCustomAttribute<MaxLengthAttribute>(inherit: true) == null)
+            .Where(c => c.MaxLength == null)
             .Select(c => $"{entityType.Name}.{c.Name}")
             .ToList();
 
         // 付け漏れが 1 件も無いことを確認する(失敗時はどの列かをメッセージで示す)
         Assert.True(missing.Count == 0,
-            $"監査対象エンティティの永続化 string 列に [MaxLength] がありません: {string.Join(", ", missing)}。" +
-            $"入力経路と同じ上限({nameof(FieldLengths)} の定数)を [MaxLength] で明示してください " +
+            $"監査対象エンティティの永続化 string 列に長さ上限がありません: {string.Join(", ", missing)}。" +
+            $"入力経路と同じ上限({nameof(FieldLengths)} の定数)を [MaxLength] か HasMaxLength() で明示してください " +
             "(EF Core は保存時に DataAnnotations を検証しないため、ViewModel を経由しない書き込み経路が " +
             "生えた瞬間に無制限の文字列がそのまま永続化され、同じ値が AuditLog.ChangesJson にも積まれます)。");
     }

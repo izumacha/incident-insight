@@ -33,11 +33,17 @@ public class Incident
     // インシデントの種別。必須で、初期値は「その他」
     [Required(ErrorMessage = "インシデント種別は必須です")]
     [Display(Name = "インシデント種別")]
+    // DB へは HasConversion で文字列として保存されるため PHI 分類の対象になる。
+    // IncidentTypeKind の固定値だけを取る閉じた語彙で、患者に紐づく情報を含まない
+    [NotPhi("インシデント種別は IncidentTypeKind の固定値だけを取る閉じた語彙で、自由記述でも個人名でもないため患者を特定しない。監査ログ上でも種別が読めた方が追跡しやすい")]
     public IncidentTypeKind IncidentType { get; set; } = IncidentTypeKind.Other;
 
     // 重症度レベル。必須で、初期値は「ヒヤリハット(レベル0)」
     [Required(ErrorMessage = "重症度は必須です")]
     [Display(Name = "重症度")]
+    // DB へは HasConversion で文字列として保存されるため PHI 分類の対象になる。
+    // IncidentSeverity の固定値だけを取る閉じた語彙で、患者に紐づく情報を含まない
+    [NotPhi("重症度は IncidentSeverity の固定値だけを取る閉じた語彙で、自由記述でも個人名でもないため患者を特定しない。監査ログ上でも重症度が読めた方が追跡しやすい")]
     public IncidentSeverity Severity { get; set; } = IncidentSeverity.Level0;
 
     // 発生状況や経緯の説明。必須で上限は FieldLengths.FreeText

@@ -32,22 +32,7 @@ public class AuditedEntityPhiClassificationTests
     // テスト側が独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
     // 新しいエンティティの列が誰にも見られないまま平文で ChangesJson へ書かれる
     // ——「付け忘れを検出する」ためのこの検出網自身が、同じ形で穴を空けることになる
-    public static TheoryData<Type> AuditedEntityTypes
-    {
-        get
-        {
-            // xUnit の [MemberData] へ渡す形に詰め替えるための入れ物
-            var data = new TheoryData<Type>();
-            // インターセプタの宣言から導出した CLR 型を 1 つずつ積む
-            foreach (var entityType in AuditedEntityModel.ResolveAuditedClrTypes())
-            {
-                // 1 ケース分として追加する
-                data.Add(entityType);
-            }
-            // 組み上がったケース一覧を返す
-            return data;
-        }
-    }
+    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
 
     [Theory]
     [MemberData(nameof(AuditedEntityTypes))]
@@ -55,7 +40,9 @@ public class AuditedEntityPhiClassificationTests
     {
         // このエンティティで実際に列になり、かつ属性を付けられる(CLR プロパティを持つ)string 列を取り出す。
         // shadow property を除くのは PersistedStringColumns_MustHaveBackingClrProperty が担当するため
-        var columnNames = AuditedEntityModel.ClrBackedStringColumnNames(entityType);
+        var columnNames = AuditedEntityModel.ClrBackedStringColumns(entityType)
+            .Select(c => c.Name)
+            .ToList();
 
         // 前提確認: 監査対象の各集約はいずれも文字列列を最低 1 つ持つはず。
         // 0 件だと「全部分類済み」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
@@ -81,7 +68,9 @@ public class AuditedEntityPhiClassificationTests
     {
         // このエンティティで実際に列になり、かつ属性を付けられる string 列を取り出す
         // (shadow property は属性を持ちえないので、そもそも矛盾のしようがない)
-        var columnNames = AuditedEntityModel.ClrBackedStringColumnNames(entityType);
+        var columnNames = AuditedEntityModel.ClrBackedStringColumns(entityType)
+            .Select(c => c.Name)
+            .ToList();
 
         // 両方付いている列を集める。両立は「マスクする」と「平文でよい」を同時に主張しており、
         // 実際にはインターセプタが [Sensitive] を優先してマスクするため [NotPhi] の理由文だけが

@@ -4,6 +4,8 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Validation;
 // 入力用 ViewModel(IncidentCreateEditViewModel など)を使うために取り込む
 using IncidentInsight.Web.Models.ViewModels;
+// 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
 // [MaxLength] 属性を参照するために取り込む
 using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報から属性を調べる仕組み)を使うために取り込む
@@ -24,19 +26,37 @@ namespace IncidentInsight.Tests.Models;
 // 機械的に固定し、裸の数値が再び紛れ込むのを CI で検知する。
 public class FieldLengthsTests
 {
-    // 検査対象の型一覧(監査対象の 3 集約 + 原因分類マスタ + 入力用 ViewModel)。
-    // AuditLog は業務入力ではなく監査証跡スキーマ固有の列長(256/64/16)なので対象外
-    public static TheoryData<Type> LengthGovernedTypes => new()
+    // 検査対象の型一覧(監査対象の集約 + 原因分類マスタ + 入力用 ViewModel)。
+    // AuditLog は業務入力ではなく監査証跡スキーマ固有の列長(256/64/16)なので対象外。
+    //
+    // 監査対象の集約は名前を書き並べず AuditSaveChangesInterceptor.AuditedEntities から導出する。
+    // 写しを持つと、監査対象を足したときに PHI 分類・長さ上限の検査だけが自動で追随し、
+    // 「その [MaxLength] が FieldLengths の定数か」を見るこの検査だけが取り残される
+    // ——新しい集約に裸の [MaxLength(200)] を書いても CI が緑のまま通る
+    public static TheoryData<Type> LengthGovernedTypes
     {
-        typeof(Incident),
-        typeof(CauseAnalysis),
-        typeof(PreventiveMeasure),
-        typeof(CauseCategory),
-        typeof(IncidentCreateEditViewModel),
-        typeof(CauseAnalysisFormViewModel),
-        typeof(MeasureFormViewModel),
-        typeof(ReviewViewModel),
-    };
+        get
+        {
+            // 監査対象の集約(唯一の真実の源から導出)を土台にする
+            var types = AuditedEntityModel.ResolveAuditedClrTypes().ToList();
+
+            // 監査対象ではないが同じ上限規約に従う型を足す
+            types.Add(typeof(CauseCategory));
+            types.Add(typeof(IncidentCreateEditViewModel));
+            types.Add(typeof(CauseAnalysisFormViewModel));
+            types.Add(typeof(MeasureFormViewModel));
+            types.Add(typeof(ReviewViewModel));
+
+            // xUnit へ渡す形に詰め替える
+            var data = new TheoryData<Type>();
+            foreach (var type in types)
+            {
+                // 1 ケース分として追加する
+                data.Add(type);
+            }
+            return data;
+        }
+    }
 
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
