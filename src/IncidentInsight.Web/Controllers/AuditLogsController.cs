@@ -34,13 +34,20 @@ public class AuditLogsController : Controller
     // 1 ページあたりの件数(監査ログは件数が多くなりやすいので少し大きめ)
     private const int PageSize = 50;
 
-    // フィルタ用エンティティ名の許可リスト(監査対象は 3 種類だけ)
-    private static readonly string[] AllowedEntityNames = new[]
-    {
-        nameof(Incident),
-        nameof(CauseAnalysis),
-        nameof(PreventiveMeasure)
-    };
+    // フィルタ用エンティティ名の許可リスト。
+    //
+    // 名前を書き並べず AuditSaveChangesInterceptor.AuditedEntities(監査対象の唯一の真実の源)から
+    // 導出する。写しを持つと監査対象を足したときにインターセプタだけが増えてここが取り残され、
+    // (a) 新しいエンティティを選んでも Contains が false になって絞り込みが黙って外れ、
+    //     全エンティティを返す(フィルタとしての fail-open)、
+    // (b) そもそもドロップダウンに現れず、規制対応の証跡に書かれた行へ画面から到達できない
+    // という 2 つのずれが同時に起きる。
+    //
+    // 並び順は宣言側(ドメインの順。ルート集約のインシデントが先)をそのまま使う。
+    // ここで型名の序数順に並べ替えると、日本語 UI の表示順が英語の識別子の綴り順という
+    // 利用者から見て無意味な並びになる(原因分析がインシデントより先に来る)
+    private static readonly string[] AllowedEntityNames =
+        AuditSaveChangesInterceptor.AuditedEntities.ToArray();
 
     // フィルタ用操作種別の許可リスト
     private static readonly string[] AllowedOperations = new[] { "Added", "Modified", "Deleted" };

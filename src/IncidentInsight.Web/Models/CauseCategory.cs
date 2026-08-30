@@ -18,7 +18,10 @@ public class CauseCategory
     [Display(Name = "分類名")]
     public string Name { get; set; } = "";
 
-    // 分類の説明文(省略可)
+    // 分類の説明文(省略可)。上限は FieldLengths.FreeText。
+    // 上限が無いままだと nvarchar(max) / text 相当の無制限列になり、書き込み経路が
+    // 増えたときに際限なく積める(§8 の資源枯渇防止と §9 の DoS 防止に反する)
+    [MaxLength(FieldLengths.FreeText)]
     [Display(Name = "説明")]
     public string? Description { get; set; }
 

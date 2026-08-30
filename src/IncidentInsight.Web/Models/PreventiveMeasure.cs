@@ -39,6 +39,9 @@ public class PreventiveMeasure
     // 短期 or 長期の区分。必須で、初期値は「短期対策」
     [Required(ErrorMessage = "対策種別を選択してください")]
     [Display(Name = "対策種別")]
+    // DB へは HasConversion で文字列として保存されるため PHI 分類の対象になる。
+    // MeasureTypeKind の固定値だけを取る閉じた語彙で、患者に紐づく情報を含まない
+    [NotPhi("対策種別は MeasureTypeKind の固定値だけを取る閉じた語彙で、自由記述でも個人名でもないため患者を特定しない。監査ログ上でも種別が読めた方が追跡しやすい")]
     public MeasureTypeKind MeasureType { get; set; } = MeasureTypeKind.ShortTerm;
 
     // 対策を担当する人の名前。必須で上限は FieldLengths.ShortText
@@ -74,6 +77,9 @@ public class PreventiveMeasure
     // Status lifecycle: Planned → InProgress → Completed
     // 対策の進行状況。初期値は「計画中」
     [Display(Name = "ステータス")]
+    // DB へは HasConversion で文字列として保存されるため PHI 分類の対象になる。
+    // MeasureStatus の固定値だけを取る閉じた語彙で、患者に紐づく情報を含まない
+    [NotPhi("ステータスは MeasureStatus の固定値だけを取る閉じた語彙で、自由記述でも個人名でもないため患者を特定しない。監査ログ上でも進行状況が読めた方が追跡しやすい")]
     public MeasureStatus Status { get; set; } = MeasureStatus.Planned;
 
     // 完了した日付(省略可)

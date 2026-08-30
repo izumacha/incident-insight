@@ -35,6 +35,22 @@ public static class FieldLengths
     public const int ShortText = 100;
 
     /// <summary>
+    /// <c>HasConversion&lt;string&gt;()</c> で文字列として保存する enum 列の上限。
+    /// 保存されるのは enum の名前(<c>Level0</c> / <c>Planned</c> / <c>ShortTerm</c> など)で、
+    /// 利用者の入力ではなく閉じた語彙なので <see cref="ShortText"/> とは別の値にしている。
+    /// </summary>
+    // 文字列として保存する enum 列(重症度 / ステータス / 対策種別)の上限文字数
+    public const int EnumCode = 20;
+
+    /// <summary>
+    /// 文字列として保存する enum 列のうち、日本語の値を保存するものの上限。
+    /// <c>Incident.IncidentType</c> は <c>IncidentTypeMapping</c> が日本語の DB 文字列
+    /// (「与薬・投薬」など)へ変換して保存するため、<see cref="EnumCode"/> では足りない。
+    /// </summary>
+    // 日本語の値を文字列として保存する enum 列(インシデント種別)の上限文字数
+    public const int EnumCodeJapanese = 50;
+
+    /// <summary>
     /// <c>[MaxLength]</c> 用の日本語エラーメッセージ書式。
     /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限文字数が入る
     /// (<c>MaxLengthAttribute.FormatErrorMessage</c> がこの 2 つを渡す)。

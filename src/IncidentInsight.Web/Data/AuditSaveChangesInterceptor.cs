@@ -44,19 +44,26 @@ namespace IncidentInsight.Web.Data;
 /// </summary>
 public class AuditSaveChangesInterceptor : SaveChangesInterceptor
 {
-    // 監査対象となるエンティティ名の集合。
-    // 「どのエンティティを監査するか」の唯一の真実の源であり、監査の不変条件を検査する
-    // テスト側(AuditedEntityPhiClassificationTests / FreeTextMaxLengthAttributeTests)も
-    // ここから読む。テストが独自に一覧を持つと、監査対象を足したときに実装だけが増えて
-    // 検査が追随せず、新しいエンティティの列が「誰にも見られないまま」ChangesJson へ
-    // 平文で書かれる — 検出網が黙って穴を空ける(この repo が各所で避けている fail-open)。
-    // 書き換えを防ぐため IReadOnlySet で公開する(可変のまま出すと 1 行の代入で監査対象を消せる)
-    public static readonly IReadOnlySet<string> AuditedEntities = new HashSet<string>
+    // 監査対象となるエンティティ名の一覧。
+    // 「どのエンティティを監査するか」の唯一の真実の源であり、本番コード・テストの双方が
+    // ここから導出する。導出先の一覧と、写しを持ったときに何が起きるかは CLAUDE.md §3
+    // 「監査対象の一覧を読む側は必ず AuditSaveChangesInterceptor.AuditedEntities から導出する」
+    // に集約してある(ここに書き写すと、導出先が増えたときにこのコメントだけが古くなる)。
+    //
+    // 集合ではなく**順序を持つ一覧**にしているのは、監査ログ画面のフィルタのドロップダウンが
+    // ここから並びを取るため。HashSet の列挙順は保証されないので、集合のまま渡すと表示順が
+    // 実行環境やランタイム版で揺れる。ここをドメインの順(ルート集約が先)にしておけば、
+    // 導出先は並べ替えずにそのまま使える。要素数は 3 なので Contains の線形探索で十分。
+    // 書き換えを防ぐため読み取り専用のラッパーで公開する。
+    // 型を IReadOnlyList にするだけでは不十分で、中身が配列のままだと
+    // ((string[])AuditedEntities)[0] = "..." というキャスト 1 つで監査対象を書き換えられる
+    // (Incident が一致しなくなり、監査ログが黙って書かれなくなる = このファイルが防ぐ fail-open)
+    public static readonly IReadOnlyList<string> AuditedEntities = Array.AsReadOnly(new[]
     {
         nameof(Incident),
         nameof(CauseAnalysis),
         nameof(PreventiveMeasure)
-    };
+    });
 
     // 現在のユーザー名取得に使う HttpContext アクセサ(null 可)
     private readonly IHttpContextAccessor? _httpContextAccessor;

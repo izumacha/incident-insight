@@ -4,6 +4,8 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Validation;
 // 入力用 ViewModel(IncidentCreateEditViewModel など)を使うために取り込む
 using IncidentInsight.Web.Models.ViewModels;
+// 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
+using IncidentInsight.Tests.Helpers;
 // [MaxLength] 属性を参照するために取り込む
 using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報から属性を調べる仕組み)を使うために取り込む
@@ -24,26 +26,60 @@ namespace IncidentInsight.Tests.Models;
 // 機械的に固定し、裸の数値が再び紛れ込むのを CI で検知する。
 public class FieldLengthsTests
 {
-    // 検査対象の型一覧(監査対象の 3 集約 + 原因分類マスタ + 入力用 ViewModel)。
-    // AuditLog は業務入力ではなく監査証跡スキーマ固有の列長(256/64/16)なので対象外
-    public static TheoryData<Type> LengthGovernedTypes => new()
+    // 検査対象の型一覧(監査対象の集約 + 原因分類マスタ + 入力用 ViewModel)。
+    // AuditLog は業務入力ではなく監査証跡スキーマ固有の列長(256/64/16)なので対象外。
+    //
+    // 監査対象の集約は名前を書き並べず AuditSaveChangesInterceptor.AuditedEntities から導出する。
+    // 写しを持つと、監査対象を足したときに PHI 分類・長さ上限の検査だけが自動で追随し、
+    // 「その [MaxLength] が FieldLengths の定数か」を見るこの検査だけが取り残される
+    // ——新しい集約に裸の [MaxLength(200)] を書いても CI が緑のまま通る
+    private static IReadOnlyList<Type> GovernedTypes()
     {
-        typeof(Incident),
-        typeof(CauseAnalysis),
-        typeof(PreventiveMeasure),
-        typeof(CauseCategory),
-        typeof(IncidentCreateEditViewModel),
-        typeof(CauseAnalysisFormViewModel),
-        typeof(MeasureFormViewModel),
-        typeof(ReviewViewModel),
+        // 長さ上限の管理対象となる業務エンティティ(監査対象とは独立に EF のモデルから導出)
+        var types = AuditedEntityModel.LengthGovernedEntityTypes().ToList();
+
+        // エンティティではないが同じ上限規約に従う入力用 ViewModel を足す
+        types.Add(typeof(IncidentCreateEditViewModel));
+        types.Add(typeof(CauseAnalysisFormViewModel));
+        types.Add(typeof(MeasureFormViewModel));
+        types.Add(typeof(ReviewViewModel));
+
+        // 重複を除いて返す。監査対象に CauseCategory 等を足すと導出側と直書き側の両方に
+        // 現れ、同じ型のテストケースが 2 つできてしまう(TheoryData は重複を畳まない)
+        return types.Distinct().ToList();
+    }
+
+    public static TheoryData<Type> LengthGovernedTypes => AuditedEntityModel.ToTheoryData(GovernedTypes());
+
+    // [MaxLength] 属性に書いてよい上限。利用者が入力する項目の上限だけを許す。
+    //
+    // ここに EnumCode / EnumCodeJapanese を混ぜてはいけない。混ぜると ViewModel の入力欄に
+    // 裸の [MaxLength(20)] / [MaxLength(50)] を書いても「FieldLengths の定数だ」として通り、
+    // 対応するエンティティ側の列は ShortText(100) のまま——FieldLengths が防ぐために作られた
+    // 層またぎのずれがそのまま復活する(この 2 つは値変換した enum 列にしか意味を持たない)
+    private static readonly int[] AttributeAllowedLengths =
+    {
+        FieldLengths.FreeText,
+        FieldLengths.ShortText,
     };
+
+    // EF のモデルに設定してよい上限。上に加えて、値変換した enum 列専用の 2 つを許す。
+    // 属性側と意図的に別集合にしている(理由は上のコメント)。共有すると片方が黙って緩む
+    private static readonly int[] ModelAllowedLengths = AttributeAllowedLengths
+        .Concat(new[] { FieldLengths.EnumCode, FieldLengths.EnumCodeJapanese })
+        .ToArray();
+
+    // EF のモデル側の上限を検査する対象(= 長さ上限の管理対象となる業務エンティティ)。
+    // ViewModel は EF のモデルを持たないので入らない
+    public static TheoryData<Type> ModelBackedTypes =>
+        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
 
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
     {
-        // FieldLengths が定める許容値の集合(ここに無い値は裸のマジックナンバーとみなす)
-        var allowed = new[] { FieldLengths.FreeText, FieldLengths.ShortText };
+        // 属性に書いてよい上限の集合(ここに無い値は裸のマジックナンバーとみなす)
+        var allowed = AttributeAllowedLengths;
 
         // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
         var offenders = type
@@ -58,7 +94,65 @@ public class FieldLengthsTests
         // 違反ゼロであること(あればどのプロパティが裸の数値かをメッセージで示す)
         Assert.True(offenders.Count == 0,
             "[MaxLength] に FieldLengths 以外の裸の数値が使われています " +
-            $"(FieldLengths.FreeText={FieldLengths.FreeText} / FieldLengths.ShortText={FieldLengths.ShortText}): "
+            $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
+    }
+
+    [Theory]
+    [MemberData(nameof(ModelBackedTypes))]
+    public void EveryModelMaxLength_UsesAFieldLengthsConstant(Type entityType)
+    {
+        // モデルに設定してよい上限の集合(属性側 + 値変換した enum 列専用の 2 つ)
+        var allowed = ModelAllowedLengths;
+
+        // 上の EveryMaxLength_UsesAFieldLengthsConstant は CLR の [MaxLength] 属性しか見えない。
+        // ところが FreeTextMaxLengthAttributeTests は上限の充足を EF のモデル(GetMaxLength())で
+        // 判定するようになり、fluent の HasMaxLength() も「上限あり」として通るようになった。
+        // 属性側だけを検査したままだと、その fluent 経路が裸の数値の抜け道になる
+        // ——「長さ上限はある(緑)」「でもその値は FieldLengths 由来ではない(誰も見ていない)」。
+        // エスケープハッチを足したぶん検出網が狭くなるのを防ぐため、モデル側の値も同じ集合で見る
+        // CLR プロパティの有無を問わず全 string 列を見る。属性を読まない検査なので shadow 列も
+        // 対象にできる —— ClrBacked に絞ると、fluent で裸の数値を設定した shadow 列が
+        // 「属性を付けられないから対象外」という無関係な理由で素通りする
+        var offenders = AuditedEntityModel.AllStringColumnLengths(entityType)
+            // 上限が設定されている列だけが対象(未設定は FreeTextMaxLengthAttributeTests が落とす)
+            .Where(c => c.MaxLength != null)
+            // 許容値のいずれとも一致しない上限を違反として拾う
+            .Where(c => !allowed.Contains(c.MaxLength!.Value))
+            .Select(c => $"{entityType.Name}.{c.Name} = {c.MaxLength}")
+            .ToList();
+
+        // 違反ゼロであること(あればどの列が裸の数値かをメッセージで示す)
+        Assert.True(offenders.Count == 0,
+            "EF のモデルに FieldLengths 以外の裸の数値が長さ上限として設定されています " +
+            $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
+    }
+
+    [Theory]
+    [MemberData(nameof(ModelBackedTypes))]
+    public void ModelMaxLength_AgreesWithMaxLengthAttribute(Type entityType)
+    {
+        // 属性と EF のモデルの両方に上限があり、しかも値が食い違う列を探す
+        var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
+            // 属性側の上限(無ければ検査対象外 —— 付け忘れは別の検査が落とす)
+            .Select(c => new
+            {
+                c.Name,
+                c.MaxLength,
+                Attribute = c.Property.GetCustomAttribute<MaxLengthAttribute>(inherit: true),
+            })
+            .Where(x => x.Attribute != null && x.MaxLength != null)
+            // 値が一致しないものが違反
+            .Where(x => x.Attribute!.Length != x.MaxLength!.Value)
+            .Select(x => $"{entityType.Name}.{x.Name}: [MaxLength]={x.Attribute!.Length} / モデル={x.MaxLength}")
+            .ToList();
+
+        // fluent の HasMaxLength() は属性より優先されるため、両方書いて値が違うと
+        // 「画面は属性の上限で検証し、DB は fluent の上限で作られる」という層またぎのずれになる。
+        // 上限の**充足**を EF のモデルで判定するようにした以上、モデル側だけを見ても
+        // 食い違いには気付けない(どちらも「上限あり」なので緑のまま)。ここで一致を固定する
+        Assert.True(offenders.Count == 0,
+            "同じ列に [MaxLength] と fluent の HasMaxLength() があり、値が食い違っています " +
+            "(fluent が優先されるため、画面の検証は通るのに保存時に列長超過で落ちます): "
             + string.Join(", ", offenders));
     }
 

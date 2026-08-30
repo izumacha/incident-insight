@@ -1,7 +1,13 @@
 // ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
 using IncidentInsight.Web.Data;
-// DbContextOptionsBuilder / UseInMemoryDatabase / IModel を使うために取り込む
+// DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
 using Microsoft.EntityFrameworkCore;
+// IModel / IProperty(EF Core のモデル定義を読む型)を使うために取り込む
+using Microsoft.EntityFrameworkCore.Metadata;
+// PropertyInfo / BindingFlags(CLR プロパティの探索)を使うために取り込む
+using System.Reflection;
+// TheoryData(xUnit の [MemberData] へ渡すケース一覧)を使うために取り込む
+using Xunit;
 
 // テスト共通のヘルパーが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -20,6 +26,14 @@ namespace IncidentInsight.Tests.Helpers;
 /// </summary>
 internal static class AuditedEntityModel
 {
+    // OnModelCreating を通した EF のモデル。組み立ては決定的なので 1 回で足りる。
+    //
+    // 毎回 CreateModelProbe() を呼ぶと、検査 1 件ごとに DbContext とモデルを組み直すうえ、
+    // UseInMemoryDatabase(Guid) が EF のプロセス内ストアキャッシュ(InMemoryStoreCache)へ
+    // 毎回別のストアを登録して、テストプロセスが終わるまで解放されない。
+    // Lazy にしているのは、モデル組み立ての失敗をこのクラスに触れた検査へ確実に伝えるため
+    private static readonly Lazy<IModel> Model = new(BuildModel);
+
     /// <summary>
     /// 監査対象エンティティの CLR 型を、インターセプタが持つ名前の集合から導出して返す。
     /// 名前に対応するエンティティが EF のモデルに 1 つも無ければ例外で落とす(fail-closed) —
@@ -27,9 +41,6 @@ internal static class AuditedEntityModel
     /// </summary>
     public static IReadOnlyList<Type> ResolveAuditedClrTypes()
     {
-        // モデルだけを組み立てて、解決が終わったら破棄する
-        using var probe = CreateModelProbe();
-
         // 導出した CLR 型を溜めるリスト
         var resolved = new List<Type>();
 
@@ -38,7 +49,7 @@ internal static class AuditedEntityModel
         {
             // EF のモデルから同名のエンティティ定義を探す(型名の一致で引く。
             // インターセプタも Metadata.ClrType.Name で突き合わせているので同じ土俵になる)
-            var entityType = probe.Model.GetEntityTypes()
+            var entityType = Model.Value.GetEntityTypes()
                 .FirstOrDefault(e => e.ClrType.Name == entityName);
 
             // 対応するエンティティがモデルに無いのは前提が崩れた状態なので、その場で落とす
@@ -59,16 +70,69 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
-    /// 指定エンティティで実際に列として永続化される <c>string</c> プロパティ名を返す。
+    /// 監査対象エンティティを xUnit の <c>[MemberData]</c> へ渡す形にして返す。
+    ///
+    /// 各テストクラスがこの詰め替えを書き写すと、片方だけに絞り込み(所有型の除外など)を入れたときに
+    /// 一方の検出網だけが黙って狭くなる。ケース一覧の作り方もここ 1 か所に置く。
+    /// </summary>
+    public static TheoryData<Type> AuditedEntityTheoryData()
+    {
+        // 導出した監査対象をそのままケース一覧に詰め替える
+        return ToTheoryData(ResolveAuditedClrTypes());
+    }
+
+    /// <summary>
+    /// 型の一覧を xUnit の <c>[MemberData]</c> へ渡す形に詰め替える。
+    /// 各テストクラスがこのループを書き写さないよう、ここ 1 か所に置く。
+    /// </summary>
+    public static TheoryData<Type> ToTheoryData(IEnumerable<Type> types)
+    {
+        // xUnit へ渡す入れ物を用意する
+        var data = new TheoryData<Type>();
+
+        // 渡された型を 1 つずつ積む
+        foreach (var type in types)
+        {
+            // 1 ケース分として追加する
+            data.Add(type);
+        }
+
+        // 組み上がったケース一覧を返す
+        return data;
+    }
+
+    /// <summary>
+    /// EF の列名に対応する CLR プロパティを返す(見つからなければ <c>null</c> = shadow property)。
+    ///
+    /// 列の一覧は EF のモデルから引くのに対し、<c>[Sensitive]</c> / <c>[NotPhi]</c> は CLR プロパティに
+    /// 付く属性なので、両者を突き合わせる場所がここ 1 か所に要る。検査側が個別に <c>GetProperty</c> を
+    /// 書くと、<c>BindingFlags</c> の指定が食い違ったときに「片方の検査だけ属性を見つけられない」という
+    /// 気付きにくいずれが生まれる。
+    ///
+    /// <c>BindingFlags</c> は本番の <c>AuditSaveChangesInterceptor.LookupSensitiveMask</c> と
+    /// **同一**にする(<c>NonPublic</c> を含む)。ここだけ <c>Public</c> に絞ると、非公開プロパティを列に
+    /// マップした場合に「本番は <c>[Sensitive]</c> を読んでマスクするのに、検査からは shadow property に
+    /// 見える」というずれが起き、実在して属性も付いている列に対して「CLR プロパティへ昇格させてください」
+    /// という実行不能な指示を出してしまう。
+    /// </summary>
+    public static PropertyInfo? FindClrProperty(Type entityType, string columnName)
+    {
+        // 列名と同名の CLR プロパティを探す(探索条件は本番のマスク解決と同じ)
+        return entityType.GetProperty(
+            columnName,
+            BindingFlags.Public | BindingFlags.Instance | BindingFlags.NonPublic);
+    }
+
+    /// <summary>
+    /// 指定エンティティで実際に列として永続化される「文字列として保存される」列を
+    /// CLR プロパティを持つもの／持たないもの(shadow property)に分けて返す。
     /// 主キーは除外する(インターセプタ側も <c>IsPrimaryKey()</c> のとき ChangesJson へ書かず読み飛ばす)。
     /// </summary>
-    public static IReadOnlyList<string> PersistedStringColumnNames(Type entityType)
+    public static (IReadOnlyList<StringColumn> ClrBacked, IReadOnlyList<ShadowColumn> Shadow)
+        PartitionStringColumns(Type entityType)
     {
-        // モデルだけを組み立てて、取り出しが終わったら破棄する
-        using var probe = CreateModelProbe();
-
         // EF のモデルから対象エンティティの定義を引く
-        var entity = probe.Model.FindEntityType(entityType);
+        var entity = Model.Value.FindEntityType(entityType);
 
         // モデルに載っていない型を渡された場合は検査の前提が崩れるので落とす(fail-closed)
         if (entity is null)
@@ -78,24 +142,196 @@ internal static class AuditedEntityModel
                 $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。");
         }
 
-        // 列として永続化されるプロパティのうち、主キー以外の string 型だけを名前で返す
-        return entity
+        // 主キー以外で「文字列として保存される」列を集め、CLR プロパティと組にする
+        var columns = entity
             .GetProperties()
             .Where(p => !p.IsPrimaryKey())
-            .Where(p => p.ClrType == typeof(string))
-            .Select(p => p.Name)
+            .Where(IsStringColumn)
+            .Select(p => (
+                Name: p.Name,
+                Property: FindClrProperty(entityType, p.Name),
+                // 長さ上限は EF のモデルから読む。[MaxLength] 属性だけを見ると、fluent API の
+                // HasMaxLength() で設定した列(値変換を通す列はこちらで設定している)を
+                // 「上限なし」と誤判定してしまう。DB の列長を決めているのはモデル側の値
+                MaxLength: p.GetMaxLength()))
+            .ToList();
+
+        // CLR プロパティを持つ列(= 属性で分類できる列)
+        var clrBacked = columns
+            .Where(c => c.Property != null)
+            .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength))
+            .ToList();
+
+        // CLR プロパティを持たない列(= 属性を付けようがない列)。
+        // 上限は持たせる —— 属性は付けられなくても fluent で長さは設定できるため、
+        // 「裸の数値が設定されていないか」の検査は shadow 列にも掛ける必要がある
+        var shadow = columns
+            .Where(c => c.Property == null)
+            .Select(c => new ShadowColumn(c.Name, c.MaxLength))
+            .ToList();
+
+        // 2 つに分けた結果をまとめて返す。
+        // 両方が要る呼び出し側はこれを 1 回呼べば済む(薄い射影 ClrBackedStringColumns /
+        // ShadowStringColumnNames はそれぞれ独立にここを呼ぶので、両方使うと走査は 2 回になる)。
+        // 監査対象は 3 集約・各 20 列程度でリフレクションも属性読みだけなので、
+        // メモ化して無効化のタイミングを抱えるより素直に再計算する方が安全と判断した
+        return (clrBacked, shadow);
+    }
+
+    /// <summary>
+    /// <see cref="PartitionStringColumns"/> のうち CLR プロパティを持つ列だけを返す薄い射影。
+    ///
+    /// shadow property を除くのは見逃しではなく、「shadow property は属性で分類できないので存在自体を
+    /// 禁じる」という別の検査
+    /// (<c>AuditedEntityPhiClassificationTests.PersistedStringColumns_MustHaveBackingClrProperty</c>)へ
+    /// 責務を渡しているため。1 つの原因に対して各検査がそれぞれ的外れな対処法を案内するのを避ける。
+    /// </summary>
+    public static IReadOnlyList<StringColumn> ClrBackedStringColumns(Type entityType)
+    {
+        // 分割済みの結果から CLR プロパティを持つ側だけを返す
+        return PartitionStringColumns(entityType).ClrBacked;
+    }
+
+    /// <summary>
+    /// 文字数上限の管理対象となる業務エンティティを EF のモデルから導出して返す。
+    ///
+    /// **監査対象の一覧から導出しない**のが要点。「どのエンティティを監査するか」と
+    /// 「どのエンティティの列長を管理するか」は別の関心事で、前者から後者を導くと
+    /// 監査ポリシーの変更（あるエンティティを監査対象から外す）が、無関係なはずの
+    /// 長さ管理まで黙って外してしまう —— 裸の <c>[MaxLength(200)]</c> も、上限の付け忘れも、
+    /// 値変換した列の切り詰めも、まとめて素通りするようになる（すべて fail-open）。
+    ///
+    /// 代わりに「自分たちのモデル名前空間にある、マップ済みのエンティティ」を条件にする。
+    /// こうすると新しいエンティティは何もしなくても検査対象に入る（列挙を書き写さない）。
+    /// 除外は 2 つだけで、いずれも上限の出所が <c>FieldLengths</c> ではないもの:
+    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長
+    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める
+    /// </summary>
+    public static IReadOnlyList<Type> LengthGovernedEntityTypes()
+    {
+        // 上限の出所が FieldLengths ではないエンティティ(理由は上のコメント)
+        var excluded = new[] { "AuditLog", "ApplicationUser" };
+
+        // 自分たちのモデル名前空間にあるマップ済みエンティティだけを集める
+        return Model.Value.GetEntityTypes()
+            .Select(e => e.ClrType)
+            // Identity の内部エンティティ(AspNetRoles 等)は別名前空間なのでここで落ちる
+            .Where(t => t.Namespace == "IncidentInsight.Web.Models")
+            // 上限の出所が違う 2 つを除く
+            .Where(t => !excluded.Contains(t.Name))
+            // 実行ごとに順序が揺れないよう型名で並べる
+            .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
     }
 
-    // 実 DB へ接続せずに OnModelCreating を通したモデルだけを得るための使い捨てコンテキストを作る
-    private static ApplicationDbContext CreateModelProbe()
+    /// <summary>
+    /// 組み立て済みの EF モデル。検査ごとに DbContext を作り直さないよう共有する
+    /// (作り直すと InMemory のストアがプロセス内キャッシュへ溜まり続ける)。
+    /// </summary>
+    public static IModel EfModel => Model.Value;
+
+    /// <summary>
+    /// その列が検査対象の「文字列列」かを返す(判定規則は <see cref="IsStringColumn"/>)。
+    /// 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて
+    /// 黙って対象が狭くなるため、外からもここを呼べるようにしている。
+    /// </summary>
+    public static bool IsStringColumnPublic(IProperty property) => IsStringColumn(property);
+
+    /// <summary>
+    /// その型が EF のモデルにエンティティとして載っているかを返す。
+    /// ViewModel のようにモデルを持たない型を <see cref="PartitionStringColumns"/> へ渡すと
+    /// fail-closed で落ちるため、モデル側の検査に掛ける型を選り分けるのに使う。
+    /// </summary>
+    public static bool IsMappedEntity(Type type)
+    {
+        // モデルに載っていれば true
+        return Model.Value.FindEntityType(type) != null;
+    }
+
+    /// <summary>
+    /// <see cref="PartitionStringColumns"/> のうち CLR プロパティを持たない列名だけを返す薄い射影。
+    /// </summary>
+    public static IReadOnlyList<string> ShadowStringColumnNames(Type entityType)
+    {
+        // 分割済みの結果から shadow property 側の列名だけを返す
+        return PartitionStringColumns(entityType).Shadow.Select(c => c.Name).ToList();
+    }
+
+    /// <summary>
+    /// 「列名と長さ上限」だけが要る検査のために、CLR プロパティの有無を問わず
+    /// すべての文字列列を返す。
+    ///
+    /// 長さ上限の検査は属性を読まないので shadow property も対象にできる。ここで
+    /// <see cref="ClrBackedStringColumns"/> を使ってしまうと、fluent で裸の数値を設定した
+    /// shadow 列が「属性を付けられないから対象外」という無関係な理由で素通りする。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int? MaxLength)> AllStringColumnLengths(Type entityType)
+    {
+        // 2 つに分けた結果を、検査に必要な「名前と上限」だけの形へそろえて連結する
+        var (clrBacked, shadow) = PartitionStringColumns(entityType);
+        return clrBacked.Select(c => (c.Name, c.MaxLength))
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// 「文字列として保存される」列 1 つぶんの情報。
+    /// <paramref name="MaxLength"/> は EF のモデルが持つ長さ上限で、<c>null</c> なら上限なし。
+    /// </summary>
+    /// <param name="Name">EF のモデル上の列名</param>
+    /// <param name="Property">列に対応する CLR プロパティ(属性はここから読む)</param>
+    /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
+    public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength);
+
+    /// <summary>
+    /// CLR プロパティを持たない文字列列(shadow property)1 つぶんの情報。
+    /// 属性は付けられないが、fluent で長さ上限だけは設定できるので保持する。
+    /// </summary>
+    /// <param name="Name">EF のモデル上の列名</param>
+    /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
+    public sealed record ShadowColumn(string Name, int? MaxLength);
+
+    // その列を検査対象の「文字列列」とみなすかを判定する。
+    //
+    // CLR の型が string かどうかだけでは足りない: HasConversion<string>() を通した列
+    // (Incident.Severity / IncidentType, PreventiveMeasure.Status / MeasureType など)は
+    // ClrType が enum のままなので「string 列ではない」と誤判定され、検出網から丸ごと外れる。
+    // 判定を「DB に文字列として入るか」に置くことで、将来 HasConversion<string>() で保存する
+    // 自由記述の値オブジェクトを足しても、分類と長さ上限の検査が自動で追随する
+    private static bool IsStringColumn(IProperty property)
+    {
+        // (a) CLR の型が string —— これが本命。インターセプタの SerializeChanges が ChangesJson へ
+        //     書くのは prop.CurrentValue / prop.OriginalValue、すなわち**変換前の CLR 側の値**
+        //     だから、PHI が漏れるかどうかは CLR の型に付いて回る。
+        //     たとえば自由記述列に暗号化の値変換(string → byte[])を足すと「DB へは文字列として
+        //     保存されない」列になるが、ChangesJson へ流れるのは相変わらず平文の string。
+        //     ここを変換後の型だけで判定すると、その列が検出網から丸ごと外れてしまう
+        if (property.ClrType == typeof(string)) return true;
+
+        // (b) DB へ文字列として保存される —— CLR が enum などでも、閉じた語彙かどうかの判断と
+        //     列長の管理が要るので対象に入れる。変換後の型が現れる場所は書き方によって違う(実測):
+        //       - HasConversion<string>()          → GetProviderClrType() が string
+        //                                            (Severity / Status / MeasureType)
+        //       - HasConversion(v => …, v => …)    → GetValueConverter() が string
+        //                                            (IncidentType)
+        //     片方だけを見ると、もう一方の書き方で保存される文字列列が丸ごと素通りする
+        var storedType = property.GetProviderClrType() ?? property.GetValueConverter()?.ProviderClrType;
+
+        // (a) と (b) の**和集合**にするのが要点。どちらか一方への置き換えにすると、
+        //     置き換えで外れた側が「誰も見ていない列」になる
+        return storedType == typeof(string);
+    }
+
+    // 実 DB へ接続せずに OnModelCreating を通したモデルだけを組み立てる
+    private static IModel BuildModel()
     {
         // モデルの組み立てだけが目的なので InMemory プロバイダで十分
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
 
-        // 呼び出し側が using で破棄する前提でコンテキストを返す
-        return new ApplicationDbContext(options);
+        // コンテキストは使い捨て。取り出した IModel は破棄後も読めるので保持して使い回す
+        using var probe = new ApplicationDbContext(options);
+        return probe.Model;
     }
 }
