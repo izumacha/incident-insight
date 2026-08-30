@@ -137,6 +137,26 @@ public class AuditedEntityPhiClassificationTests
         Assert.NotEmpty(derived);
     }
 
+    [Fact]
+    public void AuditedEntities_HasNoDuplicates()
+    {
+        // 宣言に同じ名前が 2 回現れていないかを数える
+        var duplicates = AuditSaveChangesInterceptor.AuditedEntities
+            .GroupBy(name => name, StringComparer.Ordinal)
+            .Where(g => g.Count() > 1)
+            .Select(g => g.Key)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // AuditedEntities は表示順を持たせるため集合ではなく順序付きの一覧にしてある。
+        // 集合なら重複は構造的にありえなかったが、一覧では書けてしまう。重複すると
+        // 監査ログ画面のドロップダウンに同じ選択肢が 2 つ並び、各 Theory も同じ型を
+        // 2 回検査する(害は小さいが、宣言の写し間違いに気付けないまま緑になる)
+        Assert.True(duplicates.Count == 0,
+            $"AuditSaveChangesInterceptor.AuditedEntities に重複した名前があります: " +
+            $"{string.Join(", ", duplicates)}。1 エンティティにつき 1 度だけ書いてください。");
+    }
+
     // 指定した列が [Sensitive] か [NotPhi] のどちらかで分類済みかを返す
     private static bool IsClassified(Type entityType, string propertyName)
     {

@@ -33,40 +33,60 @@ public class FieldLengthsTests
     // 写しを持つと、監査対象を足したときに PHI 分類・長さ上限の検査だけが自動で追随し、
     // 「その [MaxLength] が FieldLengths の定数か」を見るこの検査だけが取り残される
     // ——新しい集約に裸の [MaxLength(200)] を書いても CI が緑のまま通る
-    public static TheoryData<Type> LengthGovernedTypes
+    private static IReadOnlyList<Type> GovernedTypes()
     {
-        get
-        {
-            // 監査対象の集約(唯一の真実の源から導出)を土台にする
-            var types = AuditedEntityModel.ResolveAuditedClrTypes().ToList();
+        // 監査対象の集約(唯一の真実の源から導出)を土台にする
+        var types = AuditedEntityModel.ResolveAuditedClrTypes().ToList();
 
-            // 監査対象ではないが同じ上限規約に従う型を足す
-            types.Add(typeof(CauseCategory));
-            types.Add(typeof(IncidentCreateEditViewModel));
-            types.Add(typeof(CauseAnalysisFormViewModel));
-            types.Add(typeof(MeasureFormViewModel));
-            types.Add(typeof(ReviewViewModel));
+        // 監査対象ではないが同じ上限規約に従う型を足す
+        types.Add(typeof(CauseCategory));
+        types.Add(typeof(IncidentCreateEditViewModel));
+        types.Add(typeof(CauseAnalysisFormViewModel));
+        types.Add(typeof(MeasureFormViewModel));
+        types.Add(typeof(ReviewViewModel));
 
-            // xUnit へ渡す形に詰め替える
-            var data = new TheoryData<Type>();
-            foreach (var type in types)
-            {
-                // 1 ケース分として追加する
-                data.Add(type);
-            }
-            return data;
-        }
+        // 一覧を返す(TheoryData への詰め替えは呼び出し側が行う)
+        return types;
     }
 
-    // EF のモデル側の上限を検査する対象(監査対象の集約のみ。ViewModel は EF のモデルを持たない)
-    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
+    // 型の一覧を xUnit の [MemberData] へ渡す形に詰め替える
+    private static TheoryData<Type> ToTheoryData(IEnumerable<Type> types)
+    {
+        // xUnit へ渡す入れ物を用意する
+        var data = new TheoryData<Type>();
+        foreach (var type in types)
+        {
+            // 1 ケース分として追加する
+            data.Add(type);
+        }
+        return data;
+    }
+
+    public static TheoryData<Type> LengthGovernedTypes => ToTheoryData(GovernedTypes());
+
+    // FieldLengths が定める文字数上限の許容値。属性側とモデル側の両方の検査がこの 1 つを使う。
+    // 2 つの検査が別々の配列を持つと、片方だけに定数を足したときに「FieldLengths の定数なのに
+    // 裸の数値だと言われる」矛盾したメッセージが出る(実際 EnumCode を足したときに起きた)
+    private static readonly int[] AllowedLengths =
+    {
+        FieldLengths.FreeText,
+        FieldLengths.ShortText,
+        FieldLengths.EnumCode,
+        FieldLengths.EnumCodeJapanese,
+    };
+
+    // EF のモデル側の上限を検査する対象。LengthGovernedTypes のうちモデルを持つ型に絞る
+    // (ViewModel は EF のモデルを持たないので除く)。監査対象だけに絞ると、監査対象ではない
+    // CauseCategory の fluent 設定が属性側にもモデル側にも見られない穴になる
+    public static TheoryData<Type> ModelBackedTypes =>
+        ToTheoryData(GovernedTypes().Where(AuditedEntityModel.IsMappedEntity));
 
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
     {
         // FieldLengths が定める許容値の集合(ここに無い値は裸のマジックナンバーとみなす)
-        var allowed = new[] { FieldLengths.FreeText, FieldLengths.ShortText };
+        var allowed = AllowedLengths;
 
         // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
         var offenders = type
@@ -81,22 +101,15 @@ public class FieldLengthsTests
         // 違反ゼロであること(あればどのプロパティが裸の数値かをメッセージで示す)
         Assert.True(offenders.Count == 0,
             "[MaxLength] に FieldLengths 以外の裸の数値が使われています " +
-            $"(FieldLengths.FreeText={FieldLengths.FreeText} / FieldLengths.ShortText={FieldLengths.ShortText}): "
-            + string.Join(", ", offenders));
+            $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
     }
 
     [Theory]
-    [MemberData(nameof(AuditedEntityTypes))]
+    [MemberData(nameof(ModelBackedTypes))]
     public void EveryModelMaxLength_UsesAFieldLengthsConstant(Type entityType)
     {
-        // FieldLengths が定める許容値の集合(上の属性検査と同じ土俵)
-        var allowed = new[]
-        {
-            FieldLengths.FreeText,
-            FieldLengths.ShortText,
-            FieldLengths.EnumCode,
-            FieldLengths.EnumCodeJapanese,
-        };
+        // FieldLengths が定める許容値の集合(上の属性検査とまったく同じ配列を使う)
+        var allowed = AllowedLengths;
 
         // 上の EveryMaxLength_UsesAFieldLengthsConstant は CLR の [MaxLength] 属性しか見えない。
         // ところが FreeTextMaxLengthAttributeTests は上限の充足を EF のモデル(GetMaxLength())で
@@ -115,9 +128,7 @@ public class FieldLengthsTests
         // 違反ゼロであること(あればどの列が裸の数値かをメッセージで示す)
         Assert.True(offenders.Count == 0,
             "EF のモデルに FieldLengths 以外の裸の数値が長さ上限として設定されています " +
-            $"(FreeText={FieldLengths.FreeText} / ShortText={FieldLengths.ShortText} / " +
-            $"EnumCode={FieldLengths.EnumCode} / EnumCodeJapanese={FieldLengths.EnumCodeJapanese}): "
-            + string.Join(", ", offenders));
+            $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
     }
 
     [Theory]

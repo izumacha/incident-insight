@@ -43,12 +43,11 @@ public class AuditLogsController : Controller
     // (b) そもそもドロップダウンに現れず、規制対応の証跡に書かれた行へ画面から到達できない
     // という 2 つのずれが同時に起きる。
     //
-    // 並び順は型名の序数順に固定する。HashSet の列挙順は保証されないため、そのまま使うと
-    // ドロップダウンの並びが実行環境やランタイム版で揺れる
+    // 並び順は宣言側(ドメインの順。ルート集約のインシデントが先)をそのまま使う。
+    // ここで型名の序数順に並べ替えると、日本語 UI の表示順が英語の識別子の綴り順という
+    // 利用者から見て無意味な並びになる(原因分析がインシデントより先に来る)
     private static readonly string[] AllowedEntityNames =
-        AuditSaveChangesInterceptor.AuditedEntities
-            .OrderBy(n => n, StringComparer.Ordinal)
-            .ToArray();
+        AuditSaveChangesInterceptor.AuditedEntities.ToArray();
 
     // フィルタ用操作種別の許可リスト
     private static readonly string[] AllowedOperations = new[] { "Added", "Modified", "Deleted" };

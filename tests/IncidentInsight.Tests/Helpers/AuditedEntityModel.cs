@@ -136,7 +136,7 @@ internal static class AuditedEntityModel
         var columns = entity
             .GetProperties()
             .Where(p => !p.IsPrimaryKey())
-            .Where(IsStoredAsString)
+            .Where(IsStringColumn)
             .Select(p => (
                 Name: p.Name,
                 Property: FindClrProperty(entityType, p.Name),
@@ -181,6 +181,17 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// その型が EF のモデルにエンティティとして載っているかを返す。
+    /// ViewModel のようにモデルを持たない型を <see cref="PartitionStringColumns"/> へ渡すと
+    /// fail-closed で落ちるため、モデル側の検査に掛ける型を選り分けるのに使う。
+    /// </summary>
+    public static bool IsMappedEntity(Type type)
+    {
+        // モデルに載っていれば true
+        return Model.Value.FindEntityType(type) != null;
+    }
+
+    /// <summary>
     /// <see cref="PartitionStringColumns"/> のうち CLR プロパティを持たない列名だけを返す薄い射影。
     /// </summary>
     public static IReadOnlyList<string> ShadowStringColumnNames(Type entityType)
@@ -198,26 +209,34 @@ internal static class AuditedEntityModel
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
     public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength);
 
-    // その列が最終的に「文字列として」保存されるかを判定する。
+    // その列を検査対象の「文字列列」とみなすかを判定する。
     //
     // CLR の型が string かどうかだけでは足りない: HasConversion<string>() を通した列
     // (Incident.Severity / IncidentType, PreventiveMeasure.Status / MeasureType など)は
     // ClrType が enum のままなので「string 列ではない」と誤判定され、検出網から丸ごと外れる。
     // 判定を「DB に文字列として入るか」に置くことで、将来 HasConversion<string>() で保存する
     // 自由記述の値オブジェクトを足しても、分類と長さ上限の検査が自動で追随する
-    private static bool IsStoredAsString(IProperty property)
+    private static bool IsStringColumn(IProperty property)
     {
-        // 変換後の型は書き方によって現れる場所が違うため、両方を見る(実測で確認済み):
-        //   - HasConversion<string>()        → GetProviderClrType() が string / GetValueConverter() は null
-        //     (例: Incident.Severity, PreventiveMeasure.Status / MeasureType)
-        //   - HasConversion(v => ..., v => ...) → GetValueConverter() が string / GetProviderClrType() は null
-        //     (例: Incident.IncidentType)
-        // 片方だけを見ると、もう一方の書き方で保存される文字列列が検出網から丸ごと外れる
-        var storedType = property.GetProviderClrType()
-            ?? property.GetValueConverter()?.ProviderClrType
-            ?? property.ClrType;
+        // (a) CLR の型が string —— これが本命。インターセプタの SerializeChanges が ChangesJson へ
+        //     書くのは prop.CurrentValue / prop.OriginalValue、すなわち**変換前の CLR 側の値**
+        //     だから、PHI が漏れるかどうかは CLR の型に付いて回る。
+        //     たとえば自由記述列に暗号化の値変換(string → byte[])を足すと「DB へは文字列として
+        //     保存されない」列になるが、ChangesJson へ流れるのは相変わらず平文の string。
+        //     ここを変換後の型だけで判定すると、その列が検出網から丸ごと外れてしまう
+        if (property.ClrType == typeof(string)) return true;
 
-        // 最終的に文字列として保存されるなら検査対象
+        // (b) DB へ文字列として保存される —— CLR が enum などでも、閉じた語彙かどうかの判断と
+        //     列長の管理が要るので対象に入れる。変換後の型が現れる場所は書き方によって違う(実測):
+        //       - HasConversion<string>()          → GetProviderClrType() が string
+        //                                            (Severity / Status / MeasureType)
+        //       - HasConversion(v => …, v => …)    → GetValueConverter() が string
+        //                                            (IncidentType)
+        //     片方だけを見ると、もう一方の書き方で保存される文字列列が丸ごと素通りする
+        var storedType = property.GetProviderClrType() ?? property.GetValueConverter()?.ProviderClrType;
+
+        // (a) と (b) の**和集合**にするのが要点。どちらか一方への置き換えにすると、
+        //     置き換えで外れた側が「誰も見ていない列」になる
         return storedType == typeof(string);
     }
 
