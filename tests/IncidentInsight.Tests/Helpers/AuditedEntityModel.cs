@@ -193,6 +193,51 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// 文字数上限の管理対象となる業務エンティティを EF のモデルから導出して返す。
+    ///
+    /// **監査対象の一覧から導出しない**のが要点。「どのエンティティを監査するか」と
+    /// 「どのエンティティの列長を管理するか」は別の関心事で、前者から後者を導くと
+    /// 監査ポリシーの変更（あるエンティティを監査対象から外す）が、無関係なはずの
+    /// 長さ管理まで黙って外してしまう —— 裸の <c>[MaxLength(200)]</c> も、上限の付け忘れも、
+    /// 値変換した列の切り詰めも、まとめて素通りするようになる（すべて fail-open）。
+    ///
+    /// 代わりに「自分たちのモデル名前空間にある、マップ済みのエンティティ」を条件にする。
+    /// こうすると新しいエンティティは何もしなくても検査対象に入る（列挙を書き写さない）。
+    /// 除外は 2 つだけで、いずれも上限の出所が <c>FieldLengths</c> ではないもの:
+    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長
+    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める
+    /// </summary>
+    public static IReadOnlyList<Type> LengthGovernedEntityTypes()
+    {
+        // 上限の出所が FieldLengths ではないエンティティ(理由は上のコメント)
+        var excluded = new[] { "AuditLog", "ApplicationUser" };
+
+        // 自分たちのモデル名前空間にあるマップ済みエンティティだけを集める
+        return Model.Value.GetEntityTypes()
+            .Select(e => e.ClrType)
+            // Identity の内部エンティティ(AspNetRoles 等)は別名前空間なのでここで落ちる
+            .Where(t => t.Namespace == "IncidentInsight.Web.Models")
+            // 上限の出所が違う 2 つを除く
+            .Where(t => !excluded.Contains(t.Name))
+            // 実行ごとに順序が揺れないよう型名で並べる
+            .OrderBy(t => t.Name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    /// <summary>
+    /// 組み立て済みの EF モデル。検査ごとに DbContext を作り直さないよう共有する
+    /// (作り直すと InMemory のストアがプロセス内キャッシュへ溜まり続ける)。
+    /// </summary>
+    public static IModel EfModel => Model.Value;
+
+    /// <summary>
+    /// その列が検査対象の「文字列列」かを返す(判定規則は <see cref="IsStringColumn"/>)。
+    /// 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて
+    /// 黙って対象が狭くなるため、外からもここを呼べるようにしている。
+    /// </summary>
+    public static bool IsStringColumnPublic(IProperty property) => IsStringColumn(property);
+
+    /// <summary>
     /// その型が EF のモデルにエンティティとして載っているかを返す。
     /// ViewModel のようにモデルを持たない型を <see cref="PartitionStringColumns"/> へ渡すと
     /// fail-closed で落ちるため、モデル側の検査に掛ける型を選り分けるのに使う。

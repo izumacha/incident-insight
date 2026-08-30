@@ -12,11 +12,15 @@ using System.Reflection;
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
 
-// 監査対象エンティティの string カラムに対する長さ上限の不変条件テスト。
+// 長さ上限の管理対象となる業務エンティティの string カラムに対する不変条件テスト。
 // EF Core は保存時に DataAnnotations を自動検証しないため、ViewModel 側の検証だけに頼ると
 // 将来 ViewModel を経由しない書き込み経路(API 追加等)が生えた瞬間に無制限の文字列が
 // そのまま永続化されてしまう。しかも監査対象エンティティでは同じ値が AuditLog.ChangesJson へも
 // 積まれるため、1 列ぶんの書き込みが行と監査ログの二重に効く(AuditLog は追記専用で消せない)。
+//
+// 検査範囲は監査対象ではなく**長さ上限の管理対象となる業務エンティティ**。監査対象に絞ると、
+// 監査されないエンティティ(CauseCategory)の無制限な列を誰も見ないままになる
+// ——実際 CauseCategory.Description が上限なしのまま残っていたのをこの拡張が検出した。
 //
 // 検査対象を「[Sensitive] 付きの列」ではなく**永続化される string 列すべて**にしているのが要点。
 // 以前は [Sensitive] 付きだけを見ていたが、PHI 分類に [NotPhi] という 2 つ目の正当な選択肢が
@@ -34,10 +38,11 @@ public class FreeTextMaxLengthAttributeTests
     // (AuditSaveChangesInterceptor.AuditedEntities = 唯一の真実の源)から導出する。
     // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
     // 新しいエンティティの自由記述列が上限なしのまま素通りする
-    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
+    public static TheoryData<Type> LengthGovernedEntityTypes =>
+        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
 
     [Theory]
-    [MemberData(nameof(AuditedEntityTypes))]
+    [MemberData(nameof(LengthGovernedEntityTypes))]
     public void PersistedStringColumns_MustHaveMaxLength(Type entityType)
     {
         // 対象エンティティで実際に列になり、かつ属性を付けられる string 列を EF のモデルから取り出す
@@ -58,7 +63,7 @@ public class FreeTextMaxLengthAttributeTests
 
         // 付け漏れが 1 件も無いことを確認する(失敗時はどの列かをメッセージで示す)
         Assert.True(missing.Count == 0,
-            $"監査対象エンティティの永続化 string 列に長さ上限がありません: {string.Join(", ", missing)}。" +
+            $"永続化される string 列に長さ上限がありません: {string.Join(", ", missing)}。" +
             $"入力経路と同じ上限({nameof(FieldLengths)} の定数)を [MaxLength] か HasMaxLength() で明示してください " +
             "(EF Core は保存時に DataAnnotations を検証しないため、ViewModel を経由しない書き込み経路が " +
             "生えた瞬間に無制限の文字列がそのまま永続化され、同じ値が AuditLog.ChangesJson にも積まれます)。");

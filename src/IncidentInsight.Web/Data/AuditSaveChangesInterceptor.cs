@@ -54,13 +54,16 @@ public class AuditSaveChangesInterceptor : SaveChangesInterceptor
     // ここから並びを取るため。HashSet の列挙順は保証されないので、集合のまま渡すと表示順が
     // 実行環境やランタイム版で揺れる。ここをドメインの順(ルート集約が先)にしておけば、
     // 導出先は並べ替えずにそのまま使える。要素数は 3 なので Contains の線形探索で十分。
-    // 書き換えを防ぐため IReadOnlyList で公開する(可変のまま出すと 1 行の代入で監査対象を消せる)
-    public static readonly IReadOnlyList<string> AuditedEntities = new[]
+    // 書き換えを防ぐため読み取り専用のラッパーで公開する。
+    // 型を IReadOnlyList にするだけでは不十分で、中身が配列のままだと
+    // ((string[])AuditedEntities)[0] = "..." というキャスト 1 つで監査対象を書き換えられる
+    // (Incident が一致しなくなり、監査ログが黙って書かれなくなる = このファイルが防ぐ fail-open)
+    public static readonly IReadOnlyList<string> AuditedEntities = Array.AsReadOnly(new[]
     {
         nameof(Incident),
         nameof(CauseAnalysis),
         nameof(PreventiveMeasure)
-    };
+    });
 
     // 現在のユーザー名取得に使う HttpContext アクセサ(null 可)
     private readonly IHttpContextAccessor? _httpContextAccessor;

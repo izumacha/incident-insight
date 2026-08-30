@@ -26,26 +26,28 @@ namespace IncidentInsight.Tests.Models;
 // enum 名の長さを見ても意味がない(実際 EnumCode ではなく EnumCodeJapanese を使っている)。
 public class ConvertedEnumColumnLengthTests
 {
-    // 検査対象は監査対象の集約(値変換した列を持つのはこの 3 つ)
-    public static TheoryData<Type> AuditedEntityTypes => AuditedEntityModel.AuditedEntityTheoryData();
+    // 検査対象は長さ上限の管理対象となる業務エンティティ。裸の数値を禁じて EnumCode の使用を
+    // 誘導する検査(EveryModelMaxLength_UsesAFieldLengthsConstant)と同じ範囲にそろえる —
+    // 誘導する範囲より検証する範囲が狭いと、その差分が切り詰めの起きる死角になる
+    public static TheoryData<Type> LengthGovernedEntityTypes =>
+        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
 
     [Theory]
-    [MemberData(nameof(AuditedEntityTypes))]
+    [MemberData(nameof(LengthGovernedEntityTypes))]
     public void ConvertedColumns_CanHoldEveryValueTheyStore(Type entityType)
     {
-        // EF のモデルを組み立てる(実 DB は不要)
-        var options = new DbContextOptionsBuilder<ApplicationDbContext>()
-            .UseInMemoryDatabase(Guid.NewGuid().ToString())
-            .Options;
-        using var probe = new ApplicationDbContext(options);
-
-        // 対象エンティティの定義を引く
-        var entity = probe.Model.FindEntityType(entityType);
+        // 共有のモデルから対象エンティティの定義を引く。
+        // ここで DbContext を作り直すと、検査ごとに InMemory のストアがプロセス内キャッシュへ
+        // 溜まり続ける(AuditedEntityModel が Lazy でモデルを 1 回だけ組み立てている理由と同じ)
+        var entity = AuditedEntityModel.EfModel.FindEntityType(entityType);
         // モデルに載っていない型は前提が崩れているので落とす(fail-closed)
         Assert.NotNull(entity);
 
         // 上限に収まらない値を見つけた列を溜める
         var offenders = new List<string>();
+
+        // 実際に検査できた列の名前(網羅ガード用。下の [Fact] が「見るべき列を全部見たか」を照合する)
+        var examined = new List<string>();
 
         // 値変換が設定されていて、かつ長さ上限を持つ列だけを見る
         foreach (var property in entity!.GetProperties())
@@ -53,15 +55,12 @@ public class ConvertedEnumColumnLengthTests
             // この列に設定された変換器(書き方によっては null になる。下の分岐参照)
             var converter = property.GetValueConverter();
 
-            // 「文字列として保存される」判定は 2 通りの書き方の両方を見る必要がある(実測):
-            //   - HasConversion<string>()       → GetProviderClrType() が string / 変換器は null
-            //   - HasConversion(v => …, v => …) → 変換器が string / GetProviderClrType() は null
-            // 片方だけを見ると、もう一方の書き方の列がこの検査から丸ごと外れる
-            //   (実際この検査の初版は変換器しか見ておらず、EnumCode を 5 に縮める変異で
+            // 「文字列列か」の判定は共有ヘルパーに委ねる。ここに規則を書き写すと、
+            // 規則を直したとき(EF の版が上がって型の現れる場所が変わる等)に片方だけが
+            // 取り残され、この検査だけが黙って対象を狭める
+            //   (実際この検査の初版は独自に変換器だけを見ており、EnumCode を 5 に縮める変異で
             //    赤にならなかった —— Severity / Status / MeasureType が素通りしていた)
-            var storedAsString = converter?.ProviderClrType == typeof(string)
-                || property.GetProviderClrType() == typeof(string);
-            if (!storedAsString) continue;
+            if (!AuditedEntityModel.IsStringColumnPublic(property)) continue;
 
             // 長さ上限が無い列は「収まらない」ことが起きえないので対象外
             var maxLength = property.GetMaxLength();
@@ -70,6 +69,9 @@ public class ConvertedEnumColumnLengthTests
             // CLR 側が enum のときだけ、取りうる値を全列挙できる
             var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
             if (!clrType.IsEnum) continue;
+
+            // ここまで来た列は実際に中身を検査する
+            examined.Add(property.Name);
 
             // その enum が取りうる値を 1 つずつ変換し、上限を超えるものを探す
             foreach (var value in Enum.GetValues(clrType))
@@ -98,5 +100,55 @@ public class ConvertedEnumColumnLengthTests
             "SQL Server / PostgreSQL では保存時に例外、SQLite では黙って切り詰められ、" +
             "テストが使う InMemory では列長そのものが無いため気付けません: " +
             string.Join(" / ", offenders));
+
+        // このエンティティで見た列を記録しておく(下の網羅ガードが読む)
+        ExaminedColumns[entityType] = examined;
+    }
+
+    // 各エンティティで実際に検査できた列名。[Theory] の各ケースが書き込み、下の [Fact] が読む
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, List<string>> ExaminedColumns = new();
+
+    [Fact]
+    public void EveryLengthLimitedEnumColumn_IsActuallyExamined()
+    {
+        // 「見るべきだった列」を、この検査が使う判定とは**独立した手がかり**で求める。
+        //
+        // 独立させるのが要点。上の検査は AuditedEntityModel.IsStringColumn で対象を絞るので、
+        // その判定が狭まった瞬間(EF の版が上がって型の現れる場所が変わる / 3 つ目の
+        // HasConversion の書き方が増える 等)に列が読み飛ばされ、「違反ゼロ」= 緑として
+        // 通ってしまう。同じ判定でガードを書くと、判定と一緒にガードも狭まって意味がない。
+        //
+        // 独立な手がかりとして「enum 型で、かつ長さ上限が設定されている永続化列」を使う。
+        // enum に長さ上限を付ける理由は文字列として保存する以外に無いので、この条件に当てはまる
+        // 列は必ず切り詰めの検査対象であるべき。
+        var missed = new List<string>();
+
+        foreach (var entityType in AuditedEntityModel.LengthGovernedEntityTypes())
+        {
+            // 各エンティティの検査を実行して、見た列を記録させる([Theory] と同じ経路を通す)
+            ConvertedColumns_CanHoldEveryValueTheyStore(entityType);
+
+            // 実際に見た列(記録が無ければ空)
+            var seen = ExaminedColumns.TryGetValue(entityType, out var s) ? s : new List<string>();
+
+            // このエンティティで見るべきだった列を独立な条件で求める
+            var entity = AuditedEntityModel.EfModel.FindEntityType(entityType)!;
+            foreach (var property in entity.GetProperties())
+            {
+                // 長さ上限が無い列は切り詰めようがないので対象外
+                if (property.GetMaxLength() is null) continue;
+                // enum 以外は取りうる値を全列挙できないので対象外
+                var clrType = Nullable.GetUnderlyingType(property.ClrType) ?? property.ClrType;
+                if (!clrType.IsEnum) continue;
+                // 見るべきなのに見ていない列を記録する
+                if (!seen.Contains(property.Name)) missed.Add($"{entityType.Name}.{property.Name}");
+            }
+        }
+
+        // 取りこぼしが 1 件も無いことを確認する(fail-closed)
+        Assert.True(missed.Count == 0,
+            "長さ上限を持つ enum 列が切り詰めの検査対象になっていません: " + string.Join(", ", missed) +
+            "。判定(AuditedEntityModel.IsStringColumn)が対象を拾えなくなっている可能性があります " +
+            "——このままだと切り詰めの検出網は「違反ゼロ」として緑のまま無力化されます。");
     }
 }
