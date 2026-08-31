@@ -526,35 +526,41 @@ internal static class AuditedEntityModel
     /// 正しい <c>[MaxLength]</c> の横に裸の <c>[StringLength]</c> を足すだけで 2 つ目が視界から外れる
     /// —— MVC は両方の validator を走らせるので実効上限は小さい方になる。
     ///
-    /// <c>inherit: true</c> で読むのは、基底クラスで宣言し派生側で <c>override</c> した列を
-    /// 「属性なし」と誤判定しないため（誤判定すると fluent の <c>HasMaxLength()</c> との
-    /// 食い違いが黙って素通りする）。
+    /// <paramref name="inherit"/> の既定は <c>true</c>。基底クラスで宣言し派生側で
+    /// <c>override</c> した列を「属性なし」と誤判定しないためで、誤判定すると fluent の
+    /// <c>HasMaxLength()</c> との食い違いが黙って素通りする。
+    ///
+    /// 一方、<b>属性側の走査は <c>inherit: false</c> で呼ぶ</b>。あちらは
+    /// <c>BindingFlags.DeclaredOnly</c> で型ごとに宣言プロパティだけを見るので、
+    /// 継承まで辿ると基底の属性が派生側でも見つかり、<b>同じ違反が 2 つの型名で二重に報告される</b>
+    /// （<c>DeclaredOnly</c> を入れた目的が打ち消される）。継承したプロパティは、
+    /// それを宣言している型のケースで 1 度だけ報告されればよい。
     ///
     /// 解釈をここ 1 か所に集約するのが要点で、DataAnnotations に長さ上限の属性が増えたら
     /// ここへ足す（名前空間・型名の接尾辞への依存をやめたのと同じ理由で、属性名への依存も残さない）。
     /// </summary>
     public static IReadOnlyList<(int Length, string? ErrorMessage, string AttributeName)>
-        ReadLengthLimits(PropertyInfo property)
+        ReadLengthLimits(PropertyInfo property, bool inherit = true)
     {
         // 見つけた上限を溜めるリスト
         var limits = new List<(int, string?, string)>();
 
         // [MaxLength] … 上限だけを表す。この repo の標準の綴り
-        foreach (var attribute in property.GetCustomAttributes<MaxLengthAttribute>(inherit: true))
+        foreach (var attribute in property.GetCustomAttributes<MaxLengthAttribute>(inherit))
         {
             // 上限値とメッセージを積む
             limits.Add((attribute.Length, attribute.ErrorMessage, nameof(MaxLengthAttribute)));
         }
 
         // [StringLength] … 最大長を上限として扱う(最小長はこの検査の関心事ではない)
-        foreach (var attribute in property.GetCustomAttributes<StringLengthAttribute>(inherit: true))
+        foreach (var attribute in property.GetCustomAttributes<StringLengthAttribute>(inherit))
         {
             // 最大長とメッセージを積む
             limits.Add((attribute.MaximumLength, attribute.ErrorMessage, nameof(StringLengthAttribute)));
         }
 
         // [Length(min, max)] … .NET 8 で追加。こちらも最大長を上限として扱う
-        foreach (var attribute in property.GetCustomAttributes<LengthAttribute>(inherit: true))
+        foreach (var attribute in property.GetCustomAttributes<LengthAttribute>(inherit))
         {
             // 最大長とメッセージを積む
             limits.Add((attribute.MaximumLength, attribute.ErrorMessage, nameof(LengthAttribute)));

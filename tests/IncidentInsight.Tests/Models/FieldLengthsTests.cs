@@ -196,6 +196,13 @@ public class FieldLengthsTests
     /// </summary>
     private static int[] AllowedLengthsFor(PropertyInfo property)
     {
+        // バイト長には専用の定数がまだ無い。文字数用の FreeText(500) / ShortText(100) を
+        // 流用させると「自由記述欄の文字数上限」で添付のバイト数を表すことになり、
+        // FieldLengths が防ぐために作られた単位またぎのずれそのものになる。
+        // 許容値を空にして、最初に byte[] の上限を足す人へ「専用の定数を FieldLengths へ足す」
+        // ことを要求する(裸の数値を禁じるこの検査の趣旨どおりの案内になる)
+        if (ClassifyLimit(property) == LimitKind.ByteLength) return Array.Empty<int>();
+
         // Nullable を剥がした素の型
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
@@ -250,7 +257,7 @@ public class FieldLengthsTests
             // ——実測でも 506 → 506 件、テスト件数すら変わらずに全件緑で通った。
             // 「検査する範囲」より「対象を選ぶ範囲」が狭いと、その差分がそのまま死角になる
             .Where(t => t.GetProperties(DeclaredInstanceProperties)
-                .Any(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0))
+                .Any(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false).Count > 0))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
@@ -308,7 +315,7 @@ public class FieldLengthsTests
             // 最初の 1 つで打ち切ると、[MaxLength](正しい値) と [StringLength](裸の値) を
             // 並べるだけで 2 つ目が視界から外れる —— MVC は両方の validator を走らせるので
             // 実効上限は小さい方になり、綴りではなく「属性を 1 つ足す」形の抜け道になる
-            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
+            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false).Select(limit => new { Property = p, Limit = limit }))
             // 許容値のいずれとも一致しない上限を違反として拾う
             .Where(x => !AllowedLengthsFor(x.Property).Contains(x.Limit.Length))
             .Select(x => $"{type.Name}.{x.Property.Name} = {x.Limit.Length} ([{x.Limit.AttributeName}])")
@@ -422,7 +429,7 @@ public class FieldLengthsTests
             // 裸の数値もメッセージ漏れも両方素通りし、日本語 UI に
             // "The field Tags must be a string or array type with a maximum length of '3'." が出る
             // (実測。main では捕まっていた退行)
-            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
+            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
             //  (b) [MaxLength] だが ErrorMessage が共通書式でない
@@ -697,7 +704,7 @@ public class FieldLengthsTests
         // MaxLengthAttribute.IsValid が測れない型に付いた長さ属性を拾う
         var offenders = type
             .GetProperties(DeclaredInstanceProperties)
-            .Where(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0)
+            .Where(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false).Count > 0)
             .Where(p => !IsMeasurableByLengthAttribute(p.PropertyType))
             .Select(p => $"{type.Name}.{p.Name} ({p.PropertyType.Name})")
             .ToList();
@@ -773,10 +780,15 @@ public class FieldLengthsTests
             // 意図的な除外(AuditLog)は対象外
             .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
                           && AuditedEntityModel.IsMappedEntity(t)))
-            // 名前が "LengthAttribute" で終わる属性を宣言プロパティに持つ型を拾う
+            // 名前が "LengthAttribute" で終わる属性を宣言プロパティに持つ型を拾う。
+            //
+            // [MinLength] は除く。名前は条件に当てはまるが**最大値を表さない**ので
+            // ReadLengthLimits は意図的に読まない。除かないと、[MinLength] だけを持つ正当な型で
+            // このガードが「ReadLengthLimits が属性を拾えなくなっている」という誤った診断を出し、
+            // しかも指示どおり [MinLength] を読ませると最小値が上限として扱われて別の検査が壊れる
+            // ——直しようのない失敗になり、いずれガードを緩める方向へ倒れる
             .Where(t => t.GetProperties(DeclaredInstanceProperties)
-                .Any(p => p.GetCustomAttributes(inherit: true)
-                    .Any(a => a.GetType().Name.EndsWith("LengthAttribute", StringComparison.Ordinal))))
+                .Any(p => p.GetCustomAttributes(inherit: true).Any(IsMaximumLengthAttribute)))
             .ToList();
 
         // 手がかりが空だとこのガードは空振りになるので fail-closed で落とす
@@ -797,6 +809,25 @@ public class FieldLengthsTests
             "長さ上限の属性を持つ型が、属性側の検査対象から外れています: " + string.Join(", ", missing) +
             "。AuditedEntityModel.ReadLengthLimits が対象の属性を拾えなくなっている可能性があります " +
             "——このままだとその型の裸の数値もメッセージ漏れも黙って素通りします。");
+    }
+
+    /// <summary>
+    /// その属性が「上限（最大値）」を表す長さ属性かを名前で判定する。
+    ///
+    /// 網羅ガードの手がかりは、導出（属性の<b>型</b>を引く経路）と独立させるために
+    /// <b>名前</b>で見る。ただし <c>MinLengthAttribute</c> は名前の条件に当てはまるのに
+    /// 最大値を表さないので除く。
+    /// </summary>
+    private static bool IsMaximumLengthAttribute(object attribute)
+    {
+        // 属性の型名
+        var name = attribute.GetType().Name;
+
+        // 最小値を表す属性は対象外
+        if (name == nameof(MinLengthAttribute)) return false;
+
+        // 名前が LengthAttribute で終わるものを上限の属性とみなす
+        return name.EndsWith("LengthAttribute", StringComparison.Ordinal);
     }
 
     [Fact]

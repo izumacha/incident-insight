@@ -56,9 +56,15 @@ public static class FieldLengths
     /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限バイト数が入る。
     ///
     /// 文字数用の <see cref="MaxLengthMessage"/> を流用してはいけない。
-    /// <c>[MaxLength(100)] byte[] Attachment</c> に文字数の書式を付けると、画面には
+    /// <c>byte[]</c> の上限に文字数の書式を付けると、画面には
     /// 「添付は100文字以内で入力してください。」という<b>誤った文言</b>が出る
-    /// （実際に制限しているのはバイト数）。<see cref="ItemCountMessage"/> と同じ理由で、
+    /// （実際に制限しているのはバイト数）。
+    ///
+    /// なお<b>上限の「値」も文字数用の定数を流用しない</b>。
+    /// <see cref="FreeText"/> / <see cref="ShortText"/> は文字数の上限として定義してあるので、
+    /// それでバイト数を表すと単位またぎのずれになる。バイト長の上限を最初に足すときは、
+    /// 用途を表す専用の定数（例: 添付ファイルの上限バイト数）をこのクラスへ追加すること
+    /// （<c>EveryMaxLength_UsesAFieldLengthsConstant</c> がそう案内する）。<see cref="ItemCountMessage"/> と同じ理由で、
     /// 本番の利用箇所がまだ無くてもここに置く（最初にバイト長の上限を足す人が参照できないと、
     /// 一元管理すべき値がその時点で必ず二重化する）。
     /// </summary>
