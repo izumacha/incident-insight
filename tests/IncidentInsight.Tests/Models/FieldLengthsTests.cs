@@ -41,8 +41,7 @@ public class FieldLengthsTests
     // 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
     private static IReadOnlyList<Type> GovernedTypes()
     {
-        // 長さ上限の管理対象から意図的に外している型（理由は LengthGovernanceExclusions）
-        var excluded = LengthGovernanceExclusions.Keys.ToHashSet(StringComparer.Ordinal);
+        // 除外の判定は完全修飾名で行う(単純名だと同名の別型まで巻き添えで落ちる)
 
         // 自分たちのアセンブリで [MaxLength] を 1 つでも宣言している型を集める
         return typeof(ApplicationDbContext).Assembly
@@ -54,10 +53,11 @@ public class FieldLengthsTests
             // 同名の非エンティティ —— たとえば Models/ViewModels 配下の AuditLog という
             // 一覧フィルタ用 ViewModel —— まで巻き添えで検査対象から外れる。
             // そうなると裸の [MaxLength(200)] も ErrorMessage の指定漏れも素通りする
-            .Where(t => !(AuditedEntityModel.IsMappedEntity(t) && excluded.Contains(t.Name)))
+            .Where(t => !(AuditedEntityModel.IsMappedEntity(t)
+                          && LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))))
             // 自分たちが宣言したプロパティに [MaxLength] があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(AuditedEntityModel.IsAppDeclaredColumn)
+                .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
                 .Any(p => p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) != null))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
@@ -109,7 +109,7 @@ public class FieldLengthsTests
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             // 基底クラス(Identity など)が宣言したプロパティは対象外。列長を決めているのが
             // 自分たちではない以上、FieldLengths の定数を当てはめる対象でもない
-            .Where(AuditedEntityModel.IsAppDeclaredColumn)
+            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
             .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
             .Where(x => x.Attribute != null)
             // 許容値のいずれとも一致しない上限を違反として拾う
@@ -160,7 +160,7 @@ public class FieldLengthsTests
         // 属性と EF のモデルの両方に上限があり、しかも値が食い違う列を探す
         var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
             // 基底クラス(Identity など)が宣言した列は対象外(上限を決めているのが自分たちではない)
-            .Where(c => AuditedEntityModel.IsAppDeclaredColumn(c.Property))
+            .Where(c => AuditedEntityModel.IsDeclaredInOwnAssembly(c.Property))
             // 属性側の上限(無ければ検査対象外 —— 付け忘れは別の検査が落とす)
             .Select(c => new
             {
@@ -186,18 +186,28 @@ public class FieldLengthsTests
 
     [Theory]
     [MemberData(nameof(MaxLengthDeclaringTypes))]
-    public void ViewModelMaxLength_UsesJapaneseSharedErrorMessage(Type type)
+    public void NonEntityMaxLength_UsesJapaneseSharedErrorMessage(Type type)
     {
-        // 入力用の型だけが画面へエラーメッセージを出す。エンティティ側の [MaxLength] は
-        // EF Core の列長定義にしか使われず、メッセージが利用者に見えないため検査対象外にする。
+        // 検査対象は「EF のモデルに載っていない型」= 画面やリクエストの入力を受ける型。
+        // エンティティ側の [MaxLength] は EF Core の列長定義にしか使われず、メッセージが
+        // 利用者に見えないため対象外にする。
         //
         // 判定を型名の接尾辞("ViewModel")ではなく**EF のモデルに載っているか**で行うのが要点。
         // 対象の導出(GovernedTypes)は「[MaxLength] を宣言している型」へ広げてあるのに、ここだけ
         // 接尾辞で絞ると導出だけが広がって検査が広がらない —— 実測でも、Models/ViewModels へ
         // 接尾辞の無い MeasureForm を足して ErrorMessage 無しの [MaxLength] を書くと全件緑で通り、
         // 日本語 UI に英語の既定メッセージ("The field ... maximum length of '500'.")が混ざった。
-        // 「エンティティか、画面へ出す入力用の型か」を分けたいのだから、命名規約ではなく
-        // モデルに載っているかどうかで切る
+        // 「エンティティか、入力を受ける型か」を分けたいのだから、命名規約ではなく
+        // モデルに載っているかどうかで切る。
+        //
+        // この条件は "ViewModel" より**広い**。画面を持たない DTO(取り込み用の行、API の
+        // リクエスト record、ジョブのペイロード等)に [MaxLength] を付けた場合も対象になり、
+        // 共通の日本語メッセージを要求される。意図的にこの向きへ倒している —— 判定を
+        // 「利用者に見えるか」に寄せようとすると結局は命名規約や属性の有無に頼ることになり、
+        // 見落とし(fail-open)の側へ倒れる。付けるコストは ErrorMessage 1 つぶんで、
+        // 逆に日本語 UI へ英語の既定メッセージが出る事故は利用者に見えるため、
+        // 「要求しすぎ」より「見落とし」の方が高くつく。
+        // メソッド名も対象に合わせてある(ViewModel ではなく非エンティティ)
         if (AuditedEntityModel.IsMappedEntity(type)) return;
 
         // [MaxLength] が付いた公開プロパティのうち、共通の日本語書式を使っていないものを拾う。
@@ -206,7 +216,7 @@ public class FieldLengthsTests
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             // 基底クラスが宣言したプロパティは対象外(自分たちが書いた文言ではない)
-            .Where(AuditedEntityModel.IsAppDeclaredColumn)
+            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
             .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
             .Where(x => x.Attribute != null)
             // ErrorMessage が共通書式と一致しないものを違反とする
@@ -216,8 +226,8 @@ public class FieldLengthsTests
 
         // 違反ゼロであること
         Assert.True(offenders.Count == 0,
-            "ViewModel の [MaxLength] に共通の日本語エラーメッセージ書式 " +
-            "(FieldLengths.MaxLengthMessage) が指定されていません: " + string.Join(", ", offenders));
+            "入力を受ける型(EF のモデルに載っていない型)の [MaxLength] に、共通の日本語" +
+            "エラーメッセージ書式(FieldLengths.MaxLengthMessage)が指定されていません: " + string.Join(", ", offenders));
     }
 
     // 長さ上限の管理対象から意図的に外している型と理由。導出・網羅ガード・属性側の対象導出の
@@ -289,7 +299,7 @@ public class FieldLengthsTests
         // DbSet で公開しているのに、管理対象でも「意図的な除外」でもないエンティティを拾う
         var missing = ownedEntityTypes
             .Where(t => !governed.Contains(t))
-            .Where(t => !LengthGovernanceExclusions.ContainsKey(t.Name))
+            .Where(t => !LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t)))
             .Select(t => t.Name)
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
@@ -377,7 +387,8 @@ public class FieldLengthsTests
         // 上のガードは「除外に無いなら管理対象のはず」として正しく落ちるが、失敗の原因が
         // 「除外が実在しない名前を指している」ことだとは分からない。ここで名指しして迷わせない
         var stale = LengthGovernanceExclusions.Keys
-            .Where(name => AuditedEntityModel.EfModel.GetEntityTypes().All(e => e.ClrType.Name != name))
+            .Where(key => AuditedEntityModel.EfModel.GetEntityTypes()
+                .All(e => AuditedEntityModel.ExclusionKeyFor(e.ClrType) != key))
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
 
@@ -403,9 +414,16 @@ public class FieldLengthsTests
         // (ApplicationUser) —— は除外表に載せられないことを固定する。この型は
         // 「フレームワークが持つ型に自分たちが業務列を足したもの」で、列長の管理を
         // やめてよい列とやめてはいけない列が同居しているため、**エンティティ単位で外すこと自体が誤り**。
-        // 正しい対処は列単位(AuditedEntityModel.IsAppDeclaredColumn)で切ることで、それは既に効いている
-        var identityBacked = OwnDbContextBaseTypeArguments()
-            .Where(t => LengthGovernanceExclusions.ContainsKey(t.Name))
+        // 正しい対処は列単位(AuditedEntityModel.IsDeclaredInOwnAssembly)で切ることで、それは既に効いている
+        // 手がかりが空だとこのガードは 0 == 0 を確かめるだけの空振りになる。
+        // 他の検出網と同じく、前提が崩れたら緑ではなく赤で知らせる(fail-closed)
+        var baseTypeArguments = OwnDbContextBaseTypeArguments();
+        Assert.True(baseTypeArguments.Count > 0,
+            "ApplicationDbContext の基底へ渡した自アセンブリの型引数を 1 つも読み取れませんでした。" +
+            "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
+
+        var identityBacked = baseTypeArguments
+            .Where(t => LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t)))
             .Select(t => t.Name)
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();

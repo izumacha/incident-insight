@@ -245,7 +245,7 @@ internal static class AuditedEntityModel
             // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
             .Where(t => t.Assembly == ownAssembly)
             // 意図的に外している型(現在は AuditLog のみ。理由は LengthGovernanceExclusions)を除く
-            .Where(t => !LengthGovernanceExclusions.ContainsKey(t.Name))
+            .Where(t => !LengthGovernanceExclusions.ContainsKey(ExclusionKeyFor(t)))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
@@ -270,8 +270,17 @@ internal static class AuditedEntityModel
     public static readonly IReadOnlyDictionary<string, string> LengthGovernanceExclusions =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            [nameof(AuditLog)] = "監査証跡スキーマ固有の列長(256/100/64/16)で、業務入力の上限ではないため",
+            // キーは**完全修飾名**。単純名で持つと、将来同じ単純名のエンティティ
+            // (Models.Reporting.AuditLog のような集計用テーブル)を足したときに、
+            // それも巻き添えで 4 検査すべてから外れる —— しかも綴りの検査は同じ単純名で
+            // 突き合わせるため緑のまま。typeof(...).FullName で引くので綴りは手で書かない
+            [typeof(AuditLog).FullName!] = "監査証跡スキーマ固有の列長(256/100/64/16)で、業務入力の上限ではないため",
         };
+
+    /// <summary>
+    /// 除外表を引くためのキー（完全修飾名）を返す。引き方を各所で書き写さないためのヘルパー。
+    /// </summary>
+    public static string ExclusionKeyFor(Type type) => type.FullName ?? type.Name;
 
     /// <summary>
     /// 長さ上限の管理対象エンティティを xUnit の <c>[MemberData]</c> へ渡す形にして返す。
@@ -325,7 +334,7 @@ internal static class AuditedEntityModel
 
         // CLR プロパティを持つ列のうち、自分たちが宣言したものだけを残す
         return clrBacked
-            .Where(c => IsAppDeclaredColumn(c.Property))
+            .Where(c => IsDeclaredInOwnAssembly(c.Property))
             .Select(c => (c.Name, c.MaxLength))
             // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
             .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
@@ -333,15 +342,23 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
-    /// その列を「自分たちが宣言した列」とみなすかを返す（宣言元の型が自アセンブリかどうか）。
+    /// そのプロパティを「自分たちが宣言したもの」とみなすかを返す（宣言元の型が自アセンブリか）。
     ///
-    /// 判定を 1 か所に置くのは、列単位の絞り込みを使う検査が複数あるため。各検査が
+    /// **列だけに使う判定ではない**。用途は 2 つある:
+    ///   - エンティティの列を絞る（<c>ApplicationUser</c> の <c>UserName</c> など、
+    ///     ASP.NET Core Identity が宣言した列を長さ管理から外す）
+    ///   - ViewModel / DTO のプロパティを絞る（基底クラスが宣言した入力欄を対象外にする）
+    /// EF のモデルを参照しないのは意図的で、モデルに載らない型（ViewModel）にも同じ判定を
+    /// 使うため。ここに「EF のモデルにある列か」を足すと、属性側の 3 検査が黙って
+    /// エンティティだけに狭まり、ViewModel の裸の数値を見逃すようになる。
+    ///
+    /// 判定を 1 か所に置くのは、この絞り込みを使う検査が複数あるため。各検査が
     /// <c>DeclaringType?.Assembly == …</c> を書き写すと、条件を直したときに片方だけが
     /// 取り残されて対象が食い違う。
     /// </summary>
-    public static bool IsAppDeclaredColumn(PropertyInfo property)
+    public static bool IsDeclaredInOwnAssembly(PropertyInfo property)
     {
-        // 宣言元の型が自分たちのアセンブリ(IncidentInsight.Web)にあれば自前の列
+        // 宣言元の型が自分たちのアセンブリ(IncidentInsight.Web)にあれば自前の宣言
         return property.DeclaringType?.Assembly == typeof(ApplicationDbContext).Assembly;
     }
 
