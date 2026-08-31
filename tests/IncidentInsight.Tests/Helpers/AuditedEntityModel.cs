@@ -2,8 +2,6 @@
 using IncidentInsight.Web.Data;
 // AuditLog(長さ上限の管理対象から除くエンティティ)を名前で参照するために取り込む
 using IncidentInsight.Web.Models;
-// IdentityUser(列長を Identity が決める型)の派生判定に使うために取り込む
-using Microsoft.AspNetCore.Identity;
 // DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
 using Microsoft.EntityFrameworkCore;
 // IModel / IProperty(EF Core のモデル定義を読む型)を使うために取り込む
@@ -219,13 +217,18 @@ internal static class AuditedEntityModel
     /// 496 → 490 に減ることだけで、これは正当なリファクタと見分けが付かない）。
     /// アセンブリ単位なら、名前空間をどう切り直しても対象から外れない。
     ///
-    /// 除外は 2 つだけで、いずれも上限の出所が <c>FieldLengths</c> ではないもの:
-    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める。
-    ///     名前ではなく <c>IdentityUser</c> の派生かどうかで判定するので、将来 Identity の型を
-    ///     もう 1 つ拡張しても同じ理由で自動的に外れる
-    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長。こちらは該当する
-    ///     型の条件が無いので名前で除く。ただし綴りが実在の型を指していることを確かめる
-    ///     （リネームで除外が空振りになったことに気付けるように）
+    /// 除外はエンティティ単位では <c>AuditLog</c> の 1 つだけ。業務入力ではなく監査証跡スキーマ固有の
+    /// 列長（256/100/64/16）を持つため、<c>FieldLengths</c> の定数を当てはめる対象ではない。
+    /// 該当する型の条件が無いので名前で除いており、その名前が EF のモデル上に実在することを
+    /// 確かめる（モデルから消えたのに除外だけが残るのを防ぐ。<c>nameof</c> を使っているので
+    /// リネームには C# のリファクタが追随し、この経路では空振りしない）。
+    ///
+    /// **<c>ApplicationUser</c> はエンティティごと除外しない。** 列長を Identity が決めるのは
+    /// Identity 自身が宣言した列（<c>UserName</c> / <c>Email</c> など）だけで、
+    /// <c>DisplayName</c> / <c>Department</c> はこのリポジトリが足した業務列だから。
+    /// 型ごと外すと、この 2 列が長さ管理から永久に外れる（実際 <c>DisplayName</c> は個人名、
+    /// <c>Department</c> は <c>Incident.Department</c> と同じ語彙なのに上限が無かった）。
+    /// 代わりに<b>列単位</b>で「自分たちが宣言した列か」を見る（<see cref="AppDeclaredStringColumnLengths"/>）。
     ///
     /// この導出が正しく効いているかは <c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>
     /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言）で照合する。
@@ -243,18 +246,15 @@ internal static class AuditedEntityModel
             .Select(e => e.ClrType)
             // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
             .Where(t => t.Assembly == ownAssembly)
-            // 列長を Identity が決める型(ApplicationUser など)を、名前ではなく派生関係で除く
-            .Where(t => !typeof(IdentityUser).IsAssignableFrom(t))
             // 監査証跡スキーマ固有の列長を持つ AuditLog を除く
             .Where(t => t.Name != auditTrailEntityName)
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
 
-        // 名前で除いている AuditLog が実在の型を指しているかを確かめる(fail-closed)。
-        // リネームすると除外が空振りして AuditLog が検査対象に入り、監査証跡固有の列長
-        // (256/64/16)が「裸の数値」として落ちる —— 原因が分かりにくい失敗になるので、
-        // ここで「除外の綴りが古い」ことを名指しで伝える
+        // 名前で除いている AuditLog が EF のモデル上に実在するかを確かめる(fail-closed)。
+        // モデルから消えたのに除外だけが残ると、以後この名前は何も除かない「飾り」になり、
+        // 読み手には除外が効いているように見える
         if (Model.Value.GetEntityTypes().All(e => e.ClrType.Name != auditTrailEntityName))
         {
             // どの除外が実在の型を指していないのかを示して失敗させる
@@ -265,6 +265,65 @@ internal static class AuditedEntityModel
 
         // 導出結果を返す
         return governed;
+    }
+
+    /// <summary>
+    /// 長さ上限の管理対象エンティティを xUnit の <c>[MemberData]</c> へ渡す形にして返す。
+    ///
+    /// 長さ上限の検査は 3 つのテストクラス（<c>FieldLengthsTests</c> /
+    /// <c>FreeTextMaxLengthAttributeTests</c> / <c>ConvertedEnumColumnLengthTests</c>）に分かれており、
+    /// 以前はそれぞれが同じ詰め替えを書き写していた。監査対象側に
+    /// <see cref="AuditedEntityTheoryData"/> を用意したのと同じ理由（どれか 1 箇所に絞り込みを
+    /// 足すと、そのクラスの検出網だけが黙って狭くなる）がこちらにも当てはまるので、
+    /// ケース一覧の作り方をここ 1 か所に置く。
+    /// </summary>
+    public static TheoryData<Type> LengthGovernedTheoryData()
+    {
+        // 導出した長さ管理対象をそのままケース一覧に詰め替える
+        return ToTheoryData(LengthGovernedEntityTypes());
+    }
+
+    /// <summary>
+    /// 長さ上限の検査に掛ける「自分たちが宣言した」文字列列を、列名と上限の組で返す。
+    ///
+    /// <see cref="AllStringColumnLengths"/> との違いは、<b>基底クラスが宣言した列を落とす</b>点。
+    /// <c>ApplicationUser</c> は <c>IdentityUser</c> を継承しており、<c>UserName</c> /
+    /// <c>Email</c> / <c>PasswordHash</c> などの列長は ASP.NET Core Identity が決める
+    /// （<c>FieldLengths</c> の定数を当てはめる対象ではない）。一方
+    /// <c>DisplayName</c> / <c>Department</c> はこのリポジトリが足した業務列なので管理対象。
+    ///
+    /// 「エンティティごと外す」のではなく列単位で切るのが要点。型ごと外すと、その型に足した
+    /// 業務列まで巻き添えで長さ管理から外れる（すべて fail-open）。
+    ///
+    /// shadow property（CLR プロパティを持たない列）は<b>残す</b>。宣言元をたどれないが、
+    /// これは自分たちの <c>OnModelCreating</c> か EF の規約が作った列であり、
+    /// 上限の検査は属性を読まないので対象にできる。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int? MaxLength)> AppDeclaredStringColumnLengths(Type entityType)
+    {
+        // CLR プロパティを持つ列と shadow 列に分けて取り出す
+        var (clrBacked, shadow) = PartitionStringColumns(entityType);
+
+        // CLR プロパティを持つ列のうち、自分たちが宣言したものだけを残す
+        return clrBacked
+            .Where(c => IsAppDeclaredColumn(c.Property))
+            .Select(c => (c.Name, c.MaxLength))
+            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// その列を「自分たちが宣言した列」とみなすかを返す（宣言元の型が自アセンブリかどうか）。
+    ///
+    /// 判定を 1 か所に置くのは、列単位の絞り込みを使う検査が複数あるため。各検査が
+    /// <c>DeclaringType?.Assembly == …</c> を書き写すと、条件を直したときに片方だけが
+    /// 取り残されて対象が食い違う。
+    /// </summary>
+    public static bool IsAppDeclaredColumn(PropertyInfo property)
+    {
+        // 宣言元の型が自分たちのアセンブリ(IncidentInsight.Web)にあれば自前の列
+        return property.DeclaringType?.Assembly == typeof(ApplicationDbContext).Assembly;
     }
 
     /// <summary>

@@ -39,16 +39,24 @@ public class FreeTextMaxLengthAttributeTests
     // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
     // 新しいエンティティの自由記述列が上限なしのまま素通りする
     public static TheoryData<Type> LengthGovernedEntityTypes =>
-        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
+        AuditedEntityModel.LengthGovernedTheoryData();
 
     [Theory]
     [MemberData(nameof(LengthGovernedEntityTypes))]
     public void PersistedStringColumns_MustHaveMaxLength(Type entityType)
     {
-        // 対象エンティティで実際に列になり、かつ属性を付けられる string 列を EF のモデルから取り出す
-        // (列名と CLR プロパティの組)。shadow property は AuditedEntityPhiClassificationTests が
-        // 専用の対処法で落とすので、ここでは対象から外れている
-        var columns = AuditedEntityModel.ClrBackedStringColumns(entityType);
+        // 対象エンティティで実際に列になる string 列を、列名と上限の組で EF のモデルから取り出す。
+        //
+        // shadow property(CLR プロパティを持たない列)も**含める**。以前は ClrBacked に絞り、
+        // 「shadow は AuditedEntityPhiClassificationTests が専用の対処法で落とす」としていたが、
+        // その検査の対象は監査対象 3 集約だけなので、監査対象でない CauseCategory へ
+        // 上限なしの shadow string 列(Property<string>("...") )を足すと 4 つの検査すべてを
+        // 素通りした(実測で全件緑)。上限の検査は属性を読まないので shadow 列も対象にできる。
+        //
+        // 基底クラス(Identity)が宣言した列は除く —— UserName / Email などの列長を決めているのは
+        // ASP.NET Core Identity で、FieldLengths の定数を当てはめる対象ではない。
+        // 一方 ApplicationUser.DisplayName / Department はこのリポジトリが足した業務列なので残る
+        var columns = AuditedEntityModel.AppDeclaredStringColumnLengths(entityType);
 
         // 前提確認: 各エンティティに検査対象の string 列が最低 1 つは存在するはず。
         // 0 件だと「全部上限付き」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)

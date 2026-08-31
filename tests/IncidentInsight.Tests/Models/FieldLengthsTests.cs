@@ -2,8 +2,6 @@
 using IncidentInsight.Web.Models;
 // 文字数上限の唯一の真実の源(FieldLengths)を検証対象として取り込む
 using IncidentInsight.Web.Models.Validation;
-// 入力用 ViewModel(IncidentCreateEditViewModel など)を使うために取り込む
-using IncidentInsight.Web.Models.ViewModels;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
 // 網羅ガードが読む DbSet<T> の宣言元(ApplicationDbContext)を使うために取り込む
@@ -30,27 +28,36 @@ namespace IncidentInsight.Tests.Models;
 // 機械的に固定し、裸の数値が再び紛れ込むのを CI で検知する。
 public class FieldLengthsTests
 {
-    // 検査対象の型一覧(監査対象の集約 + 原因分類マスタ + 入力用 ViewModel)。
-    // AuditLog は業務入力ではなく監査証跡スキーマ固有の列長(256/64/16)なので対象外。
+    // [MaxLength] 属性側の検査対象となる型の一覧。
     //
-    // 監査対象の集約は名前を書き並べず AuditSaveChangesInterceptor.AuditedEntities から導出する。
-    // 写しを持つと、監査対象を足したときに PHI 分類・長さ上限の検査だけが自動で追随し、
-    // 「その [MaxLength] が FieldLengths の定数か」を見るこの検査だけが取り残される
-    // ——新しい集約に裸の [MaxLength(200)] を書いても CI が緑のまま通る
+    // **型名を書き並べない**のが要点。以前はエンティティを EF のモデルから導出する一方で、
+    // ViewModel だけ 4 型を直書きしていた。その形だと Models/ViewModels へ新しい入力用
+    // ViewModel を足し、そのプロパティに裸の [MaxLength(200)]（あるいは ErrorMessage 未指定の
+    // [MaxLength]）を書いても、この検査も ViewModelMaxLength_UsesJapaneseSharedErrorMessage も
+    // 対象に含めないため CI は緑のまま通る。結果として画面側の上限だけがエンティティ
+    // （ShortText=100 等）とずれ、SQL Server / PostgreSQL 配備では保存時に列長超過
+    // （未捕捉の DbUpdateException = HTTP 500）になり、日本語 UI に英語の既定検証メッセージが混ざる。
+    // 「写しが取り残される」形そのものなので、条件を「[MaxLength] を 1 つでも宣言している型」に置く。
+    //
+    // 名前空間や型名の接尾辞（"ViewModel"）ではなく**属性の有無**を条件にしているので、
+    // 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
     private static IReadOnlyList<Type> GovernedTypes()
     {
-        // 長さ上限の管理対象となる業務エンティティ(監査対象とは独立に EF のモデルから導出)
-        var types = AuditedEntityModel.LengthGovernedEntityTypes().ToList();
+        // 長さ上限の管理対象から意図的に外している型（理由は LengthGovernanceExclusions）
+        var excluded = LengthGovernanceExclusions.Keys.ToHashSet(StringComparer.Ordinal);
 
-        // エンティティではないが同じ上限規約に従う入力用 ViewModel を足す
-        types.Add(typeof(IncidentCreateEditViewModel));
-        types.Add(typeof(CauseAnalysisFormViewModel));
-        types.Add(typeof(MeasureFormViewModel));
-        types.Add(typeof(ReviewViewModel));
-
-        // 重複を除いて返す。監査対象に CauseCategory 等を足すと導出側と直書き側の両方に
-        // 現れ、同じ型のテストケースが 2 つできてしまう(TheoryData は重複を畳まない)
-        return types.Distinct().ToList();
+        // 自分たちのアセンブリで [MaxLength] を 1 つでも宣言している型を集める
+        return typeof(ApplicationDbContext).Assembly
+            .GetTypes()
+            // 意図的な除外(AuditLog は監査証跡スキーマ固有の列長)を外す
+            .Where(t => !excluded.Contains(t.Name))
+            // 自分たちが宣言したプロパティに [MaxLength] があるものだけを残す
+            .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
+                .Where(AuditedEntityModel.IsAppDeclaredColumn)
+                .Any(p => p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) != null))
+            // 実行ごとに順序が揺れないよう型名で並べる
+            .OrderBy(t => t.Name, StringComparer.Ordinal)
+            .ToList();
     }
 
     public static TheoryData<Type> LengthGovernedTypes => AuditedEntityModel.ToTheoryData(GovernedTypes());
@@ -75,8 +82,7 @@ public class FieldLengthsTests
 
     // EF のモデル側の上限を検査する対象(= 長さ上限の管理対象となる業務エンティティ)。
     // ViewModel は EF のモデルを持たないので入らない
-    public static TheoryData<Type> ModelBackedTypes =>
-        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
+    public static TheoryData<Type> ModelBackedTypes => AuditedEntityModel.LengthGovernedTheoryData();
 
     [Theory]
     [MemberData(nameof(LengthGovernedTypes))]
@@ -88,6 +94,9 @@ public class FieldLengthsTests
         // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            // 基底クラス(Identity など)が宣言したプロパティは対象外。列長を決めているのが
+            // 自分たちではない以上、FieldLengths の定数を当てはめる対象でもない
+            .Where(AuditedEntityModel.IsAppDeclaredColumn)
             .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
             .Where(x => x.Attribute != null)
             // 許容値のいずれとも一致しない上限を違反として拾う
@@ -117,7 +126,7 @@ public class FieldLengthsTests
         // CLR プロパティの有無を問わず全 string 列を見る。属性を読まない検査なので shadow 列も
         // 対象にできる —— ClrBacked に絞ると、fluent で裸の数値を設定した shadow 列が
         // 「属性を付けられないから対象外」という無関係な理由で素通りする
-        var offenders = AuditedEntityModel.AllStringColumnLengths(entityType)
+        var offenders = AuditedEntityModel.AppDeclaredStringColumnLengths(entityType)
             // 上限が設定されている列だけが対象(未設定は FreeTextMaxLengthAttributeTests が落とす)
             .Where(c => c.MaxLength != null)
             // 許容値のいずれとも一致しない上限を違反として拾う
@@ -137,6 +146,8 @@ public class FieldLengthsTests
     {
         // 属性と EF のモデルの両方に上限があり、しかも値が食い違う列を探す
         var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
+            // 基底クラス(Identity など)が宣言した列は対象外(上限を決めているのが自分たちではない)
+            .Where(c => AuditedEntityModel.IsAppDeclaredColumn(c.Property))
             // 属性側の上限(無ければ検査対象外 —— 付け忘れは別の検査が落とす)
             .Select(c => new
             {
@@ -173,6 +184,8 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            // 基底クラスが宣言したプロパティは対象外(自分たちが書いた文言ではない)
+            .Where(AuditedEntityModel.IsAppDeclaredColumn)
             .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
             .Where(x => x.Attribute != null)
             // ErrorMessage が共通書式と一致しないものを違反とする
@@ -279,19 +292,26 @@ public class FieldLengthsTests
     [Fact]
     public void LengthGovernanceExclusions_AreAllStillReal()
     {
-        // 除外の綴りが実在のエンティティを指しているかを確かめる。
-        // リネームや削除で除外が空振りになっても、上のガードは「除外に無いなら管理対象のはず」
-        // として正しく落ちるので実害は小さいが、失敗の原因が「除外の綴りが古い」ことだと
-        // 分かりにくくなる。ここで名指しして、直す場所を迷わせない
+        // 除外の名前が EF のモデル上に実在するかを確かめる。
+        //
+        // **この検査が捉えるのは「モデルから消えた」場合だけ**で、リネームは捉えられない。
+        // キーは nameof(AuditLog) なので、型をリネームすれば C# のリファクタが自動追随し、
+        // 除外と実装は常に一致する（そして除外は正しく効き続ける）。捉える必要があるのは
+        // 「エンティティをモデルから外した／マップをやめたのに除外だけが残る」場合で、
+        // そのとき除外は何も除かない飾りになり、読み手には効いているように見える。
+        //
+        // 上のガードは「除外に無いなら管理対象のはず」として正しく落ちるが、失敗の原因が
+        // 「除外が実在しない名前を指している」ことだとは分からない。ここで名指しして迷わせない
         var stale = LengthGovernanceExclusions.Keys
             .Where(name => AuditedEntityModel.EfModel.GetEntityTypes().All(e => e.ClrType.Name != name))
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
 
-        // 空振りしている除外が無いこと
+        // 実在しない名前を指している除外が無いこと
         Assert.True(stale.Count == 0,
             "長さ上限の管理対象から除外している名前が、EF のモデル上のエンティティを指していません: " +
-            string.Join(", ", stale) + "。リネームか削除で除外の綴りが古くなっています。");
+            string.Join(", ", stale) + "。エンティティをモデルから外したのに除外だけが残っています " +
+            "(このままだとその除外は何も除かない飾りになります)。");
     }
 
     [Fact]
