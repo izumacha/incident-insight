@@ -377,8 +377,17 @@ internal static class AuditedEntityModel
     ///
     /// <see cref="AppDeclaredStringColumnLengths"/> が 0 件を返したときに、それが
     /// 「そもそも対象の列を持たない正当な型」なのか「検出網が対象を拾えなくなった」のかを
-    /// 見分けるための独立な手がかり。<see cref="IsStringColumn"/> を使わず CLR の型で判定するので、
-    /// あちらの判定が狭まったときにこちらは狭まらない。
+    /// 見分けるための<b>独立な手がかり</b>。
+    ///
+    /// 独立させる相手は 2 つあり、どちらも<b>あえて共有しない</b>:
+    ///   - <see cref="IsStringColumn"/> … CLR の型が <c>string</c> かどうかで判定する
+    ///   - <see cref="IsDeclaredInOwnAssembly"/> … 宣言元アセンブリをここで直接比べる
+    ///
+    /// 後者が要点。守る対象と同じ述語を通すと、その 1 つを狭めた瞬間にガードも一緒に狭まって
+    /// 発火しなくなる —— 実測でも、<c>IsDeclaredInOwnAssembly</c> へ「Identity 由来の列を外す」
+    /// という一見リファクタに見える条件を足し、同時に <c>ApplicationUser</c> の
+    /// <c>[MaxLength]</c> を消すと、506 → 504 で<b>全件緑のまま</b>通った
+    /// （この PR が塞いだ穴が、テスト件数が 2 減るだけの痕跡で開き直る）。
     ///
     /// 主キーと未マップ（<c>[NotMapped]</c> / 計算プロパティ）を除くのが要点。
     /// 単純に「自前の <c>string</c> プロパティがあるか」で見ると、文字列を主キーにしたマスタ型や
@@ -393,13 +402,17 @@ internal static class AuditedEntityModel
         // モデルに載っていなければ数えようがないので 0
         if (entity is null) return 0;
 
+        // ガードが守る対象と同じアセンブリ(綴りを書かずモデルの型から引く)。
+        // IsDeclaredInOwnAssembly をあえて呼ばない理由は上のコメントを参照
+        var ownAssembly = typeof(Incident).Assembly;
+
         // マップ済み・主キー以外の列のうち、自前で宣言した string プロパティを数える
         return entity.GetProperties()
             .Where(p => !p.IsPrimaryKey())
             .Select(p => FindClrProperty(entityType, p.Name))
             .Count(pi => pi != null
                          && pi.PropertyType == typeof(string)
-                         && IsDeclaredInOwnAssembly(pi));
+                         && pi.DeclaringType?.Assembly == ownAssembly);
     }
 
     /// <summary>

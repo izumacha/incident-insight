@@ -107,8 +107,16 @@ public class FieldLengthsTests
         // Nullable を剥がした素の型
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
+        // 緩和の根拠は「値変換して**文字列として保存する enum 列**」なので、
+        // enum であることに加えて**マップ済みエンティティの列**であることも要求する。
+        // 型だけで判断すると ViewModel の enum プロパティにも 20 / 50 が通ってしまい、
+        // しかも MaxLengthAttribute は enum 値に対して実行時に InvalidCastException を投げる
+        // ため、その画面の POST が毎回 HTTP 500 になる(実測)
+        var declaringType = property.DeclaringType;
+        var isMappedEntityColumn = declaringType != null && AuditedEntityModel.IsMappedEntity(declaringType);
+
         // 値変換して保存する enum 列だけが enum 用の上限を使ってよい
-        return type.IsEnum ? ModelAllowedLengths : AttributeAllowedLengths;
+        return type.IsEnum && isMappedEntityColumn ? ModelAllowedLengths : AttributeAllowedLengths;
     }
 
     /// <summary>
@@ -139,16 +147,16 @@ public class FieldLengthsTests
             // 辞書引きを先に置いて、アセンブリ内の全型に対して EF モデル検索が走らないようにする
             .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
                           && AuditedEntityModel.IsMappedEntity(t)))
-            // 自分たちが宣言したプロパティに「長さを意味する」上限属性があるものだけを残す。
+            // 自分たちが宣言したプロパティに長さ上限の属性があるものだけを残す。
             //
-            // 選別の述語は、実際に検査する側(IsNakedNumberCheckedProperty)と**同じ**にする。
+            // 選別の述語は、実際に検査する 2 つの述語の**和集合**(= 広い方)にする。
             // ここだけ string に絞ると、長さ属性が非 string プロパティにしか付いていない型
             // (例: [MaxLength(200)] byte[] Blob と [MaxLength(333)] MeasureStatus Status だけを
             // 持つ ViewModel)が [Theory] のケースにすら入らず、裸の数値が誰にも見られない
             // ——実測でも 506 → 506 件、テスト件数すら変わらずに全件緑で通った。
             // 「検査する範囲」より「対象を選ぶ範囲」が狭いと、その差分がそのまま死角になる
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(IsNakedNumberCheckedProperty)
+                .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
                 .Any(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
@@ -250,8 +258,10 @@ public class FieldLengthsTests
     {
         // 属性と EF のモデルの両方に上限があり、しかも値が食い違う列を探す
         var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
-            // 基底クラス(Identity など)が宣言した列は対象外(上限を決めているのが自分たちではない)
-            .Where(c => AuditedEntityModel.IsDeclaredInOwnAssembly(c.Property))
+            // 基底が宣言した列も対象に残す。属性を持たない列は ReadLengthLimits が空を返して
+            // どのみち脱落するので今は 1 件も結果が変わらないが、将来 Identity が基底へ
+            // [StringLength(256)] を付け、こちらが同じ列へ HasMaxLength(37) を書いた場合に、
+            // 除外があるとその層またぎのずれだけが黙って検査対象外になる
             // モデル側に上限がある列だけが対象(付け忘れは FreeTextMaxLengthAttributeTests が落とす)
             .Where(c => c.MaxLength != null)
             // 属性側の上限は 1 つとは限らないのですべて取り出して突き合わせる
@@ -303,12 +313,16 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            // 裸の数値の検査と**同じ範囲**を見る。string に絞ると、たとえば
-            // [MaxLength(FieldLengths.ShortText)] byte[] Attachment(添付サイズの上限という
-            // 正当な宣言)が検査から外れ、日本語 UI に英語の既定メッセージ
-            // ("The field Attachment must be a string or array type with a maximum length of '100'.")
-            // が出る —— main では全プロパティを見ていたので捕まっていた退行だった(実測)
-            .Where(IsNakedNumberCheckedProperty)
+            // 自分たちが宣言したプロパティを**型を問わず**見る。
+            //
+            // 裸の数値の検査(IsNakedNumberCheckedProperty)はコレクションを除くが、その除外を
+            // ここへ流用してはいけない。除外の根拠は「要素数に FieldLengths の定数を当てろ」が
+            // 実行不能だという点であって、ErrorMessage を書くことは対象がコレクションでも
+            // 実行可能だから。流用すると [MaxLength(3)] List<string> Tags のような宣言が
+            // 裸の数値もメッセージ漏れも両方素通りし、日本語 UI に
+            // "The field Tags must be a string or array type with a maximum length of '3'." が出る
+            // (実測。main では捕まっていた退行)
+            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
