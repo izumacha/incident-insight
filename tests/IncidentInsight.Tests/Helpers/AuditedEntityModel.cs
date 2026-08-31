@@ -380,6 +380,39 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// 指定エンティティの「長さ上限が設定されている、自分たちが宣言した列」を返す。
+    ///
+    /// <see cref="AppDeclaredStringColumnLengths"/> との違いは<b>文字列列に限らない</b>点。
+    /// 属性側の裸の数値の検査は <c>byte[]</c> や値変換した enum 列まで見るのに、モデル側が
+    /// 文字列列しか見ないと、その差分がそのまま死角になる —— 実測でも
+    /// <c>byte[]</c> の列へ fluent で <c>HasMaxLength(300)</c> と書くと、裸の 300 も
+    /// 属性との食い違いも 4 つの検査すべてを素通りした（fluent が抜け道になる形そのもの）。
+    ///
+    /// 「上限が設定されている列」だけを返すので、上限を持たない列（<c>int</c> や
+    /// <c>DateTime</c>）を巻き込むことはない。上限の<b>付け忘れ</b>は文字列列に対してだけ
+    /// 意味があるので、そちらは <see cref="AppDeclaredStringColumnLengths"/> が担う。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int MaxLength, PropertyInfo? Property)>
+        AppDeclaredColumnsWithLength(Type entityType)
+    {
+        // EF のモデルから対象エンティティの定義を引く
+        var entity = Model.Value.FindEntityType(entityType);
+
+        // モデルに載っていない型は対象外(呼び出し側はマップ済みの型だけを渡す)
+        if (entity is null) return Array.Empty<(string, int, PropertyInfo?)>();
+
+        // 主キー以外で長さ上限が設定されている列を集める
+        return entity.GetProperties()
+            .Where(p => !p.IsPrimaryKey())
+            .Where(p => p.GetMaxLength() != null)
+            .Select(p => (Name: p.Name, MaxLength: p.GetMaxLength()!.Value, Property: FindClrProperty(entityType, p.Name)))
+            // 基底クラスが宣言した列は対象外(上限を決めているのが自分たちではない)。
+            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
+            .Where(c => c.Property == null || IsDeclaredInOwnAssembly(c.Property))
+            .ToList();
+    }
+
+    /// <summary>
     /// その CLR プロパティが「EF のモデル上で文字列として保存される列」かを返す。
     ///
     /// 「値変換して文字列として保存する enum 列」だけに許す緩和を、宣言型ではなく

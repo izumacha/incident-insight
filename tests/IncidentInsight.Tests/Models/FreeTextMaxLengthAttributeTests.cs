@@ -4,8 +4,6 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
-// リフレクション(型情報からプロパティや属性を調べる仕組み)を使うために取り込む
-using System.Reflection;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
@@ -83,7 +81,8 @@ public class FreeTextMaxLengthAttributeTests
         // 「0 件でないこと」だけを見ると**部分的な取りこぼしが素通りする**: たとえば
         // Incident の検査対象には値変換した enum 列(Severity / IncidentType)も含まれるため、
         // 絞り込みが狭まって自由記述 4 列が丸ごと落ちても columns.Count は 2 のままで、
-        // 0 件ではないのでガードが発火しない。件数の比較にしておけば、その取りこぼしも捕まる
+        // 0 件ではないのでガードが発火しない。件数の比較にしておけば、その取りこぼしも捕まる。
+        //
         // 突き合わせるのは**同じ種類の列どうし**。columns には値変換した enum 列や shadow 列も
         // 含まれるので、全体の件数で比べると「enum 列の数だけ string 列を落としても通る」
         // 隙間ができる —— 実測でも Incident(string 4 + enum 2)から自前の string 列を 2 つ

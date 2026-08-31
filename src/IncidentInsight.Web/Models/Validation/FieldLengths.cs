@@ -52,6 +52,18 @@ public static class FieldLengths
     public const int EnumCodeJapanese = 50;
 
     /// <summary>
+    /// コレクション（要素数）の上限に使う日本語エラーメッセージ書式。
+    /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限件数が入る。
+    ///
+    /// 文字数用の <see cref="MaxLengthMessage"/> を流用してはいけない。
+    /// <c>[MaxLength(3)] List&lt;string&gt; Tags</c> に文字数の書式を付けると、
+    /// 画面には「タグは3文字以内で入力してください。」という<b>誤った文言</b>が出る
+    /// （実際に制限しているのはタグの「件数」）。
+    /// </summary>
+    // 要素数の上限を伝える日本語メッセージの書式
+    public const string ItemCountMessage = "{0}は{1}件以内で入力してください。";
+
+    /// <summary>
     /// <c>[MaxLength]</c> 用の日本語エラーメッセージ書式。
     /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限文字数が入る
     /// (<c>MaxLengthAttribute.FormatErrorMessage</c> がこの 2 つを渡す)。
