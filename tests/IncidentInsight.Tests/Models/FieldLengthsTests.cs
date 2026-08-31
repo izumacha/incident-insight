@@ -54,14 +54,26 @@ public class FieldLengthsTests
     private static (int Length, string? ErrorMessage, string AttributeName)? ReadLengthLimit(PropertyInfo property)
     {
         // [MaxLength] が付いていればその上限とメッセージを返す
-        var maxLength = property.GetCustomAttribute<MaxLengthAttribute>(inherit: false);
+        // inherit: true で読む。基底クラスで [MaxLength] を宣言し派生側で override した列は
+        // FindClrProperty が派生側の PropertyInfo を返すため、false のままだと属性が見つからず
+        // 「属性が無いので検査対象外」として黙ってスキップされる —— fluent の HasMaxLength() と
+        // 食い違っていても緑のままになり、ModelMaxLength_AgreesWithMaxLengthAttribute が
+        // 存在する目的(層またぎのずれの固定)がその列について失われる
+        var maxLength = property.GetCustomAttribute<MaxLengthAttribute>(inherit: true);
         if (maxLength != null) return (maxLength.Length, maxLength.ErrorMessage, nameof(MaxLengthAttribute));
 
         // [StringLength] も上限を表すので同じ形に読み替えて返す(最大長だけを見る)
-        var stringLength = property.GetCustomAttribute<StringLengthAttribute>(inherit: false);
+        var stringLength = property.GetCustomAttribute<StringLengthAttribute>(inherit: true);
         if (stringLength != null) return (stringLength.MaximumLength, stringLength.ErrorMessage, nameof(StringLengthAttribute));
 
-        // どちらも無ければ上限の宣言なし
+        // .NET 8 で入った [Length(min, max)] も同じく上限を表す。
+        // MVC の入力検証はこれも尊重するので、拾わないと [StringLength] と同じ抜け道になる
+        // (実測: ViewModel の [MaxLength] を裸の [Length(1, 200)] に置き換えると
+        //  506 件すべて緑のまま通り、件数も変わらないので痕跡がゼロだった)
+        var length = property.GetCustomAttribute<LengthAttribute>(inherit: true);
+        if (length != null) return (length.MaximumLength, length.ErrorMessage, nameof(LengthAttribute));
+
+        // いずれも無ければ上限の宣言なし
         return null;
     }
 
@@ -72,15 +84,15 @@ public class FieldLengthsTests
         // 自分たちのアセンブリで [MaxLength] を 1 つでも宣言している型を集める
         return typeof(ApplicationDbContext).Assembly
             .GetTypes()
-            // 意図的な除外(AuditLog は監査証跡スキーマ固有の列長)を外す。
-            // **マップ済みエンティティであることも条件にする**のが要点。除外表は
-            // 「エンティティ」に対する表(LengthGovernanceExclusions_AreAllStillReal が
-            // 各キーは EF のモデル上の型だと固定している)なので、型名の一致だけで落とすと
-            // 同名の非エンティティ —— たとえば Models/ViewModels 配下の AuditLog という
-            // 一覧フィルタ用 ViewModel —— まで巻き添えで検査対象から外れる。
-            // そうなると裸の [MaxLength(200)] も ErrorMessage の指定漏れも素通りする
-            .Where(t => !(AuditedEntityModel.IsMappedEntity(t)
-                          && LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))))
+            // 意図的な除外(AuditLog は列長の出所が監査証跡スキーマ)を外す。
+            //
+            // 除外表は「エンティティ」に対する表なので、マップ済みであることも併せて確かめる。
+            // キーが完全修飾名である限り同名衝突は起きえない(同一アセンブリに同じ完全修飾名の型は
+            // 2 つ作れない)ので、この条件は今のところ結果を変えない —— それでも残すのは、
+            // 除外表がエンティティに対するものだという不変条件をここに明示しておくため。
+            // 辞書引きを先に置いて、アセンブリ内の全型に対して EF モデル検索が走らないようにする
+            .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
+                          && AuditedEntityModel.IsMappedEntity(t)))
             // 自分たちが宣言したプロパティに長さ上限の属性があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
@@ -296,7 +308,7 @@ public class FieldLengthsTests
             // ガードが赤くなり、しかも「導出条件(所属アセンブリ)がずれている」という
             // 誤った原因を指す —— 唯一の逃げ道が「フレームワークの型を除外表へ足す」に
             // なってしまい、人がレビューすべき表を無関係な型で膨らませる
-            .Where(t => t.Assembly == typeof(ApplicationDbContext).Assembly)
+            .Where(AuditedEntityModel.IsOwnAssemblyType)
             // ここで確定させる。遅延のままだと下の前提確認と ownedEntityTypes が
             // それぞれ独立に走査を回し、「前提を確認した列」と「実際に使う列」が別の値になる
             .Distinct()
@@ -356,9 +368,6 @@ public class FieldLengthsTests
     /// </summary>
     private static IReadOnlyList<Type> OwnDbContextBaseTypeArguments()
     {
-        // 自分たちのアセンブリ(綴りを書かず DbContext の所属から引く)
-        var ownAssembly = typeof(ApplicationDbContext).Assembly;
-
         // 見つけた型引数を溜めるリスト
         var found = new List<Type>();
 
@@ -369,7 +378,7 @@ public class FieldLengthsTests
             if (!type.IsGenericType) continue;
 
             // 型引数のうち自分たちのアセンブリのものだけを積む
-            found.AddRange(type.GetGenericArguments().Where(a => a.Assembly == ownAssembly));
+            found.AddRange(type.GetGenericArguments().Where(AuditedEntityModel.IsOwnAssemblyType));
         }
 
         // マップ済みエンティティに限る。型引数には EF のエンティティでないものも来うるため
@@ -391,14 +400,11 @@ public class FieldLengthsTests
     // 導出側(エンティティの CLR 型を所属アセンブリと派生関係で絞る)とは別の手がかりを使う
     private static IEnumerable<Type> OwnDbContextTypes()
     {
-        // 自分たちのアセンブリ(綴りを書かず DbContext の所属から引く)
-        var ownAssembly = typeof(ApplicationDbContext).Assembly;
-
         // ApplicationDbContext から基底へ 1 つずつさかのぼる
         for (var type = typeof(ApplicationDbContext); type != null; type = type.BaseType)
         {
             // 自分たちのアセンブリの外(EF / Identity の基底)へ出たらそこで打ち切る
-            if (type.Assembly != ownAssembly) yield break;
+            if (!AuditedEntityModel.IsOwnAssemblyType(type)) yield break;
 
             // 自分たちが書いた DbContext 型として返す
             yield return type;
@@ -425,7 +431,7 @@ public class FieldLengthsTests
         // その登録は何も除かない飾りのまま、人がレビューすべき表だけが膨らむ
         var ownMappedEntityKeys = AuditedEntityModel.EfModel.GetEntityTypes()
             .Select(e => e.ClrType)
-            .Where(t => t.Assembly == typeof(ApplicationDbContext).Assembly)
+            .Where(AuditedEntityModel.IsOwnAssemblyType)
             .Select(AuditedEntityModel.ExclusionKeyFor)
             .ToHashSet(StringComparer.Ordinal);
 

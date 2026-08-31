@@ -246,14 +246,11 @@ internal static class AuditedEntityModel
     /// </summary>
     public static IReadOnlyList<Type> LengthGovernedEntityTypes()
     {
-        // 自分たちのアセンブリ(IncidentInsight.Web)。DbContext の所属から引くので綴りを書かない
-        var ownAssembly = typeof(ApplicationDbContext).Assembly;
-
         // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集めて返す
         return Model.Value.GetEntityTypes()
             .Select(e => e.ClrType)
             // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
-            .Where(t => t.Assembly == ownAssembly)
+            .Where(IsOwnAssemblyType)
             // 意図的に外している型(現在は AuditLog のみ。理由は LengthGovernanceExclusions)を除く
             .Where(t => !LengthGovernanceExclusions.ContainsKey(ExclusionKeyFor(t)))
             // 実行ごとに順序が揺れないよう型名で並べる
@@ -368,8 +365,23 @@ internal static class AuditedEntityModel
     /// </summary>
     public static bool IsDeclaredInOwnAssembly(PropertyInfo property)
     {
-        // 宣言元の型が自分たちのアセンブリ(IncidentInsight.Web)にあれば自前の宣言
-        return property.DeclaringType?.Assembly == typeof(ApplicationDbContext).Assembly;
+        // 宣言元の型が自分たちのアセンブリにあれば自前の宣言
+        return property.DeclaringType != null && IsOwnAssemblyType(property.DeclaringType);
+    }
+
+    /// <summary>
+    /// その型が自分たちのアセンブリ（<c>IncidentInsight.Web</c>）で定義されているかを返す。
+    ///
+    /// <see cref="IsDeclaredInOwnAssembly"/> と同じ理由で 1 か所に置く。以前はこの述語が
+    /// 導出・DbSet の絞り込み・基底型引数の絞り込み・除外の実在検査の 4 箇所へ直書きされていた。
+    /// 将来この条件を変える（業務エンティティを 2 つ目のアセンブリへ切り出す等）ときに
+    /// 導出だけ広げてガードを直し忘れると、網羅ガードが新しいエンティティを見なくなり
+    /// 「取りこぼしゼロ＝緑」のまま無力化される。
+    /// </summary>
+    public static bool IsOwnAssemblyType(Type type)
+    {
+        // 定義元アセンブリが DbContext と同じなら自前の型
+        return type.Assembly == typeof(ApplicationDbContext).Assembly;
     }
 
     /// <summary>
