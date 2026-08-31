@@ -15,10 +15,20 @@ using Xunit;
 namespace IncidentInsight.Tests.Helpers;
 
 /// <summary>
-/// 「監査対象エンティティ」に関する検査が共通して使う土台。
+/// EF Core のモデルを読む検査が共通して使う土台。
 ///
-/// 監査対象の一覧は <see cref="AuditSaveChangesInterceptor.AuditedEntities"/> が唯一の真実の源で、
-/// テスト側はそこから導出する。テストが独自に一覧を持つと、監査対象を足したときに実装だけが増えて
+/// <b>独立した 2 つの関心事</b>を扱う。名前に「Audited」と付いているが、後者を前者から導いてはいけない:
+///   1. <b>監査対象</b>（PHI 分類・ラベル網羅）… 一覧は
+///      <see cref="AuditSaveChangesInterceptor.AuditedEntities"/> が唯一の真実の源。
+///   2. <b>長さ上限の管理対象</b>（<see cref="LengthGovernedEntityTypes"/> /
+///      <see cref="LengthGovernanceExclusions"/> / <see cref="AppDeclaredStringColumnLengths"/>）…
+///      監査対象**とは無関係に**、自アセンブリのマップ済みエンティティから導出する。
+///
+/// 2 を 1 から導くと、監査ポリシーの変更（あるエンティティを監査対象から外す）が無関係なはずの
+/// 長さ管理まで黙って外す（すべて fail-open。CLAUDE.md §3）。同じ型に同居させているのは
+/// EF のモデルの組み立てを 1 回で共有するためで、**関心事としては分けたまま**にすること。
+///
+/// 監査対象の一覧をテストが独自に持つと、監査対象を足したときに実装だけが増えて
 /// 検査が追随せず、新しいエンティティの列が誰にも見られないまま ChangesJson へ平文で書かれる。
 ///
 /// 列の判定に CLR のリフレクションではなく EF Core のモデルを使うのは、インターセプタが走査するのが
@@ -274,7 +284,7 @@ internal static class AuditedEntityModel
             // (Models.Reporting.AuditLog のような集計用テーブル)を足したときに、
             // それも巻き添えで 4 検査すべてから外れる —— しかも綴りの検査は同じ単純名で
             // 突き合わせるため緑のまま。typeof(...).FullName で引くので綴りは手で書かない
-            [typeof(AuditLog).FullName!] = "監査証跡スキーマ固有の列長(256/100/64/16)で、業務入力の上限ではないため",
+            [typeof(AuditLog).FullName!] = "列長の出所が監査証跡スキーマで、業務入力の上限(FieldLengths)ではないため",
         };
 
     /// <summary>

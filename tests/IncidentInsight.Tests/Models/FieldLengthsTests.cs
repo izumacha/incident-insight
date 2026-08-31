@@ -39,6 +39,32 @@ public class FieldLengthsTests
     //
     // 名前空間や型名の接尾辞（"ViewModel"）ではなく**属性の有無**を条件にしているので、
     // 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
+    /// <summary>
+    /// 長さ上限を表す属性から「上限値」と「エラーメッセージ」を取り出す。
+    ///
+    /// <c>[MaxLength]</c> だけを見ると <c>[StringLength]</c> が丸ごと抜け道になる。
+    /// 2 つは継承関係が無い別々の属性だが、<b>MVC の入力検証も EF Core の列長も両方を尊重する</b>ので、
+    /// 綴りを変えるだけで同じことができてしまう —— 実測でも、ViewModel に
+    /// <c>[StringLength(200)]</c> を書くと 506 件すべて緑のまま通り、裸の 200 も
+    /// ErrorMessage の指定漏れ（＝日本語 UI に英語の既定メッセージ）も素通りした。
+    ///
+    /// 対象の選び方を「特定の属性名」に依存させると、この PR が名前空間・型名の接尾辞への依存を
+    /// やめた意味が薄れる。上限を表す属性はここ 1 か所で解釈する。
+    /// </summary>
+    private static (int Length, string? ErrorMessage, string AttributeName)? ReadLengthLimit(PropertyInfo property)
+    {
+        // [MaxLength] が付いていればその上限とメッセージを返す
+        var maxLength = property.GetCustomAttribute<MaxLengthAttribute>(inherit: false);
+        if (maxLength != null) return (maxLength.Length, maxLength.ErrorMessage, nameof(MaxLengthAttribute));
+
+        // [StringLength] も上限を表すので同じ形に読み替えて返す(最大長だけを見る)
+        var stringLength = property.GetCustomAttribute<StringLengthAttribute>(inherit: false);
+        if (stringLength != null) return (stringLength.MaximumLength, stringLength.ErrorMessage, nameof(StringLengthAttribute));
+
+        // どちらも無ければ上限の宣言なし
+        return null;
+    }
+
     private static IReadOnlyList<Type> GovernedTypes()
     {
         // 除外の判定は完全修飾名で行う(単純名だと同名の別型まで巻き添えで落ちる)
@@ -55,10 +81,10 @@ public class FieldLengthsTests
             // そうなると裸の [MaxLength(200)] も ErrorMessage の指定漏れも素通りする
             .Where(t => !(AuditedEntityModel.IsMappedEntity(t)
                           && LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))))
-            // 自分たちが宣言したプロパティに [MaxLength] があるものだけを残す
+            // 自分たちが宣言したプロパティに長さ上限の属性があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-                .Any(p => p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) != null))
+                .Any(p => ReadLengthLimit(p) != null))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
@@ -110,16 +136,16 @@ public class FieldLengthsTests
             // 基底クラス(Identity など)が宣言したプロパティは対象外。列長を決めているのが
             // 自分たちではない以上、FieldLengths の定数を当てはめる対象でもない
             .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-            .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
-            .Where(x => x.Attribute != null)
+            .Select(p => new { Property = p, Limit = ReadLengthLimit(p) })
+            .Where(x => x.Limit != null)
             // 許容値のいずれとも一致しない上限を違反として拾う
-            .Where(x => !allowed.Contains(x.Attribute!.Length))
-            .Select(x => $"{type.Name}.{x.Property.Name} = {x.Attribute!.Length}")
+            .Where(x => !allowed.Contains(x.Limit!.Value.Length))
+            .Select(x => $"{type.Name}.{x.Property.Name} = {x.Limit!.Value.Length} ([{x.Limit!.Value.AttributeName}])")
             .ToList();
 
         // 違反ゼロであること(あればどのプロパティが裸の数値かをメッセージで示す)
         Assert.True(offenders.Count == 0,
-            "[MaxLength] に FieldLengths 以外の裸の数値が使われています " +
+            "長さ上限の属性([MaxLength] / [StringLength])に FieldLengths 以外の裸の数値が使われています " +
             $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
     }
 
@@ -166,12 +192,12 @@ public class FieldLengthsTests
             {
                 c.Name,
                 c.MaxLength,
-                Attribute = c.Property.GetCustomAttribute<MaxLengthAttribute>(inherit: true),
+                Limit = ReadLengthLimit(c.Property),
             })
-            .Where(x => x.Attribute != null && x.MaxLength != null)
+            .Where(x => x.Limit != null && x.MaxLength != null)
             // 値が一致しないものが違反
-            .Where(x => x.Attribute!.Length != x.MaxLength!.Value)
-            .Select(x => $"{entityType.Name}.{x.Name}: [MaxLength]={x.Attribute!.Length} / モデル={x.MaxLength}")
+            .Where(x => x.Limit!.Value.Length != x.MaxLength!.Value)
+            .Select(x => $"{entityType.Name}.{x.Name}: [{x.Limit!.Value.AttributeName}]={x.Limit!.Value.Length} / モデル={x.MaxLength}")
             .ToList();
 
         // fluent の HasMaxLength() は属性より優先されるため、両方書いて値が違うと
@@ -217,10 +243,10 @@ public class FieldLengthsTests
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             // 基底クラスが宣言したプロパティは対象外(自分たちが書いた文言ではない)
             .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-            .Select(p => new { Property = p, Attribute = p.GetCustomAttribute<MaxLengthAttribute>(inherit: false) })
-            .Where(x => x.Attribute != null)
+            .Select(p => new { Property = p, Limit = ReadLengthLimit(p) })
+            .Where(x => x.Limit != null)
             // ErrorMessage が共通書式と一致しないものを違反とする
-            .Where(x => x.Attribute!.ErrorMessage != FieldLengths.MaxLengthMessage)
+            .Where(x => x.Limit!.Value.ErrorMessage != FieldLengths.MaxLengthMessage)
             .Select(x => $"{type.Name}.{x.Property.Name}")
             .ToList();
 
@@ -265,6 +291,12 @@ public class FieldLengthsTests
                         && p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
             // 型引数 T(= エンティティの CLR 型)を取り出す
             .Select(p => p.PropertyType.GetGenericArguments()[0])
+            // 自分たちのアセンブリの型だけを残す。導出側も同じ条件で絞っているので、
+            // ここを外すと「便利のために DbSet<IdentityRole> を生やしただけ」で
+            // ガードが赤くなり、しかも「導出条件(所属アセンブリ)がずれている」という
+            // 誤った原因を指す —— 唯一の逃げ道が「フレームワークの型を除外表へ足す」に
+            // なってしまい、人がレビューすべき表を無関係な型で膨らませる
+            .Where(t => t.Assembly == typeof(ApplicationDbContext).Assembly)
             // ここで確定させる。遅延のままだと下の前提確認と ownedEntityTypes が
             // それぞれ独立に走査を回し、「前提を確認した列」と「実際に使う列」が別の値になる
             .Distinct()
@@ -378,25 +410,35 @@ public class FieldLengthsTests
     {
         // 除外の名前が EF のモデル上に実在するかを確かめる。
         //
-        // **この検査が捉えるのは「モデルから消えた」場合だけ**で、リネームは捉えられない。
-        // キーは nameof(AuditLog) なので、型をリネームすれば C# のリファクタが自動追随し、
-        // 除外と実装は常に一致する（そして除外は正しく効き続ける）。捉える必要があるのは
+        // **この検査が捉えるのは「導出の対象から消えた」場合だけ**で、リネームは捉えられない。
+        // キーは typeof(AuditLog).FullName なので、型のリネームにも名前空間の移動にも
+        // C# のリファクタが自動追随し、除外と実装は常に一致する
+        // （そして除外は正しく効き続ける）。捉える必要があるのは
         // 「エンティティをモデルから外した／マップをやめたのに除外だけが残る」場合で、
         // そのとき除外は何も除かない飾りになり、読み手には効いているように見える。
         //
         // 上のガードは「除外に無いなら管理対象のはず」として正しく落ちるが、失敗の原因が
         // 「除外が実在しない名前を指している」ことだとは分からない。ここで名指しして迷わせない
+        // 突き合わせ先は**導出が見ているのと同じ範囲**(自アセンブリのマップ済みエンティティ)。
+        // モデル全体と突き合わせると、フレームワークの型(IdentityRole など)を登録した除外が
+        // 「実在する」として通ってしまう —— 導出はその前段で自アセンブリに絞るので、
+        // その登録は何も除かない飾りのまま、人がレビューすべき表だけが膨らむ
+        var ownMappedEntityKeys = AuditedEntityModel.EfModel.GetEntityTypes()
+            .Select(e => e.ClrType)
+            .Where(t => t.Assembly == typeof(ApplicationDbContext).Assembly)
+            .Select(AuditedEntityModel.ExclusionKeyFor)
+            .ToHashSet(StringComparer.Ordinal);
+
         var stale = LengthGovernanceExclusions.Keys
-            .Where(key => AuditedEntityModel.EfModel.GetEntityTypes()
-                .All(e => AuditedEntityModel.ExclusionKeyFor(e.ClrType) != key))
+            .Where(key => !ownMappedEntityKeys.Contains(key))
             .OrderBy(n => n, StringComparer.Ordinal)
             .ToList();
 
         // 実在しない名前を指している除外が無いこと
         Assert.True(stale.Count == 0,
-            "長さ上限の管理対象から除外している名前が、EF のモデル上のエンティティを指していません: " +
-            string.Join(", ", stale) + "。エンティティをモデルから外したのに除外だけが残っています " +
-            "(このままだとその除外は何も除かない飾りになります)。");
+            "長さ上限の管理対象から除外しているキーが、自アセンブリのマップ済みエンティティを指していません: " +
+            string.Join(", ", stale) + "。エンティティをモデルから外した、あるいは自アセンブリ外の型を " +
+            "登録しています(どちらの場合もその除外は何も除かない飾りになります)。");
     }
 
     [Fact]
@@ -404,7 +446,7 @@ public class FieldLengthsTests
     {
         // 除外表はエスケープハッチなので、**この PR が塞いだ穴をそのまま開け直せてはいけない**。
         //
-        // 実測: [nameof(ApplicationUser)] = "列長は ASP.NET Core Identity 側が決めるため" という
+        // 実測: typeof(ApplicationUser).FullName をキーに "列長は ASP.NET Core Identity 側が決めるため" という
         // (もっともらしい)理由で登録し、ApplicationUser の [MaxLength] を 2 つとも消すと
         // 505 件すべて緑のまま通った。導出から外れるので長さ関連 4 検査が効かなくなり、
         // 上の網羅ガードも「意図的な除外」として素通りさせるため。理由の有無を見る検査も、

@@ -16,8 +16,9 @@ namespace IncidentInsight.Web.Models.Validation;
 ///
 /// 値を変更するときは、エンティティ側の <c>[MaxLength]</c> は DB の列長にも反映されるため、
 /// 同一変更セットで EF Core マイグレーションを追加すること(CLAUDE.md §3 の不変条件)。
-/// なお <see cref="AuditLog"/> の列長(256 / 64 / 16)は業務入力ではなく監査証跡スキーマ固有の
-/// 値のため、ここには含めない。
+/// なお <see cref="AuditLog"/> の列長は業務入力ではなく監査証跡スキーマ固有の値のため、
+/// ここには含めない(具体的な値は <c>AuditLog</c> の各プロパティが持つ。ここへ書き写すと
+/// 列を増やしたときにこの説明だけが古くなる —— 実際、以前は 1 列ぶん欠けた列挙になっていた)。
 /// </summary>
 public static class FieldLengths
 {
