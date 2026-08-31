@@ -12,6 +12,8 @@ using Microsoft.EntityFrameworkCore;
 using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報から属性を調べる仕組み)を使うために取り込む
 using System.Reflection;
+// 分類テストで使う enum(MeasureStatus)を参照するために取り込む
+using IncidentInsight.Web.Models.Enums;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
@@ -101,14 +103,31 @@ public class FieldLengthsTests
         // Nullable を剥がした素の型
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
-        // 文字列そのものは文字数を数える
-        if (type == typeof(string)) return true;
+        // 文字列そのものは文字数を数える。それ以外で文字数と言えるのは、値変換して
+        // 文字列として保存される enum 列だけ(数えているのは保存後の文字数)
+        return type == typeof(string) || IsStringPersistedEnumColumn(property);
+    }
 
-        // 値変換して文字列として保存される enum 列も、数えているのは保存後の文字数。
-        //
-        // 判定を「型が enum か」だけにしてはいけない: ViewModel の enum プロパティに
-        // [MaxLength] を書くと MaxLengthAttribute が実行時に InvalidCastException を投げ、
-        // その画面の POST が毎回 HTTP 500 になる(実測)。列として文字列で保存されるものだけを許す
+    /// <summary>
+    /// そのプロパティが「値変換して<b>文字列として保存する</b> enum 列」かを返す。
+    ///
+    /// <b>判定はここ 1 か所に置く。</b> この条件は 2 か所で意味が違う形で使われる ——
+    /// <see cref="IsCharacterLengthProperty"/> は「文字数を数える対象に含めるか」、
+    /// <see cref="AllowedLengthsFor"/> は「<c>EnumCode</c> / <c>EnumCodeJapanese</c> を許すか」。
+    /// 書き写すと片方を狭めたときに<b>両者が食い違う</b>: 文字数の対象には残るのに許容値が
+    /// 入力欄用へ落ちると、正しく <c>EnumCode</c> を使っている列が「裸の数値だ」と
+    /// <b>事実と異なる診断</b>で赤になり、開発者を誤った値へ誘導する。
+    ///
+    /// 「型が enum か」だけで見てはいけない: ViewModel の enum プロパティに <c>[MaxLength]</c> を
+    /// 書くと <c>MaxLengthAttribute</c> が実行時に <c>InvalidCastException</c> を投げ、
+    /// その画面への POST が毎回 HTTP 500 になる（実測）。列として文字列で保存されるものだけを許す。
+    /// </summary>
+    private static bool IsStringPersistedEnumColumn(PropertyInfo property)
+    {
+        // Nullable を剥がした素の型
+        var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+
+        // enum であり、かつ EF のモデル上で文字列として保存される列であること
         return type.IsEnum && AuditedEntityModel.IsStringPersistedColumn(property);
     }
 
@@ -124,16 +143,10 @@ public class FieldLengthsTests
     /// </summary>
     private static int[] AllowedLengthsFor(PropertyInfo property)
     {
-        // Nullable を剥がした素の型
-        var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
-
-        // 緩和の根拠は「値変換して**文字列として保存する enum 列**」なので、判定も
-        // そのプロパティ自身が文字列として保存される列かどうかで行う。
-        //
-        // 「宣言型がマップ済みエンティティか」で見ると広すぎる: 同じ型にある [NotMapped] の
-        // enum プロパティや、既定の int マッピングのまま文字列として保存されない enum 列にも
-        // 20 / 50 が通ってしまい、しかもモデル側の検査は文字列列しか見ないので誰も見ない
-        return type.IsEnum && AuditedEntityModel.IsStringPersistedColumn(property)
+        // 緩和の根拠は「値変換して**文字列として保存する enum 列**」なので、
+        // 対象を選ぶときと同じ判定(IsStringPersistedEnumColumn)をそのまま使う。
+        // ここに条件を書き写すと、対象と許容値が食い違って誤った診断が出る
+        return IsStringPersistedEnumColumn(property)
             ? ModelAllowedLengths
             : AttributeAllowedLengths;
     }
@@ -754,6 +767,53 @@ public class FieldLengthsTests
 
         // 名前が LengthAttribute で終わるものを上限の属性とみなす
         return name.EndsWith("LengthAttribute", StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void CharacterLengthClassification_CoversStringPersistedEnumColumnsOnly()
+    {
+        // 「文字数を数える対象か」の判定そのものを直接固定する。
+        //
+        // **これが無いと分類が無検証になる**（実測）: 現時点でこのリポジトリには
+        // 「長さ属性が付いた enum プロパティ」が 1 つも無いため、
+        // IsStringPersistedEnumColumn を `return false;` に潰しても 521 件が全件緑のまま通った。
+        // 分類は 2 つの検査（対象の絞り込みと許容値の決定）の土台なので、
+        // 実データが通らない状態でも「どちらへ倒れるか」を直接確かめておく。
+        //
+        // 分岐そのものは残す。値変換して文字列として保存する enum 列に
+        // [MaxLength(FieldLengths.EnumCode)] と書く宣言は EF が列長として尊重する正当な形で、
+        // 数えているのは**保存される文字列の文字数**だから ——
+        // ここで「文字数以外だ」と落とすと事実と異なる診断になる
+        // （この repo が繰り返し避けている、正しい宣言を外す方向へ誘導する失敗）。
+
+        // 値変換して文字列として保存される enum 列(fluent の HasConversion<string>())
+        var storedAsString = typeof(PreventiveMeasure).GetProperty(nameof(PreventiveMeasure.Status))!;
+
+        // 文字数を数える対象に入り、enum 列専用の上限(EnumCode / EnumCodeJapanese)を許される
+        Assert.True(IsCharacterLengthProperty(storedAsString));
+        Assert.Equal(ModelAllowedLengths, AllowedLengthsFor(storedAsString));
+
+        // 列ではない enum プロパティ(画面へバインドされる入力型)は対象外。
+        // MaxLengthAttribute は enum 値を測れず InvalidCastException を投げるので、
+        // ここが true になると HTTP 500 になる宣言を「正しい」として通してしまう
+        var notAColumn = typeof(ProbeEnumHolder).GetProperty(nameof(ProbeEnumHolder.Status))!;
+        Assert.False(IsCharacterLengthProperty(notAColumn));
+        Assert.Equal(AttributeAllowedLengths, AllowedLengthsFor(notAColumn));
+
+        // 文字列は無条件で対象。入力欄用の許容値だけが許される
+        var text = typeof(PreventiveMeasure).GetProperty(nameof(PreventiveMeasure.Description))!;
+        Assert.True(IsCharacterLengthProperty(text));
+        Assert.Equal(AttributeAllowedLengths, AllowedLengthsFor(text));
+    }
+
+    /// <summary>
+    /// 上の分類テスト専用の「EF のモデルに載っていない enum プロパティ」。
+    /// 本番の型を使うと、その型が将来マップされたときにテストの意図が静かに反転する。
+    /// </summary>
+    private sealed class ProbeEnumHolder
+    {
+        // 列ではない enum プロパティ
+        public MeasureStatus Status { get; set; }
     }
 
     [Fact]
