@@ -29,20 +29,6 @@ namespace IncidentInsight.Tests.Models;
 public class FieldLengthsTests
 {
     /// <summary>
-    /// 属性側の検査対象となる型の一覧。
-    ///
-    /// <b>型名を書き並べない</b>のが要点。以前はエンティティを EF のモデルから導出する一方で、
-    /// ViewModel だけ 4 型を直書きしていた。その形だと <c>Models/ViewModels</c> へ新しい入力用
-    /// ViewModel を足し、そのプロパティに裸の <c>[MaxLength(200)]</c>（あるいは <c>ErrorMessage</c>
-    /// 未指定の <c>[MaxLength]</c>）を書いても、どの検査も対象に含めないため CI は緑のまま通る。
-    /// 結果として画面側の上限だけがエンティティ（<c>ShortText</c>=100 等）とずれ、
-    /// SQL Server / PostgreSQL 配備では保存時に列長超過（未捕捉の <c>DbUpdateException</c> = HTTP 500）に
-    /// なり、日本語 UI に英語の既定検証メッセージが混ざる。
-    ///
-    /// 名前空間や型名の接尾辞（"ViewModel"）ではなく<b>長さ上限の属性の有無</b>を条件にしているので、
-    /// 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
-    /// </summary>
-    /// <summary>
     /// 網羅ガード専用の「自分たちのアセンブリの型か」判定。
     ///
     /// <b>共有ヘルパー <c>AuditedEntityModel.IsOwnAssemblyType</c> をあえて呼ばない。</b>
@@ -86,6 +72,62 @@ public class FieldLengthsTests
                && property.PropertyType == typeof(string);
     }
 
+    /// <summary>
+    /// 裸の数値の検査に掛けるプロパティかを返す。
+    ///
+    /// 条件は「自分たちが宣言した」かつ「その数値が<b>文字数（長さ）</b>を意味する」こと。
+    /// 除くのは<b>要素数を数える制約だけ</b>（<c>List&lt;T&gt;</c> などのコレクション）で、
+    /// <c>string</c> はもちろん <c>byte[]</c>（バイト長）や値変換した enum 列（保存される文字列の長さ）は<b>残す</b>。
+    ///
+    /// ここを <c>string</c> 限定にすると穴が開く（実測）: 値変換した enum 列
+    /// （<c>PreventiveMeasure.Status</c> など）へ裸の <c>[MaxLength(20)]</c> を書くと、
+    /// CLR 型が enum なのでこの検査から外れ、モデル側の検査は 20 を <c>EnumCode</c> として許し、
+    /// 属性とモデルの一致検査も（値が同じなので）通って<b>全件緑</b>になった。
+    /// 実行不能な指示を避けたいのはコレクションの要素数だけなので、除外もそこに限る。
+    /// </summary>
+    private static bool IsNakedNumberCheckedProperty(PropertyInfo property)
+    {
+        // 基底クラスが宣言したプロパティは対象外(上限を決めているのが自分たちではない)
+        if (!AuditedEntityModel.IsDeclaredInOwnAssembly(property)) return false;
+
+        // 対象の型
+        var type = property.PropertyType;
+
+        // string と byte[] は「長さ」なので対象に残す
+        if (type == typeof(string) || type == typeof(byte[])) return true;
+
+        // それ以外のコレクションは要素数を数える制約なので対象外
+        return !typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
+    }
+
+    /// <summary>
+    /// そのプロパティの上限として許してよい値の集合を返す。
+    ///
+    /// 利用者が入力する文字列（<c>string</c>）は <see cref="AttributeAllowedLengths"/> だけ。
+    /// それ以外（値変換して文字列として保存する enum 列など）は、fluent と同じ
+    /// <see cref="ModelAllowedLengths"/> を許す —— <c>FieldLengths.EnumCode</c> は
+    /// そういう列にしか意味を持たないので、ViewModel の入力欄には引き続き使えない。
+    /// </summary>
+    private static int[] AllowedLengthsFor(PropertyInfo property)
+    {
+        // string は入力欄用の集合、それ以外は enum 列用を足した集合
+        return property.PropertyType == typeof(string) ? AttributeAllowedLengths : ModelAllowedLengths;
+    }
+
+    /// <summary>
+    /// 属性側の検査対象となる型の一覧。
+    ///
+    /// <b>型名を書き並べない</b>のが要点。以前はエンティティを EF のモデルから導出する一方で、
+    /// ViewModel だけ 4 型を直書きしていた。その形だと <c>Models/ViewModels</c> へ新しい入力用
+    /// ViewModel を足し、そのプロパティに裸の <c>[MaxLength(200)]</c>（あるいは <c>ErrorMessage</c>
+    /// 未指定の <c>[MaxLength]</c>）を書いても、どの検査も対象に含めないため CI は緑のまま通る。
+    /// 結果として画面側の上限だけがエンティティ（<c>ShortText</c>=100 等）とずれ、
+    /// SQL Server / PostgreSQL 配備では保存時に列長超過（未捕捉の <c>DbUpdateException</c> = HTTP 500）に
+    /// なり、日本語 UI に英語の既定検証メッセージが混ざる。
+    ///
+    /// 名前空間や型名の接尾辞（"ViewModel"）ではなく<b>長さ上限の属性の有無</b>を条件にしているので、
+    /// 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
+    /// </summary>
     private static IReadOnlyList<Type> GovernedTypes()
     {
         // 自分たちのアセンブリで長さ上限の属性を 1 つでも宣言している型を集める
@@ -146,28 +188,26 @@ public class FieldLengthsTests
     [MemberData(nameof(MaxLengthDeclaringTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
     {
-        // 属性に書いてよい上限の集合(ここに無い値は裸のマジックナンバーとみなす)
-        var allowed = AttributeAllowedLengths;
-
-        // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
+        // 対象型の公開プロパティのうち長さ上限が付いているものを列挙する
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            // 自分たちが宣言した string プロパティだけを見る(理由は IsGovernedInputProperty)
-            .Where(IsGovernedInputProperty)
+            // 数値が「長さ」を意味するプロパティだけを見る(理由は IsNakedNumberCheckedProperty)
+            .Where(IsNakedNumberCheckedProperty)
             // 1 つのプロパティに複数の長さ属性が付くこともあるので**すべて**を見る。
             // 最初の 1 つで打ち切ると、[MaxLength](正しい値) と [StringLength](裸の値) を
             // 並べるだけで 2 つ目が視界から外れる —— MVC は両方の validator を走らせるので
             // 実効上限は小さい方になり、綴りではなく「属性を 1 つ足す」形の抜け道になる
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 許容値のいずれとも一致しない上限を違反として拾う
-            .Where(x => !allowed.Contains(x.Limit.Length))
+            .Where(x => !AllowedLengthsFor(x.Property).Contains(x.Limit.Length))
             .Select(x => $"{type.Name}.{x.Property.Name} = {x.Limit.Length} ([{x.Limit.AttributeName}])")
             .ToList();
 
         // 違反ゼロであること(あればどのプロパティが裸の数値かをメッセージで示す)
         Assert.True(offenders.Count == 0,
-            "長さ上限の属性([MaxLength] / [StringLength])に FieldLengths 以外の裸の数値が使われています " +
-            $"(許容値: {string.Join(" / ", allowed)}): " + string.Join(", ", offenders));
+            "長さ上限の属性([MaxLength] / [StringLength] / [Length])に FieldLengths 以外の裸の数値が " +
+            $"使われています(許容値: 文字列は {string.Join(" / ", AttributeAllowedLengths)}、" +
+            $"値変換して保存する列は {string.Join(" / ", ModelAllowedLengths)}): " + string.Join(", ", offenders));
     }
 
     [Theory]

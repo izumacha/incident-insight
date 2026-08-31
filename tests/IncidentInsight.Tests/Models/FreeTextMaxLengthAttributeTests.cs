@@ -63,6 +63,28 @@ public class FreeTextMaxLengthAttributeTests
         // 一方 ApplicationUser.DisplayName / Department はこのリポジトリが足した業務列なので残る
         var columns = AuditedEntityModel.AppDeclaredStringColumnLengths(entityType);
 
+        // 前提確認: このエンティティが自前の string プロパティを宣言しているなら、
+        // 検査対象の列も最低 1 つは取れるはず。0 件なら「全部上限付き」と誤って緑になり、
+        // このエンティティについて検出網が黙って死ぬ(fail-closed にしておく)。
+        //
+        // 「自前の string プロパティを宣言しているなら」という条件を付けるのが要点。
+        // 無条件に非空を要求すると、この repo が確立したパターン(Identity の型を継承して
+        // 業務列を足す)に従って独自の string 列を持たない型を足したときに
+        // 「自分たちには足せない列を足せ」という実行不能な指示になる。
+        // 逆にスイート全体の合計で見ると granularity が失われ、あるエンティティの業務列が
+        // 別アセンブリの基底へ移って 0 件になっても、他のエンティティの列数で合計が
+        // 正のままになり**痕跡なく**そのエンティティだけ検査が空回りする(テスト件数も変わらない)
+        var declaresOwnStringProperty = entityType
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Any(p => p.PropertyType == typeof(string)
+                      && AuditedEntityModel.IsDeclaredInOwnAssembly(p));
+
+        // 自前の string プロパティがあるのに列が 1 つも取れないのは前提が崩れた状態
+        Assert.False(declaresOwnStringProperty && columns.Count == 0,
+            $"{entityType.Name} は自前の string プロパティを宣言しているのに、検査対象の列を " +
+            "1 つも取得できませんでした。AppDeclaredStringColumnLengths の条件が実装とずれています" +
+            "(このままでは上限の付け忘れがこのエンティティについて常に「違反ゼロ」= 緑になります)。");
+
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る
         var missing = columns
@@ -76,29 +98,6 @@ public class FreeTextMaxLengthAttributeTests
             $"入力経路と同じ上限({nameof(FieldLengths)} の定数)を [MaxLength] か HasMaxLength() で明示してください " +
             "(EF Core は保存時に DataAnnotations を検証しないため、ViewModel を経由しない書き込み経路が " +
             "生えた瞬間に無制限の文字列がそのまま永続化され、同じ値が AuditLog.ChangesJson にも積まれます)。");
-    }
-
-    [Fact]
-    public void GovernedEntities_HaveStringColumnsToExamine()
-    {
-        // 「検出網が死んでいないか」の確認。0 件だと「全部上限付き」と誤って緑になる。
-        //
-        // 以前はこれを各エンティティに対して Assert.NotEmpty で見ていたが、その形だと
-        // 実行不能な指示を出しうる —— この repo が確立したパターン(Identity の型を継承して
-        // 業務列を足す)に従って ApplicationRole : IdentityRole を足し、独自の string 列を
-        // 持たせなかった場合、そのエンティティだけ 0 件になって「自分たちには足せない列を
-        // 足せ」という失敗になる。CLAUDE.md が言う「実行不能な指示を出す検出網は、いずれ
-        // 『直せないので検査を緩める』方向へ倒れる」形そのもの。
-        //
-        // 見たいのは「この検査が 1 列も見ていない状態」なので、判定はスイート全体で行う
-        var totalColumns = AuditedEntityModel.LengthGovernedEntityTypes()
-            .Sum(t => AuditedEntityModel.AppDeclaredStringColumnLengths(t).Count);
-
-        // 全体で 1 列も見ていなければ、検査が対象を取得する条件が実装とずれている
-        Assert.True(totalColumns > 0,
-            "長さ上限の管理対象エンティティから、検査対象の string 列を 1 つも取得できませんでした。" +
-            "AppDeclaredStringColumnLengths の条件が実装とずれています" +
-            "(このままでは上限の付け忘れが常に「違反ゼロ」= 緑になります)。");
     }
 
     [Theory]
