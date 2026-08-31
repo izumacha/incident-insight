@@ -74,7 +74,7 @@ public class FreeTextMaxLengthAttributeTests
         // 数える対象は「マップ済み・主キー以外」に限る。単に「自前の string プロパティがあるか」で
         // 見ると、文字列を主キーにしたマスタ型や計算プロパティしか持たない型に対して
         // 「条件が実装とずれている」という誤った原因で落ちる(実測)
-        var ownStringColumnCount = AuditedEntityModel.OwnDeclaredMappedStringPropertyCount(entityType);
+        var ownStringColumnCount = AuditedEntityModel.OwnDeclaredMappedStringColumnCount(entityType);
 
         // 成り立つべき不変条件は「独立に数えた自前の string 列は、必ず検査対象に現れる」。
         //
@@ -90,12 +90,19 @@ public class FreeTextMaxLengthAttributeTests
         // 個人名の列が無制限で出荷された(テスト件数すら変わらない)
         var clrStringColumnCount = columns.Count(c => c.IsClrString);
 
-        // 独立に数えた自前の string 列は、必ず検査対象に現れるはず
-        Assert.True(clrStringColumnCount >= ownStringColumnCount,
-            $"{entityType.Name} は自前の string 列を {ownStringColumnCount} 件持つのに、検査対象の " +
-            $"string 列が {clrStringColumnCount} 件しか取得できていません。" +
-            "AppDeclaredStringColumnLengths の条件が実装とずれています" +
-            "(このままだと落ちた列について上限の付け忘れが素通りします)。");
+        // 独立に数えた自前の string 列と、検査対象に現れた string 列は**一致する**はず。
+        //
+        // >= ではなく == にするのが要点。両者は同じ条件(マップ済み・主キー以外・自分たちのもの・
+        // CLR 型が string)を数えているので、ずれること自体が絞り込みの異常。>= のままだと
+        // 「絞り込みが緩んで Identity の UserName / PasswordHash が戻ってきた」場合に
+        // このガードが沈黙し、代わりに本体が「PasswordHash に長さ上限がありません」という
+        // 無関係で実行不能な指示を出して落ちる
+        Assert.True(clrStringColumnCount == ownStringColumnCount,
+            $"{entityType.Name} の自前 string 列は {ownStringColumnCount} 件ですが、検査対象に " +
+            $"現れた string 列は {clrStringColumnCount} 件です。" +
+            "AppDeclaredStringColumnLengths の絞り込みが実装とずれています" +
+            "(少ないなら上限の付け忘れが素通りし、多いなら自分たちが決めていない列に " +
+            "FieldLengths の定数を要求してしまいます)。");
 
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る

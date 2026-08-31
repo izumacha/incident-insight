@@ -156,6 +156,9 @@ internal static class AuditedEntityModel
             .Select(p => (
                 Name: p.Name,
                 Property: FindClrProperty(entityType, p.Name),
+                // EF のモデル上の CLR 型が string か。shadow 列には CLR プロパティが無いので、
+                // 「CLR 型が string の列」を数える完全性ガードはこちらを見る必要がある
+                IsStringClrType: p.ClrType == typeof(string),
                 // 長さ上限は EF のモデルから読む。[MaxLength] 属性だけを見ると、fluent API の
                 // HasMaxLength() で設定した列(値変換を通す列はこちらで設定している)を
                 // 「上限なし」と誤判定してしまう。DB の列長を決めているのはモデル側の値
@@ -165,7 +168,7 @@ internal static class AuditedEntityModel
         // CLR プロパティを持つ列(= 属性で分類できる列)
         var clrBacked = columns
             .Where(c => c.Property != null)
-            .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength))
+            .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength, c.IsStringClrType))
             .ToList();
 
         // CLR プロパティを持たない列(= 属性を付けようがない列)。
@@ -173,7 +176,7 @@ internal static class AuditedEntityModel
         // 「裸の数値が設定されていないか」の検査は shadow 列にも掛ける必要がある
         var shadow = columns
             .Where(c => c.Property == null)
-            .Select(c => new ShadowColumn(c.Name, c.MaxLength))
+            .Select(c => new ShadowColumn(c.Name, c.MaxLength, c.IsStringClrType))
             .ToList();
 
         // 2 つに分けた結果をまとめて返す。
@@ -350,10 +353,12 @@ internal static class AuditedEntityModel
         // (件数を突き合わせる前提確認が、種類の違う列を数え合わせないようにするため)
         return clrBacked
             .Where(c => IsDeclaredInOwnAssembly(c.Property))
-            .Select(c => (c.Name, c.MaxLength, c.Property.PropertyType == typeof(string)))
+            .Select(c => (c.Name, c.MaxLength, c.IsStringClrType))
             // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す。
-            // CLR プロパティが無いので IsClrString は false
-            .Concat(shadow.Select(c => (c.Name, c.MaxLength, false)))
+            // IsClrString は EF のモデル上の CLR 型で決めるので、shadow の string 列も true になる
+            // ——ここを false 固定にすると、完全性ガードが shadow 列を数えられず、
+            // この .Concat を外す変異(= shadow 列が丸ごと検査対象から落ちる)を見逃す
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength, c.IsStringClrType)))
             .ToList();
     }
 
@@ -461,8 +466,8 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
-    /// そのエンティティが宣言する「マップ済み・主キー以外・自前・CLR 型が <c>string</c>」の
-    /// プロパティ数を返す。
+    /// そのエンティティの「マップ済み・主キー以外・自分たちのもの・CLR 型が <c>string</c>」の
+    /// 列数を返す（<b>shadow 列も含む</b>）。
     ///
     /// <see cref="AppDeclaredStringColumnLengths"/> が 0 件を返したときに、それが
     /// 「そもそも対象の列を持たない正当な型」なのか「検出網が対象を拾えなくなった」のかを
@@ -483,7 +488,7 @@ internal static class AuditedEntityModel
     /// 計算プロパティしか持たない型に対して「条件が実装とずれている」という<b>誤った原因</b>で
     /// 落ちる —— 直しようがないので、いずれ検査を緩める方向へ倒れる。
     /// </summary>
-    public static int OwnDeclaredMappedStringPropertyCount(Type entityType)
+    public static int OwnDeclaredMappedStringColumnCount(Type entityType)
     {
         // EF のモデルから対象エンティティの定義を引く
         var entity = Model.Value.FindEntityType(entityType);
@@ -495,13 +500,16 @@ internal static class AuditedEntityModel
         // IsDeclaredInOwnAssembly をあえて呼ばない理由は上のコメントを参照
         var ownAssembly = typeof(Incident).Assembly;
 
-        // マップ済み・主キー以外の列のうち、自前で宣言した string プロパティを数える
+        // マップ済み・主キー以外で CLR 型が string の列のうち、自分たちのものを数える。
+        //
+        // shadow 列(CLR プロパティを持たない列)も**数える**。数えないと、検査側が shadow 列を
+        // 取り込むのをやめる変異(= 上限なしの shadow 列が丸ごと素通りする)をガードが
+        // 見逃す ——実測でも、その変異を当てると 69/69 が全件緑のまま通った
         return entity.GetProperties()
             .Where(p => !p.IsPrimaryKey())
+            .Where(p => p.ClrType == typeof(string))
             .Select(p => FindClrProperty(entityType, p.Name))
-            .Count(pi => pi != null
-                         && pi.PropertyType == typeof(string)
-                         && pi.DeclaringType?.Assembly == ownAssembly);
+            .Count(pi => pi == null || pi.DeclaringType?.Assembly == ownAssembly);
     }
 
     /// <summary>
@@ -604,7 +612,7 @@ internal static class AuditedEntityModel
     /// <param name="Name">EF のモデル上の列名</param>
     /// <param name="Property">列に対応する CLR プロパティ(属性はここから読む)</param>
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
-    public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength);
+    public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength, bool IsStringClrType);
 
     /// <summary>
     /// CLR プロパティを持たない文字列列(shadow property)1 つぶんの情報。
@@ -612,7 +620,7 @@ internal static class AuditedEntityModel
     /// </summary>
     /// <param name="Name">EF のモデル上の列名</param>
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
-    public sealed record ShadowColumn(string Name, int? MaxLength);
+    public sealed record ShadowColumn(string Name, int? MaxLength, bool IsStringClrType);
 
     // その列を検査対象の「文字列列」とみなすかを判定する。
     // 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて黙って対象が

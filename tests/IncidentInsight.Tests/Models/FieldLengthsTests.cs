@@ -124,6 +124,22 @@ public class FieldLengthsTests
     }
 
     /// <summary>
+    /// そのプロパティに期待される書式の<b>定数名</b>を返す。
+    /// 失敗メッセージには生の文字列ではなくこちらを出す —— 生の文字列だけを見せると、
+    /// 開発者はそれを直書きして緑にしてしまい、定数を本番へ置いた意味（一元管理）が失われる。
+    /// </summary>
+    private static string ExpectedMessageConstantNameFor(PropertyInfo property)
+    {
+        // 分類に対応する定数名を返す
+        return ClassifyLimit(property) switch
+        {
+            LimitKind.ItemCount => nameof(FieldLengths.ItemCountMessage),
+            LimitKind.ByteLength => nameof(FieldLengths.ByteLengthMessage),
+            _ => nameof(FieldLengths.MaxLengthMessage),
+        };
+    }
+
+    /// <summary>
     /// そのプロパティの上限に付けるべき日本語メッセージの書式を返す（分類は <see cref="ClassifyLimit"/>）。
     ///
     /// コレクション（要素数の上限）に文字数の書式を流用すると、
@@ -302,7 +318,8 @@ public class FieldLengthsTests
         Assert.True(offenders.Count == 0,
             "長さ上限の属性([MaxLength] / [StringLength] / [Length])に FieldLengths 以外の裸の数値が " +
             $"使われています(許容値: 文字列は {string.Join(" / ", AttributeAllowedLengths)}、" +
-            $"値変換して保存する列は {string.Join(" / ", ModelAllowedLengths)}): " + string.Join(", ", offenders));
+            $"値変換して保存する列は {string.Join(" / ", ModelAllowedLengths)}、" +
+            "バイト長は専用の定数がまだ無いので FieldLengths へ追加が必要): " + string.Join(", ", offenders));
     }
 
     [Theory]
@@ -420,14 +437,14 @@ public class FieldLengthsTests
             .Where(x => x.Limit.AttributeName != nameof(MaxLengthAttribute)
                         || x.Limit.ErrorMessage != ExpectedMessageFor(x.Property))
             .Select(x => $"{type.Name}.{x.Property.Name} ([{x.Limit.AttributeName}]) " +
-                         $"→ 期待する書式: {ExpectedMessageFor(x.Property)}")
+                         $"→ 期待する書式: FieldLengths.{ExpectedMessageConstantNameFor(x.Property)}")
             .ToList();
 
         // 違反ゼロであること
         Assert.True(offenders.Count == 0,
             "入力を受ける型(EF のモデルに載っていない型)の長さ上限は、[MaxLength] に " +
             "共通の日本語エラーメッセージ書式を指定してください(文字数は FieldLengths.MaxLengthMessage、" +
-            "コレクションの件数は FieldLengths.ItemCountMessage。" +
+            "バイト長は FieldLengths.ByteLengthMessage、コレクションの件数は FieldLengths.ItemCountMessage。" +
             "[StringLength] / [Length] は書式の {1} の意味が違うため使わない): " + string.Join(", ", offenders));
     }
 
@@ -703,9 +720,13 @@ public class FieldLengthsTests
     /// <summary>
     /// <c>MaxLengthAttribute.IsValid</c> がその型の長さを測れるかを返す。
     ///
-    /// 実装は「<c>string</c> か、配列か、<c>ICollection</c>」で、それ以外は
-    /// <c>InvalidCastException</c> を投げる。判定をここへ写しているのは、
-    /// 属性の実装が投げる条件そのものを検査の条件にしたいため。
+    /// .NET 8 の実装は「<c>string</c>」「配列」「<b>読み取れる <c>int Count</c> を持つ型</b>」を
+    /// 受け入れ、それ以外で <c>InvalidCastException</c> を投げる。
+    ///
+    /// 条件を <c>ICollection</c> / <c>ICollection&lt;T&gt;</c> に狭めてはいけない（実測）:
+    /// <c>IReadOnlyCollection&lt;string&gt;</c> も、<c>int Count</c> だけを持つ独自型も、
+    /// 属性側は<b>例外を投げず検証に通る</b>のに、狭い判定では「実行時に HTTP 500 になる」という
+    /// <b>事実と異なる診断</b>で赤にしてしまい、開発者を正しい宣言を外す方向へ誘導する。
     /// </summary>
     private static bool IsMeasurableByLengthAttribute(Type type)
     {
@@ -715,10 +736,67 @@ public class FieldLengthsTests
         // 配列(char[] / byte[] / T[])は Length を持つ
         if (type.IsArray) return true;
 
-        // ICollection を実装していれば Count を持つ
-        return typeof(System.Collections.ICollection).IsAssignableFrom(type)
-               || type.GetInterfaces().Any(i => i.IsGenericType
-                                                && i.GetGenericTypeDefinition() == typeof(ICollection<>));
+        // 読み取れる int Count を持つ型(ICollection / ICollection<T> / IReadOnlyCollection<T> /
+        // 独自の Count プロパティ)は、属性が Count 経由で長さを測れる
+        return HasReadableIntCount(type)
+               || type.GetInterfaces().Any(HasReadableIntCount);
+    }
+
+    /// <summary>
+    /// その型に「読み取れる <c>int Count</c> プロパティ」があるかを返す
+    /// （<c>MaxLengthAttribute</c> が長さを測るのに使う手がかり）。
+    /// </summary>
+    private static bool HasReadableIntCount(Type type)
+    {
+        // 公開インスタンスプロパティ Count を探す
+        var count = type.GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
+
+        // int を返し、読み取れるものだけが該当する
+        return count != null && count.PropertyType == typeof(int) && count.CanRead;
+    }
+
+    [Fact]
+    public void MaxLengthDeclaringTypes_CoverEveryTypeWithALengthAttribute()
+    {
+        // 属性側の対象選別は ReadLengthLimits(= 実際に検査する述語そのもの)だけに依存している。
+        // つまり ReadLengthLimits を狭める「整理」を入れると、対象からも同時に落ちて
+        // 検出網が黙って無力化される —— たとえば [MaxLength] だけを見る形へ戻すと、
+        // (a) [StringLength] / [Length] の禁止が消え、(b) 長さ属性が [StringLength] だけの
+        // ViewModel は [Theory] のケースにすら入らなくなるが、そういう型が現時点で存在しない
+        // ため 517/517 緑のまま・テスト件数も変わらずに通る(痕跡ゼロ)。
+        //
+        // そこで対象を**独立した手がかり**で照合する。導出は「属性の型を引く」経路なので、
+        // ここでは「属性の**名前**が Length で終わるか」という別の経路で数える。
+        // 同じ経路でガードを書くと、導出が狭まったときにガードも一緒に狭まって意味がない。
+        var expected = typeof(ApplicationDbContext).Assembly
+            .GetTypes()
+            // 意図的な除外(AuditLog)は対象外
+            .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
+                          && AuditedEntityModel.IsMappedEntity(t)))
+            // 名前が "LengthAttribute" で終わる属性を宣言プロパティに持つ型を拾う
+            .Where(t => t.GetProperties(DeclaredInstanceProperties)
+                .Any(p => p.GetCustomAttributes(inherit: true)
+                    .Any(a => a.GetType().Name.EndsWith("LengthAttribute", StringComparison.Ordinal))))
+            .ToList();
+
+        // 手がかりが空だとこのガードは空振りになるので fail-closed で落とす
+        AssertClueIsReadable(expected, "名前が LengthAttribute で終わる属性を持つ型");
+
+        // 現在の導出結果
+        var governed = GovernedTypesCache.Value;
+
+        // 手がかりにあるのに対象へ入っていない型を拾う
+        var missing = expected
+            .Where(t => !governed.Contains(t))
+            .Select(t => t.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 取りこぼしが 1 件も無いこと(fail-closed)
+        Assert.True(missing.Count == 0,
+            "長さ上限の属性を持つ型が、属性側の検査対象から外れています: " + string.Join(", ", missing) +
+            "。AuditedEntityModel.ReadLengthLimits が対象の属性を拾えなくなっている可能性があります " +
+            "——このままだとその型の裸の数値もメッセージ漏れも黙って素通りします。");
     }
 
     [Fact]
