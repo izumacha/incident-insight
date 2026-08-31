@@ -78,7 +78,43 @@ public class FieldLengthsTests
         BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
     /// <summary>
-    /// そのプロパティの上限に付けるべき日本語メッセージの書式を返す。
+    /// 長さ上限の属性が付いた数値が「何を数えているか」の分類。
+    /// </summary>
+    private enum LimitKind
+    {
+        /// <summary>文字数・バイト数などの「長さ」（<c>string</c> / <c>byte[]</c> など）。</summary>
+        Length,
+
+        /// <summary>コレクションの「要素数」（<c>List&lt;T&gt;</c> など）。</summary>
+        ItemCount,
+    }
+
+    /// <summary>
+    /// そのプロパティの長さ属性が何を数えているかを分類する。
+    ///
+    /// <b>分類はここ 1 か所だけで行う。</b> 以前は「検査に掛けるか」と「どの文言を要求するか」が
+    /// それぞれ同じ <c>string</c> / <c>byte[]</c> / <c>IEnumerable</c> の判定を持っていた。
+    /// 片方にだけ新しい種類（<c>char[]</c> など）を足すと、
+    /// 「文字数の文言は要求されるのに裸の数値は誰も見ない」という食い違いが生まれる
+    /// —— このファイル自身が繰り返し戒めている「写しの片方が取り残される」形。
+    /// </summary>
+    private static LimitKind ClassifyLimit(PropertyInfo property)
+    {
+        // 対象の型
+        var type = property.PropertyType;
+
+        // string と byte[] は「長さ」
+        if (type == typeof(string) || type == typeof(byte[])) return LimitKind.Length;
+
+        // それ以外のコレクションは「要素数」
+        if (typeof(System.Collections.IEnumerable).IsAssignableFrom(type)) return LimitKind.ItemCount;
+
+        // 残り(値変換した enum 列など)は保存される文字列の「長さ」
+        return LimitKind.Length;
+    }
+
+    /// <summary>
+    /// そのプロパティの上限に付けるべき日本語メッセージの書式を返す（分類は <see cref="ClassifyLimit"/>）。
     ///
     /// コレクション（要素数の上限）に文字数の書式を流用すると、
     /// <c>[MaxLength(3)] List&lt;string&gt; Tags</c> が「タグは3文字以内で入力してください。」という
@@ -88,23 +124,18 @@ public class FieldLengthsTests
     /// </summary>
     private static string ExpectedMessageFor(PropertyInfo property)
     {
-        // 対象の型
-        var type = property.PropertyType;
-
-        // string と byte[] は「長さ」なので文字数の書式
-        if (type == typeof(string) || type == typeof(byte[])) return FieldLengths.MaxLengthMessage;
-
-        // それ以外のコレクションは要素数なので件数の書式
-        if (typeof(System.Collections.IEnumerable).IsAssignableFrom(type)) return FieldLengths.ItemCountMessage;
-
-        // 残りは長さ(文字数)として扱う
-        return FieldLengths.MaxLengthMessage;
+        // 分類に対応する書式を返す
+        return ClassifyLimit(property) == LimitKind.ItemCount
+            ? FieldLengths.ItemCountMessage
+            : FieldLengths.MaxLengthMessage;
     }
 
     /// <summary>
     /// 裸の数値の検査に掛けるプロパティかを返す。
     ///
-    /// 条件は「自分たちが宣言した」かつ「その数値が<b>文字数（長さ）</b>を意味する」こと。
+    /// 条件は「その数値が<b>長さ</b>を意味する」こと（走査側が
+    /// <c>BindingFlags.DeclaredOnly</c> で自アセンブリの型だけを見ているので、
+    /// 「自分たちが宣言した」かどうかはここでは判定しない）。
     /// 除くのは<b>要素数を数える制約だけ</b>（<c>List&lt;T&gt;</c> などのコレクション）で、
     /// <c>string</c> はもちろん <c>byte[]</c>（バイト長）や値変換した enum 列（保存される文字列の長さ）は<b>残す</b>。
     ///
@@ -116,17 +147,9 @@ public class FieldLengthsTests
     /// </summary>
     private static bool IsNakedNumberCheckedProperty(PropertyInfo property)
     {
-        // 基底クラスが宣言したプロパティは対象外(上限を決めているのが自分たちではない)
-        if (!AuditedEntityModel.IsDeclaredInOwnAssembly(property)) return false;
-
-        // 対象の型
-        var type = property.PropertyType;
-
-        // string と byte[] は「長さ」なので対象に残す
-        if (type == typeof(string) || type == typeof(byte[])) return true;
-
-        // それ以外のコレクションは要素数を数える制約なので対象外
-        return !typeof(System.Collections.IEnumerable).IsAssignableFrom(type);
+        // 「長さ」を数えているものだけが FieldLengths の定数と突き合わせる対象。
+        // 要素数の上限に FreeText(500) を当てろというのは実行不能な指示になる
+        return ClassifyLimit(property) == LimitKind.Length;
     }
 
     /// <summary>
@@ -356,7 +379,8 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(DeclaredInstanceProperties)
-            // 自分たちが宣言したプロパティを**型を問わず**見る。
+            // 型を問わず、その型が宣言したプロパティをすべて見る
+            // (自アセンブリかどうかは走査条件 DeclaredInstanceProperties が担保している)。
             //
             // 裸の数値の検査(IsNakedNumberCheckedProperty)はコレクションを除くが、その除外を
             // ここへ流用してはいけない。除外の根拠は「要素数に FieldLengths の定数を当てろ」が
@@ -365,18 +389,18 @@ public class FieldLengthsTests
             // 裸の数値もメッセージ漏れも両方素通りし、日本語 UI に
             // "The field Tags must be a string or array type with a maximum length of '3'." が出る
             // (実測。main では捕まっていた退行)
-            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
             //  (b) [MaxLength] だが ErrorMessage が共通書式でない
             //
-            // (a) を違反にするのは、共通書式 FieldLengths.MaxLengthMessage の {1} が
-            // 「上限」を指す前提で書かれているため。[Length] の FormatErrorMessage は
-            // {1} に**最小長**を渡すので、同じ書式を付けると画面には
-            // 「◯◯は1文字以内で入力してください。」という誤った文言が出る(実測)。
-            // 属性ごとに別の書式を用意するより、入力を受ける型では綴りを [MaxLength] に
-            // そろえる方が単純で、[StringLength] / [Length] の抜け道も同時に塞げる
+            // (a) を違反にする理由は綴りによって違う:
+            //   - [Length] … FormatErrorMessage が {1} に**最小長**を渡すため、
+            //     共通書式({1} が上限の前提)を付けると「◯◯は1文字以内で…」と壊れる(実測)
+            //   - [StringLength] … {1} は上限なので文言自体は壊れない。それでも弾くのは、
+            //     同じことを表す綴りが増えるほど検出網に抜け道ができるから
+            //     (この PR は [MaxLength] しか見ていなかった時代に [StringLength] が
+            //      丸ごと抜け道になっていたのを塞いだ)。入力を受ける型では綴りを 1 つに保つ
             .Where(x => x.Limit.AttributeName != nameof(MaxLengthAttribute)
                         || x.Limit.ErrorMessage != ExpectedMessageFor(x.Property))
             .Select(x => $"{type.Name}.{x.Property.Name} ([{x.Limit.AttributeName}]) " +

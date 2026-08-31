@@ -398,8 +398,19 @@ internal static class AuditedEntityModel
         // EF のモデルから対象エンティティの定義を引く
         var entity = Model.Value.FindEntityType(entityType);
 
-        // モデルに載っていない型は対象外(呼び出し側はマップ済みの型だけを渡す)
-        if (entity is null) return Array.Empty<(string, int, PropertyInfo?)>();
+        // モデルに載っていない型を渡された場合は検査の前提が崩れるので落とす(fail-closed)。
+        //
+        // 空を返してはいけない。属性側の型一覧(ViewModel を含む)をモデル側の [Theory] へ
+        // 取り違えて配線すると、全ケースが 0 列を評価して**緑のまま**通ってしまう
+        // ——実測でも、モデル側 2 検査の [MemberData] を取り違えると 41/41 で緑になった。
+        // 姉妹メソッド PartitionStringColumns と同じく例外で気付けるようにする
+        if (entity is null)
+        {
+            // どの型が解決できなかったのかを示して失敗させる
+            throw new InvalidOperationException(
+                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。" +
+                "モデル側の検査に、EF のモデルを持たない型(ViewModel など)が渡されています。");
+        }
 
         // 主キー以外で長さ上限が設定されている列を集める
         return entity.GetProperties()

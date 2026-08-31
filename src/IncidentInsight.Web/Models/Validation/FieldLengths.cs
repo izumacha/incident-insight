@@ -59,6 +59,13 @@ public static class FieldLengths
     /// <c>[MaxLength(3)] List&lt;string&gt; Tags</c> に文字数の書式を付けると、
     /// 画面には「タグは3文字以内で入力してください。」という<b>誤った文言</b>が出る
     /// （実際に制限しているのはタグの「件数」）。
+    ///
+    /// <b>現時点で本番の利用箇所は無い</b>（コレクションに上限を付けた入力欄がまだ無いため）。
+    /// それでもテスト側に置かず本番の定数として持つのは、この書式が
+    /// <c>NonEntityMaxLength_UsesJapaneseSharedErrorMessage</c> が<b>要求する値</b>だから。
+    /// テストの中に隠すと、最初にコレクションの上限を足す人はこの文言を参照できず、
+    /// 自分で別の文字列を書くしかなくなる（＝ <see cref="MaxLengthMessage"/> と同じ理由で
+    /// 一元管理すべき値が、最初の利用時点で必ず二重化する）。
     /// </summary>
     // 要素数の上限を伝える日本語メッセージの書式
     public const string ItemCountMessage = "{0}は{1}件以内で入力してください。";
