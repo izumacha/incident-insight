@@ -175,9 +175,17 @@ public class FieldLengthsTests
     [MemberData(nameof(LengthGovernedTypes))]
     public void ViewModelMaxLength_UsesJapaneseSharedErrorMessage(Type type)
     {
-        // 入力用 ViewModel だけが画面へエラーメッセージを出す。エンティティ側の [MaxLength] は
-        // EF Core の列長定義にしか使われず、メッセージが利用者に見えないため検査対象外にする
-        if (!type.Name.EndsWith("ViewModel", StringComparison.Ordinal)) return;
+        // 入力用の型だけが画面へエラーメッセージを出す。エンティティ側の [MaxLength] は
+        // EF Core の列長定義にしか使われず、メッセージが利用者に見えないため検査対象外にする。
+        //
+        // 判定を型名の接尾辞("ViewModel")ではなく**EF のモデルに載っているか**で行うのが要点。
+        // 対象の導出(GovernedTypes)は「[MaxLength] を宣言している型」へ広げてあるのに、ここだけ
+        // 接尾辞で絞ると導出だけが広がって検査が広がらない —— 実測でも、Models/ViewModels へ
+        // 接尾辞の無い MeasureForm を足して ErrorMessage 無しの [MaxLength] を書くと全件緑で通り、
+        // 日本語 UI に英語の既定メッセージ("The field ... maximum length of '500'.")が混ざった。
+        // 「エンティティか、画面へ出す入力用の型か」を分けたいのだから、命名規約ではなく
+        // モデルに載っているかどうかで切る
+        if (AuditedEntityModel.IsMappedEntity(type)) return;
 
         // [MaxLength] が付いた公開プロパティのうち、共通の日本語書式を使っていないものを拾う。
         // 既定のメッセージは英語("The field ... maximum length of '500'.")のため、
@@ -199,12 +207,11 @@ public class FieldLengthsTests
             "(FieldLengths.MaxLengthMessage) が指定されていません: " + string.Join(", ", offenders));
     }
 
-    // 長さ上限の管理対象から意図的に外しているエンティティと、その理由。
-    // 下の網羅ガードが「見落とし」と「意図的な除外」を区別するために使う
-    private static readonly Dictionary<string, string> LengthGovernanceExclusions = new()
-    {
-        [nameof(AuditLog)] = "監査証跡スキーマ固有の列長(256/64/16)で、業務入力の上限ではないため",
-    };
+    // 長さ上限の管理対象から意図的に外している型と理由。導出・網羅ガード・属性側の対象導出の
+    // 3 つが同じ表を読むよう、唯一の真実の源である AuditedEntityModel 側を参照する
+    // (ここに写しを置くと、どちらへ除外を足しても片方が取り残される)
+    private static IReadOnlyDictionary<string, string> LengthGovernanceExclusions =>
+        AuditedEntityModel.LengthGovernanceExclusions;
 
     [Fact]
     public void LengthGovernedTypes_CoverEveryOwnedDbSet()
@@ -224,25 +231,40 @@ public class FieldLengthsTests
         // ここでは別の宣言箇所である ApplicationDbContext の DbSet<T> 宣言を読む。
         // 同じ経路でガードを書くと、導出が狭まったときにガードも一緒に狭まり、
         // 「取りこぼしゼロ = 緑」として無力化される(この repo が各所で避けている形)。
-        var ownedEntityTypes = OwnDbContextTypes()
+        // 手がかり (a): ApplicationDbContext が**自分で宣言した** DbSet<T>。
+        // DeclaredOnly を付けるのは、基底の IdentityDbContext が宣言する DbSet(Users / Roles など)
+        // をまとめて拾うと、Identity が列長を決める型まで業務エンティティと取り違えるため
+        var declaredDbSetTypes = OwnDbContextTypes()
             .SelectMany(t => t.GetProperties(
-                // DeclaredOnly を付けて「その型自身が宣言した」プロパティだけを見る。
-                // 付けないと基底の IdentityDbContext が宣言する DbSet(Users / Roles など)まで
-                // 拾ってしまい、Identity が列長を決める型を業務エンティティと取り違える
                 BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
             // DbSet<T> 型のプロパティだけを拾う
             .Where(p => p.PropertyType.IsGenericType
                         && p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
             // 型引数 T(= エンティティの CLR 型)を取り出す
-            .Select(p => p.PropertyType.GetGenericArguments()[0])
-            .Distinct()
-            .ToList();
+            .Select(p => p.PropertyType.GetGenericArguments()[0]);
 
-        // DbSet が 1 つも読めないのは前提が崩れた状態(リフレクションの条件が古い)なので落とす。
+        // 手がかり (b): 基底の総称 DbContext へ**自分たちが渡した型引数**
+        // (IdentityDbContext<ApplicationUser> の ApplicationUser など)。
+        //
+        // (a) だけでは足りない。ApplicationUser は Identity 側の DbSet(Users)で公開されるため
+        // DeclaredOnly に掛からず、本 PR で唯一新たに管理対象へ入れた型なのにガードの視界の外だった。
+        // 実測でも、導出へ IdentityUser 派生の除外を戻すと ApplicationUser が長さ関連 4 検査から
+        // 同時に消えるのに 504 → 500 で全件緑のまま通った(痕跡はテスト件数の減少だけ)。
+        // 「自分たちが型引数として名指しした自アセンブリの型」は、DbSet の宣言と同じく
+        // 導出とは独立した宣言箇所なので、手がかりとして加える
+        var identityUserTypes = OwnDbContextBaseTypeArguments();
+
+        // 2 つの手がかりを合わせたものが「管理対象であるべき」型の下限
+        var ownedEntityTypes = declaredDbSetTypes.Concat(identityUserTypes).Distinct().ToList();
+
+        // 手がかりが 1 つも読めないのは前提が崩れた状態(リフレクションの条件が古い)なので落とす。
         // ここを素通りさせると「見るべき対象ゼロ = 緑」でガード自体が無力化される
-        Assert.True(ownedEntityTypes.Count > 0,
+        Assert.True(declaredDbSetTypes.Any(),
             "ApplicationDbContext から DbSet<T> の宣言を 1 つも読み取れませんでした。" +
             "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
+        Assert.True(identityUserTypes.Count > 0,
+            "ApplicationDbContext の基底へ渡した自アセンブリの型引数(ApplicationUser など)を " +
+            "1 つも読み取れませんでした。このガードが対象を取得する条件が実装とずれています。");
 
         // 現在の導出結果(検査対象になっているエンティティ)
         var governed = AuditedEntityModel.LengthGovernedEntityTypes();
@@ -263,6 +285,36 @@ public class FieldLengthsTests
             "実装とずれている可能性があります —— このままだと裸の [MaxLength]・上限の付け忘れ・" +
             "値変換列の切り詰めの検査が、そのエンティティについて黙って効かなくなります。" +
             "意図的に外すなら LengthGovernanceExclusions へ理由付きで登録してください。");
+    }
+
+    /// <summary>
+    /// <c>ApplicationDbContext</c> が基底の総称 DbContext へ渡した型引数のうち、
+    /// 自分たちのアセンブリで定義された型を返す（<c>IdentityDbContext&lt;ApplicationUser&gt;</c> の
+    /// <c>ApplicationUser</c> など）。
+    ///
+    /// これも「自分たちが名指しした宣言」なので、導出（EF のモデルをアセンブリで絞る経路）とは
+    /// 独立した手がかりになる。Identity 側の型引数（<c>IdentityRole</c> 等）は別アセンブリなので落ちる。
+    /// </summary>
+    private static IReadOnlyList<Type> OwnDbContextBaseTypeArguments()
+    {
+        // 自分たちのアセンブリ(綴りを書かず DbContext の所属から引く)
+        var ownAssembly = typeof(ApplicationDbContext).Assembly;
+
+        // 見つけた型引数を溜めるリスト
+        var found = new List<Type>();
+
+        // ApplicationDbContext から基底へ 1 つずつさかのぼる
+        for (var type = typeof(ApplicationDbContext); type != null; type = type.BaseType)
+        {
+            // 総称でない基底には型引数が無いので読み飛ばす
+            if (!type.IsGenericType) continue;
+
+            // 型引数のうち自分たちのアセンブリのものだけを積む
+            found.AddRange(type.GetGenericArguments().Where(a => a.Assembly == ownAssembly));
+        }
+
+        // 同じ型が複数の基底に現れることがあるので重複を除いて返す
+        return found.Distinct().ToList();
     }
 
     // 網羅ガードが DbSet<T> の宣言を探す型の並び。

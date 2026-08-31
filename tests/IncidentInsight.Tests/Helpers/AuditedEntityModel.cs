@@ -238,34 +238,42 @@ internal static class AuditedEntityModel
         // 自分たちのアセンブリ(IncidentInsight.Web)。DbContext の所属から引くので綴りを書かない
         var ownAssembly = typeof(ApplicationDbContext).Assembly;
 
-        // 監査証跡スキーマ固有の列長を持つため除くエンティティ(理由は上のコメント)
-        const string auditTrailEntityName = nameof(AuditLog);
-
         // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集める
         var governed = Model.Value.GetEntityTypes()
             .Select(e => e.ClrType)
             // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
             .Where(t => t.Assembly == ownAssembly)
-            // 監査証跡スキーマ固有の列長を持つ AuditLog を除く
-            .Where(t => t.Name != auditTrailEntityName)
+            // 意図的に外している型(現在は AuditLog のみ。理由は LengthGovernanceExclusions)を除く
+            .Where(t => !LengthGovernanceExclusions.ContainsKey(t.Name))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
 
-        // 名前で除いている AuditLog が EF のモデル上に実在するかを確かめる(fail-closed)。
-        // モデルから消えたのに除外だけが残ると、以後この名前は何も除かない「飾り」になり、
-        // 読み手には除外が効いているように見える
-        if (Model.Value.GetEntityTypes().All(e => e.ClrType.Name != auditTrailEntityName))
-        {
-            // どの除外が実在の型を指していないのかを示して失敗させる
-            throw new InvalidOperationException(
-                $"長さ上限の管理対象から除外している '{auditTrailEntityName}' に対応するエンティティが " +
-                "EF のモデルにありません。除外の綴りが実装とずれています。");
-        }
-
         // 導出結果を返す
         return governed;
     }
+
+    /// <summary>
+    /// 長さ上限の管理対象から意図的に外している型と、その理由。
+    ///
+    /// **この表が「意図的な除外」の唯一の真実の源**で、導出（<see cref="LengthGovernedEntityTypes"/>）と
+    /// 網羅ガード（<c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>）と
+    /// 属性側の対象導出（<c>FieldLengthsTests.GovernedTypes</c>）の 3 つが同じここを読む。
+    ///
+    /// 以前は導出側が <c>nameof(AuditLog)</c> をローカル定数で持ち、ガード側が別の表を持つ
+    /// 写しの形だった。その形だとどちらへ除外を足しても片方が取り残される —— 実測でも、
+    /// ガード側の表にだけ <c>CauseCategory</c> を登録するとモデル側 3 検査は除外せずに走り、
+    /// 「除外したはずの型」で検査が落ちた（逆に導出側だけへ足すと、ガードが
+    /// 「導出条件がずれている」という**誤った原因**を指して落ちる）。
+    ///
+    /// 理由を必須にしているのは <c>[NotPhi("理由")]</c> と同じ考え方で、
+    /// 「とりあえず検出網を黙らせる」使い方を残さないため。
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> LengthGovernanceExclusions =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [nameof(AuditLog)] = "監査証跡スキーマ固有の列長(256/100/64/16)で、業務入力の上限ではないため",
+        };
 
     /// <summary>
     /// 長さ上限の管理対象エンティティを xUnit の <c>[MemberData]</c> へ渡す形にして返す。
@@ -286,7 +294,7 @@ internal static class AuditedEntityModel
     /// <summary>
     /// 長さ上限の検査に掛ける「自分たちが宣言した」文字列列を、列名と上限の組で返す。
     ///
-    /// <see cref="AllStringColumnLengths"/> との違いは、<b>基底クラスが宣言した列を落とす</b>点。
+    /// CLR プロパティを持つ列と shadow 列の両方を対象にするが、<b>基底クラスが宣言した列は落とす</b>。
     /// <c>ApplicationUser</c> は <c>IdentityUser</c> を継承しており、<c>UserName</c> /
     /// <c>Email</c> / <c>PasswordHash</c> などの列長は ASP.NET Core Identity が決める
     /// （<c>FieldLengths</c> の定数を当てはめる対象ではない）。一方
@@ -359,22 +367,6 @@ internal static class AuditedEntityModel
         return PartitionStringColumns(entityType).Shadow.Select(c => c.Name).ToList();
     }
 
-    /// <summary>
-    /// 「列名と長さ上限」だけが要る検査のために、CLR プロパティの有無を問わず
-    /// すべての文字列列を返す。
-    ///
-    /// 長さ上限の検査は属性を読まないので shadow property も対象にできる。ここで
-    /// <see cref="ClrBackedStringColumns"/> を使ってしまうと、fluent で裸の数値を設定した
-    /// shadow 列が「属性を付けられないから対象外」という無関係な理由で素通りする。
-    /// </summary>
-    public static IReadOnlyList<(string Name, int? MaxLength)> AllStringColumnLengths(Type entityType)
-    {
-        // 2 つに分けた結果を、検査に必要な「名前と上限」だけの形へそろえて連結する
-        var (clrBacked, shadow) = PartitionStringColumns(entityType);
-        return clrBacked.Select(c => (c.Name, c.MaxLength))
-            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
-            .ToList();
-    }
 
     /// <summary>
     /// 「文字列として保存される」列 1 つぶんの情報。

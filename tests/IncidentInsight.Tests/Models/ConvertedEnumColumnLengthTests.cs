@@ -1,9 +1,5 @@
-// ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
-using IncidentInsight.Web.Data;
-// 監査対象エンティティを導出する共有ヘルパーを使うために取り込む
+// 長さ上限の管理対象を導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
-// DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
-using Microsoft.EntityFrameworkCore;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
@@ -41,8 +37,13 @@ public class ConvertedEnumColumnLengthTests
         // (ConcurrentDictionary)経由で「見た列」を受け取っていた。その形だと
         //   - 切り詰め違反があるとガード側も同じ例外で落ち、ガード固有の失敗メッセージ
         //     (「見るべき列を全部見ていない」)が出ないので原因の切り分けが逆に難しくなる
-        //   - 全エンティティの走査が 2 回走り、側路がプロセス寿命の static として残り続ける
-        // という副作用があった。純粋関数にすれば、両者が同じ走査を独立に呼べる
+        //   - 側路がプロセス寿命の static として残り続ける
+        // という副作用があった。純粋関数にすれば、両者が同じ走査を独立に呼べる。
+        //
+        // なお走査そのものは今も 2 回走る([Theory] の各ケースで 1 回、下の網羅ガードで全件もう 1 回)。
+        // 監査対象は数エンティティ・各 20 列程度で、EF の組み立て済みモデルを読むだけなので
+        // 実測でも差は出ない。ここで結果を共有すると、また「片方が書いて片方が読む」形に戻り、
+        // 実行順に依存する脆さを持ち込むことになるため、素直に 2 回走らせている
         var (offenders, _) = ScanConvertedColumns(entityType);
 
         // 超過が 1 件も無いことを確認する(失敗時は列・値・長さをメッセージで示す)
