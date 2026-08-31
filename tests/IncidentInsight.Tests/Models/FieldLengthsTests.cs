@@ -1,3 +1,5 @@
+// ドメインモデル(Incident)をガードのアンカーとして参照するために取り込む
+using IncidentInsight.Web.Models;
 // 文字数上限の唯一の真実の源(FieldLengths)を検証対象として取り込む
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
@@ -40,11 +42,53 @@ public class FieldLengthsTests
     /// 名前空間や型名の接尾辞（"ViewModel"）ではなく<b>長さ上限の属性の有無</b>を条件にしているので、
     /// 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
     /// </summary>
+    /// <summary>
+    /// 網羅ガード専用の「自分たちのアセンブリの型か」判定。
+    ///
+    /// <b>共有ヘルパー <c>AuditedEntityModel.IsOwnAssemblyType</c> をあえて呼ばない。</b>
+    /// このガードの存在意義は「導出が対象を取りこぼしていないか」を<b>独立した手がかり</b>で
+    /// 照合することにある。導出と同じ述語を通すと、その 1 つを狭めた瞬間に導出とガードが
+    /// <b>一緒に</b>狭まり、ガードは「取りこぼしゼロ＝緑」で無力化される —— 実測でも、
+    /// 共有述語へ条件を 1 つ足して同時にそのエンティティの <c>[MaxLength]</c> を消すと
+    /// 507 → 501 件で<b>全件緑のまま</b>通った（痕跡はテスト件数の減少だけ）。
+    ///
+    /// つまりここは DRY より<b>手がかりの独立性</b>を優先する箇所で、重複は意図的。
+    /// アンカーをモデルの型（<c>Incident</c>）に変えて、別経路で同じ問いに答える。
+    /// </summary>
+    private static bool IsGuardOwnAssemblyType(Type type)
+    {
+        // ドメインモデルが置かれているアセンブリと同じなら自前の型
+        return type.Assembly == typeof(Incident).Assembly;
+    }
+
+    /// <summary>
+    /// 属性側の検査に掛けるプロパティかを返す。条件は 2 つ。
+    ///
+    /// 1. <b>自分たちが宣言したもの</b> … 基底クラス（Identity など）が宣言したプロパティは、
+    ///    上限を決めているのが自分たちではないので <c>FieldLengths</c> の定数を当てはめる対象でもない。
+    /// 2. <b>型が <c>string</c></b> … <c>[MaxLength]</c> / <c>[Length]</c> は<b>文字数以外にも使える</b>。
+    ///    コレクションの要素数（<c>[Length(1, 10)] List&lt;string&gt; Measures</c> は、この repo の
+    ///    <c>HasAtLeastOneValidMeasure</c> を DataAnnotations で書いた自然な形）や
+    ///    <c>byte[]</c> の長さにも付く。string に限らないと、そういう正当な宣言に対して
+    ///    「その 10 を <c>FieldLengths.FreeText</c>(500) か <c>ShortText</c>(100) にしろ」
+    ///    「<c>{0}は{1}文字以内で入力してください。</c> を付けろ」という<b>実行不能な指示</b>を出す。
+    ///    CLAUDE.md が言う「実行不能な指示を出す検出網は、いずれ『直せないので検査を緩める』
+    ///    方向へ倒れる」形そのものなので、文字数の規約は文字列にだけ課す。
+    ///
+    /// なおモデル側の検査（<c>ModelMaxLength_AgreesWithMaxLengthAttribute</c>）はここを通さない。
+    /// あちらの対象は EF が文字列として保存する列に限られており、値変換した enum 列（CLR 型は enum）
+    /// も含める必要があるため。
+    /// </summary>
+    private static bool IsGovernedInputProperty(PropertyInfo property)
+    {
+        // 自分たちが宣言したプロパティで、かつ型が string のものだけを対象にする
+        return AuditedEntityModel.IsDeclaredInOwnAssembly(property)
+               && property.PropertyType == typeof(string);
+    }
+
     private static IReadOnlyList<Type> GovernedTypes()
     {
-        // 除外の判定は完全修飾名で行う(単純名だと同名の別型まで巻き添えで落ちる)
-
-        // 自分たちのアセンブリで [MaxLength] を 1 つでも宣言している型を集める
+        // 自分たちのアセンブリで長さ上限の属性を 1 つでも宣言している型を集める
         return typeof(ApplicationDbContext).Assembly
             .GetTypes()
             // 意図的な除外(AuditLog は列長の出所が監査証跡スキーマ)を外す。
@@ -56,9 +100,9 @@ public class FieldLengthsTests
             // 辞書引きを先に置いて、アセンブリ内の全型に対して EF モデル検索が走らないようにする
             .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
                           && AuditedEntityModel.IsMappedEntity(t)))
-            // 自分たちが宣言したプロパティに長さ上限の属性があるものだけを残す
+            // 自分たちが宣言した string プロパティに長さ上限の属性があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
+                .Where(IsGovernedInputProperty)
                 .Any(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
@@ -108,9 +152,8 @@ public class FieldLengthsTests
         // 対象型の公開プロパティのうち [MaxLength] が付いているものを列挙する
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            // 基底クラス(Identity など)が宣言したプロパティは対象外。列長を決めているのが
-            // 自分たちではない以上、FieldLengths の定数を当てはめる対象でもない
-            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
+            // 自分たちが宣言した string プロパティだけを見る(理由は IsGovernedInputProperty)
+            .Where(IsGovernedInputProperty)
             // 1 つのプロパティに複数の長さ属性が付くこともあるので**すべて**を見る。
             // 最初の 1 つで打ち切ると、[MaxLength](正しい値) と [StringLength](裸の値) を
             // 並べるだけで 2 つ目が視界から外れる —— MVC は両方の validator を走らせるので
@@ -215,8 +258,8 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            // 基底クラスが宣言したプロパティは対象外(自分たちが書いた文言ではない)
-            .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
+            // 自分たちが宣言した string プロパティだけを見る(理由は IsGovernedInputProperty)
+            .Where(IsGovernedInputProperty)
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
@@ -275,12 +318,13 @@ public class FieldLengthsTests
                         && p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
             // 型引数 T(= エンティティの CLR 型)を取り出す
             .Select(p => p.PropertyType.GetGenericArguments()[0])
-            // 自分たちのアセンブリの型だけを残す。導出側も同じ条件で絞っているので、
-            // ここを外すと「便利のために DbSet<IdentityRole> を生やしただけ」で
-            // ガードが赤くなり、しかも「導出条件(所属アセンブリ)がずれている」という
-            // 誤った原因を指す —— 唯一の逃げ道が「フレームワークの型を除外表へ足す」に
-            // なってしまい、人がレビューすべき表を無関係な型で膨らませる
-            .Where(AuditedEntityModel.IsOwnAssemblyType)
+            // 自分たちのアセンブリの型だけを残す。外すと「便宜のために DbSet<IdentityRole> を
+            // 生やしただけ」でガードが赤くなり、しかも「導出条件がずれている」という誤った
+            // 原因を指す(唯一の逃げ道が「フレームワークの型を除外表へ足す」になってしまう)。
+            //
+            // ただし判定には**あえて共有ヘルパーを使わない**(IsGuardOwnAssemblyType)。理由は
+            // そちらのコメントを参照
+            .Where(IsGuardOwnAssemblyType)
             // ここで確定させる。遅延のままだと下の前提確認と ownedEntityTypes が
             // それぞれ独立に走査を回し、「前提を確認した列」と「実際に使う列」が別の値になる
             .Distinct()
@@ -350,7 +394,7 @@ public class FieldLengthsTests
             if (!type.IsGenericType) continue;
 
             // 型引数のうち自分たちのアセンブリのものだけを積む
-            found.AddRange(type.GetGenericArguments().Where(AuditedEntityModel.IsOwnAssemblyType));
+            found.AddRange(type.GetGenericArguments().Where(IsGuardOwnAssemblyType));
         }
 
         // マップ済みエンティティに限る。型引数には EF のエンティティでないものも来うるため
@@ -376,7 +420,7 @@ public class FieldLengthsTests
         for (var type = typeof(ApplicationDbContext); type != null; type = type.BaseType)
         {
             // 自分たちのアセンブリの外(EF / Identity の基底)へ出たらそこで打ち切る
-            if (!AuditedEntityModel.IsOwnAssemblyType(type)) yield break;
+            if (!IsGuardOwnAssemblyType(type)) yield break;
 
             // 自分たちが書いた DbContext 型として返す
             yield return type;
