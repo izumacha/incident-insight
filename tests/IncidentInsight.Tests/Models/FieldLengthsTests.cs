@@ -614,8 +614,12 @@ public class FieldLengthsTests
         "バイト長(byte[] の添付など)やコレクションの件数を制限する項目は現時点で 1 つも無いため、" +
         "単位に合った定数もメッセージ書式も用意していません(§6 の「将来を見越した過度な抽象化を避ける」)。" +
         "最初に別の単位の上限を足すときは、(1) 用途を表す定数と日本語メッセージ書式を FieldLengths へ追加し、" +
-        "(2) IsCharacterLengthProperty / この検査を単位ごとの分類へ拡張し、" +
-        "(3) 裸の数値と文言の検査がその単位を正しく扱うようにしてください。";
+        "(2) 対象の判定(属性側は FieldLengthsTests.IsCharacterLengthProperty、" +
+        "モデル側は AppDeclaredColumnsWithLength の IsCharacterColumn)を単位ごとの分類へ広げ、" +
+        "(3) 裸の数値の検査(EveryMaxLength_UsesAFieldLengthsConstant / " +
+        "EveryModelMaxLength_UsesAFieldLengthsConstant)と文言の検査" +
+        "(NonEntityMaxLength_UsesJapaneseSharedErrorMessage)が、その単位の許容値と書式を" +
+        "要求するようにしてください。";
 
     [Theory]
     [MemberData(nameof(MaxLengthDeclaringTypes))]
