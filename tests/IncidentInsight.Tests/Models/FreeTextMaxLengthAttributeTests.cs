@@ -63,10 +63,6 @@ public class FreeTextMaxLengthAttributeTests
         // 一方 ApplicationUser.DisplayName / Department はこのリポジトリが足した業務列なので残る
         var columns = AuditedEntityModel.AppDeclaredStringColumnLengths(entityType);
 
-        // 前提確認: 各エンティティに検査対象の string 列が最低 1 つは存在するはず。
-        // 0 件だと「全部上限付き」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
-        Assert.NotEmpty(columns);
-
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る
         var missing = columns
@@ -82,6 +78,29 @@ public class FreeTextMaxLengthAttributeTests
             "生えた瞬間に無制限の文字列がそのまま永続化され、同じ値が AuditLog.ChangesJson にも積まれます)。");
     }
 
+    [Fact]
+    public void GovernedEntities_HaveStringColumnsToExamine()
+    {
+        // 「検出網が死んでいないか」の確認。0 件だと「全部上限付き」と誤って緑になる。
+        //
+        // 以前はこれを各エンティティに対して Assert.NotEmpty で見ていたが、その形だと
+        // 実行不能な指示を出しうる —— この repo が確立したパターン(Identity の型を継承して
+        // 業務列を足す)に従って ApplicationRole : IdentityRole を足し、独自の string 列を
+        // 持たせなかった場合、そのエンティティだけ 0 件になって「自分たちには足せない列を
+        // 足せ」という失敗になる。CLAUDE.md が言う「実行不能な指示を出す検出網は、いずれ
+        // 『直せないので検査を緩める』方向へ倒れる」形そのもの。
+        //
+        // 見たいのは「この検査が 1 列も見ていない状態」なので、判定はスイート全体で行う
+        var totalColumns = AuditedEntityModel.LengthGovernedEntityTypes()
+            .Sum(t => AuditedEntityModel.AppDeclaredStringColumnLengths(t).Count);
+
+        // 全体で 1 列も見ていなければ、検査が対象を取得する条件が実装とずれている
+        Assert.True(totalColumns > 0,
+            "長さ上限の管理対象エンティティから、検査対象の string 列を 1 つも取得できませんでした。" +
+            "AppDeclaredStringColumnLengths の条件が実装とずれています" +
+            "(このままでは上限の付け忘れが常に「違反ゼロ」= 緑になります)。");
+    }
+
     [Theory]
     // 自由記述 3 プロパティが、入力経路(ViewModel)と同じ FieldLengths.FreeText 上限であることを個別確認する
     [InlineData(typeof(Incident), nameof(Incident.Description), FieldLengths.FreeText)]
@@ -93,11 +112,17 @@ public class FreeTextMaxLengthAttributeTests
         var property = entityType.GetProperty(propertyName);
         // プロパティ自体が存在することを確認する(改名時にテストが追従漏れしないように)
         Assert.NotNull(property);
-        // [MaxLength] 属性を取り出す
-        var attr = property!.GetCustomAttribute<MaxLengthAttribute>(inherit: false);
-        // 属性が付いていることを確認する
-        Assert.NotNull(attr);
-        // 上限値が ViewModel 側の検証(FieldLengths.FreeText)と一致していることを確認する
-        Assert.Equal(expected, attr!.Length);
+
+        // 長さ上限の属性は共有リーダーで解釈する。ここだけ [MaxLength] を直接読むと、
+        // 綴りを [StringLength] へ変えたときにこのテストだけが「属性が無い」という
+        // 原因の分からない失敗になる(CLAUDE.md「属性の解釈は 1 か所に集約する」)
+        var limits = AuditedEntityModel.ReadLengthLimits(property!);
+
+        // 上限が宣言されていることを確認する
+        Assert.True(limits.Count > 0,
+            $"{entityType.Name}.{propertyName} に長さ上限の属性が付いていません。");
+
+        // 宣言された上限がすべて期待値と一致していることを確認する
+        Assert.All(limits, limit => Assert.Equal(expected, limit.Length));
     }
 }

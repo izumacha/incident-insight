@@ -26,57 +26,20 @@ namespace IncidentInsight.Tests.Models;
 // 機械的に固定し、裸の数値が再び紛れ込むのを CI で検知する。
 public class FieldLengthsTests
 {
-    // [MaxLength] 属性側の検査対象となる型の一覧。
-    //
-    // **型名を書き並べない**のが要点。以前はエンティティを EF のモデルから導出する一方で、
-    // ViewModel だけ 4 型を直書きしていた。その形だと Models/ViewModels へ新しい入力用
-    // ViewModel を足し、そのプロパティに裸の [MaxLength(200)]（あるいは ErrorMessage 未指定の
-    // [MaxLength]）を書いても、この検査も ViewModelMaxLength_UsesJapaneseSharedErrorMessage も
-    // 対象に含めないため CI は緑のまま通る。結果として画面側の上限だけがエンティティ
-    // （ShortText=100 等）とずれ、SQL Server / PostgreSQL 配備では保存時に列長超過
-    // （未捕捉の DbUpdateException = HTTP 500）になり、日本語 UI に英語の既定検証メッセージが混ざる。
-    // 「写しが取り残される」形そのものなので、条件を「[MaxLength] を 1 つでも宣言している型」に置く。
-    //
-    // 名前空間や型名の接尾辞（"ViewModel"）ではなく**属性の有無**を条件にしているので、
-    // 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
     /// <summary>
-    /// 長さ上限を表す属性から「上限値」と「エラーメッセージ」を取り出す。
+    /// 属性側の検査対象となる型の一覧。
     ///
-    /// <c>[MaxLength]</c> だけを見ると <c>[StringLength]</c> が丸ごと抜け道になる。
-    /// 2 つは継承関係が無い別々の属性だが、<b>MVC の入力検証も EF Core の列長も両方を尊重する</b>ので、
-    /// 綴りを変えるだけで同じことができてしまう —— 実測でも、ViewModel に
-    /// <c>[StringLength(200)]</c> を書くと 506 件すべて緑のまま通り、裸の 200 も
-    /// ErrorMessage の指定漏れ（＝日本語 UI に英語の既定メッセージ）も素通りした。
+    /// <b>型名を書き並べない</b>のが要点。以前はエンティティを EF のモデルから導出する一方で、
+    /// ViewModel だけ 4 型を直書きしていた。その形だと <c>Models/ViewModels</c> へ新しい入力用
+    /// ViewModel を足し、そのプロパティに裸の <c>[MaxLength(200)]</c>（あるいは <c>ErrorMessage</c>
+    /// 未指定の <c>[MaxLength]</c>）を書いても、どの検査も対象に含めないため CI は緑のまま通る。
+    /// 結果として画面側の上限だけがエンティティ（<c>ShortText</c>=100 等）とずれ、
+    /// SQL Server / PostgreSQL 配備では保存時に列長超過（未捕捉の <c>DbUpdateException</c> = HTTP 500）に
+    /// なり、日本語 UI に英語の既定検証メッセージが混ざる。
     ///
-    /// 対象の選び方を「特定の属性名」に依存させると、この PR が名前空間・型名の接尾辞への依存を
-    /// やめた意味が薄れる。上限を表す属性はここ 1 か所で解釈する。
+    /// 名前空間や型名の接尾辞（"ViewModel"）ではなく<b>長さ上限の属性の有無</b>を条件にしているので、
+    /// 置き場所を変えても、命名規約から外れた型を足しても、対象から外れない。
     /// </summary>
-    private static (int Length, string? ErrorMessage, string AttributeName)? ReadLengthLimit(PropertyInfo property)
-    {
-        // [MaxLength] が付いていればその上限とメッセージを返す
-        // inherit: true で読む。基底クラスで [MaxLength] を宣言し派生側で override した列は
-        // FindClrProperty が派生側の PropertyInfo を返すため、false のままだと属性が見つからず
-        // 「属性が無いので検査対象外」として黙ってスキップされる —— fluent の HasMaxLength() と
-        // 食い違っていても緑のままになり、ModelMaxLength_AgreesWithMaxLengthAttribute が
-        // 存在する目的(層またぎのずれの固定)がその列について失われる
-        var maxLength = property.GetCustomAttribute<MaxLengthAttribute>(inherit: true);
-        if (maxLength != null) return (maxLength.Length, maxLength.ErrorMessage, nameof(MaxLengthAttribute));
-
-        // [StringLength] も上限を表すので同じ形に読み替えて返す(最大長だけを見る)
-        var stringLength = property.GetCustomAttribute<StringLengthAttribute>(inherit: true);
-        if (stringLength != null) return (stringLength.MaximumLength, stringLength.ErrorMessage, nameof(StringLengthAttribute));
-
-        // .NET 8 で入った [Length(min, max)] も同じく上限を表す。
-        // MVC の入力検証はこれも尊重するので、拾わないと [StringLength] と同じ抜け道になる
-        // (実測: ViewModel の [MaxLength] を裸の [Length(1, 200)] に置き換えると
-        //  506 件すべて緑のまま通り、件数も変わらないので痕跡がゼロだった)
-        var length = property.GetCustomAttribute<LengthAttribute>(inherit: true);
-        if (length != null) return (length.MaximumLength, length.ErrorMessage, nameof(LengthAttribute));
-
-        // いずれも無ければ上限の宣言なし
-        return null;
-    }
-
     private static IReadOnlyList<Type> GovernedTypes()
     {
         // 除外の判定は完全修飾名で行う(単純名だと同名の別型まで巻き添えで落ちる)
@@ -96,7 +59,7 @@ public class FieldLengthsTests
             // 自分たちが宣言したプロパティに長さ上限の属性があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-                .Any(p => ReadLengthLimit(p) != null))
+                .Any(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
@@ -148,11 +111,14 @@ public class FieldLengthsTests
             // 基底クラス(Identity など)が宣言したプロパティは対象外。列長を決めているのが
             // 自分たちではない以上、FieldLengths の定数を当てはめる対象でもない
             .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-            .Select(p => new { Property = p, Limit = ReadLengthLimit(p) })
-            .Where(x => x.Limit != null)
+            // 1 つのプロパティに複数の長さ属性が付くこともあるので**すべて**を見る。
+            // 最初の 1 つで打ち切ると、[MaxLength](正しい値) と [StringLength](裸の値) を
+            // 並べるだけで 2 つ目が視界から外れる —— MVC は両方の validator を走らせるので
+            // 実効上限は小さい方になり、綴りではなく「属性を 1 つ足す」形の抜け道になる
+            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 許容値のいずれとも一致しない上限を違反として拾う
-            .Where(x => !allowed.Contains(x.Limit!.Value.Length))
-            .Select(x => $"{type.Name}.{x.Property.Name} = {x.Limit!.Value.Length} ([{x.Limit!.Value.AttributeName}])")
+            .Where(x => !allowed.Contains(x.Limit.Length))
+            .Select(x => $"{type.Name}.{x.Property.Name} = {x.Limit.Length} ([{x.Limit.AttributeName}])")
             .ToList();
 
         // 違反ゼロであること(あればどのプロパティが裸の数値かをメッセージで示す)
@@ -200,16 +166,12 @@ public class FieldLengthsTests
             // 基底クラス(Identity など)が宣言した列は対象外(上限を決めているのが自分たちではない)
             .Where(c => AuditedEntityModel.IsDeclaredInOwnAssembly(c.Property))
             // 属性側の上限(無ければ検査対象外 —— 付け忘れは別の検査が落とす)
-            .Select(c => new
-            {
-                c.Name,
-                c.MaxLength,
-                Limit = ReadLengthLimit(c.Property),
-            })
-            .Where(x => x.Limit != null && x.MaxLength != null)
+            .Where(c => c.MaxLength != null)
+            .SelectMany(c => AuditedEntityModel.ReadLengthLimits(c.Property)
+                .Select(limit => new { c.Name, c.MaxLength, Limit = limit }))
             // 値が一致しないものが違反
-            .Where(x => x.Limit!.Value.Length != x.MaxLength!.Value)
-            .Select(x => $"{entityType.Name}.{x.Name}: [{x.Limit!.Value.AttributeName}]={x.Limit!.Value.Length} / モデル={x.MaxLength}")
+            .Where(x => x.Limit.Length != x.MaxLength!.Value)
+            .Select(x => $"{entityType.Name}.{x.Name}: [{x.Limit.AttributeName}]={x.Limit.Length} / モデル={x.MaxLength}")
             .ToList();
 
         // fluent の HasMaxLength() は属性より優先されるため、両方書いて値が違うと
@@ -255,17 +217,27 @@ public class FieldLengthsTests
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
             // 基底クラスが宣言したプロパティは対象外(自分たちが書いた文言ではない)
             .Where(AuditedEntityModel.IsDeclaredInOwnAssembly)
-            .Select(p => new { Property = p, Limit = ReadLengthLimit(p) })
-            .Where(x => x.Limit != null)
-            // ErrorMessage が共通書式と一致しないものを違反とする
-            .Where(x => x.Limit!.Value.ErrorMessage != FieldLengths.MaxLengthMessage)
-            .Select(x => $"{type.Name}.{x.Property.Name}")
+            .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
+            // 違反は 2 種類:
+            //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
+            //  (b) [MaxLength] だが ErrorMessage が共通書式でない
+            //
+            // (a) を違反にするのは、共通書式 FieldLengths.MaxLengthMessage の {1} が
+            // 「上限」を指す前提で書かれているため。[Length] の FormatErrorMessage は
+            // {1} に**最小長**を渡すので、同じ書式を付けると画面には
+            // 「◯◯は1文字以内で入力してください。」という誤った文言が出る(実測)。
+            // 属性ごとに別の書式を用意するより、入力を受ける型では綴りを [MaxLength] に
+            // そろえる方が単純で、[StringLength] / [Length] の抜け道も同時に塞げる
+            .Where(x => x.Limit.AttributeName != nameof(MaxLengthAttribute)
+                        || x.Limit.ErrorMessage != FieldLengths.MaxLengthMessage)
+            .Select(x => $"{type.Name}.{x.Property.Name} ([{x.Limit.AttributeName}])")
             .ToList();
 
         // 違反ゼロであること
         Assert.True(offenders.Count == 0,
-            "入力を受ける型(EF のモデルに載っていない型)の [MaxLength] に、共通の日本語" +
-            "エラーメッセージ書式(FieldLengths.MaxLengthMessage)が指定されていません: " + string.Join(", ", offenders));
+            "入力を受ける型(EF のモデルに載っていない型)の長さ上限は、[MaxLength] に " +
+            "共通の日本語エラーメッセージ書式(FieldLengths.MaxLengthMessage)を指定してください " +
+            "([StringLength] / [Length] は書式の {1} の意味が違うため使わない): " + string.Join(", ", offenders));
     }
 
     // 長さ上限の管理対象から意図的に外している型と理由。導出・網羅ガード・属性側の対象導出の
