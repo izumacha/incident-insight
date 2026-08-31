@@ -29,21 +29,26 @@ namespace IncidentInsight.Tests.Models;
 public class FieldLengthsTests
 {
     /// <summary>
-    /// 「基底の総称 DbContext へ渡した自アセンブリの型引数」を読み取れたことを確かめる。
+    /// 網羅ガードが使う「手がかり」を実際に読み取れたことを確かめる。
     ///
-    /// この手がかりを使うガードが 2 つあり、どちらも前提が崩れたら緑ではなく赤で知らせる必要がある
-    /// （空のまま素通りさせると、どちらも「対象ゼロ＝緑」で無力化される）。
-    /// 同じ表明を両方へ書き写すと、手がかりの導出を変えたときに片方だけが古い前提を確かめ続けるので、
-    /// ここ 1 か所に置く。
+    /// この形の表明はガード側に 3 か所あり（DbSet の手がかり 1 つ、基底型引数の手がかり 2 つ）、
+    /// どれも前提が崩れたら緑ではなく赤で知らせる必要がある
+    /// （空のまま素通りさせると「対象ゼロ＝緑」で無力化される）。
+    /// 同じ表明を書き写すと、手がかりの導出を変えたときに一部だけが古い前提を確かめ続けるので、
+    /// 文言も強さもここ 1 か所に置き、どの手がかりかだけを引数で渡す。
     /// </summary>
-    private static void AssertBaseTypeArgumentsReadable(IReadOnlyList<Type> baseTypeArguments)
+    private static void AssertClueIsReadable(IReadOnlyList<Type> clueTypes, string clueDescription)
     {
         // 1 つも読み取れないのは、対象を取得する条件が実装とずれている状態
-        Assert.True(baseTypeArguments.Count > 0,
-            "ApplicationDbContext の基底へ渡した自アセンブリの型引数(ApplicationUser など)を " +
-            "1 つも読み取れませんでした。このガードが対象を取得する条件が実装とずれています" +
-            "(このままでは常に緑になります)。");
+        Assert.True(clueTypes.Count > 0,
+            $"{clueDescription}を 1 つも読み取れませんでした。" +
+            "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
     }
+
+    // 手がかりの説明(失敗メッセージに埋め込む)。両方の呼び出し元がここから引く
+    private const string DeclaredDbSetClue = "ApplicationDbContext が自分で宣言した DbSet<T>";
+    private const string BaseTypeArgumentClue =
+        "ApplicationDbContext の基底へ渡した自アセンブリの型引数(ApplicationUser など)";
 
     /// <summary>
     /// 網羅ガード専用の「自分たちのアセンブリの型か」判定。
@@ -107,16 +112,18 @@ public class FieldLengthsTests
         // Nullable を剥がした素の型
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
-        // 緩和の根拠は「値変換して**文字列として保存する enum 列**」なので、
-        // enum であることに加えて**マップ済みエンティティの列**であることも要求する。
-        // 型だけで判断すると ViewModel の enum プロパティにも 20 / 50 が通ってしまい、
-        // しかも MaxLengthAttribute は enum 値に対して実行時に InvalidCastException を投げる
-        // ため、その画面の POST が毎回 HTTP 500 になる(実測)
-        var declaringType = property.DeclaringType;
-        var isMappedEntityColumn = declaringType != null && AuditedEntityModel.IsMappedEntity(declaringType);
-
-        // 値変換して保存する enum 列だけが enum 用の上限を使ってよい
-        return type.IsEnum && isMappedEntityColumn ? ModelAllowedLengths : AttributeAllowedLengths;
+        // 緩和の根拠は「値変換して**文字列として保存する enum 列**」なので、判定も
+        // そのプロパティ自身が文字列として保存される列かどうかで行う。
+        //
+        // 「宣言型がマップ済みエンティティか」で見ると広すぎる: 同じ型にある [NotMapped] の
+        // enum プロパティや、既定の int マッピングのまま文字列として保存されない enum 列にも
+        // 20 / 50 が通ってしまい、しかもモデル側の検査は文字列列しか見ないので誰も見ない。
+        // 「型が enum か」だけでも広すぎる: ViewModel の enum プロパティに [MaxLength] を書くと
+        // MaxLengthAttribute が実行時に InvalidCastException を投げ、その画面の POST が
+        // 毎回 HTTP 500 になる(実測)
+        return type.IsEnum && AuditedEntityModel.IsStringPersistedColumn(property)
+            ? ModelAllowedLengths
+            : AttributeAllowedLengths;
     }
 
     /// <summary>
@@ -409,10 +416,8 @@ public class FieldLengthsTests
 
         // 手がかりが 1 つも読めないのは前提が崩れた状態(リフレクションの条件が古い)なので落とす。
         // ここを素通りさせると「見るべき対象ゼロ = 緑」でガード自体が無力化される
-        Assert.True(declaredDbSetTypes.Count > 0,
-            "ApplicationDbContext から DbSet<T> の宣言を 1 つも読み取れませんでした。" +
-            "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
-        AssertBaseTypeArgumentsReadable(identityUserTypes);
+        AssertClueIsReadable(declaredDbSetTypes, DeclaredDbSetClue);
+        AssertClueIsReadable(identityUserTypes, BaseTypeArgumentClue);
 
         // 現在の導出結果(検査対象になっているエンティティ)
         var governed = AuditedEntityModel.LengthGovernedEntityTypes();
@@ -512,6 +517,7 @@ public class FieldLengthsTests
             .Select(AuditedEntityModel.ExclusionKeyFor)
             .ToHashSet(StringComparer.Ordinal);
 
+        // 除外表のキーのうち、その範囲に実在しないものを拾う
         var stale = LengthGovernanceExclusions.Keys
             .Where(key => !ownMappedEntityKeys.Contains(key))
             .OrderBy(n => n, StringComparer.Ordinal)
@@ -543,8 +549,9 @@ public class FieldLengthsTests
         // 手がかりが空だとこのガードは 0 == 0 を確かめるだけの空振りになる。
         // 他の検出網と同じく、前提が崩れたら緑ではなく赤で知らせる(fail-closed)
         var baseTypeArguments = OwnDbContextBaseTypeArguments();
-        AssertBaseTypeArgumentsReadable(baseTypeArguments);
+        AssertClueIsReadable(baseTypeArguments, BaseTypeArgumentClue);
 
+        // 手がかり (b) の型のうち、除外表に載っているものを拾う(載せてはいけない型)
         var identityBacked = baseTypeArguments
             .Where(t => LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t)))
             .Select(t => t.Name)

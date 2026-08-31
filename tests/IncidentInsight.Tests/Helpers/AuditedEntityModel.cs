@@ -372,6 +372,29 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// その CLR プロパティが「EF のモデル上で文字列として保存される列」かを返す。
+    ///
+    /// 「値変換して文字列として保存する enum 列」だけに許す緩和を、宣言型ではなく
+    /// <b>プロパティそのもの</b>で判定するために使う。宣言型がマップ済みエンティティかどうかで
+    /// 見ると、同じ型にある <c>[NotMapped]</c> の enum プロパティや、既定の int マッピングのまま
+    /// 文字列として保存されない enum 列にも緩和が届いてしまう。
+    /// </summary>
+    public static bool IsStringPersistedColumn(PropertyInfo property)
+    {
+        // 宣言型が分からなければ判定できない
+        var declaringType = property.DeclaringType;
+        if (declaringType is null) return false;
+
+        // 宣言型が EF のモデルに載っていなければ列ではない(ViewModel など)
+        var entity = Model.Value.FindEntityType(declaringType);
+        if (entity is null) return false;
+
+        // 同名の列を引き、文字列として保存されるかを共有の判定に委ねる
+        var efProperty = entity.FindProperty(property.Name);
+        return efProperty != null && IsStringColumn(efProperty);
+    }
+
+    /// <summary>
     /// そのエンティティが宣言する「マップ済み・主キー以外・自前・CLR 型が <c>string</c>」の
     /// プロパティ数を返す。
     ///

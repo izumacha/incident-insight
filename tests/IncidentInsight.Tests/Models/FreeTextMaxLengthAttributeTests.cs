@@ -78,11 +78,16 @@ public class FreeTextMaxLengthAttributeTests
         // 「条件が実装とずれている」という誤った原因で落ちる(実測)
         var ownStringColumnCount = AuditedEntityModel.OwnDeclaredMappedStringPropertyCount(entityType);
 
-        // 自前の string プロパティがあるのに列が 1 つも取れないのは前提が崩れた状態
-        Assert.False(ownStringColumnCount > 0 && columns.Count == 0,
-            $"{entityType.Name} は自前の string 列を持つのに、検査対象の列を " +
-            "1 つも取得できませんでした。AppDeclaredStringColumnLengths の条件が実装とずれています" +
-            "(このままでは上限の付け忘れがこのエンティティについて常に「違反ゼロ」= 緑になります)。");
+        // 成り立つべき不変条件は「独立に数えた自前の string 列は、必ず検査対象に現れる」。
+        //
+        // 「0 件でないこと」だけを見ると**部分的な取りこぼしが素通りする**: たとえば
+        // Incident の検査対象には値変換した enum 列(Severity / IncidentType)も含まれるため、
+        // 絞り込みが狭まって自由記述 4 列が丸ごと落ちても columns.Count は 2 のままで、
+        // 0 件ではないのでガードが発火しない。件数の比較にしておけば、その取りこぼしも捕まる
+        Assert.True(columns.Count >= ownStringColumnCount,
+            $"{entityType.Name} は自前の string 列を {ownStringColumnCount} 件持つのに、検査対象の列が " +
+            $"{columns.Count} 件しか取得できていません。AppDeclaredStringColumnLengths の条件が" +
+            "実装とずれています(このままだと落ちた列について上限の付け忘れが素通りします)。");
 
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る
