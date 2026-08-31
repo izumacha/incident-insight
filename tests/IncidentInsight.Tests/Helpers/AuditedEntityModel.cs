@@ -412,16 +412,17 @@ internal static class AuditedEntityModel
     /// 指定エンティティの「長さ上限が設定されている、自分たちが宣言した列」を返す。
     ///
     /// <see cref="AppDeclaredStringColumnLengths"/> との違いは<b>文字列列に限らない</b>点。
-    /// 属性側の裸の数値の検査は <c>byte[]</c> や値変換した enum 列まで見るのに、モデル側が
-    /// 文字列列しか見ないと、その差分がそのまま死角になる —— 実測でも
-    /// <c>byte[]</c> の列へ fluent で <c>HasMaxLength(300)</c> と書くと、裸の 300 も
-    /// 属性との食い違いも 4 つの検査すべてを素通りした（fluent が抜け道になる形そのもの）。
+    /// 文字列列だけを返すと、fluent の <c>HasMaxLength()</c> で文字列以外の列へ設定した上限が
+    /// 誰にも見られなくなる —— 実測でも <c>byte[]</c> の列へ <c>HasMaxLength(300)</c> と書くと、
+    /// 裸の 300 も属性との食い違いも 4 つの検査すべてを素通りした（fluent が抜け道になる形そのもの）。
+    /// 「その列が文字数を数える列か」は <c>IsCharacterColumn</c> で呼び出し側へ渡し、
+    /// 判定の規則（<see cref="IsStringColumn"/>）はここ 1 か所に置く。
     ///
     /// 「上限が設定されている列」だけを返すので、上限を持たない列（<c>int</c> や
     /// <c>DateTime</c>）を巻き込むことはない。上限の<b>付け忘れ</b>は文字列列に対してだけ
     /// 意味があるので、そちらは <see cref="AppDeclaredStringColumnLengths"/> が担う。
     /// </summary>
-    public static IReadOnlyList<(string Name, int MaxLength, PropertyInfo? Property)>
+    public static IReadOnlyList<(string Name, int MaxLength, PropertyInfo? Property, bool IsCharacterColumn)>
         AppDeclaredColumnsWithLength(Type entityType)
     {
         // EF のモデルから対象エンティティの定義を引く(未マップなら例外)。
@@ -435,7 +436,12 @@ internal static class AuditedEntityModel
         return entity.GetProperties()
             .Where(p => !p.IsPrimaryKey())
             .Where(p => p.GetMaxLength() != null)
-            .Select(p => (Name: p.Name, MaxLength: p.GetMaxLength()!.Value, Property: FindClrProperty(entityType, p.Name)))
+            .Select(p => (
+                Name: p.Name,
+                MaxLength: p.GetMaxLength()!.Value,
+                Property: FindClrProperty(entityType, p.Name),
+                // 文字列として保存される列か。shadow 列にも判定できるよう EF のモデル側で見る
+                IsCharacterColumn: IsStringColumn(p)))
             // 基底クラスが宣言した列は対象外(上限を決めているのが自分たちではない)。
             // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
             .Where(c => c.Property == null || IsDeclaredInOwnAssembly(c.Property))

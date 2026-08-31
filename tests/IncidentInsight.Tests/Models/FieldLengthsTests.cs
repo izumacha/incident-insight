@@ -78,155 +78,52 @@ public class FieldLengthsTests
         BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly;
 
     /// <summary>
-    /// 長さ上限の属性が付いた数値が「何を数えているか」の分類。
-    /// </summary>
-    private enum LimitKind
-    {
-        /// <summary>文字数（<c>string</c> / <c>char[]</c> / 文字列として保存する列）。</summary>
-        CharacterLength,
-
-        /// <summary>バイト長（<c>byte[]</c>）。</summary>
-        ByteLength,
-
-        /// <summary>コレクションの「要素数」（<c>List&lt;T&gt;</c> など）。</summary>
-        ItemCount,
-    }
-
-    /// <summary>
-    /// そのプロパティの長さ属性が何を数えているかを分類する。
+    /// そのプロパティの長さ上限が<b>文字数</b>を数えているかを返す。
     ///
-    /// <b>分類はここ 1 か所だけで行う。</b> 以前は「検査に掛けるか」と「どの文言を要求するか」が
-    /// それぞれ同じ判定を持っており、片方にだけ種類を足すと
-    /// 「文字数の文言は要求されるのに裸の数値は誰も見ない」という食い違いが生まれた。
+    /// この検出網が扱う単位は文字数だけで、対象は 2 つに限る:
+    ///   - <c>string</c> のプロパティ（入力欄・文字列列）
+    ///   - 値変換して<b>文字列として保存する</b> enum 列（<c>PreventiveMeasure.Status</c> など。
+    ///     数えているのは保存される文字列の文字数）
     ///
-    /// 種類を「長さ / 要素数」の 2 つにまとめてもいけない（実測で 2 つの穴が出た）:
-    ///   - <c>byte[]</c> を「長さ」に含めると、バイト長の上限に文字数の文言
-    ///     （「添付は100<b>文字</b>以内で…」）を強制してしまう
-    ///   - <c>char[]</c> を「要素数」に落とすと、文字数の上限なのに裸の数値が
-    ///     どの検査にも掛からず、文言も「◯◯は333<b>件</b>以内で…」になる
-    /// </summary>
-    private static LimitKind ClassifyLimit(PropertyInfo property)
-    {
-        // 対象の型
-        var type = property.PropertyType;
-
-        // string と char[] は文字数を数える
-        if (type == typeof(string) || type == typeof(char[])) return LimitKind.CharacterLength;
-
-        // byte[] はバイト数を数える(文字数とは別の文言が要る)
-        if (type == typeof(byte[])) return LimitKind.ByteLength;
-
-        // それ以外のコレクションは要素数を数える
-        if (typeof(System.Collections.IEnumerable).IsAssignableFrom(type)) return LimitKind.ItemCount;
-
-        // 残り(値変換して文字列として保存する enum 列など)は保存される文字列の文字数
-        return LimitKind.CharacterLength;
-    }
-
-    /// <summary>
-    /// そのプロパティに期待される書式の<b>定数名</b>を返す。
-    /// 失敗メッセージには生の文字列ではなくこちらを出す —— 生の文字列だけを見せると、
-    /// 開発者はそれを直書きして緑にしてしまい、定数を本番へ置いた意味（一元管理）が失われる。
-    /// </summary>
-    private static string ExpectedMessageConstantNameFor(PropertyInfo property)
-    {
-        // 分類に対応する定数名を返す
-        return ClassifyLimit(property) switch
-        {
-            LimitKind.ItemCount => nameof(FieldLengths.ItemCountMessage),
-            LimitKind.ByteLength => nameof(FieldLengths.ByteLengthMessage),
-            _ => nameof(FieldLengths.MaxLengthMessage),
-        };
-    }
-
-    /// <summary>
-    /// そのプロパティの上限に付けるべき日本語メッセージの書式を返す（分類は <see cref="ClassifyLimit"/>）。
+    /// それ以外（<c>byte[]</c> のバイト長・コレクションの件数・測りようのない <c>int</c> や
+    /// <c>DateTime</c>）に長さ上限が付いていたら、値や文言を検査する前に
+    /// <see cref="LengthLimit_OnlyOnCharacterProperties"/> が落とす。
+    /// 単位ごとの定数も文言もこのリポジトリには無いので、ここで
+    /// 「<c>FieldLengths</c> の定数を使え」と案内しても<b>実行不能な指示</b>になるため。
     ///
-    /// コレクション（要素数の上限）に文字数の書式を流用すると、
-    /// <c>[MaxLength(3)] List&lt;string&gt; Tags</c> が「タグは3文字以内で入力してください。」という
-    /// 誤った文言になる（実際に制限しているのは件数）。かといってコレクションを検査から外すと、
-    /// 今度は英語の既定メッセージが日本語 UI に出るのを止められない（実測で両方を確認した）。
-    /// どちらにも倒さず、<b>種類に応じた正しい書式</b>を要求する。
+    /// enum を条件に含めるのは省略できない（実測）: <c>string</c> 限定にすると、
+    /// 値変換した enum 列へ裸の <c>[MaxLength(20)]</c> を書いたとき CLR 型が enum なので
+    /// この検査から外れ、モデル側は 20 を <c>EnumCode</c> として許し、属性とモデルの一致検査も
+    /// （値が同じなので）通って<b>全件緑</b>になった。
     /// </summary>
-    private static string ExpectedMessageFor(PropertyInfo property)
+    private static bool IsCharacterLengthProperty(PropertyInfo property)
     {
-        // 分類に対応する書式を返す
-        return ClassifyLimit(property) switch
-        {
-            // 要素数は「件」で伝える
-            LimitKind.ItemCount => FieldLengths.ItemCountMessage,
-            // バイト長は「バイト」で伝える
-            LimitKind.ByteLength => FieldLengths.ByteLengthMessage,
-            // 残りは文字数
-            _ => FieldLengths.MaxLengthMessage,
-        };
+        // Nullable を剥がした素の型
+        var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+
+        // 文字列そのものは文字数を数える
+        if (type == typeof(string)) return true;
+
+        // 値変換して文字列として保存される enum 列も、数えているのは保存後の文字数。
+        //
+        // 判定を「型が enum か」だけにしてはいけない: ViewModel の enum プロパティに
+        // [MaxLength] を書くと MaxLengthAttribute が実行時に InvalidCastException を投げ、
+        // その画面の POST が毎回 HTTP 500 になる(実測)。列として文字列で保存されるものだけを許す
+        return type.IsEnum && AuditedEntityModel.IsStringPersistedColumn(property);
     }
-
-    /// <summary>
-    /// 裸の数値の検査に掛けるプロパティかを返す。
-    ///
-    /// 条件は「その数値が<b>長さ</b>を意味する」こと（走査側が
-    /// <c>BindingFlags.DeclaredOnly</c> で自アセンブリの型だけを見ているので、
-    /// 「自分たちが宣言した」かどうかはここでは判定しない）。
-    /// 除くのは<b>要素数を数える制約だけ</b>（<c>List&lt;T&gt;</c> などのコレクション）で、
-    /// <c>string</c> はもちろん <c>byte[]</c>（バイト長）や値変換した enum 列（保存される文字列の長さ）は<b>残す</b>。
-    ///
-    /// ここを <c>string</c> 限定にすると穴が開く（実測）: 値変換した enum 列
-    /// （<c>PreventiveMeasure.Status</c> など）へ裸の <c>[MaxLength(20)]</c> を書くと、
-    /// CLR 型が enum なのでこの検査から外れ、モデル側の検査は 20 を <c>EnumCode</c> として許し、
-    /// 属性とモデルの一致検査も（値が同じなので）通って<b>全件緑</b>になった。
-    /// 実行不能な指示を避けたいのはコレクションの要素数だけなので、除外もそこに限る。
-    /// </summary>
-    private static bool IsNakedNumberCheckedProperty(PropertyInfo property)
-    {
-        // 長さ(文字数・バイト数)を数えているものだけが FieldLengths の定数と突き合わせる対象。
-        // 要素数の上限に FreeText(500) を当てろというのは実行不能な指示になる
-        return ClassifyLimit(property) != LimitKind.ItemCount;
-    }
-
-    // 文字数を表す定数(バイト長には流用させないもの)。ここに無い FieldLengths の定数は
-    // 「単位が文字数ではない」= バイト長などに使ってよい値とみなす
-    private static readonly int[] CharacterCountFieldLengths =
-    {
-        FieldLengths.FreeText,
-        FieldLengths.ShortText,
-        FieldLengths.EnumCode,
-        FieldLengths.EnumCodeJapanese,
-    };
-
-    // FieldLengths が公開する const int のうち、文字数用ではないものを集める。
-    // 定数名を書き並べず反射で拾うので、専用の定数を足せば検査が自動で追随する
-    private static readonly Lazy<int[]> NonCharacterFieldLengths = new(() =>
-        typeof(FieldLengths)
-            .GetFields(BindingFlags.Public | BindingFlags.Static)
-            .Where(f => f.IsLiteral && f.FieldType == typeof(int))
-            .Select(f => (int)f.GetRawConstantValue()!)
-            .Where(value => !CharacterCountFieldLengths.Contains(value))
-            .Distinct()
-            .ToArray());
 
     /// <summary>
     /// そのプロパティの上限として許してよい値の集合を返す。
     ///
     /// 利用者が入力する項目は <see cref="AttributeAllowedLengths"/> だけ。
-    /// <c>EnumCode</c> / <c>EnumCodeJapanese</c> を許すのは<b>enum のプロパティだけ</b>。
-    /// この 2 つは「値変換して文字列として保存する enum 列」にしか意味を持たないので、
-    /// 「string でなければ何でも」に広げてはいけない —— 実測でも、その形だと
-    /// <c>[MaxLength(20)] byte[] Attachment</c> のような裸の数値が通ってしまった
-    /// （<c>main</c> では全プロパティを <c>{500, 100}</c> と突き合わせていたので捕まっていた）。
+    /// <c>EnumCode</c> / <c>EnumCodeJapanese</c> を許すのは
+    /// <b>値変換して文字列として保存する enum 列</b>だけで、入力欄へ広げてはいけない
+    /// （広げると ViewModel の入力欄に裸の <c>[MaxLength(20)]</c> を書いても
+    /// 「<c>FieldLengths</c> の定数だ」として通り、エンティティ側の <c>ShortText</c>(100) と
+    /// 層またぎでずれる）。
     /// </summary>
     private static int[] AllowedLengthsFor(PropertyInfo property)
     {
-        // バイト長は文字数用の定数(FreeText / ShortText / EnumCode / EnumCodeJapanese)を
-        // 流用させない。「自由記述欄の文字数上限」で添付のバイト数を表すことになり、
-        // FieldLengths が防ぐために作られた単位またぎのずれそのものになるため。
-        //
-        // 代わりに「FieldLengths にある**文字数用ではない**定数」を許す。今日は該当が無いので
-        // 実質どの値も通らないが、案内どおり専用の定数(例: 添付の上限バイト数)を FieldLengths へ
-        // 足せば**そのまま通る**。空集合を返して固定してしまうと、案内に従っても永久に緑にできず、
-        // 最後は検査を緩めるしかなくなる(この repo が繰り返し避けている形)
-        if (ClassifyLimit(property) == LimitKind.ByteLength) return NonCharacterFieldLengths.Value;
-
         // Nullable を剥がした素の型
         var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
 
@@ -235,10 +132,7 @@ public class FieldLengthsTests
         //
         // 「宣言型がマップ済みエンティティか」で見ると広すぎる: 同じ型にある [NotMapped] の
         // enum プロパティや、既定の int マッピングのまま文字列として保存されない enum 列にも
-        // 20 / 50 が通ってしまい、しかもモデル側の検査は文字列列しか見ないので誰も見ない。
-        // 「型が enum か」だけでも広すぎる: ViewModel の enum プロパティに [MaxLength] を書くと
-        // MaxLengthAttribute が実行時に InvalidCastException を投げ、その画面の POST が
-        // 毎回 HTTP 500 になる(実測)
+        // 20 / 50 が通ってしまい、しかもモデル側の検査は文字列列しか見ないので誰も見ない
         return type.IsEnum && AuditedEntityModel.IsStringPersistedColumn(property)
             ? ModelAllowedLengths
             : AttributeAllowedLengths;
@@ -333,8 +227,9 @@ public class FieldLengthsTests
         // 対象型の公開プロパティのうち長さ上限が付いているものを列挙する
         var offenders = type
             .GetProperties(DeclaredInstanceProperties)
-            // 数値が「長さ」を意味するプロパティだけを見る(理由は IsNakedNumberCheckedProperty)
-            .Where(IsNakedNumberCheckedProperty)
+            // 文字数を数えるプロパティだけを見る(理由は IsCharacterLengthProperty)。
+            // それ以外に長さ上限が付いていたら LengthLimit_OnlyOnCharacterProperties が落とす
+            .Where(IsCharacterLengthProperty)
             // 1 つのプロパティに複数の長さ属性が付くこともあるので**すべて**を見る。
             // 最初の 1 つで打ち切ると、[MaxLength](正しい値) と [StringLength](裸の値) を
             // 並べるだけで 2 つ目が視界から外れる —— MVC は両方の validator を走らせるので
@@ -349,8 +244,7 @@ public class FieldLengthsTests
         Assert.True(offenders.Count == 0,
             "長さ上限の属性([MaxLength] / [StringLength] / [Length])に FieldLengths 以外の裸の数値が " +
             $"使われています(許容値: 文字列は {string.Join(" / ", AttributeAllowedLengths)}、" +
-            $"値変換して保存する列は {string.Join(" / ", ModelAllowedLengths)}、" +
-            $"バイト長は文字数用でない FieldLengths の定数({(NonCharacterFieldLengths.Value.Length == 0 ? "現在は該当なし。用途を表す定数を FieldLengths へ追加してください" : string.Join(" / ", NonCharacterFieldLengths.Value))})): "
+            $"値変換して保存する enum 列は {string.Join(" / ", ModelAllowedLengths)}): "
             + string.Join(", ", offenders));
     }
 
@@ -370,18 +264,13 @@ public class FieldLengthsTests
         // CLR プロパティの有無を問わず全 string 列を見る。属性を読まない検査なので shadow 列も
         // 対象にできる —— ClrBacked に絞ると、fluent で裸の数値を設定した shadow 列が
         // 「属性を付けられないから対象外」という無関係な理由で素通りする
-        // 対象は「長さ上限が設定されている列」すべて。文字列列に絞ると、属性側が byte[] や
-        // 値変換した enum 列まで見ているのに対してモデル側だけが狭くなり、その差分が死角になる
-        // (実測: byte[] の列へ fluent で HasMaxLength(300) と書くと 4 検査すべてを素通りした)
+        // 対象は「長さ上限が設定されている列」すべて。文字列列に絞ると、fluent で
+        // 文字列以外の列へ設定した裸の数値が誰にも見られなくなる
+        // (実測: byte[] の列へ fluent で HasMaxLength(300) と書くと 4 検査すべてを素通りした)。
+        // その列が**そもそも文字数を数える列か**は LengthLimit_OnlyOnCharacterColumns が見る
         var offenders = AuditedEntityModel.AppDeclaredColumnsWithLength(entityType)
-            // 許容値のいずれとも一致しない上限を違反として拾う。
-            //
-            // CLR プロパティを持つ列は**属性側と同じ分類**で許容値を決める。モデル側だけ
-            // 一律に ModelAllowedLengths と突き合わせると、byte[] の列へ fluent で
-            // HasMaxLength(ShortText) と書いたときに「100 バイト」を文字数の定数で表せてしまう
-            // ——属性で同じことを書くと弾かれるのに、fluent だけが単位またぎの抜け道になる。
-            // shadow 列は種類を判定できないので従来どおりモデル側の集合で見る
-            .Where(c => !(c.Property != null ? AllowedLengthsFor(c.Property) : allowed).Contains(c.MaxLength))
+            // 許容値のいずれとも一致しない上限を違反として拾う
+            .Where(c => !allowed.Contains(c.MaxLength))
             .Select(c => $"{entityType.Name}.{c.Name} = {c.MaxLength}")
             .ToList();
 
@@ -450,16 +339,10 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(DeclaredInstanceProperties)
-            // 型を問わず、その型が宣言したプロパティをすべて見る
-            // (自アセンブリかどうかは走査条件 DeclaredInstanceProperties が担保している)。
-            //
-            // 裸の数値の検査(IsNakedNumberCheckedProperty)はコレクションを除くが、その除外を
-            // ここへ流用してはいけない。除外の根拠は「要素数に FieldLengths の定数を当てろ」が
-            // 実行不能だという点であって、ErrorMessage を書くことは対象がコレクションでも
-            // 実行可能だから。流用すると [MaxLength(3)] List<string> Tags のような宣言が
-            // 裸の数値もメッセージ漏れも両方素通りし、日本語 UI に
-            // "The field Tags must be a string or array type with a maximum length of '3'." が出る
-            // (実測。main では捕まっていた退行)
+            // 文字数を数えるプロパティだけを見る。文字数以外(コレクションの件数など)に
+            // 長さ上限が付いていること自体は LengthLimit_OnlyOnCharacterProperties が落とすので、
+            // ここで文言まで重ねて報告しない(1 つの違反に対して失敗を 1 つに保つ)
+            .Where(IsCharacterLengthProperty)
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
@@ -473,17 +356,17 @@ public class FieldLengthsTests
             //     (この PR は [MaxLength] しか見ていなかった時代に [StringLength] が
             //      丸ごと抜け道になっていたのを塞いだ)。入力を受ける型では綴りを 1 つに保つ
             .Where(x => x.Limit.AttributeName != nameof(MaxLengthAttribute)
-                        || x.Limit.ErrorMessage != ExpectedMessageFor(x.Property))
-            .Select(x => $"{type.Name}.{x.Property.Name} ([{x.Limit.AttributeName}]) " +
-                         $"→ 期待する書式: FieldLengths.{ExpectedMessageConstantNameFor(x.Property)}")
+                        || x.Limit.ErrorMessage != FieldLengths.MaxLengthMessage)
+            .Select(x => $"{type.Name}.{x.Property.Name} ([{x.Limit.AttributeName}])")
             .ToList();
 
-        // 違反ゼロであること
+        // 違反ゼロであること。
+        // 失敗メッセージには生の書式ではなく**定数名**を出す —— 生の文字列を見せると、
+        // 開発者はそれを直書きして緑にしてしまい、定数を本番へ置いた意味(一元管理)が失われる
         Assert.True(offenders.Count == 0,
             "入力を受ける型(EF のモデルに載っていない型)の長さ上限は、[MaxLength] に " +
-            "共通の日本語エラーメッセージ書式を指定してください(文字数は FieldLengths.MaxLengthMessage、" +
-            "バイト長は FieldLengths.ByteLengthMessage、コレクションの件数は FieldLengths.ItemCountMessage。" +
-            "[StringLength] / [Length] は書式の {1} の意味が違うため使わない): " + string.Join(", ", offenders));
+            $"FieldLengths.{nameof(FieldLengths.MaxLengthMessage)} を指定してください" +
+            "([StringLength] / [Length] は書式の {1} の意味が違うため使わない): " + string.Join(", ", offenders));
     }
 
     // 長さ上限の管理対象から意図的に外している型と理由。導出・網羅ガード・属性側の対象導出の
@@ -724,89 +607,69 @@ public class FieldLengthsTests
             "「とりあえず検出網を黙らせる」使い方を残さないためです。");
     }
 
+    // 単位を広げるときの案内。属性側・モデル側の 2 検査が同じ文言を出すため定数にしている
+    // (別々に書くと、片方だけ案内が古くなる)
+    private const string ExtendTheRuleGuidance =
+        "この検出網が扱う長さの単位は**文字数**だけです。" +
+        "バイト長(byte[] の添付など)やコレクションの件数を制限する項目は現時点で 1 つも無いため、" +
+        "単位に合った定数もメッセージ書式も用意していません(§6 の「将来を見越した過度な抽象化を避ける」)。" +
+        "最初に別の単位の上限を足すときは、(1) 用途を表す定数と日本語メッセージ書式を FieldLengths へ追加し、" +
+        "(2) IsCharacterLengthProperty / この検査を単位ごとの分類へ拡張し、" +
+        "(3) 裸の数値と文言の検査がその単位を正しく扱うようにしてください。";
+
     [Theory]
     [MemberData(nameof(MaxLengthDeclaringTypes))]
-    public void NonEntityLengthAttribute_OnlyOnMeasurableTypes(Type type)
+    public void LengthLimit_OnlyOnCharacterProperties(Type type)
     {
-        // 対象は入力を受ける型(EF のモデルに載っていない型)。エンティティ側の [MaxLength] は
-        // EF Core の列長定義にしか使われず、DataAnnotations の検証は走らない
-        if (AuditedEntityModel.IsMappedEntity(type)) return;
-
-        // MaxLengthAttribute.IsValid が測れない型に付いた長さ属性を拾う
+        // 文字数を数えないプロパティに付いた長さ上限を拾う
         var offenders = type
             .GetProperties(DeclaredInstanceProperties)
-            // 属性ごとに測れる範囲が違うので、属性と型の組で判定する
+            // 文字数を数えるものは対象外(値と文言は別の検査が見る)
+            .Where(p => !IsCharacterLengthProperty(p))
+            // 属性の綴りも失敗メッセージに出すため、上限ごとに展開する
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p, inherit: false)
                 .Select(limit => new { Property = p, limit.AttributeName }))
-            .Where(x => !IsMeasurableBy(x.AttributeName, x.Property.PropertyType))
             .Select(x => $"{type.Name}.{x.Property.Name} ({x.Property.PropertyType.Name} / [{x.AttributeName}])")
             .Distinct()
             .ToList();
 
-        // MVC の検証時に例外になる宣言が 1 つも無いこと。
+        // 文字数以外の単位の上限が 1 つも無いこと。
         //
-        // 上限の**値**や**文言**の検査だけでは足りない: enum / int / DateTime に
-        // [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)] と
-        // 書くと、値は許容集合に入り文言も規約どおりなので全検査が緑になる。ところが
-        // MaxLengthAttribute.IsValid は測れない型に対して InvalidCastException を投げるため、
-        // その画面への POST は毎回 HTTP 500 になる(実測)
+        // これは 2 つの事故をまとめて塞ぐ:
+        //  (a) **測れない型**(enum / int / DateTime)に長さ属性を付けると、
+        //      MaxLengthAttribute.IsValid が InvalidCastException を投げ、その画面への POST が
+        //      毎回 HTTP 500 になる(実測)。値が許容集合に入り文言も規約どおりだと、
+        //      値・文言の検査はどちらも緑のまま通るのでここで落とす必要がある
+        //  (b) **単位の違う上限**(byte[] のバイト長・コレクションの件数)を、文字数用の定数
+        //      (FreeText=500)と文言(「◯◯は500文字以内で…」)で表してしまう単位またぎのずれ
         Assert.True(offenders.Count == 0,
-            "長さ上限の属性が、MaxLengthAttribute では測れない型のプロパティに付いています: " +
-            string.Join(", ", offenders) +
-            "。MVC の検証時に InvalidCastException(\"must be a string, array or ICollection type\") が" +
-            "投げられ、その画面への POST が毎回 HTTP 500 になります。" +
-            "長さ属性を外すか、対象を string / char[] / byte[] / ICollection にしてください。");
+            "文字数以外を数えるプロパティに長さ上限の属性が付いています: " +
+            string.Join(", ", offenders) + "。" + ExtendTheRuleGuidance +
+            " なお enum / int / DateTime など MaxLengthAttribute が測れない型では、" +
+            "MVC の検証時に InvalidCastException が投げられ、その画面への POST が毎回 HTTP 500 になります。");
     }
 
-    /// <summary>
-    /// <c>MaxLengthAttribute.IsValid</c> がその型の長さを測れるかを返す。
-    ///
-    /// <c>MaxLengthAttribute</c> / <c>LengthAttribute</c> 用の判定（<c>[StringLength]</c> は
-    /// <see cref="IsMeasurableBy"/> が別扱いにする）。
-    /// .NET 8 の実装は「<c>string</c>」「配列」「<b>読み取れる <c>int Count</c> を持つ型</b>」を
-    /// 受け入れ、それ以外で <c>InvalidCastException</c> を投げる。
-    ///
-    /// 条件を <c>ICollection</c> / <c>ICollection&lt;T&gt;</c> に狭めてはいけない（実測）:
-    /// <c>IReadOnlyCollection&lt;string&gt;</c> も、<c>int Count</c> だけを持つ独自型も、
-    /// 属性側は<b>例外を投げず検証に通る</b>のに、狭い判定では「実行時に HTTP 500 になる」という
-    /// <b>事実と異なる診断</b>で赤にしてしまい、開発者を正しい宣言を外す方向へ誘導する。
-    /// </summary>
-    private static bool IsMeasurableBy(string attributeName, Type type)
+    [Theory]
+    [MemberData(nameof(ModelBackedTypes))]
+    public void LengthLimit_OnlyOnCharacterColumns(Type entityType)
     {
-        // [StringLength] は値を string へキャストするので、測れるのは string だけ。
-        // [MaxLength] / [Length] と同じ扱いにすると、[StringLength] を byte[] に付けた宣言を
-        // 「測れる」と誤判定する —— 実測では InvalidCastException を投げるので HTTP 500 になる
-        if (attributeName == nameof(StringLengthAttribute)) return type == typeof(string);
+        // fluent の HasMaxLength() で文字数以外の列に上限を設定していないかを見る。
+        //
+        // 属性側だけを見ていると fluent が単位またぎの抜け道になる —— byte[] の列へ
+        // HasMaxLength(FieldLengths.ShortText) と書くと「100 バイト」を文字数の定数で表せてしまう
+        // (属性で同じことを書けば上の検査が弾くのに、fluent だけが通る)
+        var offenders = AuditedEntityModel.AppDeclaredColumnsWithLength(entityType)
+            // 文字列として保存される列は対象外(値は EveryModelMaxLength_UsesAFieldLengthsConstant が見る)。
+            // 判定は共有ヘルパーに委ねる —— ここに規則を書き写すと、EF の版が上がって
+            // 変換後の型の現れる場所が変わったときに片方だけが取り残される
+            .Where(c => !c.IsCharacterColumn)
+            .Select(c => $"{entityType.Name}.{c.Name} = {c.MaxLength}")
+            .ToList();
 
-        // [MaxLength] / [Length] は string / 配列 / 読み取れる int Count を測れる
-        return IsMeasurableByLengthAttribute(type);
-    }
-
-    private static bool IsMeasurableByLengthAttribute(Type type)
-    {
-        // string は長さを測れる
-        if (type == typeof(string)) return true;
-
-        // 配列(char[] / byte[] / T[])は Length を持つ
-        if (type.IsArray) return true;
-
-        // 読み取れる int Count を持つ型(ICollection / ICollection<T> / IReadOnlyCollection<T> /
-        // 独自の Count プロパティ)は、属性が Count 経由で長さを測れる
-        return HasReadableIntCount(type)
-               || type.GetInterfaces().Any(HasReadableIntCount);
-    }
-
-    /// <summary>
-    /// その型に「読み取れる <c>int Count</c> プロパティ」があるかを返す
-    /// （<c>MaxLengthAttribute</c> が長さを測るのに使う手がかり）。
-    /// </summary>
-    private static bool HasReadableIntCount(Type type)
-    {
-        // 公開インスタンスプロパティ Count を探す
-        var count = type.GetProperty("Count", BindingFlags.Public | BindingFlags.Instance);
-
-        // int を返し、読み取れるものだけが該当する
-        return count != null && count.PropertyType == typeof(int) && count.CanRead;
+        // 文字数以外の単位の列長が 1 つも無いこと
+        Assert.True(offenders.Count == 0,
+            "文字列として保存されない列に長さ上限が設定されています: " +
+            string.Join(", ", offenders) + "。" + ExtendTheRuleGuidance);
     }
 
     [Fact]
@@ -887,45 +750,6 @@ public class FieldLengthsTests
 
         // 名前が LengthAttribute で終わるものを上限の属性とみなす
         return name.EndsWith("LengthAttribute", StringComparison.Ordinal);
-    }
-
-    [Fact]
-    public void ByteLengthMessage_FormatsDisplayNameAndLimit()
-    {
-        // 実際に MaxLengthAttribute が組み立てるメッセージを確認する。
-        // 本番の利用箇所がまだ無い定数なので、書式を固定しておかないと
-        // プレースホルダの取り違えに最初の利用者まで誰も気付けない
-        // 例に使う上限バイト数。FieldLengths の文字数用定数(ShortText など)は使わない
-        // ——このテストが確かめている当の規約(バイト数を文字数の定数で表さない)に反するうえ、
-        // 読み手が参照実装として真似てしまう
-        const int sampleByteLimit = 1024;
-
-        var attribute = new MaxLengthAttribute(sampleByteLimit)
-        {
-            ErrorMessage = FieldLengths.ByteLengthMessage
-        };
-
-        // 表示名「添付ファイル」に対するエラーメッセージを生成する
-        var message = attribute.FormatErrorMessage("添付ファイル");
-
-        // 項目名と上限バイト数の両方が含まれた日本語メッセージになっていること
-        Assert.Equal($"添付ファイルは{sampleByteLimit}バイト以内で入力してください。", message);
-    }
-
-    [Fact]
-    public void ItemCountMessage_FormatsDisplayNameAndLimit()
-    {
-        // 上と同じ理由で、要素数用の書式も固定する
-        var attribute = new MaxLengthAttribute(FieldLengths.ShortText)
-        {
-            ErrorMessage = FieldLengths.ItemCountMessage
-        };
-
-        // 表示名「タグ」に対するエラーメッセージを生成する
-        var message = attribute.FormatErrorMessage("タグ");
-
-        // 項目名と上限件数の両方が含まれた日本語メッセージになっていること
-        Assert.Equal($"タグは{FieldLengths.ShortText}件以内で入力してください。", message);
     }
 
     [Fact]
