@@ -65,21 +65,22 @@ public class FreeTextMaxLengthAttributeTests
         // 検査対象の列も最低 1 つは取れるはず。0 件なら「全部上限付き」と誤って緑になり、
         // このエンティティについて検出網が黙って死ぬ(fail-closed にしておく)。
         //
-        // 「自前の string プロパティを宣言しているなら」という条件を付けるのが要点。
+        // 「自前の string 列を持つなら」という条件を付けるのが要点。
         // 無条件に非空を要求すると、この repo が確立したパターン(Identity の型を継承して
         // 業務列を足す)に従って独自の string 列を持たない型を足したときに
         // 「自分たちには足せない列を足せ」という実行不能な指示になる。
         // 逆にスイート全体の合計で見ると granularity が失われ、あるエンティティの業務列が
         // 別アセンブリの基底へ移って 0 件になっても、他のエンティティの列数で合計が
-        // 正のままになり**痕跡なく**そのエンティティだけ検査が空回りする(テスト件数も変わらない)
-        var declaresOwnStringProperty = entityType
-            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            .Any(p => p.PropertyType == typeof(string)
-                      && AuditedEntityModel.IsDeclaredInOwnAssembly(p));
+        // 正のままになり**痕跡なく**そのエンティティだけ検査が空回りする(テスト件数も変わらない)。
+        //
+        // 数える対象は「マップ済み・主キー以外」に限る。単に「自前の string プロパティがあるか」で
+        // 見ると、文字列を主キーにしたマスタ型や計算プロパティしか持たない型に対して
+        // 「条件が実装とずれている」という誤った原因で落ちる(実測)
+        var ownStringColumnCount = AuditedEntityModel.OwnDeclaredMappedStringPropertyCount(entityType);
 
         // 自前の string プロパティがあるのに列が 1 つも取れないのは前提が崩れた状態
-        Assert.False(declaresOwnStringProperty && columns.Count == 0,
-            $"{entityType.Name} は自前の string プロパティを宣言しているのに、検査対象の列を " +
+        Assert.False(ownStringColumnCount > 0 && columns.Count == 0,
+            $"{entityType.Name} は自前の string 列を持つのに、検査対象の列を " +
             "1 つも取得できませんでした。AppDeclaredStringColumnLengths の条件が実装とずれています" +
             "(このままでは上限の付け忘れがこのエンティティについて常に「違反ゼロ」= 緑になります)。");
 

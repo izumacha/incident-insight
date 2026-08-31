@@ -372,6 +372,37 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// そのエンティティが宣言する「マップ済み・主キー以外・自前・CLR 型が <c>string</c>」の
+    /// プロパティ数を返す。
+    ///
+    /// <see cref="AppDeclaredStringColumnLengths"/> が 0 件を返したときに、それが
+    /// 「そもそも対象の列を持たない正当な型」なのか「検出網が対象を拾えなくなった」のかを
+    /// 見分けるための独立な手がかり。<see cref="IsStringColumn"/> を使わず CLR の型で判定するので、
+    /// あちらの判定が狭まったときにこちらは狭まらない。
+    ///
+    /// 主キーと未マップ（<c>[NotMapped]</c> / 計算プロパティ）を除くのが要点。
+    /// 単純に「自前の <c>string</c> プロパティがあるか」で見ると、文字列を主キーにしたマスタ型や
+    /// 計算プロパティしか持たない型に対して「条件が実装とずれている」という<b>誤った原因</b>で
+    /// 落ちる —— 直しようがないので、いずれ検査を緩める方向へ倒れる。
+    /// </summary>
+    public static int OwnDeclaredMappedStringPropertyCount(Type entityType)
+    {
+        // EF のモデルから対象エンティティの定義を引く
+        var entity = Model.Value.FindEntityType(entityType);
+
+        // モデルに載っていなければ数えようがないので 0
+        if (entity is null) return 0;
+
+        // マップ済み・主キー以外の列のうち、自前で宣言した string プロパティを数える
+        return entity.GetProperties()
+            .Where(p => !p.IsPrimaryKey())
+            .Select(p => FindClrProperty(entityType, p.Name))
+            .Count(pi => pi != null
+                         && pi.PropertyType == typeof(string)
+                         && IsDeclaredInOwnAssembly(pi));
+    }
+
+    /// <summary>
     /// そのプロパティに付いた「長さ上限を表す属性」を<b>すべて</b>読み取り、
     /// 上限値・エラーメッセージ・属性名の組で返す（無ければ空）。
     ///

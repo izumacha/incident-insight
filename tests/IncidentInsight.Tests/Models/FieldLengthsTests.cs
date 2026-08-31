@@ -29,6 +29,23 @@ namespace IncidentInsight.Tests.Models;
 public class FieldLengthsTests
 {
     /// <summary>
+    /// 「基底の総称 DbContext へ渡した自アセンブリの型引数」を読み取れたことを確かめる。
+    ///
+    /// この手がかりを使うガードが 2 つあり、どちらも前提が崩れたら緑ではなく赤で知らせる必要がある
+    /// （空のまま素通りさせると、どちらも「対象ゼロ＝緑」で無力化される）。
+    /// 同じ表明を両方へ書き写すと、手がかりの導出を変えたときに片方だけが古い前提を確かめ続けるので、
+    /// ここ 1 か所に置く。
+    /// </summary>
+    private static void AssertBaseTypeArgumentsReadable(IReadOnlyList<Type> baseTypeArguments)
+    {
+        // 1 つも読み取れないのは、対象を取得する条件が実装とずれている状態
+        Assert.True(baseTypeArguments.Count > 0,
+            "ApplicationDbContext の基底へ渡した自アセンブリの型引数(ApplicationUser など)を " +
+            "1 つも読み取れませんでした。このガードが対象を取得する条件が実装とずれています" +
+            "(このままでは常に緑になります)。");
+    }
+
+    /// <summary>
     /// 網羅ガード専用の「自分たちのアセンブリの型か」判定。
     ///
     /// <b>共有ヘルパー <c>AuditedEntityModel.IsOwnAssemblyType</c> をあえて呼ばない。</b>
@@ -45,31 +62,6 @@ public class FieldLengthsTests
     {
         // ドメインモデルが置かれているアセンブリと同じなら自前の型
         return type.Assembly == typeof(Incident).Assembly;
-    }
-
-    /// <summary>
-    /// 属性側の検査に掛けるプロパティかを返す。条件は 2 つ。
-    ///
-    /// 1. <b>自分たちが宣言したもの</b> … 基底クラス（Identity など）が宣言したプロパティは、
-    ///    上限を決めているのが自分たちではないので <c>FieldLengths</c> の定数を当てはめる対象でもない。
-    /// 2. <b>型が <c>string</c></b> … <c>[MaxLength]</c> / <c>[Length]</c> は<b>文字数以外にも使える</b>。
-    ///    コレクションの要素数（<c>[Length(1, 10)] List&lt;string&gt; Measures</c> は、この repo の
-    ///    <c>HasAtLeastOneValidMeasure</c> を DataAnnotations で書いた自然な形）や
-    ///    <c>byte[]</c> の長さにも付く。string に限らないと、そういう正当な宣言に対して
-    ///    「その 10 を <c>FieldLengths.FreeText</c>(500) か <c>ShortText</c>(100) にしろ」
-    ///    「<c>{0}は{1}文字以内で入力してください。</c> を付けろ」という<b>実行不能な指示</b>を出す。
-    ///    CLAUDE.md が言う「実行不能な指示を出す検出網は、いずれ『直せないので検査を緩める』
-    ///    方向へ倒れる」形そのものなので、文字数の規約は文字列にだけ課す。
-    ///
-    /// なおモデル側の検査（<c>ModelMaxLength_AgreesWithMaxLengthAttribute</c>）はここを通さない。
-    /// あちらの対象は EF が文字列として保存する列に限られており、値変換した enum 列（CLR 型は enum）
-    /// も含める必要があるため。
-    /// </summary>
-    private static bool IsGovernedInputProperty(PropertyInfo property)
-    {
-        // 自分たちが宣言したプロパティで、かつ型が string のものだけを対象にする
-        return AuditedEntityModel.IsDeclaredInOwnAssembly(property)
-               && property.PropertyType == typeof(string);
     }
 
     /// <summary>
@@ -103,15 +95,20 @@ public class FieldLengthsTests
     /// <summary>
     /// そのプロパティの上限として許してよい値の集合を返す。
     ///
-    /// 利用者が入力する文字列（<c>string</c>）は <see cref="AttributeAllowedLengths"/> だけ。
-    /// それ以外（値変換して文字列として保存する enum 列など）は、fluent と同じ
-    /// <see cref="ModelAllowedLengths"/> を許す —— <c>FieldLengths.EnumCode</c> は
-    /// そういう列にしか意味を持たないので、ViewModel の入力欄には引き続き使えない。
+    /// 利用者が入力する項目は <see cref="AttributeAllowedLengths"/> だけ。
+    /// <c>EnumCode</c> / <c>EnumCodeJapanese</c> を許すのは<b>enum のプロパティだけ</b>。
+    /// この 2 つは「値変換して文字列として保存する enum 列」にしか意味を持たないので、
+    /// 「string でなければ何でも」に広げてはいけない —— 実測でも、その形だと
+    /// <c>[MaxLength(20)] byte[] Attachment</c> のような裸の数値が通ってしまった
+    /// （<c>main</c> では全プロパティを <c>{500, 100}</c> と突き合わせていたので捕まっていた）。
     /// </summary>
     private static int[] AllowedLengthsFor(PropertyInfo property)
     {
-        // string は入力欄用の集合、それ以外は enum 列用を足した集合
-        return property.PropertyType == typeof(string) ? AttributeAllowedLengths : ModelAllowedLengths;
+        // Nullable を剥がした素の型
+        var type = Nullable.GetUnderlyingType(property.PropertyType) ?? property.PropertyType;
+
+        // 値変換して保存する enum 列だけが enum 用の上限を使ってよい
+        return type.IsEnum ? ModelAllowedLengths : AttributeAllowedLengths;
     }
 
     /// <summary>
@@ -255,8 +252,9 @@ public class FieldLengthsTests
         var offenders = AuditedEntityModel.ClrBackedStringColumns(entityType)
             // 基底クラス(Identity など)が宣言した列は対象外(上限を決めているのが自分たちではない)
             .Where(c => AuditedEntityModel.IsDeclaredInOwnAssembly(c.Property))
-            // 属性側の上限(無ければ検査対象外 —— 付け忘れは別の検査が落とす)
+            // モデル側に上限がある列だけが対象(付け忘れは FreeTextMaxLengthAttributeTests が落とす)
             .Where(c => c.MaxLength != null)
+            // 属性側の上限は 1 つとは限らないのですべて取り出して突き合わせる
             .SelectMany(c => AuditedEntityModel.ReadLengthLimits(c.Property)
                 .Select(limit => new { c.Name, c.MaxLength, Limit = limit }))
             // 値が一致しないものが違反
@@ -305,8 +303,12 @@ public class FieldLengthsTests
         // 指定漏れがあると日本語 UI に英文の検証エラーが混ざる(CLAUDE.md §1)
         var offenders = type
             .GetProperties(BindingFlags.Public | BindingFlags.Instance)
-            // 自分たちが宣言した string プロパティだけを見る(理由は IsGovernedInputProperty)
-            .Where(IsGovernedInputProperty)
+            // 裸の数値の検査と**同じ範囲**を見る。string に絞ると、たとえば
+            // [MaxLength(FieldLengths.ShortText)] byte[] Attachment(添付サイズの上限という
+            // 正当な宣言)が検査から外れ、日本語 UI に英語の既定メッセージ
+            // ("The field Attachment must be a string or array type with a maximum length of '100'.")
+            // が出る —— main では全プロパティを見ていたので捕まっていた退行だった(実測)
+            .Where(IsNakedNumberCheckedProperty)
             .SelectMany(p => AuditedEntityModel.ReadLengthLimits(p).Select(limit => new { Property = p, Limit = limit }))
             // 違反は 2 種類:
             //  (a) [MaxLength] 以外の綴り([StringLength] / [Length])を使っている
@@ -396,9 +398,7 @@ public class FieldLengthsTests
         Assert.True(declaredDbSetTypes.Count > 0,
             "ApplicationDbContext から DbSet<T> の宣言を 1 つも読み取れませんでした。" +
             "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
-        Assert.True(identityUserTypes.Count > 0,
-            "ApplicationDbContext の基底へ渡した自アセンブリの型引数(ApplicationUser など)を " +
-            "1 つも読み取れませんでした。このガードが対象を取得する条件が実装とずれています。");
+        AssertBaseTypeArgumentsReadable(identityUserTypes);
 
         // 現在の導出結果(検査対象になっているエンティティ)
         var governed = AuditedEntityModel.LengthGovernedEntityTypes();
@@ -529,9 +529,7 @@ public class FieldLengthsTests
         // 手がかりが空だとこのガードは 0 == 0 を確かめるだけの空振りになる。
         // 他の検出網と同じく、前提が崩れたら緑ではなく赤で知らせる(fail-closed)
         var baseTypeArguments = OwnDbContextBaseTypeArguments();
-        Assert.True(baseTypeArguments.Count > 0,
-            "ApplicationDbContext の基底へ渡した自アセンブリの型引数を 1 つも読み取れませんでした。" +
-            "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
+        AssertBaseTypeArgumentsReadable(baseTypeArguments);
 
         var identityBacked = baseTypeArguments
             .Where(t => LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t)))
