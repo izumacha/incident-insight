@@ -51,7 +51,7 @@ public class FreeTextMaxLengthAttributeTests
         // shadow property(CLR プロパティを持たない列)も**含める**。以前は ClrBacked に絞り、
         // 「shadow は AuditedEntityPhiClassificationTests が専用の対処法で落とす」としていたが、
         // その検査の対象は監査対象 3 集約だけなので、監査対象でない CauseCategory へ
-        // 上限なしの shadow string 列(Property<string>("...") )を足すと 4 つの検査すべてを
+        // 上限なしの shadow string 列(Property<string>("...") )を足すと 長さ関連の検査すべてを
         // 素通りした(実測で全件緑)。上限の検査は属性を読まないので shadow 列も対象にできる。
         //
         // 基底クラス(Identity)が宣言した列は除く —— UserName / Email などの列長を決めているのは

@@ -279,7 +279,7 @@ public class FieldLengthsTests
         // 「属性を付けられないから対象外」という無関係な理由で素通りする
         // 対象は「長さ上限が設定されている列」すべて。文字列列に絞ると、fluent で
         // 文字列以外の列へ設定した裸の数値が誰にも見られなくなる
-        // (実測: byte[] の列へ fluent で HasMaxLength(300) と書くと 4 検査すべてを素通りした)。
+        // (実測: byte[] の列へ fluent で HasMaxLength(300) と書くと 長さ関連の検査すべてを素通りした)。
         // その列が**そもそも文字数を数える列か**は LengthLimit_OnlyOnCharacterColumns が見る
         var offenders = AuditedEntityModel.AppDeclaredColumnsWithLength(entityType)
             // 許容値のいずれとも一致しない上限を違反として拾う
@@ -395,7 +395,7 @@ public class FieldLengthsTests
         // その網羅ガード)あるが、対象範囲はすべて
         // AuditedEntityModel.LengthGovernedEntityTypes() の 1 か所が決めている。
         // つまりこの導出が 1 つでもエンティティを取りこぼした瞬間、そのエンティティは
-        // 4 つの検査から**同時に、しかも黙って**外れる(すべて fail-open)。
+        // 長さ関連の検査から**同時に、しかも黙って**外れる(すべて fail-open)。
         //
         // 実測: あるエンティティが導出集合から外れ、同時にその列の [MaxLength] が消える変異は
         // 全件緑のまま通った。唯一の痕跡はテスト件数が 496 → 490 に減ることだけで、
@@ -434,7 +434,7 @@ public class FieldLengthsTests
         //
         // (a) だけでは足りない。ApplicationUser は Identity 側の DbSet(Users)で公開されるため
         // DeclaredOnly に掛からず、本 PR で唯一新たに管理対象へ入れた型なのにガードの視界の外だった。
-        // 実測でも、導出へ IdentityUser 派生の除外を戻すと ApplicationUser が長さ関連 4 検査から
+        // 実測でも、導出へ IdentityUser 派生の除外を戻すと ApplicationUser が長さ関連の検査から
         // 同時に消えるのに 504 → 500 で全件緑のまま通った(痕跡はテスト件数の減少だけ)。
         // 「自分たちが型引数として名指しした自アセンブリの型」は、DbSet の宣言と同じく
         // 導出とは独立した宣言箇所なので、手がかりとして加える
@@ -566,7 +566,7 @@ public class FieldLengthsTests
         //
         // 実測: typeof(ApplicationUser).FullName をキーに "列長は ASP.NET Core Identity 側が決めるため" という
         // (もっともらしい)理由で登録し、ApplicationUser の [MaxLength] を 2 つとも消すと
-        // 505 件すべて緑のまま通った。導出から外れるので長さ関連 4 検査が効かなくなり、
+        // 505 件すべて緑のまま通った。導出から外れるので長さ関連の検査が効かなくなり、
         // 上の網羅ガードも「意図的な除外」として素通りさせるため。理由の有無を見る検査も、
         // 文言がもっともらしい以上まったく助けにならない。
         //
@@ -603,7 +603,7 @@ public class FieldLengthsTests
         // 値に理由を持たせている。ところが読み手は .Keys と .ContainsKey だけで、
         // **値は誰も見ていなかった** —— 理由を空文字や空白にしても通ってしまう。
         //
-        // 実測: [nameof(CauseCategory)] = "   " を足すと CauseCategory が長さ関連 4 検査すべてから
+        // 実測: [nameof(CauseCategory)] = "   " を足すと CauseCategory が長さ関連の検査すべてから
         // 外れるのに 504 → 498 で全件緑のまま通った(痕跡はテスト件数の減少だけ)。
         // NotPhiAttribute は同じ意図を実行時の throw で強制している。同じ強度をここにも与える
         var missingReason = LengthGovernanceExclusions

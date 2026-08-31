@@ -287,7 +287,7 @@ internal static class AuditedEntityModel
         {
             // キーは**完全修飾名**。単純名で持つと、将来同じ単純名のエンティティ
             // (Models.Reporting.AuditLog のような集計用テーブル)を足したときに、
-            // それも巻き添えで 4 検査すべてから外れる —— しかも綴りの検査は同じ単純名で
+            // それも巻き添えで長さ関連の検査すべてから外れる —— しかも綴りの検査は同じ単純名で
             // 突き合わせるため緑のまま。typeof(...).FullName で引くので綴りは手で書かない
             [typeof(AuditLog).FullName!] = "列長の出所が監査証跡スキーマで、業務入力の上限(FieldLengths)ではないため",
         };
@@ -414,7 +414,7 @@ internal static class AuditedEntityModel
     /// <see cref="AppDeclaredStringColumnLengths"/> との違いは<b>文字列列に限らない</b>点。
     /// 文字列列だけを返すと、fluent の <c>HasMaxLength()</c> で文字列以外の列へ設定した上限が
     /// 誰にも見られなくなる —— 実測でも <c>byte[]</c> の列へ <c>HasMaxLength(300)</c> と書くと、
-    /// 裸の 300 も属性との食い違いも 4 つの検査すべてを素通りした（fluent が抜け道になる形そのもの）。
+    /// 裸の 300 も属性との食い違いも 長さ関連の検査すべてを素通りした（fluent が抜け道になる形そのもの）。
     /// 「その列が文字数を数える列か」は <c>IsCharacterColumn</c> で呼び出し側へ渡し、
     /// 判定の規則（<see cref="IsStringColumn"/>）はここ 1 か所に置く。
     ///
