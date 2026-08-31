@@ -92,7 +92,7 @@ public class ConvertedEnumColumnLengthTests
             // 取り残され、この検査だけが黙って対象を狭める
             //   (実際この検査の初版は独自に変換器だけを見ており、EnumCode を 5 に縮める変異で
             //    赤にならなかった —— Severity / Status / MeasureType が素通りしていた)
-            if (!AuditedEntityModel.IsStringColumnPublic(property)) continue;
+            if (!AuditedEntityModel.IsStringColumn(property)) continue;
 
             // 長さ上限が無い列は「収まらない」ことが起きえないので対象外
             var maxLength = property.GetMaxLength();

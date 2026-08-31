@@ -84,10 +84,19 @@ public class FreeTextMaxLengthAttributeTests
         // Incident の検査対象には値変換した enum 列(Severity / IncidentType)も含まれるため、
         // 絞り込みが狭まって自由記述 4 列が丸ごと落ちても columns.Count は 2 のままで、
         // 0 件ではないのでガードが発火しない。件数の比較にしておけば、その取りこぼしも捕まる
-        Assert.True(columns.Count >= ownStringColumnCount,
-            $"{entityType.Name} は自前の string 列を {ownStringColumnCount} 件持つのに、検査対象の列が " +
-            $"{columns.Count} 件しか取得できていません。AppDeclaredStringColumnLengths の条件が" +
-            "実装とずれています(このままだと落ちた列について上限の付け忘れが素通りします)。");
+        // 突き合わせるのは**同じ種類の列どうし**。columns には値変換した enum 列や shadow 列も
+        // 含まれるので、全体の件数で比べると「enum 列の数だけ string 列を落としても通る」
+        // 隙間ができる —— 実測でも Incident(string 4 + enum 2)から自前の string 列を 2 つ
+        // 落としつつ ReporterName の [MaxLength] を消すと 4 >= 4 が成立し、全件緑のまま
+        // 個人名の列が無制限で出荷された(テスト件数すら変わらない)
+        var clrStringColumnCount = columns.Count(c => c.IsClrString);
+
+        // 独立に数えた自前の string 列は、必ず検査対象に現れるはず
+        Assert.True(clrStringColumnCount >= ownStringColumnCount,
+            $"{entityType.Name} は自前の string 列を {ownStringColumnCount} 件持つのに、検査対象の " +
+            $"string 列が {clrStringColumnCount} 件しか取得できていません。" +
+            "AppDeclaredStringColumnLengths の条件が実装とずれています" +
+            "(このままだと落ちた列について上限の付け忘れが素通りします)。");
 
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る

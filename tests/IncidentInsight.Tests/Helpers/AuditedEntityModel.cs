@@ -255,6 +255,10 @@ internal static class AuditedEntityModel
             .Where(IsOwnAssemblyType)
             // 意図的に外している型(現在は AuditLog のみ。理由は LengthGovernanceExclusions)を除く
             .Where(t => !LengthGovernanceExclusions.ContainsKey(ExclusionKeyFor(t)))
+            // 同じ CLR 型が複数のエンティティ型にマップされることがある(所有型を 2 つの所有者に
+            // 置く / shared-type entity type)。GetEntityTypes はエンティティ型ごとに 1 件返すので、
+            // ここで畳まないと [MemberData] に同じ型のケースが 2 つ並ぶ(TheoryData は畳まない)
+            .Distinct()
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
@@ -336,17 +340,21 @@ internal static class AuditedEntityModel
     /// で <c>ApplicationUser</c> ごと外してはいけない —— それをやると
     /// <c>DisplayName</c> / <c>Department</c> がまた長さ管理から落ちる。
     /// </summary>
-    public static IReadOnlyList<(string Name, int? MaxLength)> AppDeclaredStringColumnLengths(Type entityType)
+    public static IReadOnlyList<(string Name, int? MaxLength, bool IsClrString)>
+        AppDeclaredStringColumnLengths(Type entityType)
     {
         // CLR プロパティを持つ列と shadow 列に分けて取り出す
         var (clrBacked, shadow) = PartitionStringColumns(entityType);
 
-        // CLR プロパティを持つ列のうち、自分たちが宣言したものだけを残す
+        // CLR プロパティを持つ列のうち、自分たちが宣言したものだけを残す。
+        // IsClrString は「CLR の型が string か」で、値変換した enum 列と区別するために持つ
+        // (件数を突き合わせる前提確認が、種類の違う列を数え合わせないようにするため)
         return clrBacked
             .Where(c => IsDeclaredInOwnAssembly(c.Property))
-            .Select(c => (c.Name, c.MaxLength))
-            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
-            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
+            .Select(c => (c.Name, c.MaxLength, c.Property.PropertyType == typeof(string)))
+            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す。
+            // CLR プロパティが無いので IsClrString は false
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength, false)))
             .ToList();
     }
 
@@ -512,13 +520,6 @@ internal static class AuditedEntityModel
     public static IModel EfModel => Model.Value;
 
     /// <summary>
-    /// その列が検査対象の「文字列列」かを返す(判定規則は <see cref="IsStringColumn"/>)。
-    /// 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて
-    /// 黙って対象が狭くなるため、外からもここを呼べるようにしている。
-    /// </summary>
-    public static bool IsStringColumnPublic(IProperty property) => IsStringColumn(property);
-
-    /// <summary>
     /// その型が EF のモデルにエンティティとして載っているかを返す。
     /// ViewModel のようにモデルを持たない型を <see cref="PartitionStringColumns"/> へ渡すと
     /// fail-closed で落ちるため、モデル側の検査に掛ける型を選り分けるのに使う。
@@ -556,13 +557,15 @@ internal static class AuditedEntityModel
     public sealed record ShadowColumn(string Name, int? MaxLength);
 
     // その列を検査対象の「文字列列」とみなすかを判定する。
+    // 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて黙って対象が
+    // 狭くなるため、外からもここを呼ぶ(可視性の都合だけの別名は置かない)。
     //
     // CLR の型が string かどうかだけでは足りない: HasConversion<string>() を通した列
     // (Incident.Severity / IncidentType, PreventiveMeasure.Status / MeasureType など)は
     // ClrType が enum のままなので「string 列ではない」と誤判定され、検出網から丸ごと外れる。
     // 判定を「DB に文字列として入るか」に置くことで、将来 HasConversion<string>() で保存する
     // 自由記述の値オブジェクトを足しても、分類と長さ上限の検査が自動で追随する
-    private static bool IsStringColumn(IProperty property)
+    public static bool IsStringColumn(IProperty property)
     {
         // (a) CLR の型が string —— これが本命。インターセプタの SerializeChanges が ChangesJson へ
         //     書くのは prop.CurrentValue / prop.OriginalValue、すなわち**変換前の CLR 側の値**
