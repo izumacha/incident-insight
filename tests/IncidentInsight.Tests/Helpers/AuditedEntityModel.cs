@@ -1,5 +1,9 @@
 // ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
 using IncidentInsight.Web.Data;
+// AuditLog(長さ上限の管理対象から除くエンティティ)を名前で参照するために取り込む
+using IncidentInsight.Web.Models;
+// IdentityUser(列長を Identity が決める型)の派生判定に使うために取り込む
+using Microsoft.AspNetCore.Identity;
 // DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
 using Microsoft.EntityFrameworkCore;
 // IModel / IProperty(EF Core のモデル定義を読む型)を使うために取り込む
@@ -201,27 +205,66 @@ internal static class AuditedEntityModel
     /// 長さ管理まで黙って外してしまう —— 裸の <c>[MaxLength(200)]</c> も、上限の付け忘れも、
     /// 値変換した列の切り詰めも、まとめて素通りするようになる（すべて fail-open）。
     ///
-    /// 代わりに「自分たちのモデル名前空間にある、マップ済みのエンティティ」を条件にする。
+    /// 代わりに「自分たちのアセンブリで定義された、マップ済みのエンティティ」を条件にする。
     /// こうすると新しいエンティティは何もしなくても検査対象に入る（列挙を書き写さない）。
+    ///
+    /// 条件を**名前空間の完全一致から所属アセンブリへ変えてある**のが要点。
+    /// 以前は <c>t.Namespace == "IncidentInsight.Web.Models"</c> という文字列の一致で絞っていたが、
+    /// この repo は既に <c>Models/Enums</c> / <c>Models/Auditing</c> / <c>Models/Validation</c> 等の
+    /// サブフォルダを持っており、エンティティを 1 つサブフォルダへ移すだけで名前空間が変わって
+    /// 一致しなくなる。そうなるとそのエンティティは長さ上限に関する検査**すべて**
+    /// （裸の数値の禁止・上限の付け忘れ・値変換列の切り詰め・その網羅ガード）から
+    /// 同時に、しかも黙って外れる —— 実測でも「あるエンティティが導出集合から外れ、
+    /// 同時にその列の上限が消える」変異が全件緑のまま通った（唯一の痕跡はテスト件数が
+    /// 496 → 490 に減ることだけで、これは正当なリファクタと見分けが付かない）。
+    /// アセンブリ単位なら、名前空間をどう切り直しても対象から外れない。
+    ///
     /// 除外は 2 つだけで、いずれも上限の出所が <c>FieldLengths</c> ではないもの:
-    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長
-    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める
+    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める。
+    ///     名前ではなく <c>IdentityUser</c> の派生かどうかで判定するので、将来 Identity の型を
+    ///     もう 1 つ拡張しても同じ理由で自動的に外れる
+    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長。こちらは該当する
+    ///     型の条件が無いので名前で除く。ただし綴りが実在の型を指していることを確かめる
+    ///     （リネームで除外が空振りになったことに気付けるように）
+    ///
+    /// この導出が正しく効いているかは <c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>
+    /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言）で照合する。
     /// </summary>
     public static IReadOnlyList<Type> LengthGovernedEntityTypes()
     {
-        // 上限の出所が FieldLengths ではないエンティティ(理由は上のコメント)
-        var excluded = new[] { "AuditLog", "ApplicationUser" };
+        // 自分たちのアセンブリ(IncidentInsight.Web)。DbContext の所属から引くので綴りを書かない
+        var ownAssembly = typeof(ApplicationDbContext).Assembly;
 
-        // 自分たちのモデル名前空間にあるマップ済みエンティティだけを集める
-        return Model.Value.GetEntityTypes()
+        // 監査証跡スキーマ固有の列長を持つため除くエンティティ(理由は上のコメント)
+        const string auditTrailEntityName = nameof(AuditLog);
+
+        // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集める
+        var governed = Model.Value.GetEntityTypes()
             .Select(e => e.ClrType)
-            // Identity の内部エンティティ(AspNetRoles 等)は別名前空間なのでここで落ちる
-            .Where(t => t.Namespace == "IncidentInsight.Web.Models")
-            // 上限の出所が違う 2 つを除く
-            .Where(t => !excluded.Contains(t.Name))
+            // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
+            .Where(t => t.Assembly == ownAssembly)
+            // 列長を Identity が決める型(ApplicationUser など)を、名前ではなく派生関係で除く
+            .Where(t => !typeof(IdentityUser).IsAssignableFrom(t))
+            // 監査証跡スキーマ固有の列長を持つ AuditLog を除く
+            .Where(t => t.Name != auditTrailEntityName)
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
+
+        // 名前で除いている AuditLog が実在の型を指しているかを確かめる(fail-closed)。
+        // リネームすると除外が空振りして AuditLog が検査対象に入り、監査証跡固有の列長
+        // (256/64/16)が「裸の数値」として落ちる —— 原因が分かりにくい失敗になるので、
+        // ここで「除外の綴りが古い」ことを名指しで伝える
+        if (Model.Value.GetEntityTypes().All(e => e.ClrType.Name != auditTrailEntityName))
+        {
+            // どの除外が実在の型を指していないのかを示して失敗させる
+            throw new InvalidOperationException(
+                $"長さ上限の管理対象から除外している '{auditTrailEntityName}' に対応するエンティティが " +
+                "EF のモデルにありません。除外の綴りが実装とずれています。");
+        }
+
+        // 導出結果を返す
+        return governed;
     }
 
     /// <summary>
