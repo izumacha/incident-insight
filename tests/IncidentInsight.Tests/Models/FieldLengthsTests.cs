@@ -661,9 +661,13 @@ public class FieldLengthsTests
         //      (FreeText=500)と文言(「◯◯は500文字以内で…」)で表してしまう単位またぎのずれ
         Assert.True(offenders.Count == 0,
             "文字数以外を数えるプロパティに長さ上限の属性が付いています: " +
-            string.Join(", ", offenders) + "。" + ExtendTheRuleGuidance +
-            " なお enum / int / DateTime など MaxLengthAttribute が測れない型では、" +
-            "MVC の検証時に InvalidCastException が投げられ、その画面への POST が毎回 HTTP 500 になります。");
+            string.Join(", ", offenders) + "。" +
+            "対象が enum / int / DateTime など MaxLengthAttribute が測れない型なら、" +
+            "その属性は**外してください**(MVC の検証時に InvalidCastException が投げられ、" +
+            "その画面への POST が毎回 HTTP 500 になります。列長を決めたいだけなら " +
+            "OnModelCreating の HasMaxLength() を使う)。" +
+            "本当に別の単位(バイト長・件数)を制限したい場合は次の手順で規則を広げてください —— " +
+            ExtendTheRuleGuidance);
     }
 
     [Theory]
