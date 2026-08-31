@@ -34,10 +34,15 @@ namespace IncidentInsight.Tests.Models;
 // リフレクションだと計算プロパティ(SeverityLabel 等)を誤検出し、逆に shadow property を取りこぼす。
 public class FreeTextMaxLengthAttributeTests
 {
-    // 検査対象のエンティティ型一覧。型を書き並べず、監査インターセプタの宣言
-    // (AuditSaveChangesInterceptor.AuditedEntities = 唯一の真実の源)から導出する。
-    // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
-    // 新しいエンティティの自由記述列が上限なしのまま素通りする
+    // 検査対象のエンティティ型一覧。型を書き並べず、長さ上限の管理対象を導出する
+    // 共有ファクトリ(AuditedEntityModel.LengthGovernedTheoryData)から受け取る。
+    //
+    // **監査対象(AuditSaveChangesInterceptor.AuditedEntities)からは導出しない。**
+    // 「どのエンティティを監査するか」と「どのエンティティの列長を管理するか」は別の関心事で、
+    // 前者から後者を導くと、あるエンティティを監査対象から外した瞬間に無関係なはずの
+    // 長さ検査までまとめて外れる(すべて fail-open。CLAUDE.md §3)。
+    // ここで独自の一覧を持つのも同じ理由で避ける —— 管理対象が増えたときに
+    // この検査だけが取り残され、新しいエンティティの自由記述列が上限なしのまま素通りする
     public static TheoryData<Type> LengthGovernedEntityTypes =>
         AuditedEntityModel.LengthGovernedTheoryData();
 

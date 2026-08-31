@@ -47,8 +47,14 @@ public class FieldLengthsTests
         // 自分たちのアセンブリで [MaxLength] を 1 つでも宣言している型を集める
         return typeof(ApplicationDbContext).Assembly
             .GetTypes()
-            // 意図的な除外(AuditLog は監査証跡スキーマ固有の列長)を外す
-            .Where(t => !excluded.Contains(t.Name))
+            // 意図的な除外(AuditLog は監査証跡スキーマ固有の列長)を外す。
+            // **マップ済みエンティティであることも条件にする**のが要点。除外表は
+            // 「エンティティ」に対する表(LengthGovernanceExclusions_AreAllStillReal が
+            // 各キーは EF のモデル上の型だと固定している)なので、型名の一致だけで落とすと
+            // 同名の非エンティティ —— たとえば Models/ViewModels 配下の AuditLog という
+            // 一覧フィルタ用 ViewModel —— まで巻き添えで検査対象から外れる。
+            // そうなると裸の [MaxLength(200)] も ErrorMessage の指定漏れも素通りする
+            .Where(t => !(AuditedEntityModel.IsMappedEntity(t) && excluded.Contains(t.Name)))
             // 自分たちが宣言したプロパティに [MaxLength] があるものだけを残す
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
                 .Where(AuditedEntityModel.IsAppDeclaredColumn)
@@ -58,7 +64,16 @@ public class FieldLengthsTests
             .ToList();
     }
 
-    public static TheoryData<Type> LengthGovernedTypes => AuditedEntityModel.ToTheoryData(GovernedTypes());
+    // 属性側(= [MaxLength] を宣言している型)の検査対象。
+    //
+    // モデル側の集合(ModelBackedTypes / AuditedEntityModel.LengthGovernedEntityTypes)とは
+    // **中身が違う**(こちらは ViewModel を含み、あちらはマップ済みエンティティだけ)。
+    // 以前は両方が LengthGovernedTypes / LengthGovernedEntityTypes という紛らわしい名前で、
+    // [MemberData] に取り違えて配線しても**コンパイルが通ってしまう**状態だった
+    // (取り違えると、属性側の検査がエンティティだけに狭まって ViewModel の裸の数値を見逃すか、
+    //  逆にモデル側へ ViewModel が流れて PartitionStringColumns が例外で落ちる)。
+    // 役割がそのまま名前に出るようにして取り違えを防ぐ
+    public static TheoryData<Type> MaxLengthDeclaringTypes => AuditedEntityModel.ToTheoryData(GovernedTypes());
 
     // [MaxLength] 属性に書いてよい上限。利用者が入力する項目の上限だけを許す。
     //
@@ -83,7 +98,7 @@ public class FieldLengthsTests
     public static TheoryData<Type> ModelBackedTypes => AuditedEntityModel.LengthGovernedTheoryData();
 
     [Theory]
-    [MemberData(nameof(LengthGovernedTypes))]
+    [MemberData(nameof(MaxLengthDeclaringTypes))]
     public void EveryMaxLength_UsesAFieldLengthsConstant(Type type)
     {
         // 属性に書いてよい上限の集合(ここに無い値は裸のマジックナンバーとみなす)
@@ -170,7 +185,7 @@ public class FieldLengthsTests
     }
 
     [Theory]
-    [MemberData(nameof(LengthGovernedTypes))]
+    [MemberData(nameof(MaxLengthDeclaringTypes))]
     public void ViewModelMaxLength_UsesJapaneseSharedErrorMessage(Type type)
     {
         // 入力用の型だけが画面へエラーメッセージを出す。エンティティ側の [MaxLength] は
@@ -371,6 +386,37 @@ public class FieldLengthsTests
             "長さ上限の管理対象から除外している名前が、EF のモデル上のエンティティを指していません: " +
             string.Join(", ", stale) + "。エンティティをモデルから外したのに除外だけが残っています " +
             "(このままだとその除外は何も除かない飾りになります)。");
+    }
+
+    [Fact]
+    public void LengthGovernanceExclusions_CannotDropIdentityBackedEntities()
+    {
+        // 除外表はエスケープハッチなので、**この PR が塞いだ穴をそのまま開け直せてはいけない**。
+        //
+        // 実測: [nameof(ApplicationUser)] = "列長は ASP.NET Core Identity 側が決めるため" という
+        // (もっともらしい)理由で登録し、ApplicationUser の [MaxLength] を 2 つとも消すと
+        // 505 件すべて緑のまま通った。導出から外れるので長さ関連 4 検査が効かなくなり、
+        // 上の網羅ガードも「意図的な除外」として素通りさせるため。理由の有無を見る検査も、
+        // 文言がもっともらしい以上まったく助けにならない。
+        //
+        // そこで、手がかり (b) で拾う型 —— 基底の総称 DbContext へ自分たちが渡した型
+        // (ApplicationUser) —— は除外表に載せられないことを固定する。この型は
+        // 「フレームワークが持つ型に自分たちが業務列を足したもの」で、列長の管理を
+        // やめてよい列とやめてはいけない列が同居しているため、**エンティティ単位で外すこと自体が誤り**。
+        // 正しい対処は列単位(AuditedEntityModel.IsAppDeclaredColumn)で切ることで、それは既に効いている
+        var identityBacked = OwnDbContextBaseTypeArguments()
+            .Where(t => LengthGovernanceExclusions.ContainsKey(t.Name))
+            .Select(t => t.Name)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // そのような除外が 1 件も無いこと
+        Assert.True(identityBacked.Count == 0,
+            "基底の DbContext へ渡した型を長さ上限の管理対象から除外しています: " +
+            string.Join(", ", identityBacked) +
+            "。この型にはフレームワークが決める列と自分たちが足した業務列が同居しているため、" +
+            "エンティティ単位で外すと後者(ApplicationUser なら DisplayName / Department)まで" +
+            "巻き添えで長さ管理から落ちます。列単位の除外で対処してください。");
     }
 
     [Fact]

@@ -239,8 +239,8 @@ internal static class AuditedEntityModel
         // 自分たちのアセンブリ(IncidentInsight.Web)。DbContext の所属から引くので綴りを書かない
         var ownAssembly = typeof(ApplicationDbContext).Assembly;
 
-        // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集める
-        var governed = Model.Value.GetEntityTypes()
+        // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集めて返す
+        return Model.Value.GetEntityTypes()
             .Select(e => e.ClrType)
             // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
             .Where(t => t.Assembly == ownAssembly)
@@ -249,9 +249,6 @@ internal static class AuditedEntityModel
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
-
-        // 導出結果を返す
-        return governed;
     }
 
     /// <summary>
@@ -380,7 +377,6 @@ internal static class AuditedEntityModel
         // 分割済みの結果から shadow property 側の列名だけを返す
         return PartitionStringColumns(entityType).Shadow.Select(c => c.Name).ToList();
     }
-
 
     /// <summary>
     /// 「文字列として保存される」列 1 つぶんの情報。
