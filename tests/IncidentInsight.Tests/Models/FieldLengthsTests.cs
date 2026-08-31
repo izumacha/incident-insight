@@ -142,9 +142,16 @@ public class FieldLengthsTests
             // 辞書引きを先に置いて、アセンブリ内の全型に対して EF モデル検索が走らないようにする
             .Where(t => !(LengthGovernanceExclusions.ContainsKey(AuditedEntityModel.ExclusionKeyFor(t))
                           && AuditedEntityModel.IsMappedEntity(t)))
-            // 自分たちが宣言した string プロパティに長さ上限の属性があるものだけを残す
+            // 自分たちが宣言したプロパティに「長さを意味する」上限属性があるものだけを残す。
+            //
+            // 選別の述語は、実際に検査する側(IsNakedNumberCheckedProperty)と**同じ**にする。
+            // ここだけ string に絞ると、長さ属性が非 string プロパティにしか付いていない型
+            // (例: [MaxLength(200)] byte[] Blob と [MaxLength(333)] MeasureStatus Status だけを
+            // 持つ ViewModel)が [Theory] のケースにすら入らず、裸の数値が誰にも見られない
+            // ——実測でも 506 → 506 件、テスト件数すら変わらずに全件緑で通った。
+            // 「検査する範囲」より「対象を選ぶ範囲」が狭いと、その差分がそのまま死角になる
             .Where(t => t.GetProperties(BindingFlags.Public | BindingFlags.Instance)
-                .Where(IsGovernedInputProperty)
+                .Where(IsNakedNumberCheckedProperty)
                 .Any(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0))
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)

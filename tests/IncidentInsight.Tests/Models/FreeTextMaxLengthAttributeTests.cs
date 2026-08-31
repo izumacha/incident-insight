@@ -4,8 +4,6 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
-// [MaxLength] 等の DataAnnotations 属性を参照するために取り込む
-using System.ComponentModel.DataAnnotations;
 // リフレクション(型情報からプロパティや属性を調べる仕組み)を使うために取り込む
 using System.Reflection;
 
