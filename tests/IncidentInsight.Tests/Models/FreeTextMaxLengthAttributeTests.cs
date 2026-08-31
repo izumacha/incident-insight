@@ -4,10 +4,6 @@ using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
-// [MaxLength] 等の DataAnnotations 属性を参照するために取り込む
-using System.ComponentModel.DataAnnotations;
-// リフレクション(型情報からプロパティや属性を調べる仕組み)を使うために取り込む
-using System.Reflection;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
@@ -34,25 +30,79 @@ namespace IncidentInsight.Tests.Models;
 // リフレクションだと計算プロパティ(SeverityLabel 等)を誤検出し、逆に shadow property を取りこぼす。
 public class FreeTextMaxLengthAttributeTests
 {
-    // 検査対象のエンティティ型一覧。型を書き並べず、監査インターセプタの宣言
-    // (AuditSaveChangesInterceptor.AuditedEntities = 唯一の真実の源)から導出する。
-    // ここで独自の一覧を持つと、監査対象を足したときに実装だけが増えて検査が追随せず、
-    // 新しいエンティティの自由記述列が上限なしのまま素通りする
+    // 検査対象のエンティティ型一覧。型を書き並べず、長さ上限の管理対象を導出する
+    // 共有ファクトリ(AuditedEntityModel.LengthGovernedTheoryData)から受け取る。
+    //
+    // **監査対象(AuditSaveChangesInterceptor.AuditedEntities)からは導出しない。**
+    // 「どのエンティティを監査するか」と「どのエンティティの列長を管理するか」は別の関心事で、
+    // 前者から後者を導くと、あるエンティティを監査対象から外した瞬間に無関係なはずの
+    // 長さ検査までまとめて外れる(すべて fail-open。CLAUDE.md §3)。
+    // ここで独自の一覧を持つのも同じ理由で避ける —— 管理対象が増えたときに
+    // この検査だけが取り残され、新しいエンティティの自由記述列が上限なしのまま素通りする
     public static TheoryData<Type> LengthGovernedEntityTypes =>
-        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
+        AuditedEntityModel.LengthGovernedTheoryData();
 
     [Theory]
     [MemberData(nameof(LengthGovernedEntityTypes))]
     public void PersistedStringColumns_MustHaveMaxLength(Type entityType)
     {
-        // 対象エンティティで実際に列になり、かつ属性を付けられる string 列を EF のモデルから取り出す
-        // (列名と CLR プロパティの組)。shadow property は AuditedEntityPhiClassificationTests が
-        // 専用の対処法で落とすので、ここでは対象から外れている
-        var columns = AuditedEntityModel.ClrBackedStringColumns(entityType);
+        // 対象エンティティで実際に列になる string 列を、列名と上限の組で EF のモデルから取り出す。
+        //
+        // shadow property(CLR プロパティを持たない列)も**含める**。以前は ClrBacked に絞り、
+        // 「shadow は AuditedEntityPhiClassificationTests が専用の対処法で落とす」としていたが、
+        // その検査の対象は監査対象 3 集約だけなので、監査対象でない CauseCategory へ
+        // 上限なしの shadow string 列(Property<string>("...") )を足すと 長さ関連の検査すべてを
+        // 素通りした(実測で全件緑)。上限の検査は属性を読まないので shadow 列も対象にできる。
+        //
+        // 基底クラス(Identity)が宣言した列は除く —— UserName / Email などの列長を決めているのは
+        // ASP.NET Core Identity で、FieldLengths の定数を当てはめる対象ではない。
+        // 一方 ApplicationUser.DisplayName / Department はこのリポジトリが足した業務列なので残る
+        var columns = AuditedEntityModel.AppDeclaredStringColumnLengths(entityType);
 
-        // 前提確認: 各エンティティに検査対象の string 列が最低 1 つは存在するはず。
-        // 0 件だと「全部上限付き」と誤って緑になり、検出網が黙って死ぬ(fail-closed にしておく)
-        Assert.NotEmpty(columns);
+        // 前提確認: このエンティティが自前の string プロパティを宣言しているなら、
+        // 検査対象の列も最低 1 つは取れるはず。0 件なら「全部上限付き」と誤って緑になり、
+        // このエンティティについて検出網が黙って死ぬ(fail-closed にしておく)。
+        //
+        // 「自前の string 列を持つなら」という条件を付けるのが要点。
+        // 無条件に非空を要求すると、この repo が確立したパターン(Identity の型を継承して
+        // 業務列を足す)に従って独自の string 列を持たない型を足したときに
+        // 「自分たちには足せない列を足せ」という実行不能な指示になる。
+        // 逆にスイート全体の合計で見ると granularity が失われ、あるエンティティの業務列が
+        // 別アセンブリの基底へ移って 0 件になっても、他のエンティティの列数で合計が
+        // 正のままになり**痕跡なく**そのエンティティだけ検査が空回りする(テスト件数も変わらない)。
+        //
+        // 数える対象は「マップ済み・主キー以外」に限る。単に「自前の string プロパティがあるか」で
+        // 見ると、文字列を主キーにしたマスタ型や計算プロパティしか持たない型に対して
+        // 「条件が実装とずれている」という誤った原因で落ちる(実測)
+        var ownStringColumnCount = AuditedEntityModel.OwnDeclaredMappedStringColumnCount(entityType);
+
+        // 成り立つべき不変条件は「独立に数えた自前の string 列は、必ず検査対象に現れる」。
+        //
+        // 「0 件でないこと」だけを見ると**部分的な取りこぼしが素通りする**: たとえば
+        // Incident の検査対象には値変換した enum 列(Severity / IncidentType)も含まれるため、
+        // 絞り込みが狭まって自由記述 4 列が丸ごと落ちても columns.Count は 2 のままで、
+        // 0 件ではないのでガードが発火しない。件数の比較にしておけば、その取りこぼしも捕まる。
+        //
+        // 突き合わせるのは**同じ種類の列どうし**。columns には値変換した enum 列や shadow 列も
+        // 含まれるので、全体の件数で比べると「enum 列の数だけ string 列を落としても通る」
+        // 隙間ができる —— 実測でも Incident(string 4 + enum 2)から自前の string 列を 2 つ
+        // 落としつつ ReporterName の [MaxLength] を消すと 4 >= 4 が成立し、全件緑のまま
+        // 個人名の列が無制限で出荷された(テスト件数すら変わらない)
+        var clrStringColumnCount = columns.Count(c => c.IsClrString);
+
+        // 独立に数えた自前の string 列と、検査対象に現れた string 列は**一致する**はず。
+        //
+        // >= ではなく == にするのが要点。両者は同じ条件(マップ済み・主キー以外・自分たちのもの・
+        // CLR 型が string)を数えているので、ずれること自体が絞り込みの異常。>= のままだと
+        // 「絞り込みが緩んで Identity の UserName / PasswordHash が戻ってきた」場合に
+        // このガードが沈黙し、代わりに本体が「PasswordHash に長さ上限がありません」という
+        // 無関係で実行不能な指示を出して落ちる
+        Assert.True(clrStringColumnCount == ownStringColumnCount,
+            $"{entityType.Name} の自前 string 列は {ownStringColumnCount} 件ですが、検査対象に " +
+            $"現れた string 列は {clrStringColumnCount} 件です。" +
+            "AppDeclaredStringColumnLengths の絞り込みが実装とずれています" +
+            "(少ないなら上限の付け忘れが素通りし、多いなら自分たちが決めていない列に " +
+            "FieldLengths の定数を要求してしまいます)。");
 
         // 長さ上限が設定されていない列を探す(あれば付け漏れ)。
         // 判定は EF のモデルが持つ値なので、[MaxLength] 属性でも fluent の HasMaxLength() でも通る
@@ -80,11 +130,17 @@ public class FreeTextMaxLengthAttributeTests
         var property = entityType.GetProperty(propertyName);
         // プロパティ自体が存在することを確認する(改名時にテストが追従漏れしないように)
         Assert.NotNull(property);
-        // [MaxLength] 属性を取り出す
-        var attr = property!.GetCustomAttribute<MaxLengthAttribute>(inherit: false);
-        // 属性が付いていることを確認する
-        Assert.NotNull(attr);
-        // 上限値が ViewModel 側の検証(FieldLengths.FreeText)と一致していることを確認する
-        Assert.Equal(expected, attr!.Length);
+
+        // 長さ上限の属性は共有リーダーで解釈する。ここだけ [MaxLength] を直接読むと、
+        // 綴りを [StringLength] へ変えたときにこのテストだけが「属性が無い」という
+        // 原因の分からない失敗になる(CLAUDE.md「属性の解釈は 1 か所に集約する」)
+        var limits = AuditedEntityModel.ReadLengthLimits(property!);
+
+        // 上限が宣言されていることを確認する
+        Assert.True(limits.Count > 0,
+            $"{entityType.Name}.{propertyName} に長さ上限の属性が付いていません。");
+
+        // 宣言された上限がすべて期待値と一致していることを確認する
+        Assert.All(limits, limit => Assert.Equal(expected, limit.Length));
     }
 }

@@ -1,9 +1,5 @@
-// ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
-using IncidentInsight.Web.Data;
-// 監査対象エンティティを導出する共有ヘルパーを使うために取り込む
+// 長さ上限の管理対象を導出する共有ヘルパーを使うために取り込む
 using IncidentInsight.Tests.Helpers;
-// DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
-using Microsoft.EntityFrameworkCore;
 
 // このテストクラスが属する名前空間
 namespace IncidentInsight.Tests.Models;
@@ -30,18 +26,54 @@ public class ConvertedEnumColumnLengthTests
     // 誘導する検査(EveryModelMaxLength_UsesAFieldLengthsConstant)と同じ範囲にそろえる —
     // 誘導する範囲より検証する範囲が狭いと、その差分が切り詰めの起きる死角になる
     public static TheoryData<Type> LengthGovernedEntityTypes =>
-        AuditedEntityModel.ToTheoryData(AuditedEntityModel.LengthGovernedEntityTypes());
+        AuditedEntityModel.LengthGovernedTheoryData();
 
     [Theory]
     [MemberData(nameof(LengthGovernedEntityTypes))]
     public void ConvertedColumns_CanHoldEveryValueTheyStore(Type entityType)
     {
+        // 走査は純粋関数に委ね、ここは結果の表明だけを行う。
+        // 以前は網羅ガードの [Fact] がこのテストメソッドをそのまま呼び、static の側路
+        // (ConcurrentDictionary)経由で「見た列」を受け取っていた。その形だと
+        //   - 切り詰め違反があるとガード側も同じ例外で落ち、ガード固有の失敗メッセージ
+        //     (「見るべき列を全部見ていない」)が出ないので原因の切り分けが逆に難しくなる
+        //   - 側路がプロセス寿命の static として残り続ける
+        // という副作用があった。純粋関数にすれば、両者が同じ走査を独立に呼べる。
+        //
+        // なお走査そのものは今も 2 回走る([Theory] の各ケースで 1 回、下の網羅ガードで全件もう 1 回)。
+        // 長さ管理の対象は数エンティティ・各 20 列程度で、EF の組み立て済みモデルを読むだけなので
+        // 実測でも差は出ない。ここで結果を共有すると、また「片方が書いて片方が読む」形に戻り、
+        // 実行順に依存する脆さを持ち込むことになるため、素直に 2 回走らせている
+        var (offenders, _) = ScanConvertedColumns(entityType);
+
+        // 超過が 1 件も無いことを確認する(失敗時は列・値・長さをメッセージで示す)
+        Assert.True(offenders.Count == 0,
+            "値変換で文字列として保存する列の長さ上限が、実際に保存しうる値より短いです。" +
+            "SQL Server / PostgreSQL では保存時に例外、SQLite では黙って切り詰められ、" +
+            "テストが使う InMemory では列長そのものが無いため気付けません: " +
+            string.Join(" / ", offenders));
+    }
+
+    /// <summary>
+    /// 指定エンティティの「値変換で文字列として保存する列」を走査し、
+    /// 上限に収まらない値の一覧と、実際に検査できた列名の一覧を返す純粋関数。
+    /// Assert を含まないので、切り詰めの検査と網羅ガードの両方から独立に呼べる。
+    /// </summary>
+    private static (IReadOnlyList<string> Offenders, IReadOnlyList<string> Examined)
+        ScanConvertedColumns(Type entityType)
+    {
         // 共有のモデルから対象エンティティの定義を引く。
         // ここで DbContext を作り直すと、検査ごとに InMemory のストアがプロセス内キャッシュへ
         // 溜まり続ける(AuditedEntityModel が Lazy でモデルを 1 回だけ組み立てている理由と同じ)
         var entity = AuditedEntityModel.EfModel.FindEntityType(entityType);
-        // モデルに載っていない型は前提が崩れているので落とす(fail-closed)
-        Assert.NotNull(entity);
+        // モデルに載っていない型は前提が崩れているので落とす(fail-closed)。
+        // 純粋関数なので Assert ではなく例外で伝える
+        if (entity is null)
+        {
+            // どの型が解決できなかったのかを示して失敗させる
+            throw new InvalidOperationException(
+                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。");
+        }
 
         // 上限に収まらない値を見つけた列を溜める
         var offenders = new List<string>();
@@ -50,7 +82,7 @@ public class ConvertedEnumColumnLengthTests
         var examined = new List<string>();
 
         // 値変換が設定されていて、かつ長さ上限を持つ列だけを見る
-        foreach (var property in entity!.GetProperties())
+        foreach (var property in entity.GetProperties())
         {
             // この列に設定された変換器(書き方によっては null になる。下の分岐参照)
             var converter = property.GetValueConverter();
@@ -60,7 +92,7 @@ public class ConvertedEnumColumnLengthTests
             // 取り残され、この検査だけが黙って対象を狭める
             //   (実際この検査の初版は独自に変換器だけを見ており、EnumCode を 5 に縮める変異で
             //    赤にならなかった —— Severity / Status / MeasureType が素通りしていた)
-            if (!AuditedEntityModel.IsStringColumnPublic(property)) continue;
+            if (!AuditedEntityModel.IsStringColumn(property)) continue;
 
             // 長さ上限が無い列は「収まらない」ことが起きえないので対象外
             var maxLength = property.GetMaxLength();
@@ -94,19 +126,9 @@ public class ConvertedEnumColumnLengthTests
             }
         }
 
-        // 超過が 1 件も無いことを確認する(失敗時は列・値・長さをメッセージで示す)
-        Assert.True(offenders.Count == 0,
-            "値変換で文字列として保存する列の長さ上限が、実際に保存しうる値より短いです。" +
-            "SQL Server / PostgreSQL では保存時に例外、SQLite では黙って切り詰められ、" +
-            "テストが使う InMemory では列長そのものが無いため気付けません: " +
-            string.Join(" / ", offenders));
-
-        // このエンティティで見た列を記録しておく(下の網羅ガードが読む)
-        ExaminedColumns[entityType] = examined;
+        // 走査結果をそのまま返す(判断は呼び出し側が行う)
+        return (offenders, examined);
     }
-
-    // 各エンティティで実際に検査できた列名。[Theory] の各ケースが書き込み、下の [Fact] が読む
-    private static readonly System.Collections.Concurrent.ConcurrentDictionary<Type, List<string>> ExaminedColumns = new();
 
     [Fact]
     public void EveryLengthLimitedEnumColumn_IsActuallyExamined()
@@ -125,11 +147,10 @@ public class ConvertedEnumColumnLengthTests
 
         foreach (var entityType in AuditedEntityModel.LengthGovernedEntityTypes())
         {
-            // 各エンティティの検査を実行して、見た列を記録させる([Theory] と同じ経路を通す)
-            ConvertedColumns_CanHoldEveryValueTheyStore(entityType);
-
-            // 実際に見た列(記録が無ければ空)
-            var seen = ExaminedColumns.TryGetValue(entityType, out var s) ? s : new List<string>();
+            // [Theory] と同じ走査を独立に呼び、実際に見た列を受け取る。
+            // Assert を含まない純粋関数なので、切り詰め違反があってもここは落ちず、
+            // 「見るべき列を全部見たか」というこのガード固有の失敗だけを報告できる
+            var (_, seen) = ScanConvertedColumns(entityType);
 
             // このエンティティで見るべきだった列を独立な条件で求める
             var entity = AuditedEntityModel.EfModel.FindEntityType(entityType)!;

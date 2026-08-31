@@ -1,9 +1,13 @@
 // ApplicationDbContext(EF Core のモデル定義)を使うために取り込む
 using IncidentInsight.Web.Data;
+// AuditLog(長さ上限の管理対象から除くエンティティ)を名前で参照するために取り込む
+using IncidentInsight.Web.Models;
 // DbContextOptionsBuilder / UseInMemoryDatabase を使うために取り込む
 using Microsoft.EntityFrameworkCore;
 // IModel / IProperty(EF Core のモデル定義を読む型)を使うために取り込む
 using Microsoft.EntityFrameworkCore.Metadata;
+// [MaxLength] / [StringLength] / [Length] を読み取るために取り込む
+using System.ComponentModel.DataAnnotations;
 // PropertyInfo / BindingFlags(CLR プロパティの探索)を使うために取り込む
 using System.Reflection;
 // TheoryData(xUnit の [MemberData] へ渡すケース一覧)を使うために取り込む
@@ -13,10 +17,20 @@ using Xunit;
 namespace IncidentInsight.Tests.Helpers;
 
 /// <summary>
-/// 「監査対象エンティティ」に関する検査が共通して使う土台。
+/// EF Core のモデルを読む検査が共通して使う土台。
 ///
-/// 監査対象の一覧は <see cref="AuditSaveChangesInterceptor.AuditedEntities"/> が唯一の真実の源で、
-/// テスト側はそこから導出する。テストが独自に一覧を持つと、監査対象を足したときに実装だけが増えて
+/// <b>独立した 2 つの関心事</b>を扱う。名前に「Audited」と付いているが、後者を前者から導いてはいけない:
+///   1. <b>監査対象</b>（PHI 分類・ラベル網羅）… 一覧は
+///      <see cref="AuditSaveChangesInterceptor.AuditedEntities"/> が唯一の真実の源。
+///   2. <b>長さ上限の管理対象</b>（<see cref="LengthGovernedEntityTypes"/> /
+///      <see cref="LengthGovernanceExclusions"/> / <see cref="AppDeclaredStringColumnLengths"/>）…
+///      監査対象**とは無関係に**、自アセンブリのマップ済みエンティティから導出する。
+///
+/// 2 を 1 から導くと、監査ポリシーの変更（あるエンティティを監査対象から外す）が無関係なはずの
+/// 長さ管理まで黙って外す（すべて fail-open。CLAUDE.md §3）。同じ型に同居させているのは
+/// EF のモデルの組み立てを 1 回で共有するためで、**関心事としては分けたまま**にすること。
+///
+/// 監査対象の一覧をテストが独自に持つと、監査対象を足したときに実装だけが増えて
 /// 検査が追随せず、新しいエンティティの列が誰にも見られないまま ChangesJson へ平文で書かれる。
 ///
 /// 列の判定に CLR のリフレクションではなく EF Core のモデルを使うのは、インターセプタが走査するのが
@@ -131,16 +145,8 @@ internal static class AuditedEntityModel
     public static (IReadOnlyList<StringColumn> ClrBacked, IReadOnlyList<ShadowColumn> Shadow)
         PartitionStringColumns(Type entityType)
     {
-        // EF のモデルから対象エンティティの定義を引く
-        var entity = Model.Value.FindEntityType(entityType);
-
-        // モデルに載っていない型を渡された場合は検査の前提が崩れるので落とす(fail-closed)
-        if (entity is null)
-        {
-            // どの型が解決できなかったのかを示して失敗させる
-            throw new InvalidOperationException(
-                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。");
-        }
+        // EF のモデルから対象エンティティの定義を引く(未マップなら例外)
+        var entity = RequireEntityType(entityType);
 
         // 主キー以外で「文字列として保存される」列を集め、CLR プロパティと組にする
         var columns = entity
@@ -150,6 +156,9 @@ internal static class AuditedEntityModel
             .Select(p => (
                 Name: p.Name,
                 Property: FindClrProperty(entityType, p.Name),
+                // EF のモデル上の CLR 型が string か。shadow 列には CLR プロパティが無いので、
+                // 「CLR 型が string の列」を数える完全性ガードはこちらを見る必要がある
+                IsStringClrType: p.ClrType == typeof(string),
                 // 長さ上限は EF のモデルから読む。[MaxLength] 属性だけを見ると、fluent API の
                 // HasMaxLength() で設定した列(値変換を通す列はこちらで設定している)を
                 // 「上限なし」と誤判定してしまう。DB の列長を決めているのはモデル側の値
@@ -159,7 +168,7 @@ internal static class AuditedEntityModel
         // CLR プロパティを持つ列(= 属性で分類できる列)
         var clrBacked = columns
             .Where(c => c.Property != null)
-            .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength))
+            .Select(c => new StringColumn(c.Name, c.Property!, c.MaxLength, c.IsStringClrType))
             .ToList();
 
         // CLR プロパティを持たない列(= 属性を付けようがない列)。
@@ -167,7 +176,7 @@ internal static class AuditedEntityModel
         // 「裸の数値が設定されていないか」の検査は shadow 列にも掛ける必要がある
         var shadow = columns
             .Where(c => c.Property == null)
-            .Select(c => new ShadowColumn(c.Name, c.MaxLength))
+            .Select(c => new ShadowColumn(c.Name, c.MaxLength, c.IsStringClrType))
             .ToList();
 
         // 2 つに分けた結果をまとめて返す。
@@ -201,27 +210,385 @@ internal static class AuditedEntityModel
     /// 長さ管理まで黙って外してしまう —— 裸の <c>[MaxLength(200)]</c> も、上限の付け忘れも、
     /// 値変換した列の切り詰めも、まとめて素通りするようになる（すべて fail-open）。
     ///
-    /// 代わりに「自分たちのモデル名前空間にある、マップ済みのエンティティ」を条件にする。
+    /// 代わりに「自分たちのアセンブリで定義された、マップ済みのエンティティ」を条件にする。
     /// こうすると新しいエンティティは何もしなくても検査対象に入る（列挙を書き写さない）。
-    /// 除外は 2 つだけで、いずれも上限の出所が <c>FieldLengths</c> ではないもの:
-    ///   - <c>AuditLog</c> … 業務入力ではなく監査証跡スキーマ固有の列長
-    ///   - <c>ApplicationUser</c> … 列長は ASP.NET Core Identity 側が決める
+    ///
+    /// 条件を**名前空間の完全一致から所属アセンブリへ変えてある**のが要点。
+    /// 以前は <c>t.Namespace == "IncidentInsight.Web.Models"</c> という文字列の一致で絞っていたが、
+    /// この repo は既に <c>Models/Enums</c> / <c>Models/Auditing</c> / <c>Models/Validation</c> 等の
+    /// サブフォルダを持っており、エンティティを 1 つサブフォルダへ移すだけで名前空間が変わって
+    /// 一致しなくなる。そうなるとそのエンティティは長さ上限に関する検査**すべて**
+    /// （裸の数値の禁止・上限の付け忘れ・値変換列の切り詰め・その網羅ガード）から
+    /// 同時に、しかも黙って外れる —— 実測でも「あるエンティティが導出集合から外れ、
+    /// 同時にその列の上限が消える」変異が全件緑のまま通った（唯一の痕跡はテスト件数が
+    /// 496 → 490 に減ることだけで、これは正当なリファクタと見分けが付かない）。
+    /// アセンブリ単位なら、名前空間をどう切り直しても対象から外れない。
+    ///
+    /// エンティティ単位の除外は <see cref="LengthGovernanceExclusions"/>（理由付きの表）だけが決める。
+    /// この表の中身をここに書き写さない（写した瞬間に、除外を足したときこの説明だけが古くなる）。
+    /// 除外の綴りが EF のモデル上に実在することは
+    /// <c>FieldLengthsTests.LengthGovernanceExclusions_AreAllStillReal</c> が固定する
+    /// （このメソッド自身は確認しない。両方に置くと同じ検査が 2 か所に散る）。
+    ///
+    /// **<c>ApplicationUser</c> はエンティティごと除外しない。** 列長を Identity が決めるのは
+    /// Identity 自身が宣言した列（<c>UserName</c> / <c>Email</c> など）だけで、
+    /// <c>DisplayName</c> / <c>Department</c> はこのリポジトリが足した業務列だから。
+    /// 型ごと外すと、この 2 列が長さ管理から永久に外れる（実際 <c>DisplayName</c> は個人名、
+    /// <c>Department</c> は <c>Incident.Department</c> と同じ語彙なのに上限が無かった）。
+    /// 代わりに<b>列単位</b>で「自分たちが宣言した列か」を見る（<see cref="AppDeclaredStringColumnLengths"/>）。
+    ///
+    /// この導出が正しく効いているかは <c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>
+    /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言と、
+    /// 基底の総称 DbContext へ渡した自アセンブリの型引数）で照合する。
     /// </summary>
-    public static IReadOnlyList<Type> LengthGovernedEntityTypes()
-    {
-        // 上限の出所が FieldLengths ではないエンティティ(理由は上のコメント)
-        var excluded = new[] { "AuditLog", "ApplicationUser" };
+    public static IReadOnlyList<Type> LengthGovernedEntityTypes() => LengthGovernedCache.Value;
 
-        // 自分たちのモデル名前空間にあるマップ済みエンティティだけを集める
+    // 導出は決定的なので 1 度だけ行う。xUnit は [MemberData] を検査ごと(検出時と実行時)に
+    // 評価し、この導出は 3 つのテストクラスから参照されるため、素の呼び出しのままだと
+    // 同じ走査が何度も走る(EF のモデルを Lazy で 1 度だけ組み立てているのと同じ理由)
+    private static readonly Lazy<IReadOnlyList<Type>> LengthGovernedCache = new(BuildLengthGovernedEntityTypes);
+
+    private static IReadOnlyList<Type> BuildLengthGovernedEntityTypes()
+    {
+        // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集めて返す
         return Model.Value.GetEntityTypes()
             .Select(e => e.ClrType)
-            // Identity の内部エンティティ(AspNetRoles 等)は別名前空間なのでここで落ちる
-            .Where(t => t.Namespace == "IncidentInsight.Web.Models")
-            // 上限の出所が違う 2 つを除く
-            .Where(t => !excluded.Contains(t.Name))
+            // Identity の内部エンティティ(AspNetRoles 等)は別アセンブリなのでここで落ちる
+            .Where(IsOwnAssemblyType)
+            // 意図的に外している型(現在は AuditLog のみ。理由は LengthGovernanceExclusions)を除く
+            .Where(t => !LengthGovernanceExclusions.ContainsKey(ExclusionKeyFor(t)))
+            // 同じ CLR 型が複数のエンティティ型にマップされることがある(所有型を 2 つの所有者に
+            // 置く / shared-type entity type)。GetEntityTypes はエンティティ型ごとに 1 件返すので、
+            // ここで畳まないと [MemberData] に同じ型のケースが 2 つ並ぶ(TheoryData は畳まない)
+            .Distinct()
             // 実行ごとに順序が揺れないよう型名で並べる
             .OrderBy(t => t.Name, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// 長さ上限の管理対象から意図的に外している型と、その理由。
+    ///
+    /// **この表が「意図的な除外」の唯一の真実の源**で、導出（<see cref="LengthGovernedEntityTypes"/>）と
+    /// 網羅ガード（<c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>）と
+    /// 属性側の対象導出（<c>FieldLengthsTests.GovernedTypes</c>）の 3 つが同じここを読む。
+    ///
+    /// 以前は導出側が <c>nameof(AuditLog)</c> をローカル定数で持ち、ガード側が別の表を持つ
+    /// 写しの形だった。その形だとどちらへ除外を足しても片方が取り残される —— 実測でも、
+    /// ガード側の表にだけ <c>CauseCategory</c> を登録するとモデル側 3 検査は除外せずに走り、
+    /// 「除外したはずの型」で検査が落ちた（逆に導出側だけへ足すと、ガードが
+    /// 「導出条件がずれている」という**誤った原因**を指して落ちる）。
+    ///
+    /// 理由を必須にしているのは <c>[NotPhi("理由")]</c> と同じ考え方で、
+    /// 「とりあえず検出網を黙らせる」使い方を残さないため。
+    /// </summary>
+    public static readonly IReadOnlyDictionary<string, string> LengthGovernanceExclusions =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // キーは**完全修飾名**。単純名で持つと、将来同じ単純名のエンティティ
+            // (Models.Reporting.AuditLog のような集計用テーブル)を足したときに、
+            // それも巻き添えで長さ関連の検査すべてから外れる —— しかも綴りの検査は同じ単純名で
+            // 突き合わせるため緑のまま。typeof(...).FullName で引くので綴りは手で書かない
+            [typeof(AuditLog).FullName!] = "列長の出所が監査証跡スキーマで、業務入力の上限(FieldLengths)ではないため",
+        };
+
+    /// <summary>
+    /// 除外表を引くためのキー（完全修飾名）を返す。引き方を各所で書き写さないためのヘルパー。
+    /// </summary>
+    public static string ExclusionKeyFor(Type type) => type.FullName ?? type.Name;
+
+    /// <summary>
+    /// 長さ上限の管理対象エンティティを xUnit の <c>[MemberData]</c> へ渡す形にして返す。
+    ///
+    /// 長さ上限の検査は 3 つのテストクラス（<c>FieldLengthsTests</c> /
+    /// <c>FreeTextMaxLengthAttributeTests</c> / <c>ConvertedEnumColumnLengthTests</c>）に分かれており、
+    /// 以前はそれぞれが同じ詰め替えを書き写していた。監査対象側に
+    /// <see cref="AuditedEntityTheoryData"/> を用意したのと同じ理由（どれか 1 箇所に絞り込みを
+    /// 足すと、そのクラスの検出網だけが黙って狭くなる）がこちらにも当てはまるので、
+    /// ケース一覧の作り方をここ 1 か所に置く。
+    /// </summary>
+    public static TheoryData<Type> LengthGovernedTheoryData()
+    {
+        // 導出した長さ管理対象をそのままケース一覧に詰め替える
+        return ToTheoryData(LengthGovernedEntityTypes());
+    }
+
+    /// <summary>
+    /// 長さ上限の検査に掛ける「自分たちが宣言した」文字列列を、列名と上限の組で返す。
+    ///
+    /// CLR プロパティを持つ列と shadow 列の両方を対象にするが、<b>基底クラスが宣言した列は落とす</b>。
+    /// <c>ApplicationUser</c> は <c>IdentityUser</c> を継承しており、<c>UserName</c> /
+    /// <c>Email</c> / <c>PasswordHash</c> などの列長は ASP.NET Core Identity が決める
+    /// （<c>FieldLengths</c> の定数を当てはめる対象ではない）。一方
+    /// <c>DisplayName</c> / <c>Department</c> はこのリポジトリが足した業務列なので管理対象。
+    ///
+    /// 「エンティティごと外す」のではなく列単位で切るのが要点。型ごと外すと、その型に足した
+    /// 業務列まで巻き添えで長さ管理から外れる（すべて fail-open）。
+    ///
+    /// shadow property（CLR プロパティを持たない列）は<b>残す</b>。宣言元をたどれないが、
+    /// これは自分たちの <c>OnModelCreating</c> か EF の規約が作った列であり、
+    /// 上限の検査は属性を読まないので対象にできる。
+    ///
+    /// <b>既知のトレードオフ</b>: <c>ApplicationUser</c> だけは基底の
+    /// <c>base.OnModelCreating</c>（ASP.NET Core Identity）も列を構成するため、
+    /// 「shadow 列＝自分たちのモデル由来」という前提が唯一崩れうる。将来 Identity が
+    /// 上限の無い shadow の文字列列をユーザーエンティティへ足すと、
+    /// <c>PersistedStringColumns_MustHaveMaxLength</c> が「自分たちには直せない列に
+    /// <c>FieldLengths</c> の定数を付けろ」という実行不能な指示を出す。
+    ///
+    /// 現時点でそのような列は 1 つも無いため、先回りの仕組みは入れていない（§6 の
+    /// 「将来を見越した過度な抽象化を避ける」）。実際に起きたときの正しい対処は
+    /// <b>列単位の除外を足す</b>ことで、<see cref="LengthGovernanceExclusions"/>（エンティティ単位）
+    /// で <c>ApplicationUser</c> ごと外してはいけない —— それをやると
+    /// <c>DisplayName</c> / <c>Department</c> がまた長さ管理から落ちる。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int? MaxLength, bool IsClrString)>
+        AppDeclaredStringColumnLengths(Type entityType)
+    {
+        // CLR プロパティを持つ列と shadow 列に分けて取り出す
+        var (clrBacked, shadow) = PartitionStringColumns(entityType);
+
+        // CLR プロパティを持つ列のうち、自分たちが宣言したものだけを残す。
+        // IsClrString は「CLR の型が string か」で、値変換した enum 列と区別するために持つ
+        // (件数を突き合わせる前提確認が、種類の違う列を数え合わせないようにするため)
+        return clrBacked
+            .Where(c => IsDeclaredInOwnAssembly(c.Property))
+            .Select(c => (c.Name, c.MaxLength, c.IsStringClrType))
+            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す。
+            // IsClrString は EF のモデル上の CLR 型で決めるので、shadow の string 列も true になる
+            // ——ここを false 固定にすると、完全性ガードが shadow 列を数えられず、
+            // この .Concat を外す変異(= shadow 列が丸ごと検査対象から落ちる)を見逃す
+            .Concat(shadow.Select(c => (c.Name, c.MaxLength, c.IsStringClrType)))
+            .ToList();
+    }
+
+    /// <summary>
+    /// そのプロパティを「自分たちが宣言したもの」とみなすかを返す（宣言元の型が自アセンブリか）。
+    ///
+    /// **列だけに使う判定ではない**。用途は 2 つある:
+    ///   - エンティティの列を絞る（<c>ApplicationUser</c> の <c>UserName</c> など、
+    ///     ASP.NET Core Identity が宣言した列を長さ管理から外す）
+    ///   - ViewModel / DTO のプロパティを絞る（基底クラスが宣言した入力欄を対象外にする）
+    /// EF のモデルを参照しないのは意図的で、モデルに載らない型（ViewModel）にも同じ判定を
+    /// 使うため。ここに「EF のモデルにある列か」を足すと、属性側の 3 検査が黙って
+    /// エンティティだけに狭まり、ViewModel の裸の数値を見逃すようになる。
+    ///
+    /// 判定を 1 か所に置くのは、この絞り込みを使う検査が複数あるため。各検査が
+    /// <c>DeclaringType?.Assembly == …</c> を書き写すと、条件を直したときに片方だけが
+    /// 取り残されて対象が食い違う。
+    /// </summary>
+    public static bool IsDeclaredInOwnAssembly(PropertyInfo property)
+    {
+        // 宣言元の型が自分たちのアセンブリにあれば自前の宣言
+        return property.DeclaringType != null && IsOwnAssemblyType(property.DeclaringType);
+    }
+
+    /// <summary>
+    /// EF のモデルから対象エンティティの定義を引く。載っていなければ例外で落とす（fail-closed）。
+    ///
+    /// モデル側の検査へ EF のモデルを持たない型（ViewModel など）が渡されるのは配線ミスで、
+    /// 空を返すと全ケースが 0 列を評価して<b>緑のまま</b>通る。引き当てと失敗時の文言を
+    /// ここ 1 か所に置き、呼び出し側ごとに違う診断が出ないようにする。
+    /// </summary>
+    private static IEntityType RequireEntityType(Type entityType)
+    {
+        // 型に対応するエンティティ定義を探す
+        var entity = Model.Value.FindEntityType(entityType);
+
+        // 見つからなければ検査の前提が崩れているので、その場で落とす
+        if (entity is null)
+        {
+            // どの型が解決できなかったのかを示して失敗させる
+            throw new InvalidOperationException(
+                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。" +
+                "モデル側の検査に、EF のモデルを持たない型(ViewModel など)が渡されています。");
+        }
+
+        // 解決できた定義を返す
+        return entity;
+    }
+
+    /// <summary>
+    /// 指定エンティティの「長さ上限が設定されている、自分たちが宣言した列」を返す。
+    ///
+    /// <see cref="AppDeclaredStringColumnLengths"/> との違いは<b>文字列列に限らない</b>点。
+    /// 文字列列だけを返すと、fluent の <c>HasMaxLength()</c> で文字列以外の列へ設定した上限が
+    /// 誰にも見られなくなる —— 実測でも <c>byte[]</c> の列へ <c>HasMaxLength(300)</c> と書くと、
+    /// 裸の 300 も属性との食い違いも 長さ関連の検査すべてを素通りした（fluent が抜け道になる形そのもの）。
+    /// 「その列が文字数を数える列か」は <c>IsCharacterColumn</c> で呼び出し側へ渡し、
+    /// 判定の規則（<see cref="IsStringColumn"/>）はここ 1 か所に置く。
+    ///
+    /// 「上限が設定されている列」だけを返すので、上限を持たない列（<c>int</c> や
+    /// <c>DateTime</c>）を巻き込むことはない。上限の<b>付け忘れ</b>は文字列列に対してだけ
+    /// 意味があるので、そちらは <see cref="AppDeclaredStringColumnLengths"/> が担う。
+    /// </summary>
+    public static IReadOnlyList<(string Name, int MaxLength, PropertyInfo? Property, bool IsCharacterColumn)>
+        AppDeclaredColumnsWithLength(Type entityType)
+    {
+        // EF のモデルから対象エンティティの定義を引く(未マップなら例外)。
+        //
+        // 空を返してはいけない。属性側の型一覧(ViewModel を含む)をモデル側の [Theory] へ
+        // 取り違えて配線すると、全ケースが 0 列を評価して**緑のまま**通ってしまう
+        // ——実測でも、モデル側 2 検査の [MemberData] を取り違えると 41/41 で緑になった
+        var entity = RequireEntityType(entityType);
+
+        // 主キー以外で長さ上限が設定されている列を集める
+        return entity.GetProperties()
+            .Where(p => !p.IsPrimaryKey())
+            .Where(p => p.GetMaxLength() != null)
+            .Select(p => (
+                Name: p.Name,
+                MaxLength: p.GetMaxLength()!.Value,
+                Property: FindClrProperty(entityType, p.Name),
+                // 文字列として保存される列か。shadow 列にも判定できるよう EF のモデル側で見る
+                IsCharacterColumn: IsStringColumn(p)))
+            // 基底クラスが宣言した列は対象外(上限を決めているのが自分たちではない)。
+            // shadow 列は宣言元をたどれないが自分たちのモデル由来なので残す
+            .Where(c => c.Property == null || IsDeclaredInOwnAssembly(c.Property))
+            .ToList();
+    }
+
+    /// <summary>
+    /// その CLR プロパティが「EF のモデル上で文字列として保存される列」かを返す。
+    ///
+    /// 「値変換して文字列として保存する enum 列」だけに許す緩和を、宣言型ではなく
+    /// <b>プロパティそのもの</b>で判定するために使う。宣言型がマップ済みエンティティかどうかで
+    /// 見ると、同じ型にある <c>[NotMapped]</c> の enum プロパティや、既定の int マッピングのまま
+    /// 文字列として保存されない enum 列にも緩和が届いてしまう。
+    /// </summary>
+    public static bool IsStringPersistedColumn(PropertyInfo property)
+    {
+        // 宣言型が分からなければ判定できない
+        var declaringType = property.DeclaringType;
+        if (declaringType is null) return false;
+
+        // 宣言型が EF のモデルに載っていなければ列ではない(ViewModel など)
+        var entity = Model.Value.FindEntityType(declaringType);
+        if (entity is null) return false;
+
+        // 同名の列を引き、文字列として保存されるかを共有の判定に委ねる
+        var efProperty = entity.FindProperty(property.Name);
+        return efProperty != null && IsStringColumn(efProperty);
+    }
+
+    /// <summary>
+    /// そのエンティティの「マップ済み・主キー以外・自分たちのもの・CLR 型が <c>string</c>」の
+    /// 列数を返す（<b>shadow 列も含む</b>）。
+    ///
+    /// <see cref="AppDeclaredStringColumnLengths"/> が 0 件を返したときに、それが
+    /// 「そもそも対象の列を持たない正当な型」なのか「検出網が対象を拾えなくなった」のかを
+    /// 見分けるための<b>独立な手がかり</b>。
+    ///
+    /// 独立させる相手は 2 つあり、どちらも<b>あえて共有しない</b>:
+    ///   - <see cref="IsStringColumn"/> … CLR の型が <c>string</c> かどうかで判定する
+    ///   - <see cref="IsDeclaredInOwnAssembly"/> … 宣言元アセンブリをここで直接比べる
+    ///
+    /// 後者が要点。守る対象と同じ述語を通すと、その 1 つを狭めた瞬間にガードも一緒に狭まって
+    /// 発火しなくなる —— 実測でも、<c>IsDeclaredInOwnAssembly</c> へ「Identity 由来の列を外す」
+    /// という一見リファクタに見える条件を足し、同時に <c>ApplicationUser</c> の
+    /// <c>[MaxLength]</c> を消すと、506 → 504 で<b>全件緑のまま</b>通った
+    /// （この PR が塞いだ穴が、テスト件数が 2 減るだけの痕跡で開き直る）。
+    ///
+    /// 主キーと未マップ（<c>[NotMapped]</c> / 計算プロパティ）を除くのが要点。
+    /// 単純に「自前の <c>string</c> プロパティがあるか」で見ると、文字列を主キーにしたマスタ型や
+    /// 計算プロパティしか持たない型に対して「条件が実装とずれている」という<b>誤った原因</b>で
+    /// 落ちる —— 直しようがないので、いずれ検査を緩める方向へ倒れる。
+    /// </summary>
+    public static int OwnDeclaredMappedStringColumnCount(Type entityType)
+    {
+        // EF のモデルから対象エンティティの定義を引く
+        var entity = Model.Value.FindEntityType(entityType);
+
+        // モデルに載っていなければ数えようがないので 0
+        if (entity is null) return 0;
+
+        // ガードが守る対象と同じアセンブリ(綴りを書かずモデルの型から引く)。
+        // IsDeclaredInOwnAssembly をあえて呼ばない理由は上のコメントを参照
+        var ownAssembly = typeof(Incident).Assembly;
+
+        // マップ済み・主キー以外で CLR 型が string の列のうち、自分たちのものを数える。
+        //
+        // shadow 列(CLR プロパティを持たない列)も**数える**。数えないと、検査側が shadow 列を
+        // 取り込むのをやめる変異(= 上限なしの shadow 列が丸ごと素通りする)をガードが
+        // 見逃す ——実測でも、その変異を当てると 69/69 が全件緑のまま通った
+        return entity.GetProperties()
+            .Where(p => !p.IsPrimaryKey())
+            .Where(p => p.ClrType == typeof(string))
+            .Select(p => FindClrProperty(entityType, p.Name))
+            .Count(pi => pi == null || pi.DeclaringType?.Assembly == ownAssembly);
+    }
+
+    /// <summary>
+    /// そのプロパティに付いた「長さ上限を表す属性」を<b>すべて</b>読み取り、
+    /// 上限値・エラーメッセージ・属性名の組で返す（無ければ空）。
+    ///
+    /// <b>長さ上限の属性は <c>[MaxLength]</c> だけではない。</b>
+    /// <c>[StringLength]</c> と .NET 8 の <c>[Length(min, max)]</c> も MVC の入力検証が尊重し、
+    /// <c>[StringLength]</c> は EF Core の列長にもなる。<c>[MaxLength]</c> だけを見ると
+    /// <b>綴りを変えるだけの抜け道</b>になり、実測でも ViewModel に <c>[StringLength(200)]</c> /
+    /// <c>[Length(1, 200)]</c> を書くと全件緑のまま通った（後者はテスト件数すら変わらない）。
+    ///
+    /// <b>最初の 1 つで打ち切らない。</b> 1 つのプロパティに複数の長さ属性を並べられるため、
+    /// 正しい <c>[MaxLength]</c> の横に裸の <c>[StringLength]</c> を足すだけで 2 つ目が視界から外れる
+    /// —— MVC は両方の validator を走らせるので実効上限は小さい方になる。
+    ///
+    /// <paramref name="inherit"/> の既定は <c>true</c>。基底クラスで宣言し派生側で
+    /// <c>override</c> した列を「属性なし」と誤判定しないためで、誤判定すると fluent の
+    /// <c>HasMaxLength()</c> との食い違いが黙って素通りする。
+    ///
+    /// 一方、<b>属性側の走査は <c>inherit: false</c> で呼ぶ</b>。あちらは
+    /// <c>BindingFlags.DeclaredOnly</c> で型ごとに宣言プロパティだけを見るので、
+    /// 継承まで辿ると基底の属性が派生側でも見つかり、<b>同じ違反が 2 つの型名で二重に報告される</b>
+    /// （<c>DeclaredOnly</c> を入れた目的が打ち消される）。継承したプロパティは、
+    /// それを宣言している型のケースで 1 度だけ報告されればよい。
+    ///
+    /// 解釈をここ 1 か所に集約するのが要点で、DataAnnotations に長さ上限の属性が増えたら
+    /// ここへ足す（名前空間・型名の接尾辞への依存をやめたのと同じ理由で、属性名への依存も残さない）。
+    /// </summary>
+    public static IReadOnlyList<(int Length, string? ErrorMessage, string AttributeName)>
+        ReadLengthLimits(PropertyInfo property, bool inherit = true)
+    {
+        // 見つけた上限を溜めるリスト
+        var limits = new List<(int, string?, string)>();
+
+        // [MaxLength] … 上限だけを表す。この repo の標準の綴り
+        foreach (var attribute in property.GetCustomAttributes<MaxLengthAttribute>(inherit))
+        {
+            // 上限値とメッセージを積む
+            limits.Add((attribute.Length, attribute.ErrorMessage, nameof(MaxLengthAttribute)));
+        }
+
+        // [StringLength] … 最大長を上限として扱う(最小長はこの検査の関心事ではない)
+        foreach (var attribute in property.GetCustomAttributes<StringLengthAttribute>(inherit))
+        {
+            // 最大長とメッセージを積む
+            limits.Add((attribute.MaximumLength, attribute.ErrorMessage, nameof(StringLengthAttribute)));
+        }
+
+        // [Length(min, max)] … .NET 8 で追加。こちらも最大長を上限として扱う
+        foreach (var attribute in property.GetCustomAttributes<LengthAttribute>(inherit))
+        {
+            // 最大長とメッセージを積む
+            limits.Add((attribute.MaximumLength, attribute.ErrorMessage, nameof(LengthAttribute)));
+        }
+
+        // 見つかった上限をすべて返す
+        return limits;
+    }
+
+    /// <summary>
+    /// その型が自分たちのアセンブリ（<c>IncidentInsight.Web</c>）で定義されているかを返す。
+    ///
+    /// <see cref="IsDeclaredInOwnAssembly"/> と同じ理由で 1 か所に置く。以前はこの述語が
+    /// 導出・DbSet の絞り込み・基底型引数の絞り込み・除外の実在検査の 4 箇所へ直書きされていた。
+    /// 将来この条件を変える（業務エンティティを 2 つ目のアセンブリへ切り出す等）ときに
+    /// 導出だけ広げてガードを直し忘れると、網羅ガードが新しいエンティティを見なくなり
+    /// 「取りこぼしゼロ＝緑」のまま無力化される。
+    /// </summary>
+    public static bool IsOwnAssemblyType(Type type)
+    {
+        // 定義元アセンブリが DbContext と同じなら自前の型
+        return type.Assembly == typeof(ApplicationDbContext).Assembly;
     }
 
     /// <summary>
@@ -229,13 +596,6 @@ internal static class AuditedEntityModel
     /// (作り直すと InMemory のストアがプロセス内キャッシュへ溜まり続ける)。
     /// </summary>
     public static IModel EfModel => Model.Value;
-
-    /// <summary>
-    /// その列が検査対象の「文字列列」かを返す(判定規則は <see cref="IsStringColumn"/>)。
-    /// 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて
-    /// 黙って対象が狭くなるため、外からもここを呼べるようにしている。
-    /// </summary>
-    public static bool IsStringColumnPublic(IProperty property) => IsStringColumn(property);
 
     /// <summary>
     /// その型が EF のモデルにエンティティとして載っているかを返す。
@@ -258,30 +618,13 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
-    /// 「列名と長さ上限」だけが要る検査のために、CLR プロパティの有無を問わず
-    /// すべての文字列列を返す。
-    ///
-    /// 長さ上限の検査は属性を読まないので shadow property も対象にできる。ここで
-    /// <see cref="ClrBackedStringColumns"/> を使ってしまうと、fluent で裸の数値を設定した
-    /// shadow 列が「属性を付けられないから対象外」という無関係な理由で素通りする。
-    /// </summary>
-    public static IReadOnlyList<(string Name, int? MaxLength)> AllStringColumnLengths(Type entityType)
-    {
-        // 2 つに分けた結果を、検査に必要な「名前と上限」だけの形へそろえて連結する
-        var (clrBacked, shadow) = PartitionStringColumns(entityType);
-        return clrBacked.Select(c => (c.Name, c.MaxLength))
-            .Concat(shadow.Select(c => (c.Name, c.MaxLength)))
-            .ToList();
-    }
-
-    /// <summary>
     /// 「文字列として保存される」列 1 つぶんの情報。
     /// <paramref name="MaxLength"/> は EF のモデルが持つ長さ上限で、<c>null</c> なら上限なし。
     /// </summary>
     /// <param name="Name">EF のモデル上の列名</param>
     /// <param name="Property">列に対応する CLR プロパティ(属性はここから読む)</param>
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
-    public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength);
+    public sealed record StringColumn(string Name, PropertyInfo Property, int? MaxLength, bool IsStringClrType);
 
     /// <summary>
     /// CLR プロパティを持たない文字列列(shadow property)1 つぶんの情報。
@@ -289,16 +632,18 @@ internal static class AuditedEntityModel
     /// </summary>
     /// <param name="Name">EF のモデル上の列名</param>
     /// <param name="MaxLength">EF のモデルに設定された長さ上限(未設定なら null)</param>
-    public sealed record ShadowColumn(string Name, int? MaxLength);
+    public sealed record ShadowColumn(string Name, int? MaxLength, bool IsStringClrType);
 
     // その列を検査対象の「文字列列」とみなすかを判定する。
+    // 同じ規則を各検査が書き写すと、規則を直したときに片方だけが取り残されて黙って対象が
+    // 狭くなるため、外からもここを呼ぶ(可視性の都合だけの別名は置かない)。
     //
     // CLR の型が string かどうかだけでは足りない: HasConversion<string>() を通した列
     // (Incident.Severity / IncidentType, PreventiveMeasure.Status / MeasureType など)は
     // ClrType が enum のままなので「string 列ではない」と誤判定され、検出網から丸ごと外れる。
     // 判定を「DB に文字列として入るか」に置くことで、将来 HasConversion<string>() で保存する
     // 自由記述の値オブジェクトを足しても、分類と長さ上限の検査が自動で追随する
-    private static bool IsStringColumn(IProperty property)
+    public static bool IsStringColumn(IProperty property)
     {
         // (a) CLR の型が string —— これが本命。インターセプタの SerializeChanges が ChangesJson へ
         //     書くのは prop.CurrentValue / prop.OriginalValue、すなわち**変換前の CLR 側の値**
