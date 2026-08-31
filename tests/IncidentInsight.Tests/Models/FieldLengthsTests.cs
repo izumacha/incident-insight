@@ -1,5 +1,3 @@
-// エンティティ(Incident / CauseAnalysis / PreventiveMeasure / CauseCategory)を使うために取り込む
-using IncidentInsight.Web.Models;
 // 文字数上限の唯一の真実の源(FieldLengths)を検証対象として取り込む
 using IncidentInsight.Web.Models.Validation;
 // 監査対象エンティティをインターセプタの宣言から導出する共有ヘルパーを使うために取り込む
@@ -241,7 +239,11 @@ public class FieldLengthsTests
             .Where(p => p.PropertyType.IsGenericType
                         && p.PropertyType.GetGenericTypeDefinition() == typeof(DbSet<>))
             // 型引数 T(= エンティティの CLR 型)を取り出す
-            .Select(p => p.PropertyType.GetGenericArguments()[0]);
+            .Select(p => p.PropertyType.GetGenericArguments()[0])
+            // ここで確定させる。遅延のままだと下の前提確認と ownedEntityTypes が
+            // それぞれ独立に走査を回し、「前提を確認した列」と「実際に使う列」が別の値になる
+            .Distinct()
+            .ToList();
 
         // 手がかり (b): 基底の総称 DbContext へ**自分たちが渡した型引数**
         // (IdentityDbContext<ApplicationUser> の ApplicationUser など)。
@@ -259,7 +261,7 @@ public class FieldLengthsTests
 
         // 手がかりが 1 つも読めないのは前提が崩れた状態(リフレクションの条件が古い)なので落とす。
         // ここを素通りさせると「見るべき対象ゼロ = 緑」でガード自体が無力化される
-        Assert.True(declaredDbSetTypes.Any(),
+        Assert.True(declaredDbSetTypes.Count > 0,
             "ApplicationDbContext から DbSet<T> の宣言を 1 つも読み取れませんでした。" +
             "このガードが対象を取得する条件が実装とずれています(このままでは常に緑になります)。");
         Assert.True(identityUserTypes.Count > 0,
@@ -313,8 +315,13 @@ public class FieldLengthsTests
             found.AddRange(type.GetGenericArguments().Where(a => a.Assembly == ownAssembly));
         }
 
-        // 同じ型が複数の基底に現れることがあるので重複を除いて返す
-        return found.Distinct().ToList();
+        // マップ済みエンティティに限る。型引数には EF のエンティティでないものも来うるため
+        // (自己参照する総称基底 AppContextBase<ApplicationDbContext> や、宣言だけして
+        // まだマップしていないロール型など)。絞らないとそれが「管理対象であるべき型」に混ざり、
+        // 導出は EF のモデルを読むので当然含まれず、ガードが
+        // 「導出条件がずれている」という**誤った原因**を指して落ちる —— このガードが
+        // 本来なくそうとしている「原因の分かりにくい失敗」そのものになる
+        return found.Distinct().Where(AuditedEntityModel.IsMappedEntity).ToList();
     }
 
     // 網羅ガードが DbSet<T> の宣言を探す型の並び。
@@ -364,6 +371,30 @@ public class FieldLengthsTests
             "長さ上限の管理対象から除外している名前が、EF のモデル上のエンティティを指していません: " +
             string.Join(", ", stale) + "。エンティティをモデルから外したのに除外だけが残っています " +
             "(このままだとその除外は何も除かない飾りになります)。");
+    }
+
+    [Fact]
+    public void LengthGovernanceExclusions_AllHaveAReason()
+    {
+        // 除外表は「理由を必須にすることで、とりあえず検出網を黙らせる使い方を塞ぐ」意図で
+        // 値に理由を持たせている。ところが読み手は .Keys と .ContainsKey だけで、
+        // **値は誰も見ていなかった** —— 理由を空文字や空白にしても通ってしまう。
+        //
+        // 実測: [nameof(CauseCategory)] = "   " を足すと CauseCategory が長さ関連 4 検査すべてから
+        // 外れるのに 504 → 498 で全件緑のまま通った(痕跡はテスト件数の減少だけ)。
+        // NotPhiAttribute は同じ意図を実行時の throw で強制している。同じ強度をここにも与える
+        var missingReason = LengthGovernanceExclusions
+            .Where(pair => string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => pair.Key)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 理由の無い除外が 1 件も無いこと
+        Assert.True(missingReason.Count == 0,
+            "長さ上限の管理対象から外す除外に理由が書かれていません: " +
+            string.Join(", ", missingReason) +
+            "。理由を必須にしているのは [NotPhi(\"理由\")] と同じで、" +
+            "「とりあえず検出網を黙らせる」使い方を残さないためです。");
     }
 
     [Fact]

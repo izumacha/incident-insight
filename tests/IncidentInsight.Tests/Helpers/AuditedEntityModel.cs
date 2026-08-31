@@ -217,11 +217,11 @@ internal static class AuditedEntityModel
     /// 496 → 490 に減ることだけで、これは正当なリファクタと見分けが付かない）。
     /// アセンブリ単位なら、名前空間をどう切り直しても対象から外れない。
     ///
-    /// 除外はエンティティ単位では <c>AuditLog</c> の 1 つだけ。業務入力ではなく監査証跡スキーマ固有の
-    /// 列長（256/100/64/16）を持つため、<c>FieldLengths</c> の定数を当てはめる対象ではない。
-    /// 該当する型の条件が無いので名前で除いており、その名前が EF のモデル上に実在することを
-    /// 確かめる（モデルから消えたのに除外だけが残るのを防ぐ。<c>nameof</c> を使っているので
-    /// リネームには C# のリファクタが追随し、この経路では空振りしない）。
+    /// エンティティ単位の除外は <see cref="LengthGovernanceExclusions"/>（理由付きの表）だけが決める。
+    /// この表の中身をここに書き写さない（写した瞬間に、除外を足したときこの説明だけが古くなる）。
+    /// 除外の綴りが EF のモデル上に実在することは
+    /// <c>FieldLengthsTests.LengthGovernanceExclusions_AreAllStillReal</c> が固定する
+    /// （このメソッド自身は確認しない。両方に置くと同じ検査が 2 か所に散る）。
     ///
     /// **<c>ApplicationUser</c> はエンティティごと除外しない。** 列長を Identity が決めるのは
     /// Identity 自身が宣言した列（<c>UserName</c> / <c>Email</c> など）だけで、
@@ -231,7 +231,8 @@ internal static class AuditedEntityModel
     /// 代わりに<b>列単位</b>で「自分たちが宣言した列か」を見る（<see cref="AppDeclaredStringColumnLengths"/>）。
     ///
     /// この導出が正しく効いているかは <c>FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet</c>
-    /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言）で照合する。
+    /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言と、
+    /// 基底の総称 DbContext へ渡した自アセンブリの型引数）で照合する。
     /// </summary>
     public static IReadOnlyList<Type> LengthGovernedEntityTypes()
     {
@@ -306,6 +307,19 @@ internal static class AuditedEntityModel
     /// shadow property（CLR プロパティを持たない列）は<b>残す</b>。宣言元をたどれないが、
     /// これは自分たちの <c>OnModelCreating</c> か EF の規約が作った列であり、
     /// 上限の検査は属性を読まないので対象にできる。
+    ///
+    /// <b>既知のトレードオフ</b>: <c>ApplicationUser</c> だけは基底の
+    /// <c>base.OnModelCreating</c>（ASP.NET Core Identity）も列を構成するため、
+    /// 「shadow 列＝自分たちのモデル由来」という前提が唯一崩れうる。将来 Identity が
+    /// 上限の無い shadow の文字列列をユーザーエンティティへ足すと、
+    /// <c>PersistedStringColumns_MustHaveMaxLength</c> が「自分たちには直せない列に
+    /// <c>FieldLengths</c> の定数を付けろ」という実行不能な指示を出す。
+    ///
+    /// 現時点でそのような列は 1 つも無いため、先回りの仕組みは入れていない（§6 の
+    /// 「将来を見越した過度な抽象化を避ける」）。実際に起きたときの正しい対処は
+    /// <b>列単位の除外を足す</b>ことで、<see cref="LengthGovernanceExclusions"/>（エンティティ単位）
+    /// で <c>ApplicationUser</c> ごと外してはいけない —— それをやると
+    /// <c>DisplayName</c> / <c>Department</c> がまた長さ管理から落ちる。
     /// </summary>
     public static IReadOnlyList<(string Name, int? MaxLength)> AppDeclaredStringColumnLengths(Type entityType)
     {
