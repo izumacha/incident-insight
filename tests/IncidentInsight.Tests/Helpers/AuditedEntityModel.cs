@@ -145,16 +145,8 @@ internal static class AuditedEntityModel
     public static (IReadOnlyList<StringColumn> ClrBacked, IReadOnlyList<ShadowColumn> Shadow)
         PartitionStringColumns(Type entityType)
     {
-        // EF のモデルから対象エンティティの定義を引く
-        var entity = Model.Value.FindEntityType(entityType);
-
-        // モデルに載っていない型を渡された場合は検査の前提が崩れるので落とす(fail-closed)
-        if (entity is null)
-        {
-            // どの型が解決できなかったのかを示して失敗させる
-            throw new InvalidOperationException(
-                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。");
-        }
+        // EF のモデルから対象エンティティの定義を引く(未マップなら例外)
+        var entity = RequireEntityType(entityType);
 
         // 主キー以外で「文字列として保存される」列を集め、CLR プロパティと組にする
         var columns = entity
@@ -246,7 +238,14 @@ internal static class AuditedEntityModel
     /// が**独立な手がかり**（<c>ApplicationDbContext</c> の <c>DbSet&lt;T&gt;</c> 宣言と、
     /// 基底の総称 DbContext へ渡した自アセンブリの型引数）で照合する。
     /// </summary>
-    public static IReadOnlyList<Type> LengthGovernedEntityTypes()
+    public static IReadOnlyList<Type> LengthGovernedEntityTypes() => LengthGovernedCache.Value;
+
+    // 導出は決定的なので 1 度だけ行う。xUnit は [MemberData] を検査ごと(検出時と実行時)に
+    // 評価し、この導出は 3 つのテストクラスから参照されるため、素の呼び出しのままだと
+    // 同じ走査が何度も走る(EF のモデルを Lazy で 1 度だけ組み立てているのと同じ理由)
+    private static readonly Lazy<IReadOnlyList<Type>> LengthGovernedCache = new(BuildLengthGovernedEntityTypes);
+
+    private static IReadOnlyList<Type> BuildLengthGovernedEntityTypes()
     {
         // マップ済みエンティティのうち、自分たちのアセンブリで定義されたものを集めて返す
         return Model.Value.GetEntityTypes()
@@ -380,6 +379,31 @@ internal static class AuditedEntityModel
     }
 
     /// <summary>
+    /// EF のモデルから対象エンティティの定義を引く。載っていなければ例外で落とす（fail-closed）。
+    ///
+    /// モデル側の検査へ EF のモデルを持たない型（ViewModel など）が渡されるのは配線ミスで、
+    /// 空を返すと全ケースが 0 列を評価して<b>緑のまま</b>通る。引き当てと失敗時の文言を
+    /// ここ 1 か所に置き、呼び出し側ごとに違う診断が出ないようにする。
+    /// </summary>
+    private static IEntityType RequireEntityType(Type entityType)
+    {
+        // 型に対応するエンティティ定義を探す
+        var entity = Model.Value.FindEntityType(entityType);
+
+        // 見つからなければ検査の前提が崩れているので、その場で落とす
+        if (entity is null)
+        {
+            // どの型が解決できなかったのかを示して失敗させる
+            throw new InvalidOperationException(
+                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。" +
+                "モデル側の検査に、EF のモデルを持たない型(ViewModel など)が渡されています。");
+        }
+
+        // 解決できた定義を返す
+        return entity;
+    }
+
+    /// <summary>
     /// 指定エンティティの「長さ上限が設定されている、自分たちが宣言した列」を返す。
     ///
     /// <see cref="AppDeclaredStringColumnLengths"/> との違いは<b>文字列列に限らない</b>点。
@@ -395,22 +419,12 @@ internal static class AuditedEntityModel
     public static IReadOnlyList<(string Name, int MaxLength, PropertyInfo? Property)>
         AppDeclaredColumnsWithLength(Type entityType)
     {
-        // EF のモデルから対象エンティティの定義を引く
-        var entity = Model.Value.FindEntityType(entityType);
-
-        // モデルに載っていない型を渡された場合は検査の前提が崩れるので落とす(fail-closed)。
+        // EF のモデルから対象エンティティの定義を引く(未マップなら例外)。
         //
         // 空を返してはいけない。属性側の型一覧(ViewModel を含む)をモデル側の [Theory] へ
         // 取り違えて配線すると、全ケースが 0 列を評価して**緑のまま**通ってしまう
-        // ——実測でも、モデル側 2 検査の [MemberData] を取り違えると 41/41 で緑になった。
-        // 姉妹メソッド PartitionStringColumns と同じく例外で気付けるようにする
-        if (entity is null)
-        {
-            // どの型が解決できなかったのかを示して失敗させる
-            throw new InvalidOperationException(
-                $"型 '{entityType.Name}' に対応するエンティティが EF のモデルに見つかりません。" +
-                "モデル側の検査に、EF のモデルを持たない型(ViewModel など)が渡されています。");
-        }
+        // ——実測でも、モデル側 2 検査の [MemberData] を取り違えると 41/41 で緑になった
+        var entity = RequireEntityType(entityType);
 
         // 主キー以外で長さ上限が設定されている列を集める
         return entity.GetProperties()

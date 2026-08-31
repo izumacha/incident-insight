@@ -52,6 +52,20 @@ public static class FieldLengths
     public const int EnumCodeJapanese = 50;
 
     /// <summary>
+    /// バイト長（<c>byte[]</c> の添付など）の上限に使う日本語エラーメッセージ書式。
+    /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限バイト数が入る。
+    ///
+    /// 文字数用の <see cref="MaxLengthMessage"/> を流用してはいけない。
+    /// <c>[MaxLength(100)] byte[] Attachment</c> に文字数の書式を付けると、画面には
+    /// 「添付は100文字以内で入力してください。」という<b>誤った文言</b>が出る
+    /// （実際に制限しているのはバイト数）。<see cref="ItemCountMessage"/> と同じ理由で、
+    /// 本番の利用箇所がまだ無くてもここに置く（最初にバイト長の上限を足す人が参照できないと、
+    /// 一元管理すべき値がその時点で必ず二重化する）。
+    /// </summary>
+    // バイト長の上限を伝える日本語メッセージの書式
+    public const string ByteLengthMessage = "{0}は{1}バイト以内で指定してください。";
+
+    /// <summary>
     /// コレクション（要素数）の上限に使う日本語エラーメッセージ書式。
     /// <c>{0}</c> に <c>[Display(Name = ...)]</c> の表示名、<c>{1}</c> に上限件数が入る。
     ///

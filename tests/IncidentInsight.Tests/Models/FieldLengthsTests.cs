@@ -82,8 +82,11 @@ public class FieldLengthsTests
     /// </summary>
     private enum LimitKind
     {
-        /// <summary>文字数・バイト数などの「長さ」（<c>string</c> / <c>byte[]</c> など）。</summary>
-        Length,
+        /// <summary>文字数（<c>string</c> / <c>char[]</c> / 文字列として保存する列）。</summary>
+        CharacterLength,
+
+        /// <summary>バイト長（<c>byte[]</c>）。</summary>
+        ByteLength,
 
         /// <summary>コレクションの「要素数」（<c>List&lt;T&gt;</c> など）。</summary>
         ItemCount,
@@ -93,24 +96,31 @@ public class FieldLengthsTests
     /// そのプロパティの長さ属性が何を数えているかを分類する。
     ///
     /// <b>分類はここ 1 か所だけで行う。</b> 以前は「検査に掛けるか」と「どの文言を要求するか」が
-    /// それぞれ同じ <c>string</c> / <c>byte[]</c> / <c>IEnumerable</c> の判定を持っていた。
-    /// 片方にだけ新しい種類（<c>char[]</c> など）を足すと、
-    /// 「文字数の文言は要求されるのに裸の数値は誰も見ない」という食い違いが生まれる
-    /// —— このファイル自身が繰り返し戒めている「写しの片方が取り残される」形。
+    /// それぞれ同じ判定を持っており、片方にだけ種類を足すと
+    /// 「文字数の文言は要求されるのに裸の数値は誰も見ない」という食い違いが生まれた。
+    ///
+    /// 種類を「長さ / 要素数」の 2 つにまとめてもいけない（実測で 2 つの穴が出た）:
+    ///   - <c>byte[]</c> を「長さ」に含めると、バイト長の上限に文字数の文言
+    ///     （「添付は100<b>文字</b>以内で…」）を強制してしまう
+    ///   - <c>char[]</c> を「要素数」に落とすと、文字数の上限なのに裸の数値が
+    ///     どの検査にも掛からず、文言も「◯◯は333<b>件</b>以内で…」になる
     /// </summary>
     private static LimitKind ClassifyLimit(PropertyInfo property)
     {
         // 対象の型
         var type = property.PropertyType;
 
-        // string と byte[] は「長さ」
-        if (type == typeof(string) || type == typeof(byte[])) return LimitKind.Length;
+        // string と char[] は文字数を数える
+        if (type == typeof(string) || type == typeof(char[])) return LimitKind.CharacterLength;
 
-        // それ以外のコレクションは「要素数」
+        // byte[] はバイト数を数える(文字数とは別の文言が要る)
+        if (type == typeof(byte[])) return LimitKind.ByteLength;
+
+        // それ以外のコレクションは要素数を数える
         if (typeof(System.Collections.IEnumerable).IsAssignableFrom(type)) return LimitKind.ItemCount;
 
-        // 残り(値変換した enum 列など)は保存される文字列の「長さ」
-        return LimitKind.Length;
+        // 残り(値変換して文字列として保存する enum 列など)は保存される文字列の文字数
+        return LimitKind.CharacterLength;
     }
 
     /// <summary>
@@ -125,9 +135,15 @@ public class FieldLengthsTests
     private static string ExpectedMessageFor(PropertyInfo property)
     {
         // 分類に対応する書式を返す
-        return ClassifyLimit(property) == LimitKind.ItemCount
-            ? FieldLengths.ItemCountMessage
-            : FieldLengths.MaxLengthMessage;
+        return ClassifyLimit(property) switch
+        {
+            // 要素数は「件」で伝える
+            LimitKind.ItemCount => FieldLengths.ItemCountMessage,
+            // バイト長は「バイト」で伝える
+            LimitKind.ByteLength => FieldLengths.ByteLengthMessage,
+            // 残りは文字数
+            _ => FieldLengths.MaxLengthMessage,
+        };
     }
 
     /// <summary>
@@ -147,9 +163,9 @@ public class FieldLengthsTests
     /// </summary>
     private static bool IsNakedNumberCheckedProperty(PropertyInfo property)
     {
-        // 「長さ」を数えているものだけが FieldLengths の定数と突き合わせる対象。
+        // 長さ(文字数・バイト数)を数えているものだけが FieldLengths の定数と突き合わせる対象。
         // 要素数の上限に FreeText(500) を当てろというのは実行不能な指示になる
-        return ClassifyLimit(property) == LimitKind.Length;
+        return ClassifyLimit(property) != LimitKind.ItemCount;
     }
 
     /// <summary>
