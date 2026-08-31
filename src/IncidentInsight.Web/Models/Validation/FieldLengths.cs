@@ -63,7 +63,7 @@ public static class FieldLengths
     /// 一元管理すべき値がその時点で必ず二重化する）。
     /// </summary>
     // バイト長の上限を伝える日本語メッセージの書式
-    public const string ByteLengthMessage = "{0}は{1}バイト以内で指定してください。";
+    public const string ByteLengthMessage = "{0}は{1}バイト以内で入力してください。";
 
     /// <summary>
     /// コレクション（要素数）の上限に使う日本語エラーメッセージ書式。

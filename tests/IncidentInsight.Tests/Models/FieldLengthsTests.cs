@@ -669,6 +669,92 @@ public class FieldLengthsTests
             "「とりあえず検出網を黙らせる」使い方を残さないためです。");
     }
 
+    [Theory]
+    [MemberData(nameof(MaxLengthDeclaringTypes))]
+    public void NonEntityLengthAttribute_OnlyOnMeasurableTypes(Type type)
+    {
+        // 対象は入力を受ける型(EF のモデルに載っていない型)。エンティティ側の [MaxLength] は
+        // EF Core の列長定義にしか使われず、DataAnnotations の検証は走らない
+        if (AuditedEntityModel.IsMappedEntity(type)) return;
+
+        // MaxLengthAttribute.IsValid が測れない型に付いた長さ属性を拾う
+        var offenders = type
+            .GetProperties(DeclaredInstanceProperties)
+            .Where(p => AuditedEntityModel.ReadLengthLimits(p).Count > 0)
+            .Where(p => !IsMeasurableByLengthAttribute(p.PropertyType))
+            .Select(p => $"{type.Name}.{p.Name} ({p.PropertyType.Name})")
+            .ToList();
+
+        // MVC の検証時に例外になる宣言が 1 つも無いこと。
+        //
+        // 上限の**値**や**文言**の検査だけでは足りない: enum / int / DateTime に
+        // [MaxLength(FieldLengths.ShortText, ErrorMessage = FieldLengths.MaxLengthMessage)] と
+        // 書くと、値は許容集合に入り文言も規約どおりなので全検査が緑になる。ところが
+        // MaxLengthAttribute.IsValid は測れない型に対して InvalidCastException を投げるため、
+        // その画面への POST は毎回 HTTP 500 になる(実測)
+        Assert.True(offenders.Count == 0,
+            "長さ上限の属性が、MaxLengthAttribute では測れない型のプロパティに付いています: " +
+            string.Join(", ", offenders) +
+            "。MVC の検証時に InvalidCastException(\"must be a string, array or ICollection type\") が" +
+            "投げられ、その画面への POST が毎回 HTTP 500 になります。" +
+            "長さ属性を外すか、対象を string / char[] / byte[] / ICollection にしてください。");
+    }
+
+    /// <summary>
+    /// <c>MaxLengthAttribute.IsValid</c> がその型の長さを測れるかを返す。
+    ///
+    /// 実装は「<c>string</c> か、配列か、<c>ICollection</c>」で、それ以外は
+    /// <c>InvalidCastException</c> を投げる。判定をここへ写しているのは、
+    /// 属性の実装が投げる条件そのものを検査の条件にしたいため。
+    /// </summary>
+    private static bool IsMeasurableByLengthAttribute(Type type)
+    {
+        // string は長さを測れる
+        if (type == typeof(string)) return true;
+
+        // 配列(char[] / byte[] / T[])は Length を持つ
+        if (type.IsArray) return true;
+
+        // ICollection を実装していれば Count を持つ
+        return typeof(System.Collections.ICollection).IsAssignableFrom(type)
+               || type.GetInterfaces().Any(i => i.IsGenericType
+                                                && i.GetGenericTypeDefinition() == typeof(ICollection<>));
+    }
+
+    [Fact]
+    public void ByteLengthMessage_FormatsDisplayNameAndLimit()
+    {
+        // 実際に MaxLengthAttribute が組み立てるメッセージを確認する。
+        // 本番の利用箇所がまだ無い定数なので、書式を固定しておかないと
+        // プレースホルダの取り違えに最初の利用者まで誰も気付けない
+        var attribute = new MaxLengthAttribute(FieldLengths.ShortText)
+        {
+            ErrorMessage = FieldLengths.ByteLengthMessage
+        };
+
+        // 表示名「添付ファイル」に対するエラーメッセージを生成する
+        var message = attribute.FormatErrorMessage("添付ファイル");
+
+        // 項目名と上限バイト数の両方が含まれた日本語メッセージになっていること
+        Assert.Equal($"添付ファイルは{FieldLengths.ShortText}バイト以内で入力してください。", message);
+    }
+
+    [Fact]
+    public void ItemCountMessage_FormatsDisplayNameAndLimit()
+    {
+        // 上と同じ理由で、要素数用の書式も固定する
+        var attribute = new MaxLengthAttribute(FieldLengths.ShortText)
+        {
+            ErrorMessage = FieldLengths.ItemCountMessage
+        };
+
+        // 表示名「タグ」に対するエラーメッセージを生成する
+        var message = attribute.FormatErrorMessage("タグ");
+
+        // 項目名と上限件数の両方が含まれた日本語メッセージになっていること
+        Assert.Equal($"タグは{FieldLengths.ShortText}件以内で入力してください。", message);
+    }
+
     [Fact]
     public void MaxLengthMessage_FormatsDisplayNameAndLimit()
     {
