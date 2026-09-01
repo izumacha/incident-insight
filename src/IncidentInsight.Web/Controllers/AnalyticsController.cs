@@ -8,6 +8,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // enum(重症度・種別など)を使う
 using IncidentInsight.Web.Models.Enums;
+// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
+using IncidentInsight.Web.Models.Validation;
 // 時刻源サービス
 using IncidentInsight.Web.Services;
 // 認可属性
@@ -51,8 +53,8 @@ public class AnalyticsController : Controller
         // ベースクエリ(読み取り専用 + 期間フィルタ)
         var query = _db.Incidents.AsNoTracking()
             .Where(i => i.OccurredAt >= firstMonthStart);
-        // 部署指定があればさらに絞り込む
-        if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
+        // 部署指定があればさらに絞り込む(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
+        if (SearchFilter.HasValue(department)) query = query.Where(i => i.Department == department);
         // 開始日指定があればさらに絞り込む(他エンドポイントと同様、既定の直近12ヶ月窓をさらに狭める)
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があればさらに絞り込む(その日を含める)
@@ -97,8 +99,8 @@ public class AnalyticsController : Controller
         // なぜなぜ分析テーブルをベースにする
         var query = _db.CauseAnalyses.AsNoTracking().AsQueryable();
 
-        // 部署指定があれば絞る
-        if (!string.IsNullOrEmpty(department))
+        // 部署指定があれば絞る(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
+        if (SearchFilter.HasValue(department))
             query = query.Where(ca => ca.Incident.Department == department);
         // 開始日指定があれば絞る
         if (dateFrom.HasValue)
@@ -169,8 +171,8 @@ public class AnalyticsController : Controller
     {
         // 読み取り専用クエリを用意
         var query = _db.Incidents.AsNoTracking().AsQueryable();
-        // 部署指定があれば絞る
-        if (!string.IsNullOrEmpty(department)) query = query.Where(i => i.Department == department);
+        // 部署指定があれば絞る(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
+        if (SearchFilter.HasValue(department)) query = query.Where(i => i.Department == department);
         // 開始日指定があれば絞る
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があれば絞る(その日を含める)

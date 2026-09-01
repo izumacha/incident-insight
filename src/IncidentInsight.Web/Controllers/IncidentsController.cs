@@ -86,7 +86,7 @@ public class IncidentsController : Controller
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (SearchFilter.HasValue(search))
         {
-            var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search!);
+            var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);
             query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
         }
         // 部署で絞り込み(空白のみは絞り込み無し)

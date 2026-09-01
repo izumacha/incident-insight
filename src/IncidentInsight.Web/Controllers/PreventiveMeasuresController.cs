@@ -95,7 +95,7 @@ public class PreventiveMeasuresController : Controller
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (SearchFilter.HasValue(responsible))
         {
-            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible!);
+            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible);
             query = query.Where(m => m.ResponsiblePerson.ToUpper().Contains(normalizedResponsible) || m.ResponsibleDepartment.ToUpper().Contains(normalizedResponsible));
         }
         // 担当部署が指定されていれば完全一致で絞る(空白のみは絞り込み無し)
@@ -169,10 +169,10 @@ public class PreventiveMeasuresController : Controller
         // フォームを再送信した時点でフィルタが利用者の意図なく無言で解除されてしまう
         // (補完するのは実際に絞り込みへ使った値だけ。空白のみの入力は上で絞り込みに使って
         //  いないため、ここでも選択肢に足さない ——足すと存在しない部署が選択肢に現れる)
-        if (SearchFilter.HasValue(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment!))
+        if (SearchFilter.HasValue(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment))
         {
             // 適用中の部署名を選択肢の先頭に追加する
-            responsibleDepartmentOptions.Insert(0, responsibleDepartment!);
+            responsibleDepartmentOptions.Insert(0, responsibleDepartment);
         }
         // ドロップダウン選択肢としてビューへ渡す
         ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;

@@ -104,6 +104,68 @@ public class AuditLogsControllerTests : IDisposable
         Assert.Equal(1, vm!.TotalCount);
     }
 
+    // 許可リストに無いエンティティ名は、絞り込みに使わないだけでなく画面へも戻さないことを固定する。
+    // そのまま戻すと (a) 絞り込みは効いていないのにパネルが「絞り込み中」を表示し、
+    // (b) ドロップダウンは一致する選択肢が無いため「全て」を指す、という三者の食い違いになる。
+    // 監査対象からエンティティを外したあとの古いブックマークで実際に起きる経路。
+    [Theory]
+    [InlineData("Bogus")]           // そもそも存在しない型名
+    [InlineData("ApplicationUser")] // 実在するが監査対象ではない型名
+    public async Task Index_EntityNameOutsideAllowList_IsNotAppliedNorEchoedBack(string rejected)
+    {
+        // 監査ログを 1 件用意する
+        _db.AuditLogs.Add(MakeLog(entity: "Incident"));
+        await _db.SaveChangesAsync();
+
+        // 許可リスト外のエンティティ名で絞り込む
+        var result = await _controller.Index(rejected, null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 絞り込みは適用されず全件が返ること
+        Assert.Equal(1, vm!.TotalCount);
+        // 採用しなかった値は画面へ戻らないこと(戻すとビューが「絞り込み中」と表示してしまう)
+        Assert.Null(vm.EntityName);
+    }
+
+    // 操作種別も同じ規則であることを固定する。エンティティ名と別々に判定しているため、
+    // 片方だけ直したときに気づけるよう経路ごとに押さえる。
+    [Fact]
+    public async Task Index_OperationOutsideAllowList_IsNotAppliedNorEchoedBack()
+    {
+        // 監査ログを 1 件用意する
+        _db.AuditLogs.Add(MakeLog(op: "Added"));
+        await _db.SaveChangesAsync();
+
+        // 許可リスト外の操作種別で絞り込む
+        var result = await _controller.Index(null, "Truncated", null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 絞り込みは適用されず全件が返ること
+        Assert.Equal(1, vm!.TotalCount);
+        // 採用しなかった値は画面へ戻らないこと
+        Assert.Null(vm.Operation);
+    }
+
+    // 許可リストを通った値は今までどおり絞り込みに使われ、画面へも戻ること
+    // (上の 2 件が「常に null にする」実装でも通ってしまわないよう、正常系を対で置く)
+    [Fact]
+    public async Task Index_EntityNameInAllowList_IsAppliedAndEchoedBack()
+    {
+        // 異なるエンティティの監査ログを 2 件用意する
+        _db.AuditLogs.Add(MakeLog(entity: "Incident", key: "1"));
+        _db.AuditLogs.Add(MakeLog(entity: "PreventiveMeasure", key: "2"));
+        await _db.SaveChangesAsync();
+
+        // 許可リストにあるエンティティ名で絞り込む
+        var result = await _controller.Index("Incident", null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 絞り込みが効いて 1 件だけになること
+        Assert.Equal(1, vm!.TotalCount);
+        // 適用した値が画面へ戻ること(ドロップダウンの選択状態の復元に使う)
+        Assert.Equal("Incident", vm.EntityName);
+    }
+
     [Fact]
     public async Task Index_NoFilters_ReturnsAllLogsNewestFirst()
     {

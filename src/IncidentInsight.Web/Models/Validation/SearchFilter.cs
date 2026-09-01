@@ -1,10 +1,15 @@
+// [NotNullWhen] 属性(戻り値が true のとき引数が非 null であることをコンパイラへ伝える)を使う
+using System.Diagnostics.CodeAnalysis;
+
 // この型が属する名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Models.Validation;
 
 /// <summary>
-/// 一覧画面の絞り込み入力について「値が入っているか」を判定する唯一の真実の源
+/// 一覧・集計画面の絞り込み入力について「値が入っているか」を判定する唯一の真実の源
 /// (single source of truth)。<c>?search=</c> のようなクエリ文字列から届く
-/// <see cref="string"/> の絞り込み条件は、すべてこの判定を通してから使う。
+/// <see cref="string"/> の絞り込み条件は、一覧でも集計(グラフ用 JSON)でも、
+/// すべてこの判定を通してから使う。利用側はここに書き並べない
+/// (参照を辿れば分かるので、写しを持つと一覧の方が先に古くなる)。
 ///
 /// <para><b>規則。</b> <c>null</c> / 空文字 / <b>空白のみ</b>の入力は「絞り込み無し」として扱う
 /// (＝<see cref="HasValue"/> は <c>false</c> を返す)。空白のみを「入力あり」と数えないのは、
@@ -43,7 +48,12 @@ public static class SearchFilter
     /// </summary>
     /// <param name="input">クエリ文字列やフォームから受け取った絞り込み条件(未入力なら <c>null</c>)。</param>
     /// <returns>絞り込みを適用すべきなら <c>true</c>、空・空白のみなら <c>false</c>。</returns>
-    public static bool HasValue(string? input)
+    // [NotNullWhen(true)] を付けると、true を返した枝では input が非 null だとコンパイラが分かる。
+    // 呼び出し側で null 免除演算子(responsible! のような後置 !)を書かずに済ませるため
+    // (! は「今は正しい」ことしか主張できず、この関数の判定を将来変えたときに
+    //  NullReferenceException として現れる。属性なら判定とコンパイラの理解が連動する)。
+    // 標準ライブラリの string.IsNullOrEmpty が [NotNullWhen(false)] を持つのと同じ仕組み
+    public static bool HasValue([NotNullWhen(true)] string? input)
         // null・空文字・空白のみ(半角/全角スペース、タブ、改行など)はすべて「未入力」とみなす
         => !string.IsNullOrWhiteSpace(input);
 }
