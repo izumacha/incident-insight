@@ -12,12 +12,18 @@
     @* 原因分析サブフォーム(NewCauseAnalysis.〜)にバリデーションエラーがあるかを判定する。
        AddCauseAnalysis の検証失敗でこのビューが再描画されたとき、折りたたみを開いた状態に
        しないと入力欄もエラーも隠れたままになり、利用者が失敗に気づけないため。
-       プレフィックスは文字列直書きではなく nameof で組み立てる(プロパティ改名に追従させる §6) *@
+       プレフィックスは文字列直書きではなく nameof で組み立てる(プロパティ改名に追従させる §6)。
+       StringComparison.Ordinal を明示するのは、引数なしの StartsWith が現在のカルチャで
+       比較するため。ICU が「無視できる文字」とみなす記号(ソフトハイフン U+00AD・ZWJ U+200D 等)を
+       挟んだキーまで前方一致と判定するので、同じビルドでもサーバの OS ロケールと ICU の版で
+       折りたたみの開閉が変わってしまう(CLAUDE.md §10 プラットフォーム差異ゼロ設計)。
+       ModelState のキーは画面が組み立てる識別子であって自然言語ではないため、序数比較が正しい。
+       この規則は ModelState キーの前方一致すべてに掛かり、ModelStateKeyPrefixMatchTests が固定する *@
     var causeFormHasErrors = ViewData.ModelState.Keys
-        .Any(k => k.StartsWith($"{nameof(Model.NewCauseAnalysis)}.") && ViewData.ModelState[k]?.Errors.Count > 0);
+        .Any(k => k.StartsWith($"{nameof(Model.NewCauseAnalysis)}.", StringComparison.Ordinal) && ViewData.ModelState[k]?.Errors.Count > 0);
     @* 対策サブフォーム(NewMeasure.〜)にバリデーションエラーがあるかを同様に判定する *@
     var measureFormHasErrors = ViewData.ModelState.Keys
-        .Any(k => k.StartsWith($"{nameof(Model.NewMeasure)}.") && ViewData.ModelState[k]?.Errors.Count > 0);
+        .Any(k => k.StartsWith($"{nameof(Model.NewMeasure)}.", StringComparison.Ordinal) && ViewData.ModelState[k]?.Errors.Count > 0);
 }
 
 @* ページヘッダ：見出し＋重症度バッジ＋アクションボタン *@

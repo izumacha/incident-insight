@@ -80,10 +80,10 @@ public class AuditLogsController : Controller
             query = query.Where(a => a.Operation == operation);
         // 変更者(ユーザー名)で部分一致(大文字小文字を区別しない)
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // SearchText.NormalizeForContainsSearch に集約してある(3 コントローラで共有)
+        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある(3 コントローラで共有)
         if (!string.IsNullOrWhiteSpace(changedBy))
         {
-            var normalizedChangedBy = SearchText.NormalizeForContainsSearch(changedBy);
+            var normalizedChangedBy = IncidentControllerHelpers.NormalizeSearchKeyword(changedBy);
             query = query.Where(a => a.ChangedBy.ToUpper().Contains(normalizedChangedBy));
         }
         // 対象キー(エンティティの ID)で完全一致

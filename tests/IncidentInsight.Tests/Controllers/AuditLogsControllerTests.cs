@@ -44,7 +44,7 @@ public class AuditLogsControllerTests : IDisposable
     // 3 コントローラそれぞれが自分の呼び出し側を持つので、経路ごとに個別に押さえる
     // (呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
     // 保存する変更者名を大文字 ASCII にしてある理由は
-    // SearchText の docstring「残る境界 2」を参照。
+    // IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照。
     [Fact]
     public async Task Index_ChangedBySearchUsesInvariantUpperCasing_NotServerLocale()
     {

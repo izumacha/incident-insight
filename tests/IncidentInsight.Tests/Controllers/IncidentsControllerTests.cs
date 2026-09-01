@@ -516,6 +516,15 @@ public class IncidentsControllerTests : IDisposable
         var vm = ValidViewModel();
         // 前方一致の対象と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
         // (先頭にソフトハイフン U+00AD を置いた、除外対象ではないキー)
+        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
+        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
+        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
+        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
+        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
+        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
+        Assert.True("­CauseAnalysis.Why1".StartsWith("CauseAnalysis.", StringComparison.CurrentCulture),
+            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
+            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
         _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
 
         // Create を実行する
@@ -548,6 +557,15 @@ public class IncidentsControllerTests : IDisposable
         vm.Measures.Add(new MeasureFormViewModel { Description = "" });
         // 空行(index 1)の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む。
         // ZWJ U+200D を語中に挟んであるので、序数比較なら除外対象にならない
+        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
+        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
+        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
+        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
+        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
+        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
+        Assert.True("Meas‍ures[1].DueDate".StartsWith("Measures[1].", StringComparison.CurrentCulture),
+            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
+            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
         _controller.ModelState.AddModelError("Meas‍ures[1].DueDate", "除外対象ではないエラー");
 
         // Create を実行する
@@ -590,6 +608,15 @@ public class IncidentsControllerTests : IDisposable
         vm.ConcurrencyToken = incident.ConcurrencyToken;
         // Measures[ の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
         // (ZWJ U+200D を語中に挟んだ、除外対象ではないキー)
+        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
+        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
+        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
+        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
+        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
+        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
+        Assert.True("Meas‍ures[0].DueDate".StartsWith("Measures[", StringComparison.CurrentCulture),
+            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
+            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
         _controller.ModelState.AddModelError("Meas‍ures[0].DueDate", "除外対象ではないエラー");
 
         // Edit POST を実行する
@@ -996,15 +1023,16 @@ public class IncidentsControllerTests : IDisposable
     // 検索キーワードの大文字化が、サーバの OS ロケールに左右されないことを
     // 「コントローラ経由で」固定する。
     //
-    // SearchTextTests はヘルパ単体の規則を固定するだけなので、コントローラが実際に
-    // そのヘルパを通っているかまでは見ていない(呼び出し側を素の ToUpper() へ戻しても
-    // ヘルパ単体のテストは緑のまま通る)。ここはその経路を押さえる。
+    // 正規化はヘルパ 1 箇所に集約してあるが、それだけでは「コントローラが実際に
+    // そのヘルパを通っているか」は誰も見ていない(呼び出し側を素の ToUpper() へ戻すだけで
+    // 元の不具合が復活する)。ここはその経路を押さえる。3 コントローラそれぞれが
+    // 自分の呼び出し側を持つので、経路ごとに個別のテストを置く。
     //
     // 保存する状況説明を「あらかじめ大文字の ASCII」にしてあるのは、テストの InMemory
     // プロバイダには SQL が無く、式ツリーの col.ToUpper() が本番と違ってアプリ内で
     // 現在のカルチャに従って評価されるため。列の側を大文字のままにしておけば
     // トルコ語ロケールでも変化せず、判定対象をキーワード側の規則だけに絞れる
-    // (この切り分けの根拠は SearchText の docstring「残る境界 2」を参照)。
+    // (この切り分けの根拠は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)。
     [Fact]
     public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
     {

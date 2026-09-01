@@ -736,8 +736,9 @@ public class PreventiveMeasuresControllerTests : IDisposable
         Assert.Contains("看護部", options);
     }
 
-    // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
-    // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
+    // 担当者/担当部署の部分一致検索の大文字化が、サーバの OS ロケールに
+    // 左右されないことを固定する。3 コントローラそれぞれが自分の呼び出し側を持つので、
+    // 経路ごとに個別に押さえる(呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
     [Fact]
     public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
     {
@@ -746,7 +747,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         try
         {
             // 担当部署が大文字 ASCII の対策を 1 件投入する
-            // (大文字にしておく理由は SearchText の docstring「残る境界 2」を参照)
+            // (大文字にしておく理由は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
 
             // ドット無し I を持つトルコ語ロケールへ切り替える
@@ -768,6 +769,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
         }
     }
 
+    // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
+    // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
     [Fact]
     public async Task Index_FilterByFreeTextResponsibleDepartment_ReturnsMatchingOnly()
     {
