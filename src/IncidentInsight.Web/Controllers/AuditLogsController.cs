@@ -10,6 +10,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // 日本語ラベル / Bootstrap カラーの一元解決(EnumLabels)を使う
 using IncidentInsight.Web.Models.Enums;
+// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
+using IncidentInsight.Web.Models.Validation;
 // 監査ログ画面用 ViewModel を使う
 using IncidentInsight.Web.Models.ViewModels;
 // 認可属性
@@ -73,21 +75,22 @@ public class AuditLogsController : Controller
         var query = _db.AuditLogs.AsNoTracking().AsQueryable();
 
         // エンティティ名で絞り込み(許可リストにあるときだけ採用)
-        if (!string.IsNullOrEmpty(entityName) && AllowedEntityNames.Contains(entityName))
+        if (SearchFilter.HasValue(entityName) && AllowedEntityNames.Contains(entityName!))
             query = query.Where(a => a.EntityName == entityName);
         // 操作種別で絞り込み(許可リストにあるときだけ採用)
-        if (!string.IsNullOrEmpty(operation) && AllowedOperations.Contains(operation))
+        if (SearchFilter.HasValue(operation) && AllowedOperations.Contains(operation!))
             query = query.Where(a => a.Operation == operation);
         // 変更者(ユーザー名)で部分一致(大文字小文字を区別しない)
+        // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
-        if (!string.IsNullOrWhiteSpace(changedBy))
+        if (SearchFilter.HasValue(changedBy))
         {
-            var normalizedChangedBy = IncidentControllerHelpers.NormalizeSearchKeyword(changedBy);
+            var normalizedChangedBy = IncidentControllerHelpers.NormalizeSearchKeyword(changedBy!);
             query = query.Where(a => a.ChangedBy.ToUpper().Contains(normalizedChangedBy));
         }
-        // 対象キー(エンティティの ID)で完全一致
-        if (!string.IsNullOrWhiteSpace(entityKey))
+        // 対象キー(エンティティの ID)で完全一致(空白のみは絞り込み無し)
+        if (SearchFilter.HasValue(entityKey))
             query = query.Where(a => a.EntityKey == entityKey);
         // 期間下限で絞り込み
         if (dateFrom.HasValue)

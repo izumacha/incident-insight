@@ -8,6 +8,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // enum(MeasureStatus)を使う
 using IncidentInsight.Web.Models.Enums;
+// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
+using IncidentInsight.Web.Models.Validation;
 // ViewModel 群を使う
 using IncidentInsight.Web.Models.ViewModels;
 // 時刻源サービスを使う
@@ -88,15 +90,16 @@ public class PreventiveMeasuresController : Controller
         if (overdue == true)
             query = query.Where(PreventiveMeasure.OverdueOn(_clock.Today));
         // 担当者キーワードが指定されていれば氏名/部署名で部分一致検索(大文字小文字を区別しない)
+        // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
-        if (!string.IsNullOrEmpty(responsible))
+        if (SearchFilter.HasValue(responsible))
         {
-            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible);
+            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible!);
             query = query.Where(m => m.ResponsiblePerson.ToUpper().Contains(normalizedResponsible) || m.ResponsibleDepartment.ToUpper().Contains(normalizedResponsible));
         }
-        // 担当部署が指定されていれば完全一致で絞る
-        if (!string.IsNullOrEmpty(responsibleDepartment))
+        // 担当部署が指定されていれば完全一致で絞る(空白のみは絞り込み無し)
+        if (SearchFilter.HasValue(responsibleDepartment))
             query = query.Where(m => m.ResponsibleDepartment == responsibleDepartment);
         // 期限日の下限指定があれば絞る
         if (dateFrom.HasValue)
@@ -164,10 +167,12 @@ public class PreventiveMeasuresController : Controller
         // 該当する対策が削除された等)は先頭に補完する。補完しないと、絞り込みが
         // 効いているのに select は「全て」を表示して UI と実状態が食い違い、その
         // フォームを再送信した時点でフィルタが利用者の意図なく無言で解除されてしまう
-        if (!string.IsNullOrEmpty(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment))
+        // (補完するのは実際に絞り込みへ使った値だけ。空白のみの入力は上で絞り込みに使って
+        //  いないため、ここでも選択肢に足さない ——足すと存在しない部署が選択肢に現れる)
+        if (SearchFilter.HasValue(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment!))
         {
             // 適用中の部署名を選択肢の先頭に追加する
-            responsibleDepartmentOptions.Insert(0, responsibleDepartment);
+            responsibleDepartmentOptions.Insert(0, responsibleDepartment!);
         }
         // ドロップダウン選択肢としてビューへ渡す
         ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;
@@ -183,11 +188,14 @@ public class PreventiveMeasuresController : Controller
         // いずれかの絞り込みが効いているか。0 件表示の文言を出し分けるために使う。
         // 「1 件も登録されていない」と「絞り込みに一致しなかった」を区別しないと、
         // 対策が大量にあるのに「まだ登録されていません」と表示され、データが消えたように見える。
-        // 判定はここに集約し、ビュー側で ViewBag を個別に見比べる形にしない
+        // 判定はここに集約し、ビュー側で ViewBag を個別に見比べる形にしない。
+        // 文字列条件は絞り込みの適用側とまったく同じ SearchFilter.HasValue を通す。
+        // ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら
+        // 全件を返す(またはその逆の)食い違いが生まれる
         ViewBag.HasActiveFilter = status.HasValue
             || overdue == true
-            || !string.IsNullOrEmpty(responsible)
-            || !string.IsNullOrEmpty(responsibleDepartment)
+            || SearchFilter.HasValue(responsible)
+            || SearchFilter.HasValue(responsibleDepartment)
             || dateFrom.HasValue
             || dateTo.HasValue;
         // 上限に達し切り詰められたかどうか。true ならビューで注意書きを表示する

@@ -63,6 +63,47 @@ public class AuditLogsControllerTests : IDisposable
         }
     }
 
+    // 空白のみの変更者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。
+    // 3 画面で空判定を SearchFilter.HasValue へ揃えた際の回帰テスト。この画面は元から
+    // IsNullOrWhiteSpace だったため挙動は変わらないが、判定を共有ヘルパーへ移したあとも
+    // 規則が維持されていることをここで押さえる(押さえないと、共有側の規則を緩めても
+    // カンバンのテストだけが落ち、この画面の退行は誰にも見えない)。
+    [Theory]
+    [InlineData(" ")]           // 半角スペース 1 つ
+    [InlineData("   ")]         // 半角スペース複数
+    [InlineData("\t")]          // タブ
+    [InlineData("　")]          // 全角スペース
+    public async Task Index_WhitespaceOnlyChangedBy_IsTreatedAsNoFilter(string blankInput)
+    {
+        // 変更者名が日本語の監査ログを 1 件用意する(空白では絶対に部分一致しない)
+        _db.AuditLogs.Add(MakeLog(user: "看護師A"));
+        await _db.SaveChangesAsync();
+
+        // 空白のみのキーワードで変更者を検索する
+        var result = await _controller.Index(null, null, blankInput, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 絞り込みは走らず、全件がそのまま返ること
+        Assert.Equal(1, vm!.TotalCount);
+    }
+
+    // 対象キー(完全一致フィルタ)側でも空白のみの入力が「絞り込み無し」になることを固定する。
+    // 変更者キーワードと別々に判定していると片方だけ直したときに気づけないため、経路ごとに押さえる。
+    [Fact]
+    public async Task Index_WhitespaceOnlyEntityKey_IsTreatedAsNoFilter()
+    {
+        // 対象キーを持つ監査ログを 1 件用意する
+        _db.AuditLogs.Add(MakeLog(key: "42"));
+        await _db.SaveChangesAsync();
+
+        // 空白のみの対象キーで絞り込む
+        var result = await _controller.Index(null, null, null, "   ", null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 絞り込みは走らず、全件がそのまま返ること
+        Assert.Equal(1, vm!.TotalCount);
+    }
+
     [Fact]
     public async Task Index_NoFilters_ReturnsAllLogsNewestFirst()
     {

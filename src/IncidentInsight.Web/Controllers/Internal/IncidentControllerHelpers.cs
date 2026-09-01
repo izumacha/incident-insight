@@ -113,8 +113,14 @@ internal static class IncidentControllerHelpers
     /// </list>
     /// 既存の 3 経路については、ロケールを差し替えるコントローラ級のテストが
     /// 「この関数が実際に経路上にあること」まで固定している。</para>
+    ///
+    /// <para><b>対になる規則。</b> 「そもそも絞り込むかどうか」(空・空白のみの入力を
+    /// 絞り込み無しとして扱う)は <see cref="Models.Validation.SearchFilter.HasValue"/> が持つ。
+    /// 呼び出し側は必ずその判定を通してからこの関数を呼ぶ。置き場所が分かれているのは、
+    /// 空判定を絞り込みの適用側(コントローラ)と「絞り込み中」の表示側(ビュー)の両方が使うのに対し、
+    /// この大文字化は EF Core のクエリを組み立てる経路にしか現れないため(issue #187)。</para>
     /// </summary>
-    /// <param name="keyword">利用者が入力した検索キーワード。</param>
+    /// <param name="keyword">利用者が入力した検索キーワード(空でないことは呼び出し側が確認済み)。</param>
     /// <returns>ロケールに依存しない規則で大文字化したキーワード。</returns>
     public static string NormalizeSearchKeyword(string keyword)
         // 実行環境のロケールに左右されない不変(invariant)規則で大文字化して返す

@@ -1053,6 +1053,39 @@ public class IncidentsControllerTests : IDisposable
         }
     }
 
+    // 空白のみのフリーワード検索は「絞り込み無し」として扱われることを固定する(issue #187)。
+    // 3 画面(インシデント一覧 / カンバン / 監査ログ)で空判定を SearchFilter.HasValue へ
+    // 揃えた際の回帰テスト。この画面は元から IsNullOrWhiteSpace だったため挙動は変わらないが、
+    // 判定を共有ヘルパーへ移したあとも規則が維持されていることをここで押さえる
+    // (押さえないと、共有側の規則を IsNullOrEmpty へ緩めても 3 画面のうち
+    //  カンバンのテストだけが落ち、この画面の退行は誰にも見えない)。
+    [Theory]
+    [InlineData(" ")]           // 半角スペース 1 つ
+    [InlineData("   ")]         // 半角スペース複数
+    [InlineData("\t")]          // タブ
+    [InlineData("　")]          // 全角スペース
+    public async Task Index_WhitespaceOnlySearch_IsTreatedAsNoFilter(string blankInput)
+    {
+        // 日本語の状況説明を持つインシデントを 1 件用意する(空白では絶対に部分一致しない)
+        _db.Incidents.Add(new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "転倒しそうになった",
+            ReporterName = "看護師A",
+            OccurredAt = TestFixtures.Today
+        });
+        await _db.SaveChangesAsync();
+
+        // 空白のみのキーワードで検索する
+        var result = await _controller.Index(blankInput, null, null, null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        // 絞り込みは走らず、全件がそのまま返ること
+        Assert.Equal(1, vm!.TotalCount);
+    }
+
     // --- Details GET ---
 
     [Fact]

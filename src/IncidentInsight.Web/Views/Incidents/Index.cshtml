@@ -20,8 +20,10 @@
 
 @* 絞り込みパネル *@
 @{
-    @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true） *@
-    var anyFilter = !string.IsNullOrEmpty(Model.Search) || !string.IsNullOrEmpty(Model.Department)
+    @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true）。
+       文字列条件はコントローラが絞り込みを適用するときとまったく同じ SearchFilter.HasValue を通す。
+       ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら全件を返す食い違いになる *@
+    var anyFilter = SearchFilter.HasValue(Model.Search) || SearchFilter.HasValue(Model.Department)
                  || Model.IncidentType.HasValue || Model.Severity.HasValue
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue || Model.CauseCategoryId.HasValue;
 }
