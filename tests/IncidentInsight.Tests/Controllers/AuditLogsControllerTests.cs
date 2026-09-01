@@ -41,7 +41,7 @@ public class AuditLogsControllerTests : IDisposable
     // --- Index ---
 
     // 変更者フィルタの大文字化が、サーバの OS ロケールに左右されないことを固定する。
-    // 3 コントローラそれぞれが自分の呼び出し側を持つので、経路ごとに個別に押さえる
+    // 各コントローラが自分の呼び出し側を持つので、経路ごとに個別に押さえる
     // (呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
     // 保存する変更者名を大文字 ASCII にしてある理由は
     // IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照。
@@ -57,7 +57,7 @@ public class AuditLogsControllerTests : IDisposable
             await _db.SaveChangesAsync();
 
             // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
             var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;

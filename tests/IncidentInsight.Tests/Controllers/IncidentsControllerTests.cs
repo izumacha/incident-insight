@@ -580,8 +580,10 @@ public class IncidentsControllerTests : IDisposable
         Assert.Empty(_db.Incidents);
     }
 
-    // Edit 側の一括除外(CauseAnalysis. / Measures[ の 2 つの前置詞)も序数比較であることを固定する。
+    // Edit 側の一括除外も序数比較であることを固定する。
     // 判定条件が Create と別の式で書かれているため、片方だけ直す取りこぼしを防ぐ意味で個別に見る。
+    // Edit の式は前置詞を 2 つ（CauseAnalysis. と Measures[）持つので、両方に 1 件ずつ積む。
+    // 片方だけを見ていると、もう片方を素の StartsWith へ戻しても振る舞いのテストは緑のまま通る。
     [Fact]
     public async Task Edit_Post_SubFormKeyFilter_UsesOrdinalPrefixMatch()
     {
@@ -618,6 +620,10 @@ public class IncidentsControllerTests : IDisposable
             "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
             + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
         _controller.ModelState.AddModelError("Meas‍ures[0].DueDate", "除外対象ではないエラー");
+        // もう一方の前置詞（CauseAnalysis.）にも同じ形のキーを積む。Edit の除去式は
+        // 2 つの前置詞を || で並べており、片方だけ素の StartsWith へ戻す変異を
+        // 取りこぼさないため、両方を 1 つのテストで押さえる
+        _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
 
         // Edit POST を実行する
         var result = await _controller.Edit(incident.Id, vm);
@@ -627,8 +633,9 @@ public class IncidentsControllerTests : IDisposable
         Assert.Null(viewResult.ViewName);
         // ModelState は無効のままであること
         Assert.False(_controller.ModelState.IsValid);
-        // 当該キーが除去されずに残っていること
+        // 当該キーが除去されずに残っていること（2 つの前置詞それぞれについて見る）
         Assert.True(_controller.ModelState.ContainsKey("Meas‍ures[0].DueDate"));
+        Assert.True(_controller.ModelState.ContainsKey("­CauseAnalysis.Why1"));
         // 検証エラーが残っている以上、既存の状況説明が書き換わっていないこと
         var reloaded = await _db.Incidents.FindAsync(incident.Id);
         Assert.Equal("編集前", reloaded!.Description);
@@ -1025,7 +1032,7 @@ public class IncidentsControllerTests : IDisposable
     //
     // 正規化はヘルパ 1 箇所に集約してあるが、それだけでは「コントローラが実際に
     // そのヘルパを通っているか」は誰も見ていない(呼び出し側を素の ToUpper() へ戻すだけで
-    // 元の不具合が復活する)。ここはその経路を押さえる。3 コントローラそれぞれが
+    // 元の不具合が復活する)。ここはその経路を押さえる。各コントローラが
     // 自分の呼び出し側を持つので、経路ごとに個別のテストを置く。
     //
     // 保存する状況説明を「あらかじめ大文字の ASCII」にしてあるのは、テストの InMemory
@@ -1053,7 +1060,7 @@ public class IncidentsControllerTests : IDisposable
             await _db.SaveChangesAsync();
 
             // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
             // 列側の "INCIDENT" に一致しなくなる

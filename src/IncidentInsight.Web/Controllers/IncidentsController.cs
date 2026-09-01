@@ -80,7 +80,7 @@ public class IncidentsController : Controller
 
         // フリーワード検索(状況または報告者名を部分一致・大文字小文字を区別しない)
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある(3 コントローラで共有)
+        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (!string.IsNullOrWhiteSpace(search))
         {
             var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);

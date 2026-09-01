@@ -40,9 +40,8 @@ internal static class IncidentControllerHelpers
     /// 一覧画面のフリーワード検索で、利用者が入力したキーワードを
     /// 「DB 側の大文字化と突き合わせられる形」へ正規化する。
     ///
-    /// <para><b>なぜ必要か。</b> 一覧の部分一致検索は 3 コントローラ
-    /// (<c>IncidentsController</c> / <c>PreventiveMeasuresController</c> / <c>AuditLogsController</c>)
-    /// にあり、いずれも「列を大文字化した結果に、大文字化したキーワードが含まれるか」で判定する。
+    /// <para><b>なぜ必要か。</b> 一覧の部分一致検索はいずれも
+    /// 「列を大文字化した結果に、大文字化したキーワードが含まれるか」で判定する。
     /// <c>string.Contains</c> をそのまま使うと、SQLite / SQL Server では大文字小文字を区別しない
     /// LIKE に翻訳されるのに Npgsql(PostgreSQL) は区別する比較に翻訳され、同じ検索語でも配備先で
     /// 結果が変わってしまうため(DB プロバイダ非依存の原則)。</para>

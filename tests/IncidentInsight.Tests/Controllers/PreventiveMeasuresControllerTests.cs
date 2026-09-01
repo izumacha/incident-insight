@@ -737,7 +737,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     // 担当者/担当部署の部分一致検索の大文字化が、サーバの OS ロケールに
-    // 左右されないことを固定する。3 コントローラそれぞれが自分の呼び出し側を持つので、
+    // 左右されないことを固定する。各コントローラが自分の呼び出し側を持つので、
     // 経路ごとに個別に押さえる(呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
     [Fact]
     public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
@@ -751,7 +751,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
 
             // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで担当者/担当部署を検索する
             // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)

@@ -89,7 +89,7 @@ public class PreventiveMeasuresController : Controller
             query = query.Where(PreventiveMeasure.OverdueOn(_clock.Today));
         // 担当者キーワードが指定されていれば氏名/部署名で部分一致検索(大文字小文字を区別しない)
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある(3 コントローラで共有)
+        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (!string.IsNullOrEmpty(responsible))
         {
             var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible);
