@@ -20,7 +20,7 @@ namespace IncidentInsight.Tests.Views;
 /// 3 箇所・Razor ビューに 2 箇所あり、序数比較へ揃える作業を 2 回行ってなお 3 箇所が残っていた。
 /// 個別の振る舞いテストは「今ある呼び出し」しか押さえられず、次に増える箇所を止められない。</para>
 ///
-/// <para><b>この検査自体も 2 度素通りさせた。</b> 直し方を記録しておく。
+/// <para><b>この検査自体が何度も素通りさせた。</b> 同じ失敗を繰り返さないよう記録しておく。
 /// <list type="number">
 ///   <item>引数を行末まで取っていたため、1 行に 2 つ呼び出しがあると最初の一致が行の残りを
 ///     飲み込み、後ろの呼び出しは <c>Regex.Matches</c> の非重複規則で数えられもしなかった
@@ -29,9 +29,30 @@ namespace IncidentInsight.Tests.Views;
 ///     <c>StringComparison.CurrentCulture</c> を渡す形が素通りした(実測: 全件緑)。
 ///     「明示したか」ではなく<b>「序数比較か」</b>を見るのが正しい。→ 許可する値を
 ///     <see cref="AllowedComparisons"/> に列挙して突き合わせる。</item>
+///   <item>許可値を引数の文字列全体から探していたため、<b>入れ子の呼び出しが受け取る</b>
+///     <c>StringComparison.Ordinal</c> を外側の呼び出しの合格根拠にしてしまった
+///     (実測: <c>StartsWith(Prefix("x", StringComparison.Ordinal))</c> が素通り)。
+///     → 最上位のカンマで区切り、<b>最後の引数そのもの</b>を突き合わせる。</item>
+///   <item>走査対象を <c>"ModelState.Keys"</c> という綴りで選んでいたため、
+///     <c>ModelState.Where(e =&gt; e.Key.StartsWith(...))</c> のようにキー集合を経由しない
+///     ファイルが丸ごと対象から外れた(実測: 素通り)。しかも判定が生の本文だったので
+///     <b>コメントの文言が検査範囲を決めて</b>いた。→ 目印を <c>"ModelState"</c> まで緩め、
+///     コメントを潰した本文で判定する。</item>
 /// </list>
-/// どちらも「検査が形だけ通る条件」を見ていたのが原因で、<b>守りたい性質そのもの</b>を
-/// 条件にしていなかった。</para>
+/// いずれも「検査が形だけ通る条件」を見ていたのが原因で、<b>守りたい性質そのもの</b>を
+/// 条件にしていなかった。<b>この検査を変えるときは、変異を 1 つ作って実際に落ちることを
+/// 確かめてから通すこと。</b></para>
+///
+/// <para><b>意図的に対象外にしているもの。</b>
+/// <list type="bullet">
+///   <item><c>StartsWith(char)</c> … 定義上つねに序数比較で、比較方法の引数を受け取れない。
+///     報告しても従いようがなく、実行不能な指示を出す検出網はいずれ緩められる方向へ倒れる。</item>
+///   <item><c>IndexOf(prefix) == 0</c> … 前方一致の書き方としては同じ危険があるが、
+///     このリポジトリに用例が 1 つも無い一方、<c>IndexOf</c> 全般へ比較方法を要求すると
+///     部分文字列検索の正当な用例まで巻き込む。実在しない事情のために検出網を広げない
+///     (CLAUDE.md §6「将来を見越した過度な抽象化を避ける」)。<b>前方一致を
+///     <c>IndexOf</c> で書く用例が出た時点で、この判断ごと見直すこと。</b></item>
+/// </list></para>
 /// </summary>
 public class ModelStateKeyPrefixMatchTests
 {
@@ -47,8 +68,15 @@ public class ModelStateKeyPrefixMatchTests
     // 探す呼び出しの綴り(この後ろの開き括弧から対応する閉じ括弧までを引数とみなす)
     private const string StartsWithCall = "StartsWith(";
 
-    // .cs 側の走査範囲を決める目印。ModelState のキー集合を触っているファイルだけを対象にする
-    private const string ModelStateKeysMarker = "ModelState.Keys";
+    // .cs 側の走査範囲を決める目印。ModelState を触っているファイルだけを対象にする。
+    //
+    // 以前は "ModelState.Keys" と綴りまで決め打ちしていたが、キー集合を経由しない書き方
+    // (ModelState.Where(e => e.Key.StartsWith(...)) 等)を持つファイルが丸ごと走査対象から
+    // 外れた(実測で確認)。目印は "ModelState" までに緩め、綴りの違いで検査範囲が
+    // 変わらないようにする。判定はコメントを潰した後の本文に対して行う——
+    // 生の本文で見ると「コメントに ModelState と書いただけのファイル」が対象に入り、
+    // 逆に説明の文言を変えるだけで対象から外れる(＝散文が検査範囲を決めてしまう)
+    private const string ModelStateMarker = "ModelState";
 
     [Fact]
     public void ModelStateKeyPrefixMatches_AlwaysUseOrdinalComparison()
@@ -58,18 +86,26 @@ public class ModelStateKeyPrefixMatchTests
         // 2 度列挙して食い違う余地を作らないよう、1 度だけ実体化して使い回す
         var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
 
-        // .cs 側は一覧を手で持たず、「Controllers 配下で ModelState.Keys に触っているファイル」
+        // .cs 側は一覧を手で持たず、「Controllers 配下で ModelState に触っているファイル」
         // という増えれば自動的に増える目印から導出する。手書きの一覧だと、別のコントローラへ
-        // 同じ構文を足したときに検査対象から静かに外れる(この検査が防ごうとしている形そのもの)
-        var controllerFiles = Directory
-            .EnumerateFiles(Path.Combine(RepositoryPaths.WebProject, "Controllers"), "*.cs", SearchOption.AllDirectories)
-            .Where(p => File.ReadAllText(p).Contains(ModelStateKeysMarker, StringComparison.Ordinal))
+        // 同じ構文を足したときに検査対象から静かに外れる(この検査が防ごうとしている形そのもの)。
+        // 本文はここで 1 度だけ読み、コメントを潰した状態を後段でも使い回す
+        // (2 度読むと目印の判定と走査が別の内容を見る余地が生まれるため)
+        var controllerSources = Directory
+            .EnumerateFiles(RepositoryPaths.Controllers, "*.cs", SearchOption.AllDirectories)
+            .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
+            .Where(f => f.Source.Contains(ModelStateMarker, StringComparison.Ordinal))
             .ToList();
 
         // 目印を持つコントローラが 1 つも無いなら、導出条件か配置が壊れている(空振り対策)
-        Assert.True(controllerFiles.Count > 0,
-            $"Controllers 配下に {ModelStateKeysMarker} を含むファイルが 1 つもありません。"
-            + "導出条件が壊れているか、ModelState のキー操作が別の場所へ移っています。");
+        Assert.True(controllerSources.Count > 0,
+            $"Controllers 配下に {ModelStateMarker} を含むファイルが 1 つもありません。"
+            + "導出条件が壊れているか、ModelState の操作が別の場所へ移っています。");
+
+        // ビュー側も同じ形（パスとコメントを潰した本文の組）に揃えておく
+        var viewSources = viewFiles
+            .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
+            .ToList();
 
         // 検出した違反(ファイル名・行番号・引数)を集める
         var violations = new List<string>();
@@ -77,16 +113,14 @@ public class ModelStateKeyPrefixMatchTests
         // 「片方の系統が丸ごと検査対象から外れた」ことを検出できないため、系統ごとに見る
         var callsByFile = new Dictionary<string, int>();
 
-        // .cs 側とビュー側を合わせて走査する
-        foreach (var path in controllerFiles.Concat(viewFiles))
+        // .cs 側とビュー側を合わせて走査する（本文はコメントを潰した状態で読み込み済み。
+        // CLAUDE.md §5 が 1 行ごとの日本語コメントを求めるため、説明のために
+        // StartsWith("...") をコメントへ書くことは実際にありうる。コード上の欠陥が
+        // 無いのにコメントで落ちる検出網は、いずれ緩められる方向へ倒れる）
+        foreach (var (path, source) in controllerSources.Concat(viewSources))
         {
             // 報告用にリポジトリルートからの相対パスにしておく
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, path);
-            // ファイル全体を読み、コメントを取り除いてから走査する。
-            // CLAUDE.md §5 が 1 行ごとの日本語コメントを求めるため、説明のために
-            // StartsWith("...") をコメントへ書くことが実際にありうる。コード上の欠陥が
-            // 無いのにコメントで落ちる検出網は、いずれ緩められる方向へ倒れる
-            var source = StripComments(File.ReadAllText(path));
             // このファイルで見つけた呼び出しの数を数える
             var callsInFile = 0;
 
@@ -103,10 +137,22 @@ public class ModelStateKeyPrefixMatchTests
                     violations.Add($"{relativePath}:{LineNumberAt(source, index)}: 引数を読み取れませんでした");
                     continue;
                 }
+                // 引数を最上位のカンマで区切る（入れ子の呼び出しの中のカンマは数えない）
+                var topLevelArguments = SplitTopLevelArguments(arguments);
+                // char を取る多重定義は定義上つねに序数比較で、比較方法の引数を受け取れない。
+                // 「StringComparison を明示せよ」と報告しても従いようがなく、実行不能な指示を
+                // 出す検出網はいずれ緩められる方向へ倒れるので、対象から外す
+                if (topLevelArguments.Count > 0 && IsCharLiteral(topLevelArguments[0]))
+                    continue;
                 // 検査した呼び出しとして数える
                 callsInFile++;
-                // 許可した序数比較のいずれかを渡していれば違反ではない
-                if (AllowedComparisons.Any(c => arguments.Contains(c, StringComparison.Ordinal)))
+                // 比較方法は「最後の引数そのもの」が許可した序数比較であることを求める。
+                // 引数の文字列のどこかに綴りがあれば通す形だと、入れ子の呼び出しが受け取る
+                // StringComparison.Ordinal を外側の（比較方法を渡していない）呼び出しの
+                // 合格根拠にしてしまう（実測: Prefix("x", StringComparison.Ordinal) を
+                // 引数に渡す形が素通りした）。見るべきは「その呼び出し自身が何を渡したか」
+                if (topLevelArguments.Count > 0
+                    && AllowedComparisons.Contains(topLevelArguments[^1].Trim(), StringComparer.Ordinal))
                     continue;
                 // 序数比較を渡していない(引数なし・CurrentCulture 等)ので違反として記録する
                 violations.Add($"{relativePath}:{LineNumberAt(source, index)}: StartsWith({arguments})");
@@ -118,18 +164,23 @@ public class ModelStateKeyPrefixMatchTests
 
         // 系統ごとに「1 件も見ていない」状態を弾く。片方が 0 でも全体が 0 でなければ
         // 気づけない、という前版の穴を塞ぐ
-        AssertScanned(controllerFiles, "Controllers 配下(.cs)");
-        AssertScanned(viewFiles, "Razor ビュー(.cshtml)");
+        AssertScanned(controllerSources.Select(f => f.Path), "Controllers 配下(.cs)");
+        AssertScanned(viewSources.Select(f => f.Path), "Razor ビュー(.cshtml)");
 
         // 違反があれば、直し方まで示して落とす
         Assert.True(violations.Count == 0,
-            "ModelState のキーに対する前方一致は StringComparison.Ordinal を明示してください"
+            "StringComparison.Ordinal を明示してください"
             + "(引数なし・CurrentCulture・InvariantCulture はいずれも ICU が無視できるとみなす文字を"
-            + "挟んだキーに誤一致し、検証エラーを捨てすぎます)。違反箇所:"
+            + "挟んだ文字列に誤一致します。ModelState のキーではこれが検証エラーの捨てすぎに直結します)。"
+            + "【この検査の適用範囲】ModelState を触るコントローラと Razor ビューの中の StartsWith を"
+            + "すべて対象にします——受け手が ModelState のキーかどうかを構文解析なしに判別できないためで、"
+            + "意図して言語的な比較をしたい場合は、その旨が読み取れるよう "
+            + "StringComparison.CurrentCulture を明示したうえで、この検査の許可値を広げるか"
+            + "対象から外す判断をレビューで行ってください。違反箇所:"
             + Environment.NewLine + string.Join(Environment.NewLine, violations));
 
         // 系統ごとの空振りを表明するローカル関数
-        void AssertScanned(List<string> files, string label)
+        void AssertScanned(IEnumerable<string> files, string label)
         {
             // その系統で検査できた呼び出しの合計を求める
             var total = files.Sum(p => callsByFile.GetValueOrDefault(Path.GetRelativePath(RepositoryPaths.Root, p)));
@@ -138,6 +189,64 @@ public class ModelStateKeyPrefixMatchTests
                 $"{label} から StartsWith( を 1 件も検出できませんでした。"
                 + "前方一致を別の場所へ移したのなら、走査対象の導出条件も併せて直してください。");
         }
+    }
+
+    /// <summary>
+    /// 引数の並びを「最上位のカンマ」で区切る。入れ子の括弧の中と文字列リテラルの中の
+    /// カンマは区切りとして数えない(<c>Prefix("a", b)</c> のような入れ子の呼び出しを
+    /// 1 つの引数として扱うため)。
+    /// </summary>
+    private static List<string> SplitTopLevelArguments(string arguments)
+    {
+        // 切り出した引数を順に溜める
+        var parts = new List<string>();
+        // 現在見ている括弧の深さ(0 が最上位)
+        var depth = 0;
+        // 今の引数が始まった位置
+        var start = 0;
+        // 引数の並びを 1 文字ずつ見ていく
+        for (var i = 0; i < arguments.Length; i++)
+        {
+            // 現在の文字を取り出す
+            var c = arguments[i];
+            // 文字列リテラルなら閉じ引用符まで読み飛ばす(中のカンマを数えないため)
+            if (c == '"')
+            {
+                // 閉じ引用符の位置を求める
+                var end = SkipStringLiteral(arguments, i);
+                // 閉じていなければこれ以上は解釈できないので打ち切る
+                if (end < 0) break;
+                // リテラル全体を読み飛ばす
+                i = end;
+                // 次の文字へ
+                continue;
+            }
+            // 括弧が開いたら深さを増やす(角括弧・波括弧も入れ子として数える)
+            if (c is '(' or '[' or '{') depth++;
+            // 括弧が閉じたら深さを減らす
+            else if (c is ')' or ']' or '}') depth--;
+            // 最上位のカンマだけを区切りとして扱う
+            else if (c == ',' && depth == 0)
+            {
+                // ここまでを 1 つの引数として切り出す
+                parts.Add(arguments[start..i]);
+                // 次の引数はカンマの次から始まる
+                start = i + 1;
+            }
+        }
+        // 残りを最後の引数として加える(引数が空文字なら「引数なし」を表す 0 件にする)
+        if (arguments.Trim().Length > 0) parts.Add(arguments[start..]);
+        // 切り出した引数の並びを返す
+        return parts;
+    }
+
+    /// <summary>最初の引数が char リテラル(<c>'x'</c> の形)かどうかを返す。</summary>
+    private static bool IsCharLiteral(string argument)
+    {
+        // 前後の空白を落として素の綴りにする
+        var trimmed = argument.Trim();
+        // 単一引用符で囲まれていれば char リテラル(最低でも 'x' の 3 文字)
+        return trimmed.Length >= 3 && trimmed[0] == '\'' && trimmed[^1] == '\'';
     }
 
     /// <summary>

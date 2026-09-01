@@ -603,6 +603,10 @@ public class IncidentsControllerTests : IDisposable
         // もう一方の前置詞（CauseAnalysis.）にも同じ形のキーを積む。Edit の除去式は
         // 2 つの前置詞を || で並べており、片方だけ素の StartsWith へ戻す変異を
         // 取りこぼさないため、両方を 1 つのテストで押さえる
+        // こちらの前置詞についても前提（カルチャ比較なら誤一致すること）を表明する。
+        // 片方だけ表明していると、ICU の版で U+00AD だけが無視されなくなったとき
+        // CauseAnalysis. 側だけが黙って判別力を失う
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("­CauseAnalysis.Why1", "CauseAnalysis.");
         _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
 
         // Edit POST を実行する

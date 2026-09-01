@@ -33,6 +33,9 @@ internal static class RepositoryPaths
     // Razor ビューを収めるディレクトリ名
     private const string ViewsDirectoryName = "Views";
 
+    // コントローラを収めるディレクトリ名
+    private const string ControllersDirectoryName = "Controllers";
+
     // テストプロジェクトを収める最上位ディレクトリ名
     private const string TestsDirectoryName = "tests";
 
@@ -51,6 +54,9 @@ internal static class RepositoryPaths
 
     /// <summary>Razor ビュー(src/IncidentInsight.Web/Views)の絶対パス。</summary>
     public static string Views => Path.Combine(WebProject, ViewsDirectoryName);
+
+    /// <summary>コントローラ(src/IncidentInsight.Web/Controllers)の絶対パス。</summary>
+    public static string Controllers => Path.Combine(WebProject, ControllersDirectoryName);
 
     /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
