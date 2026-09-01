@@ -248,9 +248,14 @@ public class IncidentsController : Controller
         // 前方一致と判定してしまう(実測: "­CauseAnalysis.Why1" が true になる)。この一致は
         // 除去する側へ効く＝意図より多くの検証エラーを捨てる fail-open で、しかも成立するかどうかが
         // サーバの OS ロケールと ICU の版に左右される(CLAUDE.md §10 プラットフォーム差異ゼロ設計)。
-        // ModelState のキーは画面が組み立てる識別子であって自然言語ではないので、序数比較が正しい
+        // ModelState のキーは画面が組み立てる識別子であって自然言語ではないので、序数比較が正しい。
+        // 前置詞は文字列直書きではなく nameof で組み立てる(§6。同じ規則をこのファイルの
+        // 再検証ブロックと Views/Incidents/Details.cshtml が既に守っている)。直書きだと
+        // ViewModel のプロパティを改名したとき、キーを組み立てる側だけが追随して
+        // 除去する側が取り残され、空行の Required エラーが消えなくなる——利用者には
+        // 「対応する入力欄が見当たらないエラー」で登録できない状態として現れる
         foreach (var key in ModelState.Keys
-            .Where(k => k.StartsWith("CauseAnalysis.", StringComparison.Ordinal))
+            .Where(k => k.StartsWith($"{nameof(vm.CauseAnalysis)}.", StringComparison.Ordinal))
             .ToList())
         {
             // 原因分析サブフォーム由来の各キーを ModelState から除去する
@@ -313,7 +318,7 @@ public class IncidentsController : Controller
             // 「保存される行のフィールド検証は残す」ことでデータ整合性を守っているため、
             // カルチャ比較で保存対象の行にまで誤一致すると DueDate=default(0001-01-01) のまま
             // 保存され IsOverdue が常に true になる
-            var rowPrefix = $"Measures[{i}].";
+            var rowPrefix = $"{nameof(vm.Measures)}[{i}].";
             foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix, StringComparison.Ordinal)).ToList())
             {
                 // 空行由来の各キーを ModelState から除去する
@@ -618,8 +623,8 @@ public class IncidentsController : Controller
         // 原因分析・対策のサブフォーム由来の ModelState キーをまとめて除外
         // StringComparison.Ordinal を明示する理由は Create 側の同じ除外ループのコメントを参照
         foreach (var key in ModelState.Keys
-            .Where(k => k.StartsWith("CauseAnalysis.", StringComparison.Ordinal)
-                     || k.StartsWith("Measures[", StringComparison.Ordinal))
+            .Where(k => k.StartsWith($"{nameof(vm.CauseAnalysis)}.", StringComparison.Ordinal)
+                     || k.StartsWith($"{nameof(vm.Measures)}[", StringComparison.Ordinal))
             .ToList())
         {
             ModelState.Remove(key);

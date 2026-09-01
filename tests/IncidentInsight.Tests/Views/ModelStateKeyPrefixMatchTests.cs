@@ -180,10 +180,16 @@ public class ModelStateKeyPrefixMatchTests
             callsByFile[relativePath] = callsInFile;
         }
 
-        // 系統ごとに「1 件も見ていない」状態を弾く。片方が 0 でも全体が 0 でなければ
-        // 気づけない、という前版の穴を塞ぐ
+        // 「1 件も見ていない」状態を弾く（検出パターンが壊れれば違反 0 件と区別が付かないため）。
+        //
+        // 系統ごとに要求するのは .cs 側だけにしてある。ビュー側にも同じ表明を置いていたが、
+        // それは「ビューに前方一致が 1 つ以上あり続ける」ことを暗に要求してしまう:
+        // Details.cshtml の「サブフォームにエラーがあるか」の計算をコントローラへ寄せる、
+        // という正当なリファクタ（ビューからロジックを減らす方向）で 0 件になり、
+        // 欠陥が無いのに落ちる。緑に戻す唯一の道が「この表明を弱める」になるのは、
+        // この検査自身が繰り返し警戒している浸食の経路そのもの。
+        // .cs 側は業務上つねに ModelState のキー除去を持つので、こちらで空振りを押さえる。
         AssertScanned(controllerSources.Select(f => f.Path), "Web プロジェクト配下(.cs)");
-        AssertScanned(viewSources.Select(f => f.Path), "Razor ビュー(.cshtml)");
 
         // 違反があれば、直し方まで示して落とす
         Assert.True(violations.Count == 0,
@@ -235,8 +241,10 @@ public class ModelStateKeyPrefixMatchTests
             // ',' という文字リテラルを区切りとして数えると引数の並びが壊れる)
             if (c == '"' || c == '\'')
             {
-                // 閉じ記号の位置を求める
-                var end = c == '"' ? SkipStringLiteral(arguments, i) : SkipCharLiteral(arguments, i);
+                // 閉じ記号の位置を求める（補間文字列は穴を数えて末尾まで進む）
+                var end = c != '"' ? SkipCharLiteral(arguments, i)
+                    : IsInterpolatedStart(arguments, i) ? SkipInterpolatedString(arguments, i)
+                    : SkipStringLiteral(arguments, i);
                 // 閉じていなければこれ以上は解釈できないので打ち切る
                 if (end < 0) break;
                 // リテラル全体を読み飛ばす
@@ -366,6 +374,25 @@ public class ModelStateKeyPrefixMatchTests
                 // .cshtml では引用符を「ただの 1 文字」として読み進め、コメントだけを潰す
                 if (!blankStringContents && chars[i] == '"') continue;
                 // 閉じ記号まで位置を進める
+                // 補間文字列（$"..."）は「穴（{...}）の中がコード」なので、ふつうの文字列として
+                // 飛ばすと穴の中の呼び出しごと見えなくなる（実測: $"hit={k.StartsWith("X")}" が素通り）。
+                // かといって開き引用符を「ただの 1 文字」として読み進めるのも誤りで、
+                // 閉じ引用符を今度は「開き」と誤認して以降を大きく飲み込む（実測で確認）。
+                // 補間文字列は専用に、穴を数えながら末尾まで正しく進める
+                if (chars[i] == '"' && IsInterpolatedStart(source, i))
+                {
+                    // 補間文字列の末尾（閉じ引用符）の位置を求める
+                    var closeAt = SkipInterpolatedString(source, i);
+                    // 末尾が見つからなければ、その 1 文字はリテラルの開始ではなかったと解釈する
+                    if (closeAt < 0) continue;
+                    // 何も潰さない。穴の中のコードは走査対象として残したいし、引用符も
+                    // そのまま残す必要がある——潰すと後段の引数解析が
+                    // $"{nameof(x)}[" の [ を「閉じていない括弧」と数えてしまい、
+                    // 正しい呼び出しを違反として報告する（実測で確認）
+                    // 閉じ引用符まで読み飛ばして、次の文字から解釈を続ける
+                    i = closeAt;
+                    continue;
+                }
                 var isString = chars[i] == '"';
                 var end = isString ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
                 // 閉じ記号が無ければ、その 1 文字はリテラルの開始ではなかったと解釈して読み進める。
@@ -387,6 +414,14 @@ public class ModelStateKeyPrefixMatchTests
             }
             // 行コメント(//)・ブロックコメント(/* */)・Razor コメント(@* *@)の開始を判定する
             var (isComment, closing) = DetectCommentStart(source, i);
+            // Razor では文字列を追わない（HTML 属性の引用符と区別が付かないため）ので、
+            // マークアップ中の // — たとえば https:// — を行コメントと誤認し、その行の
+            // 残りを潰してしまう（実測: URL と同じ行に書いた呼び出しが素通りした）。
+            // ビューでは行コメント・ブロックコメントを扱わず、Razor の @* *@ だけを潰す。
+            // 実測でビューのコメントに StartsWith を書いている箇所は無いので、
+            // この判断で誤検出は増えない。増えたときは取りこぼしではなく誤検出として
+            // 現れるので、気づける側に倒れている
+            if (!blankStringContents && closing != "*@") isComment = false;
             // コメントでなければ何もしない
             if (!isComment) continue;
             // 終端の綴りが空なら行末まで、そうでなければその綴りまでを潰す
@@ -457,8 +492,10 @@ public class ModelStateKeyPrefixMatchTests
             // 「引数を読み取れませんでした」という直しようのない報告になる)
             if (c == '"' || c == '\'')
             {
-                // 閉じ記号を探して位置を進める
-                i = c == '"' ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
+                // 閉じ記号を探して位置を進める（補間文字列は穴を数えて末尾まで進む）
+                i = c != '"' ? SkipCharLiteral(source, i)
+                    : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i)
+                    : SkipStringLiteral(source, i);
                 // 閉じ記号が見つからなければ読み取り不能
                 if (i < 0) return null;
                 // 読み飛ばしたので次の文字へ
@@ -535,6 +572,73 @@ public class ModelStateKeyPrefixMatchTests
             }
         }
         // 閉じ引用符が見つからなかった
+        return -1;
+    }
+
+    /// <summary>その引用符が補間文字列(<c>$"</c> / <c>$@"</c> / <c>@$"</c>)の開始かを返す。</summary>
+    private static bool IsInterpolatedStart(string source, int quoteIndex)
+    {
+        // 引用符の手前にある $ と @ の並びを遡って見る
+        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
+            // $ が含まれていれば補間文字列
+            if (source[k] == '$') return true;
+        // $ が無ければふつうの（または逐語的な）文字列
+        return false;
+    }
+
+    /// <summary>
+    /// 補間文字列の開き引用符の位置から、閉じ引用符の位置を返す(見つからなければ -1)。
+    ///
+    /// <para>穴(<c>{...}</c>)の中はコードなので、そこに現れる文字列リテラルや引用符を
+    /// 補間文字列の終端と取り違えないよう、波括弧の深さを数えながら進む。
+    /// <c>{{</c> / <c>}}</c> は波括弧そのものを表すエスケープなので深さを動かさない。</para>
+    /// </summary>
+    private static int SkipInterpolatedString(string source, int quoteIndex)
+    {
+        // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない
+        var isVerbatim = false;
+        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
+            if (source[k] == '@') { isVerbatim = true; break; }
+
+        // 現在の穴の深さ（0 なら文字列の本文側）
+        var depth = 0;
+        // 開き引用符の次の文字から見ていく
+        for (var i = quoteIndex + 1; i < source.Length; i++)
+        {
+            // 現在の文字を取り出す
+            var c = source[i];
+            // 通常の補間文字列だけバックスラッシュをエスケープとして扱う
+            if (!isVerbatim && c == '\\') { i++; continue; }
+            // {{ / }} は波括弧そのものを表すので 2 文字まとめて読み飛ばす
+            if ((c == '{' || c == '}') && i + 1 < source.Length && source[i + 1] == c) { i++; continue; }
+            // 穴の開始で深さを増やす
+            if (c == '{') { depth++; continue; }
+            // 穴の終了で深さを減らす
+            if (c == '}') { if (depth > 0) depth--; continue; }
+            // 穴の中（コード）に現れる文字列・文字リテラルはまとめて読み飛ばす
+            if (depth > 0 && (c == '"' || c == '\''))
+            {
+                // 入れ子のリテラルの末尾を求める（補間文字列の入れ子にも対応する）
+                var nested = c != '"' ? SkipCharLiteral(source, i)
+                    : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i)
+                    : SkipStringLiteral(source, i);
+                // 末尾が求まらなければ読み取り不能
+                if (nested < 0) return -1;
+                // 入れ子のリテラル全体を読み飛ばす
+                i = nested;
+                // 次の文字へ
+                continue;
+            }
+            // 本文側（穴の外）の引用符が補間文字列の終端
+            if (depth == 0 && c == '"')
+            {
+                // 逐語的なら "" は引用符 1 つを表すので本文の一部
+                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                // それ以外はここが終端
+                return i;
+            }
+        }
+        // 終端が見つからなかった
         return -1;
     }
 
