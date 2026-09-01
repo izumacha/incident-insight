@@ -1,3 +1,5 @@
+// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
+using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -736,6 +738,36 @@ public class PreventiveMeasuresControllerTests : IDisposable
 
     // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
     // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
+    [Fact]
+    public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
+    {
+        // 現在のスレッドのカルチャを退避しておく
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            // 担当部署が大文字 ASCII の対策を 1 件投入する
+            // (大文字にしておく理由は SearchText の docstring「残る境界 2」を参照)
+            await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
+
+            // ドット無し I を持つトルコ語ロケールへ切り替える
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+
+            // 小文字のキーワードで担当者/担当部署を検索する
+            // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)
+            var result = await _controller.Index(null, "icu", null, null, null);
+
+            // ロケールに関わらず 1 件ヒットすること
+            var view = Assert.IsType<ViewResult>(result);
+            var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+            Assert.Single(measures);
+        }
+        finally
+        {
+            // 退避しておいたカルチャへ必ず戻す
+            CultureInfo.CurrentCulture = original;
+        }
+    }
+
     [Fact]
     public async Task Index_FilterByFreeTextResponsibleDepartment_ReturnsMatchingOnly()
     {

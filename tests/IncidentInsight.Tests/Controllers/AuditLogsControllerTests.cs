@@ -1,3 +1,5 @@
+// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
+using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -37,6 +39,39 @@ public class AuditLogsControllerTests : IDisposable
     };
 
     // --- Index ---
+
+    // 変更者フィルタの大文字化が、サーバの OS ロケールに左右されないことを固定する。
+    // 3 コントローラそれぞれが自分の呼び出し側を持つので、経路ごとに個別に押さえる
+    // (呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
+    // 保存する変更者名を大文字 ASCII にしてある理由は
+    // SearchText の docstring「残る境界 2」を参照。
+    [Fact]
+    public async Task Index_ChangedBySearchUsesInvariantUpperCasing_NotServerLocale()
+    {
+        // 現在のスレッドのカルチャを退避しておく
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            // 変更者名が大文字 ASCII の監査ログを 1 件用意する
+            _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
+            await _db.SaveChangesAsync();
+
+            // ドット無し I を持つトルコ語ロケールへ切り替える
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+
+            // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
+            var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
+            var vm = result?.Model as AuditLogListViewModel;
+
+            // ロケールに関わらず 1 件ヒットすること
+            Assert.Equal(1, vm!.TotalCount);
+        }
+        finally
+        {
+            // 退避しておいたカルチャへ必ず戻す
+            CultureInfo.CurrentCulture = original;
+        }
+    }
 
     [Fact]
     public async Task Index_NoFilters_ReturnsAllLogsNewestFirst()

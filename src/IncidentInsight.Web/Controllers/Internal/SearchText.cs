@@ -1,7 +1,3 @@
-// 下の docstring が <see cref="CultureInfo.CurrentCulture"/> を参照するために要る
-// (実行コードでは使わない。cref の解決に using が必要なため残している)
-using System.Globalization;
-
 // 共通ヘルパ用の名前空間(Controllers/Internal に隔離して内部利用扱いにする)
 namespace IncidentInsight.Web.Controllers.Internal;
 
@@ -24,22 +20,34 @@ namespace IncidentInsight.Web.Controllers.Internal;
 ///   <item>キーワードの側 … C# で評価してパラメータとして渡すので、大文字化するのは <b>アプリ</b>。</item>
 /// </list>
 /// ここで引数なしの <c>ToUpper()</c> を使うと、アプリ側だけが
-/// <see cref="CultureInfo.CurrentCulture"/>(＝サーバ OS のロケール)に従ってしまう。
-/// トルコ語系ロケール(tr-TR / az-*)では <c>"incident".ToUpper()</c> が <c>"İNCİDENT"</c>
-/// (U+0130 を含む)になる一方、DB の <c>UPPER('incident')</c> はどの照合順序でも <c>"INCIDENT"</c>
-/// を返すため、<b>正規の検索語が 1 件もヒットしなくなる</b>(実測で確認済み)。
-/// 「配備先によらず同じ結果」を狙って入れた正規化が、逆にサーバのロケールという別の環境差を
-/// 持ち込んでいたことになる(CLAUDE.md §10 プラットフォーム差異ゼロ設計)。
-/// ロケールに依存しない <see cref="string.ToUpperInvariant"/> なら ASCII は DB の
-/// <c>UPPER()</c> と同じ結果になり、この食い違いが消える。</para>
+/// <see cref="System.Globalization.CultureInfo.CurrentCulture"/>(＝サーバ OS のロケール)に
+/// 従ってしまう。トルコ語系ロケール(tr-TR / az-*)では <c>"incident".ToUpper()</c> が
+/// <c>"İNCİDENT"</c>(U+0130 を含む)になる一方、標準的な照合順序の DB が返す
+/// <c>UPPER('incident')</c> は <c>"INCIDENT"</c> なので、<b>正規の検索語が 1 件も
+/// ヒットしなくなる</b>(実測で確認済み)。「配備先によらず同じ結果」を狙って入れた正規化が、
+/// 逆にサーバのロケールという別の環境差を持ち込んでいたことになる
+/// (CLAUDE.md §10 プラットフォーム差異ゼロ設計)。ロケールに依存しない
+/// <see cref="string.ToUpperInvariant"/> なら、アプリ側の結果が実行環境で揺れなくなる。</para>
 ///
-/// <para><b>残る境界(誤解を避けるため明記する)。</b> 本番では列の側を大文字化するのは DB だが、
-/// テストが使う InMemory プロバイダには SQL が無く、式ツリーの <c>col.ToUpper()</c> は
-/// <b>アプリ内で</b> 現在のカルチャに従って評価される。つまり InMemory 上では列の側だけが
-/// カルチャ依存のまま残り、トルコ語系ロケールで走らせると検索は一致しない。
-/// これはテスト実行環境に限った性質で、本番の経路(SQL への翻訳)には影響しない。
-/// そのため本ヘルパの検証は「キーワード側の正規化が
-/// カルチャに依存しないこと」を単体で固定する形にしてある(<c>SearchTextTests</c>)。</para>
+/// <para><b>残る境界 1: DB 側の照合順序は「ロケール中立」であることを前提にしている。</b>
+/// 「どの照合順序でも <c>UPPER('incident')</c> は <c>"INCIDENT"</c>」とは言えない。とくに
+/// PostgreSQL の <c>upper()</c> は引数の照合順序(データベースの <c>lc_ctype</c>、または
+/// 列・式に付けた ICU 照合順序)に従うため、<c>lc_ctype=tr_TR.UTF-8</c> で初期化した
+/// クラスタでは <c>UPPER('incident')</c> が <c>'İNCİDENT'</c> を返す。その場合はアプリ側を
+/// 不変規則にしても両辺は一致しない。<b>本ヘルパが取り除くのは「アプリ側がサーバ OS の
+/// ロケールで揺れる」ことだけ</b>で、DB 側までロケール中立にすることはできない
+/// (それは配備時の照合順序の選択の問題であり、コードからは決められない)。
+/// PostgreSQL / Supabase は CLAUDE.md §1 が挙げる一次配備先なので、トルコ語系の
+/// <c>lc_ctype</c> でクラスタを作る場合はこの前提が崩れる点に注意する。</para>
+///
+/// <para><b>残る境界 2: テストの InMemory プロバイダでは列の側もカルチャ依存になる。</b>
+/// 本番では列の側を大文字化するのは DB だが、InMemory プロバイダには SQL が無く、
+/// 式ツリーの <c>col.ToUpper()</c> は<b>アプリ内で</b>現在のカルチャに従って評価される。
+/// つまり InMemory 上では列の側だけがカルチャ依存のまま残る。これはテスト実行環境に限った
+/// 性質で、本番の経路(SQL への翻訳)には影響しない。そのためロケールを差し替える
+/// コントローラのテストは、列の側が影響を受けないよう<b>あらかじめ大文字の ASCII</b> を
+/// 保存したうえで小文字のキーワードで引く形にしてある(<c>SearchTextTests</c> および
+/// 各 <c>*ControllerTests</c> の <c>...SearchUsesInvariantUpperCasing</c>)。</para>
 ///
 /// <para>public にしているのは、この正規化規則をテストから直接固定するため
 /// (テストプロジェクトへ internal を公開する設定は置いていない)。

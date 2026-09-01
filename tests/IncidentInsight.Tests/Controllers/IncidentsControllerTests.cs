@@ -1,3 +1,5 @@
+// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
+using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -530,6 +532,36 @@ public class IncidentsControllerTests : IDisposable
         Assert.Empty(_db.Incidents);
     }
 
+    // Create の「行ごと」の除外(Measures[i]. の前置詞)も序数比較であることを固定する。
+    //
+    // 3 つある前方一致のうち、ここが最も影響が大きい。所有コメント(IncidentsController の
+    // 同ループ)のとおり、この除外は「保存されない空行だけを消し、保存される行の
+    // 担当者・実施期限などの検証は残す」ことでデータ整合性を守っている。カルチャ比較で
+    // 保存対象の行にまで誤一致すると、DueDate=default(0001-01-01) のまま保存されて
+    // IsOverdue が常に true になる。
+    [Fact]
+    public async Task Create_Post_PerRowMeasureKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 対策内容ありの行(=保存対象。この行の検証は残されるべき)を持つ ViewModel を用意する
+        var vm = ValidViewModel();
+        // 空行(対策内容なし)を 2 行目として足し、行ごとの除外ループを実際に走らせる
+        vm.Measures.Add(new MeasureFormViewModel { Description = "" });
+        // 空行(index 1)の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む。
+        // ZWJ U+200D を語中に挟んであるので、序数比較なら除外対象にならない
+        _controller.ModelState.AddModelError("Meas‍ures[1].DueDate", "除外対象ではないエラー");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // 当該キーが除去されずに残っていること(この 1 行が序数比較かどうかを判別する)
+        Assert.True(_controller.ModelState.ContainsKey("Meas‍ures[1].DueDate"));
+        // 検証エラーが残っている以上、インシデントは保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
     // Edit 側の一括除外(CauseAnalysis. / Measures[ の 2 つの前置詞)も序数比較であることを固定する。
     // 判定条件が Create と別の式で書かれているため、片方だけ直す取りこぼしを防ぐ意味で個別に見る。
     [Fact]
@@ -543,7 +575,12 @@ public class IncidentsControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "編集前",
             ReporterName = "担当",
-            OccurredAt = TestFixtures.Today
+            OccurredAt = TestFixtures.Today,
+            // 報告日時を明示しておく。既定値(0001-01-01)のままだと
+            // ValidateOccurredAtNotAfterReportedAt が「発生日時 > 報告日時」で
+            // 常にエラーを積んでしまい、下の「ModelState が無効」「保存されていない」の
+            // 各表明が前方一致の比較方法と無関係に成立してしまう(検査が空振りする)
+            ReportedAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -954,6 +991,55 @@ public class IncidentsControllerTests : IDisposable
 
         Assert.Equal(1, vm!.TotalCount);
         Assert.Contains("点滴", vm.Incidents[0].Description);
+    }
+
+    // 検索キーワードの大文字化が、サーバの OS ロケールに左右されないことを
+    // 「コントローラ経由で」固定する。
+    //
+    // SearchTextTests はヘルパ単体の規則を固定するだけなので、コントローラが実際に
+    // そのヘルパを通っているかまでは見ていない(呼び出し側を素の ToUpper() へ戻しても
+    // ヘルパ単体のテストは緑のまま通る)。ここはその経路を押さえる。
+    //
+    // 保存する状況説明を「あらかじめ大文字の ASCII」にしてあるのは、テストの InMemory
+    // プロバイダには SQL が無く、式ツリーの col.ToUpper() が本番と違ってアプリ内で
+    // 現在のカルチャに従って評価されるため。列の側を大文字のままにしておけば
+    // トルコ語ロケールでも変化せず、判定対象をキーワード側の規則だけに絞れる
+    // (この切り分けの根拠は SearchText の docstring「残る境界 2」を参照)。
+    [Fact]
+    public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
+    {
+        // 現在のスレッドのカルチャを退避しておく(他のテストへ影響を残さないため)
+        var original = CultureInfo.CurrentCulture;
+        try
+        {
+            // 状況説明に大文字 ASCII を含むインシデントを 1 件用意する
+            _db.Incidents.Add(new Incident
+            {
+                Department = "ICU",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level2,
+                Description = "INCIDENT: 点滴ラインが抜けた",
+                ReporterName = "A",
+                OccurredAt = TestFixtures.Today
+            });
+            await _db.SaveChangesAsync();
+
+            // ドット無し I を持つトルコ語ロケールへ切り替える
+            CultureInfo.CurrentCulture = new CultureInfo("tr-TR");
+
+            // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
+            // 列側の "INCIDENT" に一致しなくなる
+            var result = await _controller.Index("incident", null, null, null, null, null, null, null, 1) as ViewResult;
+            var vm = result?.Model as IncidentListViewModel;
+
+            // ロケールに関わらず 1 件ヒットすること
+            Assert.Equal(1, vm!.TotalCount);
+        }
+        finally
+        {
+            // 退避しておいたカルチャへ必ず戻す
+            CultureInfo.CurrentCulture = original;
+        }
     }
 
     // --- Details GET ---

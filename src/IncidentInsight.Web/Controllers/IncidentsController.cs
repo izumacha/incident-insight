@@ -308,8 +308,13 @@ public class IncidentsController : Controller
             // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する。
             // 末尾に "]." まで含めてプレフィックス照合する。"Measures[1]" のように
             // 角括弧で止めると "Measures[10]." 等の別の行にも誤一致してしまうため。
+            // StringComparison.Ordinal を明示する理由は上の CauseAnalysis. 除外ループのコメントを参照。
+            // この行ごとの除外は 3 つの前方一致の中で最も影響が大きい: 上のコメントのとおり
+            // 「保存される行のフィールド検証は残す」ことでデータ整合性を守っているため、
+            // カルチャ比較で保存対象の行にまで誤一致すると DueDate=default(0001-01-01) のまま
+            // 保存され IsOverdue が常に true になる
             var rowPrefix = $"Measures[{i}].";
-            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix)).ToList())
+            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix, StringComparison.Ordinal)).ToList())
             {
                 // 空行由来の各キーを ModelState から除去する
                 ModelState.Remove(key);
