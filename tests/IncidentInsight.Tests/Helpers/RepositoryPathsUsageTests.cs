@@ -71,7 +71,6 @@ public class RepositoryPathsUsageTests
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
     };
 
-    // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
 
     [Fact]
     public void RepositoryLayout_IsKnownOnlyToSharedHelper()

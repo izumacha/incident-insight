@@ -106,8 +106,8 @@ public class ModelStateKeyPrefixMatchTests
         // 言語的な比較を意図する呼び出しが将来出てきたら、失敗メッセージの案内に従って
         // 許可値を広げるか対象から外す判断をレビューで行う。
         var controllerSources = RepositoryPaths.EnumerateWebSourceFiles()
-            // 本文は 1 度だけ読み、コメントと文字列リテラルを潰した状態を後段でも使い回す
-            .Select(p => ReadFor(p))
+            // .cs はコメントと文字列リテラルの中身を潰す(文言にメソッド名が出ても誤検出しない)
+            .Select(p => ReadFor(p, blankStringContents: true))
             .ToList();
 
         // .cs が 1 つも無いなら、走査の根か配置が壊れている(空振り対策)
@@ -116,7 +116,8 @@ public class ModelStateKeyPrefixMatchTests
 
         // ビュー側も同じ形（パスとコメントを潰した本文の組）に揃えておく
         var viewSources = viewFiles
-            .Select(p => ReadFor(p))
+            // .cshtml はコメントだけを潰す(理由は Neutralize の Razor に関する説明を参照)
+            .Select(p => ReadFor(p, blankStringContents: false))
             .ToList();
 
         // 検出した違反(ファイル名・行番号・引数)を集める
@@ -266,12 +267,12 @@ public class ModelStateKeyPrefixMatchTests
     /// 走査用（無害化済み）と報告用（元のまま）の本文を組にして読み込む。
     /// 無害化は同じ長さの空白へ置換するので、両者の位置は 1 文字もずれない。
     /// </summary>
-    private static (string Path, string Source, string Raw) ReadFor(string path)
+    private static (string Path, string Source, string Raw) ReadFor(string path, bool blankStringContents)
     {
         // ファイル全体を 1 度だけ読む
         var raw = File.ReadAllText(path);
         // 走査用に無害化した本文と組にして返す
-        return (path, Neutralize(raw), raw);
+        return (path, Neutralize(raw, blankStringContents), raw);
     }
 
     /// <summary>
@@ -334,10 +335,18 @@ public class ModelStateKeyPrefixMatchTests
     /// <c>StartsWith("x", StringComparison.Ordinal)</c> は
     /// <c>StartsWith("", StringComparison.Ordinal)</c> として正しく解釈でき、
     /// 比較方法の引数(文字列ではない)はそのまま残る。</para>
+    ///
+    /// <para><b>Razor(.cshtml)では文字列の中身を潰さない</b>(<paramref name="blankStringContents"/>
+    /// を false にする)。Razor の <c>"</c> は HTML 属性の区切りでもあり、C# の文字列リテラルとして
+    /// 追うと属性の開き引用符とコード中の引用符が対になって<b>間のコードごと飲み込む</b>
+    /// (実測: <c>data-a="@(k.StartsWith("A") ? "on" : "off")"</c> と書くと呼び出しが
+    /// 丸ごと見えなくなり、違反が素通りした)。取りこぼしは fail-open で、
+    /// 文言にメソッド名が出る誤検出より重い。ビューでは引用符をただの 1 文字として
+    /// 読み進め、コメントだけを潰す。</para>
     /// 文字列リテラルの中の同じ綴りはコメントとして扱わない。
     /// 位置(行番号)を保つため、取り除くのではなく改行以外を空白へ置き換える。
     /// </summary>
-    private static string Neutralize(string source)
+    private static string Neutralize(string source, bool blankStringContents)
     {
         // 書き換え用に 1 文字ずつ写せる配列にする
         var chars = source.ToCharArray();
@@ -350,6 +359,12 @@ public class ModelStateKeyPrefixMatchTests
             // 正しいコードが違反として報告される(実測)。文字列と同じ場所で必ず一緒に扱う
             if (chars[i] == '"' || chars[i] == '\'')
             {
+                // Razor では " が HTML 属性の区切りでもあるため、C# の文字列リテラルとして
+                // 追うと属性の開き引用符とコードの中の引用符が対になり、間のコードごと
+                // 飲み込んでしまう(実測: data-a="@(k.StartsWith("A") ? ... )" と書くと
+                // 呼び出しが丸ごと見えなくなり、違反が素通りした)。
+                // .cshtml では引用符を「ただの 1 文字」として読み進め、コメントだけを潰す
+                if (!blankStringContents && chars[i] == '"') continue;
                 // 閉じ記号まで位置を進める
                 var isString = chars[i] == '"';
                 var end = isString ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
@@ -362,7 +377,7 @@ public class ModelStateKeyPrefixMatchTests
                 // 文字列リテラルは中身だけ空白へ潰す(引用符は残すので構文としては壊れない)。
                 // 文字リテラルは中身に括弧やカンマが入りうるので、潰さずそのまま読み飛ばす
                 // (IsCharLiteral が ',' や '(' を判別できる必要があるため)
-                if (isString)
+                if (isString && blankStringContents)
                     for (var j = i + 1; j < end; j++)
                         if (chars[j] != '\n' && chars[j] != '\r') chars[j] = ' ';
                 // リテラル全体を読み飛ばす

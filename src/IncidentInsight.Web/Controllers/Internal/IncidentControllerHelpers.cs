@@ -82,7 +82,21 @@ internal static class IncidentControllerHelpers
     /// 小文字のキーワードで引く形にしてある
     /// (各 <c>*ControllerTests</c> の <c>...SearchUsesInvariantUpperCasing</c>)。</para>
     ///
-    /// <para><b>残る境界 3: この規則にはソース走査の検出網が無い。</b>
+    /// <para><b>残る境界 3: SQLite の <c>upper()</c> は ASCII しか畳まない（この PR 以前からの制約）。</b>
+    /// 既定プロバイダの SQLite は組み込みの <c>upper()</c> が <c>a-z</c> だけを大文字化する
+    /// (ICU 拡張を組み込まない限り)。一方アプリ側は <see cref="string.ToUpperInvariant"/> で
+    /// Unicode 全体を畳むため、<b>非 ASCII の小文字を含む検索語は既定プロバイダでだけ一致しない</b>:
+    /// 「café」を保存して「café」で検索すると、アプリ側は <c>"CAFÉ"</c>、SQLite 側は
+    /// <c>upper('café') = 'CAFé'</c> となり 0 件になる(全角の <c>ｉｃｕ</c> なども同様)。
+    /// SQL Server / PostgreSQL は正しく畳むので一致する。
+    /// <b>これは引数なしの <c>ToUpper()</c> だった頃から同じ</b>で、この PR が変えた点ではない
+    /// (どちらの規則でも é は É へ畳まれる)。ドメイン語彙が日本語であるこのアプリでは、
+    /// 仮名・漢字に大文字小文字の区別が無いため実害は限定的だが、
+    /// <b>「配備先によらず同じ結果」を完全に達成できているわけではない</b>点は明記しておく。
+    /// 塞ぐならプロバイダ非依存の別手段(照合順序の指定、正規化済み列の保持など)が要り、
+    /// この関数の差し替えでは足りない。</para>
+    ///
+    /// <para><b>残る境界 4: この規則にはソース走査の検出網が無い。</b>
     /// ModelState のキーの前方一致には <c>ModelStateKeyPrefixMatchTests</c> があるが、
     /// こちらの「キーワード側は <c>ToUpperInvariant</c>、列の側は <c>ToUpper</c>」という
     /// 規則は<b>同じ形では機械化できない</b>。列の側は EF Core が SQL へ翻訳できる

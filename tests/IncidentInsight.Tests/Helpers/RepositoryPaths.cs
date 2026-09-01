@@ -56,7 +56,11 @@ internal static class RepositoryPaths
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
 
     /// <summary>
-    /// Razor ビュー(<c>Views</c> 配下の全 <c>.cshtml</c>)を再帰的に列挙する。
+    /// Razor ビュー(Web プロジェクト配下の全 <c>.cshtml</c>。ビルド生成物は除く)を再帰的に列挙する。
+    ///
+    /// <para><b>Views/ 配下だけではない。</b> 以前は <c>Views</c> 配下に限っていたが、
+    /// MVC の Areas(<c>Areas/&lt;Name&gt;/Views/</c>)や Razor Pages(<c>Pages/</c>)の
+    /// <c>.cshtml</c> がその外にあり、走査対象から静かに外れていた(実測)。</para>
     ///
     /// View ソースを走査する guard-rail テスト(ChartAccessibilityTests /
     /// ConcurrencyTokenFormTests / RoleGatedNavigationTests / MeasurePrioritySelectTests)が
@@ -92,8 +96,13 @@ internal static class RepositoryPaths
     /// 片方だけが生成物を走査して生成コードを違反として報告しうる。判定はここ 1 か所に置く。</para>
     /// </summary>
     public static bool IsBuildArtifact(string filePath) =>
-        // パスをディレクトリ区切りで分解し、途中に obj / bin があれば生成物とみなす
-        filePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+        // 判定は必ず「リポジトリルートからの相対パス」に対して行う。絶対パスを分解すると、
+        // チェックアウト先の途中に obj / bin という名前のディレクトリがあるだけで
+        // (例: /home/user/bin/incident-insight)全ファイルが生成物と判定され、
+        // これを使う 5 つの走査テストが「対象が 1 つも無い」で一斉に落ちる——
+        // しかも原因を指さないメッセージで落ちるので、追跡が難しい
+        Path.GetRelativePath(Root, filePath)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             .Any(segment => BuildArtifactDirectoryNames.Contains(segment, StringComparer.OrdinalIgnoreCase));
 
     // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)
