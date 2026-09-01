@@ -54,7 +54,6 @@ public class AuditLogsControllerTests : IDisposable
             _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
             await _db.SaveChangesAsync();
 
-
             // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
             var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
             var vm = result?.Model as AuditLogListViewModel;

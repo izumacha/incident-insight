@@ -1,3 +1,5 @@
+// 呼び出しの綴りを空白込みで探すために使う
+using System.Text.RegularExpressions;
 // リポジトリ内のパスを解決する共有ヘルパーを使う
 using IncidentInsight.Tests.Helpers;
 
@@ -65,8 +67,11 @@ public class ModelStateKeyPrefixMatchTests
         "StringComparison.OrdinalIgnoreCase",
     };
 
-    // 探す呼び出しの綴り(この後ろの開き括弧から対応する閉じ括弧までを引数とみなす)
-    private const string StartsWithCall = "StartsWith(";
+    // 探す呼び出しの綴り。メソッド名と開き括弧の間の空白は C# として妥当なので許す
+    // (実測: "StartsWith(" と決め打ちしていた版は、間に空白を 1 つ入れるだけで
+    //  呼び出しが見えなくなった。新しい呼び出し側には振る舞いのテストが無いため、
+    //  その綴りなら全件緑のまま出荷できてしまう)
+    private static readonly Regex StartsWithCallRegex = new(@"StartsWith\s*\(", RegexOptions.Compiled);
 
     // .cs 側の走査範囲を決める目印。ModelState を触っているファイルだけを対象にする。
     //
@@ -86,20 +91,29 @@ public class ModelStateKeyPrefixMatchTests
         // 2 度列挙して食い違う余地を作らないよう、1 度だけ実体化して使い回す
         var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
 
-        // .cs 側は一覧を手で持たず、「Controllers 配下で ModelState に触っているファイル」
-        // という増えれば自動的に増える目印から導出する。手書きの一覧だと、別のコントローラへ
+        // .cs 側は一覧を手で持たず、「Web プロジェクト配下で ModelState に触っているファイル」
+        // という増えれば自動的に増える目印から導出する。手書きの一覧だと、別の場所へ
         // 同じ構文を足したときに検査対象から静かに外れる(この検査が防ごうとしている形そのもの)。
+        //
+        // 走査の根を Controllers/ ではなく Web プロジェクト全体にしているのは、CLAUDE.md が
+        // 長さ上限の検査について明記している教訓と同じ理由:「導出の条件は『名前空間の完全一致』
+        // ではなく『所属アセンブリ』にする」。実測でも、ModelState のキー除去を
+        // Infrastructure/ 配下のヘルパへ切り出すだけ(このリポジトリが実際によく行う
+        // リファクタ)で、Controllers/ に根を置いた版は全件緑のまま素通りした。
+        //
         // 本文はここで 1 度だけ読み、コメントを潰した状態を後段でも使い回す
         // (2 度読むと目印の判定と走査が別の内容を見る余地が生まれるため)
         var controllerSources = Directory
-            .EnumerateFiles(RepositoryPaths.Controllers, "*.cs", SearchOption.AllDirectories)
+            .EnumerateFiles(RepositoryPaths.WebProject, "*.cs", SearchOption.AllDirectories)
+            // ビルド生成物(obj / bin)は自分たちのソースではないので除く
+            .Where(p => !IsBuildArtifact(p))
             .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
             .Where(f => f.Source.Contains(ModelStateMarker, StringComparison.Ordinal))
             .ToList();
 
         // 目印を持つコントローラが 1 つも無いなら、導出条件か配置が壊れている(空振り対策)
         Assert.True(controllerSources.Count > 0,
-            $"Controllers 配下に {ModelStateMarker} を含むファイルが 1 つもありません。"
+            $"Web プロジェクト配下に {ModelStateMarker} を含む .cs が 1 つもありません。"
             + "導出条件が壊れているか、ModelState の操作が別の場所へ移っています。");
 
         // ビュー側も同じ形（パスとコメントを潰した本文の組）に揃えておく
@@ -124,13 +138,13 @@ public class ModelStateKeyPrefixMatchTests
             // このファイルで見つけた呼び出しの数を数える
             var callsInFile = 0;
 
-            // StartsWith( の出現位置を先頭から順に辿る
-            for (var index = source.IndexOf(StartsWithCall, StringComparison.Ordinal);
-                 index >= 0;
-                 index = source.IndexOf(StartsWithCall, index + StartsWithCall.Length, StringComparison.Ordinal))
+            // StartsWith の呼び出しを先頭から順に辿る(名前と開き括弧の間の空白も許す)
+            foreach (Match call in StartsWithCallRegex.Matches(source))
             {
-                // この呼び出しの引数(対応する閉じ括弧まで)を切り出す
-                var arguments = ExtractArguments(source, index + StartsWithCall.Length);
+                // 報告用にこの呼び出しの開始位置を控える
+                var index = call.Index;
+                // この呼び出しの引数(開き括弧の直後から対応する閉じ括弧まで)を切り出す
+                var arguments = ExtractArguments(source, call.Index + call.Length);
                 // 括弧が閉じていない(＝読み取れない)なら、黙って見逃さず違反として報告する
                 if (arguments == null)
                 {
@@ -164,7 +178,7 @@ public class ModelStateKeyPrefixMatchTests
 
         // 系統ごとに「1 件も見ていない」状態を弾く。片方が 0 でも全体が 0 でなければ
         // 気づけない、という前版の穴を塞ぐ
-        AssertScanned(controllerSources.Select(f => f.Path), "Controllers 配下(.cs)");
+        AssertScanned(controllerSources.Select(f => f.Path), "Web プロジェクト配下(.cs)");
         AssertScanned(viewSources.Select(f => f.Path), "Razor ビュー(.cshtml)");
 
         // 違反があれば、直し方まで示して落とす
@@ -239,6 +253,12 @@ public class ModelStateKeyPrefixMatchTests
         // 切り出した引数の並びを返す
         return parts;
     }
+
+    /// <summary>ビルド生成物(obj / bin 配下)かどうかを返す。自分たちのソースではないので走査しない。</summary>
+    private static bool IsBuildArtifact(string path) =>
+        // パス区切りを挟んだ obj / bin ディレクトリを含むかで判定する
+        path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
+        || path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
 
     /// <summary>最初の引数が char リテラル(<c>'x'</c> の形)かどうかを返す。</summary>
     private static bool IsCharLiteral(string argument)
@@ -367,17 +387,51 @@ public class ModelStateKeyPrefixMatchTests
 
     /// <summary>
     /// 引用符の位置から文字列リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
-    /// バックスラッシュによるエスケープを考慮する。
+    ///
+    /// <para>C# の 3 つの書き方を扱う。<b>1 つでも取り違えるとリテラルの終わりを
+    /// 見失い、そこから先の解釈が丸ごとずれる</b>——<c>StripComments</c> は以降の
+    /// コメントを潰せなくなり、§5 が求める日本語コメントに <c>StartsWith(</c> と
+    /// 書いてあるだけで正しいコードが違反として報告される。正しいコードを咎める
+    /// 検出網はいずれ緩められる方向へ倒れるので、ここは網羅しておく。
+    /// <list type="bullet">
+    ///   <item>通常の <c>"..."</c> … バックスラッシュがエスケープになる。</item>
+    ///   <item>逐語的 <c>@"..."</c> … バックスラッシュはエスケープ<b>ではなく</b>、
+    ///     引用符を重ねた <c>""</c> が引用符 1 つを表す(実測: 逐語的リテラルを通常の
+    ///     規則で読むと、末尾のバックスラッシュが閉じ引用符を打ち消して暴走した)。</item>
+    ///   <item>生文字列 <c>"""..."""</c> … 開始と同じ数の引用符が終端になる。</item>
+    /// </list></para>
     /// </summary>
     private static int SkipStringLiteral(string source, int quoteIndex)
     {
+        // 直前が @ なら逐語的リテラル(バックスラッシュはただの文字)
+        var isVerbatim = quoteIndex > 0 && source[quoteIndex - 1] == '@';
+
+        // 引用符が 3 つ以上続いていれば生文字列リテラル
+        var fenceLength = 0;
+        while (quoteIndex + fenceLength < source.Length && source[quoteIndex + fenceLength] == '"') fenceLength++;
+        if (fenceLength >= 3)
+        {
+            // 開始と同じ数の引用符が並ぶ位置が終端になる
+            var fence = new string('"', fenceLength);
+            // 開始フェンスの直後から終端フェンスを探す
+            var close = source.IndexOf(fence, quoteIndex + fenceLength, StringComparison.Ordinal);
+            // 見つからなければ読み取り不能、見つかればフェンス末尾の位置を返す
+            return close < 0 ? -1 : close + fenceLength - 1;
+        }
+
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
-            // エスケープなら次の 1 文字を読み飛ばす
-            if (source[i] == '\\') { i++; continue; }
-            // 引用符に出会ったらそこが閉じ位置
-            if (source[i] == '"') return i;
+            // 通常のリテラルだけバックスラッシュをエスケープとして扱う
+            if (!isVerbatim && source[i] == '\\') { i++; continue; }
+            // 引用符に出会った場合の扱いはリテラルの種類で違う
+            if (source[i] == '"')
+            {
+                // 逐語的リテラルでは "" が引用符 1 つを表すので、2 つ続くなら本文の一部
+                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                // それ以外はここが閉じ位置
+                return i;
+            }
         }
         // 閉じ引用符が見つからなかった
         return -1;

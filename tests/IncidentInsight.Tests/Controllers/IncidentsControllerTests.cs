@@ -1043,7 +1043,6 @@ public class IncidentsControllerTests : IDisposable
             });
             await _db.SaveChangesAsync();
 
-
             // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
             // 列側の "INCIDENT" に一致しなくなる
             var result = await _controller.Index("incident", null, null, null, null, null, null, null, 1) as ViewResult;

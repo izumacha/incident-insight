@@ -81,6 +81,24 @@ internal static class IncidentControllerHelpers
     /// テストは、列の側が影響を受けないよう<b>あらかじめ大文字の ASCII</b> を保存したうえで
     /// 小文字のキーワードで引く形にしてある
     /// (各 <c>*ControllerTests</c> の <c>...SearchUsesInvariantUpperCasing</c>)。</para>
+    ///
+    /// <para><b>残る境界 3: この規則にはソース走査の検出網が無い。</b>
+    /// ModelState のキーの前方一致には <c>ModelStateKeyPrefixMatchTests</c> があるが、
+    /// こちらの「キーワード側は <c>ToUpperInvariant</c>、列の側は <c>ToUpper</c>」という
+    /// 規則は<b>同じ形では機械化できない</b>。列の側は EF Core が SQL へ翻訳できる
+    /// <c>ToUpper()</c> でなければならず、素の <c>ToUpper()</c> を一律に禁じると
+    /// <b>必要な書き方まで違反として報告してしまう</b>。式ツリーの内側かどうかは
+    /// テキストの走査では判別できないため(構文解析が要る)、正しいコードを咎める
+    /// 検出網になるくらいなら置かない、という判断をしている。
+    /// <b>したがって新しい一覧検索を足すときは、次の 2 つを手で守ること。</b>
+    /// <list type="number">
+    ///   <item>キーワード側は必ずこの関数を通す(素の <c>ToUpper()</c> を書かない)。</item>
+    ///   <item>列の側にも <c>.ToUpper()</c> を付ける——付け忘れると PostgreSQL では
+    ///     大文字小文字を区別する比較に翻訳されて一致しなくなる一方、SQLite / SQL Server と
+    ///     テストの InMemory では一致してしまい、<b>特定の配備先でだけ</b>壊れる。</item>
+    /// </list>
+    /// 既存の 3 経路については、ロケールを差し替えるコントローラ級のテストが
+    /// 「この関数が実際に経路上にあること」まで固定している。</para>
     /// </summary>
     /// <param name="keyword">利用者が入力した検索キーワード。</param>
     /// <returns>ロケールに依存しない規則で大文字化したキーワード。</returns>

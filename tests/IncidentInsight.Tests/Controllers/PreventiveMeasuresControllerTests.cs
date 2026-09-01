@@ -748,7 +748,6 @@ public class PreventiveMeasuresControllerTests : IDisposable
             // (大文字にしておく理由は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
 
-
             // 小文字のキーワードで担当者/担当部署を検索する
             // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)
             var result = await _controller.Index(null, "icu", null, null, null);
