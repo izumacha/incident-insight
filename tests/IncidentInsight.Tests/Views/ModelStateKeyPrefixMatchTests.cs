@@ -48,7 +48,11 @@ namespace IncidentInsight.Tests.Views;
 /// <para><b>意図的に対象外にしているもの。</b>
 /// <list type="bullet">
 ///   <item><c>StartsWith(char)</c> … 定義上つねに序数比較で、比較方法の引数を受け取れない。
-///     報告しても従いようがなく、実行不能な指示を出す検出網はいずれ緩められる方向へ倒れる。</item>
+///     報告しても従いようがなく、実行不能な指示を出す検出網はいずれ緩められる方向へ倒れる。
+///     <b>ただし判別できるのは文字リテラル(<c>','</c> の形)まで</b>で、
+///     <c>k.StartsWith(p[0])</c> のように <c>char</c> 型の<b>式</b>を渡す形は
+///     型を見ないと区別できないため違反として報告される(現在そのような呼び出しは無い)。
+///     出てきたら、その呼び出しの意図をレビューで確認したうえでこの判定を見直すこと。</item>
 ///   <item><c>IndexOf(prefix) == 0</c> … 前方一致の書き方としては同じ危険があるが、
 ///     このリポジトリに用例が 1 つも無い一方、<c>IndexOf</c> 全般へ比較方法を要求すると
 ///     部分文字列検索の正当な用例まで巻き込む。実在しない事情のために検出網を広げない
@@ -73,16 +77,6 @@ public class ModelStateKeyPrefixMatchTests
     //  その綴りなら全件緑のまま出荷できてしまう)
     private static readonly Regex StartsWithCallRegex = new(@"StartsWith\s*\(", RegexOptions.Compiled);
 
-    // .cs 側の走査範囲を決める目印。ModelState を触っているファイルだけを対象にする。
-    //
-    // 以前は "ModelState.Keys" と綴りまで決め打ちしていたが、キー集合を経由しない書き方
-    // (ModelState.Where(e => e.Key.StartsWith(...)) 等)を持つファイルが丸ごと走査対象から
-    // 外れた(実測で確認)。目印は "ModelState" までに緩め、綴りの違いで検査範囲が
-    // 変わらないようにする。判定はコメントを潰した後の本文に対して行う——
-    // 生の本文で見ると「コメントに ModelState と書いただけのファイル」が対象に入り、
-    // 逆に説明の文言を変えるだけで対象から外れる(＝散文が検査範囲を決めてしまう)
-    private const string ModelStateMarker = "ModelState";
-
     [Fact]
     public void ModelStateKeyPrefixMatches_AlwaysUseOrdinalComparison()
     {
@@ -91,30 +85,31 @@ public class ModelStateKeyPrefixMatchTests
         // 2 度列挙して食い違う余地を作らないよう、1 度だけ実体化して使い回す
         var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
 
-        // .cs 側は一覧を手で持たず、「Web プロジェクト配下で ModelState に触っているファイル」
-        // という増えれば自動的に増える目印から導出する。手書きの一覧だと、別の場所へ
-        // 同じ構文を足したときに検査対象から静かに外れる(この検査が防ごうとしている形そのもの)。
+        // .cs 側は Web プロジェクト配下を丸ごと対象にする（ビルド生成物だけ除く）。
         //
-        // 走査の根を Controllers/ ではなく Web プロジェクト全体にしているのは、CLAUDE.md が
-        // 長さ上限の検査について明記している教訓と同じ理由:「導出の条件は『名前空間の完全一致』
-        // ではなく『所属アセンブリ』にする」。実測でも、ModelState のキー除去を
-        // Infrastructure/ 配下のヘルパへ切り出すだけ(このリポジトリが実際によく行う
-        // リファクタ)で、Controllers/ に根を置いた版は全件緑のまま素通りした。
+        // 「ModelState に触っているファイルだけ」という目印で絞る版を 2 度試したが、
+        // どちらも fail-open だった: "ModelState.Keys" と綴りで絞った版は
+        // ModelState.Where(...) を持つファイルを取りこぼし、"ModelState" まで緩めた版も
+        // キー集合だけを受け取るヘルパ（KeysWithPrefix(IEnumerable<string> keys, ...) の形。
+        // このリポジトリの既存ヘルパも MVC の型ではなく素のコレクションを受け取る）を
+        // 取りこぼした。いずれも実測で全件緑のまま素通りしている。
         //
-        // 本文はここで 1 度だけ読み、コメントを潰した状態を後段でも使い回す
-        // (2 度読むと目印の判定と走査が別の内容を見る余地が生まれるため)
+        // 絞り込みをやめられるのは、Web プロジェクト全体の StartsWith が実測で 5 箇所しか
+        // 無く、そのすべてが ModelState のキーに対する前方一致だから。目印という
+        // 「当たっているかどうか自体が見えない条件」を持たない方が、この規模では安全側。
+        // 言語的な比較を意図する呼び出しが将来出てきたら、失敗メッセージの案内に従って
+        // 許可値を広げるか対象から外す判断をレビューで行う。
         var controllerSources = Directory
             .EnumerateFiles(RepositoryPaths.WebProject, "*.cs", SearchOption.AllDirectories)
             // ビルド生成物(obj / bin)は自分たちのソースではないので除く
             .Where(p => !IsBuildArtifact(p))
+            // 本文は 1 度だけ読み、コメントを潰した状態を後段でも使い回す
             .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
-            .Where(f => f.Source.Contains(ModelStateMarker, StringComparison.Ordinal))
             .ToList();
 
-        // 目印を持つコントローラが 1 つも無いなら、導出条件か配置が壊れている(空振り対策)
+        // .cs が 1 つも無いなら、走査の根か配置が壊れている(空振り対策)
         Assert.True(controllerSources.Count > 0,
-            $"Web プロジェクト配下に {ModelStateMarker} を含む .cs が 1 つもありません。"
-            + "導出条件が壊れているか、ModelState の操作が別の場所へ移っています。");
+            "Web プロジェクト配下に .cs が 1 つもありません。走査の根が壊れています。");
 
         // ビュー側も同じ形（パスとコメントを潰した本文の組）に揃えておく
         var viewSources = viewFiles
@@ -223,11 +218,12 @@ public class ModelStateKeyPrefixMatchTests
         {
             // 現在の文字を取り出す
             var c = arguments[i];
-            // 文字列リテラルなら閉じ引用符まで読み飛ばす(中のカンマを数えないため)
-            if (c == '"')
+            // 文字列/文字リテラルなら閉じ記号まで読み飛ばす(中のカンマを数えないため。
+            // ',' という文字リテラルを区切りとして数えると引数の並びが壊れる)
+            if (c == '"' || c == '\'')
             {
-                // 閉じ引用符の位置を求める
-                var end = SkipStringLiteral(arguments, i);
+                // 閉じ記号の位置を求める
+                var end = c == '"' ? SkipStringLiteral(arguments, i) : SkipCharLiteral(arguments, i);
                 // 閉じていなければこれ以上は解釈できないので打ち切る
                 if (end < 0) break;
                 // リテラル全体を読み飛ばす
@@ -281,14 +277,17 @@ public class ModelStateKeyPrefixMatchTests
         // 先頭から順に見ていく
         for (var i = 0; i < chars.Length; i++)
         {
-            // 文字列リテラルはそのまま残す(中の // などをコメント扱いしないため)
-            if (chars[i] == '"')
+            // 文字列リテラル・文字リテラルはそのまま残す(中の // や " をコメント/文字列扱いしないため)。
+            // 文字リテラルを見落とすと '"' の 1 文字だけで解釈がずれ、そこから先のコメントが
+            // 一切潰されなくなる——§5 が求める日本語コメントに StartsWith( と書いてあるだけで
+            // 正しいコードが違反として報告される(実測)。文字列と同じ場所で必ず一緒に扱う
+            if (chars[i] == '"' || chars[i] == '\'')
             {
-                // 閉じ引用符まで位置を進める
-                var end = SkipStringLiteral(source, i);
-                // 閉じ引用符が無ければこれ以上は解釈できないので打ち切る
+                // 閉じ記号まで位置を進める
+                var end = chars[i] == '"' ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
+                // 閉じ記号が無ければこれ以上は解釈できないので打ち切る
                 if (end < 0) break;
-                // 文字列リテラル全体を読み飛ばす
+                // リテラル全体を読み飛ばす
                 i = end;
                 // 次の文字へ
                 continue;
@@ -360,12 +359,14 @@ public class ModelStateKeyPrefixMatchTests
         {
             // 現在の文字を取り出す
             var c = source[i];
-            // 文字列リテラルの開始なら、その終わりまで読み飛ばす(中の括弧を数えないため)
-            if (c == '"')
+            // 文字列/文字リテラルの開始なら、その終わりまで読み飛ばす(中の括弧を数えないため。
+            // '(' のような文字リテラルを数えてしまうと括弧が永久に閉じず、
+            // 「引数を読み取れませんでした」という直しようのない報告になる)
+            if (c == '"' || c == '\'')
             {
-                // 閉じ引用符を探して位置を進める
-                i = SkipStringLiteral(source, i);
-                // 閉じ引用符が見つからなければ読み取り不能
+                // 閉じ記号を探して位置を進める
+                i = c == '"' ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
+                // 閉じ記号が見つからなければ読み取り不能
                 if (i < 0) return null;
                 // 読み飛ばしたので次の文字へ
                 continue;
@@ -403,13 +404,20 @@ public class ModelStateKeyPrefixMatchTests
     /// </summary>
     private static int SkipStringLiteral(string source, int quoteIndex)
     {
-        // 直前が @ なら逐語的リテラル(バックスラッシュはただの文字)
-        var isVerbatim = quoteIndex > 0 && source[quoteIndex - 1] == '@';
+        // 直前の接頭辞を遡って逐語的リテラルかを判定する。@" だけでなく @$" / $@" もあり、
+        // 直前 1 文字だけ見る版は @$" を取り違えてバックスラッシュをエスケープ扱いし、
+        // 末尾のバックスラッシュで閉じ引用符を飲み込んで暴走した
+        var isVerbatim = false;
+        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '@' || source[k] == '$'); k--)
+            // 接頭辞に @ が含まれていれば逐語的リテラル
+            if (source[k] == '@') { isVerbatim = true; break; }
 
-        // 引用符が 3 つ以上続いていれば生文字列リテラル
+        // 引用符が 3 つ以上続いていれば生文字列リテラル。ただし逐語的リテラルの
+        // @"""..." は「引用符を重ねて 1 つを表す」書き方なので生文字列とは別物——
+        // 先に逐語的かを見てから判定しないと、終端の意味を取り違えて暴走する
         var fenceLength = 0;
         while (quoteIndex + fenceLength < source.Length && source[quoteIndex + fenceLength] == '"') fenceLength++;
-        if (fenceLength >= 3)
+        if (!isVerbatim && fenceLength >= 3)
         {
             // 開始と同じ数の引用符が並ぶ位置が終端になる
             var fence = new string('"', fenceLength);
@@ -432,6 +440,26 @@ public class ModelStateKeyPrefixMatchTests
                 // それ以外はここが閉じ位置
                 return i;
             }
+        }
+        // 閉じ引用符が見つからなかった
+        return -1;
+    }
+
+    /// <summary>
+    /// 単一引用符の位置から文字リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
+    /// <c>'\''</c> のようなエスケープを考慮する。
+    /// </summary>
+    private static int SkipCharLiteral(string source, int quoteIndex)
+    {
+        // 開き引用符の次の文字から探し始める
+        for (var i = quoteIndex + 1; i < source.Length; i++)
+        {
+            // エスケープなら次の 1 文字を読み飛ばす
+            if (source[i] == '\\') { i++; continue; }
+            // 単一引用符に出会ったらそこが閉じ位置
+            if (source[i] == '\'') return i;
+            // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
+            if (source[i] == '\n') return -1;
         }
         // 閉じ引用符が見つからなかった
         return -1;
