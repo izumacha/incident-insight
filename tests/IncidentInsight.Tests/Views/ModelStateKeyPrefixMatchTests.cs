@@ -80,10 +80,19 @@ public class ModelStateKeyPrefixMatchTests
     [Fact]
     public void ModelStateKeyPrefixMatches_AlwaysUseOrdinalComparison()
     {
-        // Razor ビューは共有の列挙から導出する(4 つのビュー走査テストが各自で列挙して
-        // ずれた経緯があり、RepositoryPaths.EnumerateViewFiles が唯一の源)。
-        // 2 度列挙して食い違う余地を作らないよう、1 度だけ実体化して使い回す
-        var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
+        // Razor 側も .cs 側と同じくアセンブリ全体を根にする。
+        //
+        // 当初は RepositoryPaths.EnumerateViewFiles()(Views/ 配下のみ)を使っていたが、
+        // .cs 側で「目印やディレクトリで絞ると fail-open になる」と結論した理由がそのまま
+        // 当てはまる: Areas/<Name>/Views/ や Pages/ 配下の .cshtml は Views/ の外にあり、
+        // 走査対象から静かに外れる(実測: Pages/Probe.cshtml に素の StartsWith を置くと
+        // 全件緑のまま通った)。片側だけ広げると、失敗メッセージが謳う
+        // 「Razor ビューの中の StartsWith をすべて対象にします」も嘘になる。
+        var viewFiles = Directory
+            .EnumerateFiles(RepositoryPaths.WebProject, "*.cshtml", SearchOption.AllDirectories)
+            // ビルド生成物(obj / bin)は自分たちのソースではないので除く
+            .Where(p => !IsBuildArtifact(p))
+            .ToList();
 
         // .cs 側は Web プロジェクト配下を丸ごと対象にする（ビルド生成物だけ除く）。
         //
@@ -161,7 +170,7 @@ public class ModelStateKeyPrefixMatchTests
                 // 合格根拠にしてしまう（実測: Prefix("x", StringComparison.Ordinal) を
                 // 引数に渡す形が素通りした）。見るべきは「その呼び出し自身が何を渡したか」
                 if (topLevelArguments.Count > 0
-                    && AllowedComparisons.Contains(topLevelArguments[^1].Trim(), StringComparer.Ordinal))
+                    && AllowedComparisons.Contains(StripArgumentName(topLevelArguments[^1]), StringComparer.Ordinal))
                     continue;
                 // 序数比較を渡していない(引数なし・CurrentCulture 等)ので違反として記録する
                 violations.Add($"{relativePath}:{LineNumberAt(source, index)}: StartsWith({arguments})");
@@ -256,6 +265,30 @@ public class ModelStateKeyPrefixMatchTests
         path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
         || path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
 
+    /// <summary>
+    /// 引数から名前付き引数の接頭辞(<c>comparisonType:</c> の形)を取り除いて値だけを返す。
+    ///
+    /// <para>名前付き引数は位置指定と意味がまったく同じなので、これを違反として報告すると
+    /// 「すでにやっていることをやれ」という従いようのない指示になる(実測で確認)。
+    /// 三項演算子の <c>:</c> と取り違えないよう、<b>コロンの手前が識別子 1 つだけ</b>の
+    /// ときに限って取り除く。</para>
+    /// </summary>
+    private static string StripArgumentName(string argument)
+    {
+        // 前後の空白を落として素の綴りにする
+        var trimmed = argument.Trim();
+        // 最初のコロンの位置を求める
+        var colon = trimmed.IndexOf(':');
+        // コロンが無ければ名前付きではないのでそのまま返す
+        if (colon < 0) return trimmed;
+        // コロンの手前を取り出す
+        var name = trimmed[..colon].Trim();
+        // 識別子として妥当（英数字と _ のみ、かつ空でない）なときだけ接頭辞として落とす
+        var isIdentifier = name.Length > 0 && name.All(c => char.IsLetterOrDigit(c) || c == '_');
+        // 識別子ならコロンの後ろを、そうでなければ元の綴りを返す
+        return isIdentifier ? trimmed[(colon + 1)..].Trim() : trimmed;
+    }
+
     /// <summary>最初の引数が char リテラル(<c>'x'</c> の形)かどうかを返す。</summary>
     private static bool IsCharLiteral(string argument)
     {
@@ -285,8 +318,12 @@ public class ModelStateKeyPrefixMatchTests
             {
                 // 閉じ記号まで位置を進める
                 var end = chars[i] == '"' ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
-                // 閉じ記号が無ければこれ以上は解釈できないので打ち切る
-                if (end < 0) break;
+                // 閉じ記号が無ければ、その 1 文字はリテラルの開始ではなかったと解釈して読み進める。
+                // ここでファイル全体を打ち切ってはいけない: Razor の本文にある素のアポストロフィ
+                // (英文の don't など。Create.cshtml だけで 56 個ある)で以降のコメントが一切
+                // 潰されなくなり、§5 が求める日本語コメントに StartsWith( と書いてあるだけで
+                // 正しいコードが違反として報告される(実測)。誤検出は検出網を緩める圧力になる
+                if (end < 0) continue;
                 // リテラル全体を読み飛ばす
                 i = end;
                 // 次の文字へ
