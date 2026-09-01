@@ -20,9 +20,11 @@
 
 @* 絞り込みパネル *@
 @{
-    @* 何らかの絞り込み条件が指定されているかの判定 *@
-    var anyFilter = !string.IsNullOrEmpty(Model.EntityName) || !string.IsNullOrEmpty(Model.Operation)
-                 || !string.IsNullOrEmpty(Model.ChangedBy) || !string.IsNullOrEmpty(Model.EntityKey)
+    @* 何らかの絞り込み条件が指定されているかの判定。
+       文字列条件はコントローラが絞り込みを適用するときとまったく同じ SearchFilter.HasValue を通す。
+       ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら全件を返す食い違いになる *@
+    var anyFilter = SearchFilter.HasValue(Model.EntityName) || SearchFilter.HasValue(Model.Operation)
+                 || SearchFilter.HasValue(Model.ChangedBy) || SearchFilter.HasValue(Model.EntityKey)
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue;
 }
 <div class="card border-0 shadow-sm mb-3">

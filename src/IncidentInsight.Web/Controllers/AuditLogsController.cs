@@ -10,6 +10,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // 日本語ラベル / Bootstrap カラーの一元解決(EnumLabels)を使う
 using IncidentInsight.Web.Models.Enums;
+// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
+using IncidentInsight.Web.Models.Validation;
 // 監査ログ画面用 ViewModel を使う
 using IncidentInsight.Web.Models.ViewModels;
 // 認可属性
@@ -72,22 +74,36 @@ public class AuditLogsController : Controller
         // 読み取り専用クエリを用意(監査ログは絶対に変更しないため AsNoTracking)
         var query = _db.AuditLogs.AsNoTracking().AsQueryable();
 
-        // エンティティ名で絞り込み(許可リストにあるときだけ採用)
-        if (!string.IsNullOrEmpty(entityName) && AllowedEntityNames.Contains(entityName))
-            query = query.Where(a => a.EntityName == entityName);
-        // 操作種別で絞り込み(許可リストにあるときだけ採用)
-        if (!string.IsNullOrEmpty(operation) && AllowedOperations.Contains(operation))
-            query = query.Where(a => a.Operation == operation);
+        // エンティティ名 / 操作種別は「空でない」だけでなく許可リストに載っていることまで
+        // 確かめてから採用する。採用しなかった値は画面へも戻さず null に潰す(下の ViewModel が
+        // この変数を使う)。そのまま戻すと、絞り込みは効いていないのにパネルは「絞り込み中」を
+        // 表示し、ドロップダウンは一致する選択肢が無いため「全て」を指す、という三者の食い違いに
+        // なる。とくに監査対象からエンティティを外したあとの古いブックマーク
+        // (?entityName=CauseAnalysis)で起きる
+        var effectiveEntityName = SearchFilter.HasValue(entityName) && AllowedEntityNames.Contains(entityName)
+            ? entityName
+            : null;
+        var effectiveOperation = SearchFilter.HasValue(operation) && AllowedOperations.Contains(operation)
+            ? operation
+            : null;
+
+        // エンティティ名で絞り込み(許可リストを通った値のときだけ)
+        if (effectiveEntityName != null)
+            query = query.Where(a => a.EntityName == effectiveEntityName);
+        // 操作種別で絞り込み(許可リストを通った値のときだけ)
+        if (effectiveOperation != null)
+            query = query.Where(a => a.Operation == effectiveOperation);
         // 変更者(ユーザー名)で部分一致(大文字小文字を区別しない)
+        // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
-        if (!string.IsNullOrWhiteSpace(changedBy))
+        if (SearchFilter.HasValue(changedBy))
         {
             var normalizedChangedBy = IncidentControllerHelpers.NormalizeSearchKeyword(changedBy);
             query = query.Where(a => a.ChangedBy.ToUpper().Contains(normalizedChangedBy));
         }
-        // 対象キー(エンティティの ID)で完全一致
-        if (!string.IsNullOrWhiteSpace(entityKey))
+        // 対象キー(エンティティの ID)で完全一致(空白のみは絞り込み無し)
+        if (SearchFilter.HasValue(entityKey))
             query = query.Where(a => a.EntityKey == entityKey);
         // 期間下限で絞り込み
         if (dateFrom.HasValue)
@@ -135,8 +151,11 @@ public class AuditLogsController : Controller
             TotalCount = total,
             Page = page,
             PageSize = PageSize,
-            EntityName = entityName,
-            Operation = operation,
+            // 実際に採用した値だけを画面へ戻す(許可リスト外は上で null に潰してある)。
+            // これでビュー側の「絞り込み中」判定・ドロップダウンの選択状態が、
+            // 実際に適用された絞り込みと必ず一致する
+            EntityName = effectiveEntityName,
+            Operation = effectiveOperation,
             ChangedBy = changedBy,
             EntityKey = entityKey,
             DateFrom = dateFrom,

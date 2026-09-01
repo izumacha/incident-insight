@@ -759,6 +759,58 @@ public class PreventiveMeasuresControllerTests : IDisposable
         }
     }
 
+    // 空白のみの担当者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。
+    // 以前この画面だけ string.IsNullOrEmpty で判定していたため、末尾スペースの貼り付けや
+    // IME の誤入力で絞り込みが実際に走り、ResponsiblePerson.ToUpper().Contains(" ") が
+    // 日本語の氏名・部署名に一致しないため盤面が空になっていた(利用者からは原因が
+    // 分からないままデータが消えたように見える)。
+    // 空白のみの入力を素通しさせると、この 1 件が「1 件も返らない」で落ちる。
+    [Theory]
+    [InlineData(" ")]           // 半角スペース 1 つ
+    [InlineData("   ")]         // 半角スペース複数
+    [InlineData("\t")]          // タブ
+    [InlineData("　")]          // 全角スペース(IME 変換中の確定ミスで入りやすい)
+    public async Task Index_WhitespaceOnlyResponsible_IsTreatedAsNoFilter(string blankInput)
+    {
+        // 担当者・担当部署が日本語の対策を 1 件投入する(空白では絶対に部分一致しない)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+
+        // 空白のみのキーワードで担当者検索を掛ける
+        var result = await _controller.Index(null, blankInput, null, null, null);
+
+        // 絞り込みは走らず、全件がそのまま返ること
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        Assert.Single(measures);
+        // 「絞り込み中」の表示判定も同じ規則に従い、絞り込んでいない旨を返すこと。
+        // ここがずれると 0 件でないのに「絞り込み条件に一致する〜はありません」側の
+        // 文言・導線が出る(絞り込みの適用側と表示側で判定が食い違う)
+        Assert.False((bool)_controller.ViewBag.HasActiveFilter);
+    }
+
+    // 担当部署(完全一致フィルタ)側でも空白のみの入力が「絞り込み無し」になることを固定する。
+    // 担当者キーワードと別々に判定していると片方だけ直したときに気づけないため、経路ごとに押さえる。
+    [Fact]
+    public async Task Index_WhitespaceOnlyResponsibleDepartment_IsTreatedAsNoFilter()
+    {
+        // 担当部署が日本語の対策を 1 件投入する
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "看護部");
+
+        // 空白のみの担当部署で絞り込む
+        var result = await _controller.Index(null, null, "   ", null, null);
+
+        // 絞り込みは走らず、全件がそのまま返ること
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        Assert.Single(measures);
+        // 「絞り込み中」の表示判定も絞り込んでいない旨を返すこと
+        Assert.False((bool)_controller.ViewBag.HasActiveFilter);
+        // 空白のみの値をドロップダウンへ補完しないこと(絞り込みに使っていない値を
+        // 選択肢に足すと、存在しない空白の部署が選べるようになってしまう)
+        var options = Assert.IsType<List<string>>((object)_controller.ViewBag.ResponsibleDepartmentOptions);
+        Assert.DoesNotContain("   ", options);
+    }
+
     // 自由記述の担当部署でも完全一致フィルタが機能することを確認する
     // (選択肢の生成元を実データに変えてもフィルタ挙動は完全一致のまま)
     [Fact]

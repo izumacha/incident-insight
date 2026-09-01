@@ -10,6 +10,8 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // enum(重症度・種別など)を使う
 using IncidentInsight.Web.Models.Enums;
+// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
+using IncidentInsight.Web.Models.Validation;
 // フォーム用 ViewModel を使う
 using IncidentInsight.Web.Models.ViewModels;
 // 時刻源 / 再発サービスを使う
@@ -79,15 +81,16 @@ public class IncidentsController : Controller
             .ScopedByUser(User);
 
         // フリーワード検索(状況または報告者名を部分一致・大文字小文字を区別しない)
+        // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
         // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
         // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
-        if (!string.IsNullOrWhiteSpace(search))
+        if (SearchFilter.HasValue(search))
         {
             var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);
             query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
         }
-        // 部署で絞り込み
-        if (!string.IsNullOrWhiteSpace(department))
+        // 部署で絞り込み(空白のみは絞り込み無し)
+        if (SearchFilter.HasValue(department))
             query = query.Where(i => i.Department == department);
         // インシデント種別で絞り込み
         if (incidentType.HasValue)

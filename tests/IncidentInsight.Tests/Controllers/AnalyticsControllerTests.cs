@@ -54,6 +54,50 @@ public class AnalyticsControllerTests : IDisposable
         ReportedAt = DateTime.Now
     };
 
+    // 部署フィルタの「空入力」判定が一覧画面と揃っていることを固定する(issue #187)。
+    // グラフ系エンドポイントは一覧と同じ department をクエリ文字列で受けるため、ここだけ
+    // string.IsNullOrEmpty のままだと、空白のみの値で /Incidents は全件を返すのに
+    // グラフだけが Department == " " に一致せず全系列 0 になる(同じ値で画面ごとに結果が変わる)。
+    // 3 エンドポイントが各自で判定を持つので、経路ごとに押さえる。
+    [Theory]
+    [InlineData(" ")]           // 半角スペース
+    [InlineData("　")]          // 全角スペース
+    public async Task Endpoints_WhitespaceOnlyDepartment_IsTreatedAsNoFilter(string blankInput)
+    {
+        // 日本語の部署名を持つインシデントを 1 件用意する(空白とは完全一致しない)
+        var incident = MakeIncident(dept: "内科病棟");
+        _db.Incidents.Add(incident);
+        // 原因分析も 1 件ぶら下げる(ByCause の集計対象にするため)
+        _db.CauseAnalyses.Add(new CauseAnalysis
+        {
+            Incident = incident,
+            CauseCategory = new CauseCategory { Name = "確認不足", DisplayOrder = 1 },
+            Why1 = "確認していなかった"
+        });
+        await _db.SaveChangesAsync();
+
+        // 月次推移: 絞り込みが走らず、今月のカウントに 1 件が残ること
+        using (var doc = ToJsonDocument(await _controller.MonthlyTrend(null, null, blankInput)))
+        {
+            var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
+            Assert.Equal(1, data[^1].GetInt32());
+        }
+
+        // 重症度別: 絞り込みが走らず、合計が 1 件になること
+        using (var doc = ToJsonDocument(await _controller.BySeverity(null, null, blankInput)))
+        {
+            var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
+            Assert.Equal(1, data.Sum(d => d.GetInt32()));
+        }
+
+        // 原因別: 絞り込みが走らず、合計が 1 件になること
+        using (var doc = ToJsonDocument(await _controller.ByCause(null, null, blankInput)))
+        {
+            var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
+            Assert.Equal(1, data.Sum(d => d.GetInt32()));
+        }
+    }
+
     [Fact]
     public async Task MonthlyTrend_EmptyDb_Returns12MonthLabelsAndZeroCounts()
     {
