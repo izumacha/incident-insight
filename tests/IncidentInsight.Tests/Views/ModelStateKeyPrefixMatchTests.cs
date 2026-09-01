@@ -40,10 +40,23 @@ namespace IncidentInsight.Tests.Views;
 ///     ファイルが丸ごと対象から外れた(実測: 素通り)。しかも判定が生の本文だったので
 ///     <b>コメントの文言が検査範囲を決めて</b>いた。→ 目印を <c>"ModelState"</c> まで緩め、
 ///     コメントを潰した本文で判定する。</item>
+///   <item>補間文字列をふつうの文字列として読み飛ばしていたため、<b>穴(<c>{}</c>)の中</b>へ
+///     書いた呼び出しが丸ごと見えなかった(実測: <c>$"hit={k.StartsWith("X")}"</c> が素通り)。
+///     → 穴を数えながら進み、穴の中は走査対象として残す。</item>
+///   <item>Razor では文字列を追えないため、マークアップ中の <c>//</c>(<c>https://</c> 等)を
+///     行コメントの開始と誤認し、同じ行の後続の呼び出しが消えた(実測: 素通り)。
+///     → ビューでは <c>@* *@</c> だけをコメントとして扱う。</item>
 /// </list>
 /// いずれも「検査が形だけ通る条件」を見ていたのが原因で、<b>守りたい性質そのもの</b>を
-/// 条件にしていなかった。<b>この検査を変えるときは、変異を 1 つ作って実際に落ちることを
-/// 確かめてから通すこと。</b></para>
+/// 条件にしていなかった。</para>
+///
+/// <para><b>抜け道を塞ぐ修正が偽陽性を連れてくる。</b> 上の 5 番を直した初版は、補間文字列を
+/// 「何も潰さずに読み飛ばす」形にしたため、<c>$"… StartsWith(prefix) で判定します"</c> のような
+/// <b>文言だけのコード</b>を違反として報告した(実測)——ふつうの文字列で同じことが起きたから
+/// 中身を潰しているのに、補間文字列だけ例外にして同じ穴を開け直していた。正しい形は
+/// 「穴の外の文言は潰し、引用符と穴の中は残す」。<b>取りこぼしと誤検出はどちらも検出網を
+/// 緩める圧力になるので、この検査を変えるときは両方向の変異を作って確かめてから通すこと</b>
+/// (素通りすべきでないものが落ちること／落ちるべきでないものが通ること)。</para>
 ///
 /// <para><b>意図的に対象外にしているもの。</b>
 /// <list type="bullet">
@@ -381,14 +394,19 @@ public class ModelStateKeyPrefixMatchTests
                 // 補間文字列は専用に、穴を数えながら末尾まで正しく進める
                 if (chars[i] == '"' && IsInterpolatedStart(source, i))
                 {
-                    // 補間文字列の末尾（閉じ引用符）の位置を求める
-                    var closeAt = SkipInterpolatedString(source, i);
+                    // 末尾まで進めつつ、穴の外の「文言」だけを空白へ潰す
+                    // (blankStringContents が false のビューでは潰さない)。
+                    //
+                    // 引用符と穴の中はそのまま残す必要がある——引用符まで潰すと、
+                    // 後段の引数解析が $"{nameof(x)}[" の [ を「閉じていない括弧」と
+                    // 数えてしまい、正しい呼び出しを違反として報告する（実測で確認）。
+                    // 逆に穴の外を潰さないと、$"… StartsWith(prefix) で判定します" のような
+                    // 文言だけのコードが違反として報告される（実測で確認）——
+                    // ふつうの文字列で同じことが起きたから中身を潰しているのに、
+                    // 補間文字列だけ例外にすると同じ穴が開き直る
+                    var closeAt = SkipInterpolatedString(source, i, blankStringContents ? chars : null);
                     // 末尾が見つからなければ、その 1 文字はリテラルの開始ではなかったと解釈する
                     if (closeAt < 0) continue;
-                    // 何も潰さない。穴の中のコードは走査対象として残したいし、引用符も
-                    // そのまま残す必要がある——潰すと後段の引数解析が
-                    // $"{nameof(x)}[" の [ を「閉じていない括弧」と数えてしまい、
-                    // 正しい呼び出しを違反として報告する（実測で確認）
                     // 閉じ引用符まで読み飛ばして、次の文字から解釈を続ける
                     i = closeAt;
                     continue;
@@ -592,8 +610,14 @@ public class ModelStateKeyPrefixMatchTests
     /// <para>穴(<c>{...}</c>)の中はコードなので、そこに現れる文字列リテラルや引用符を
     /// 補間文字列の終端と取り違えないよう、波括弧の深さを数えながら進む。
     /// <c>{{</c> / <c>}}</c> は波括弧そのものを表すエスケープなので深さを動かさない。</para>
+    ///
+    /// <para><paramref name="blankInto"/> を渡すと、進みながら<b>穴の外の文言だけ</b>を
+    /// 空白へ潰す(引用符・波括弧・穴の中のコードは残す)。潰す/潰さないで走査の位置が
+    /// 変わらないよう、判定は 1 つの走査に閉じてある——同じ規則を 2 か所へ書き写すと、
+    /// 片方だけ直したときに「潰した本文」と「読み取った位置」がずれる。</para>
     /// </summary>
-    private static int SkipInterpolatedString(string source, int quoteIndex)
+    /// <param name="blankInto">穴の外の文言を潰す先(<c>null</c> なら潰さない)。</param>
+    private static int SkipInterpolatedString(string source, int quoteIndex, char[]? blankInto = null)
     {
         // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない
         var isVerbatim = false;
@@ -608,22 +632,31 @@ public class ModelStateKeyPrefixMatchTests
             // 現在の文字を取り出す
             var c = source[i];
             // 通常の補間文字列だけバックスラッシュをエスケープとして扱う
-            if (!isVerbatim && c == '\\') { i++; continue; }
+            if (!isVerbatim && c == '\\') { Blank(i); Blank(i + 1); i++; continue; }
             // {{ / }} は波括弧そのものを表すので 2 文字まとめて読み飛ばす
-            if ((c == '{' || c == '}') && i + 1 < source.Length && source[i + 1] == c) { i++; continue; }
-            // 穴の開始で深さを増やす
+            if ((c == '{' || c == '}') && i + 1 < source.Length && source[i + 1] == c)
+            {
+                // 文言としての波括弧なので、穴の外なら潰す対象に含める
+                Blank(i); Blank(i + 1); i++; continue;
+            }
+            // 穴の開始で深さを増やす(波括弧そのものは構造なので残す)
             if (c == '{') { depth++; continue; }
-            // 穴の終了で深さを減らす
+            // 穴の終了で深さを減らす(同上)
             if (c == '}') { if (depth > 0) depth--; continue; }
             // 穴の中（コード）に現れる文字列・文字リテラルはまとめて読み飛ばす
             if (depth > 0 && (c == '"' || c == '\''))
             {
-                // 入れ子のリテラルの末尾を求める（補間文字列の入れ子にも対応する）
+                // 入れ子のリテラルの末尾を求める（補間文字列の入れ子にも対応する）。
+                // 穴の中の文字列も外側と同じ規則で中身を潰す——潰さないと
+                // $"{Fmt("… StartsWith(x) …")}" のような文言が違反として報告される
                 var nested = c != '"' ? SkipCharLiteral(source, i)
-                    : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i)
+                    : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i, blankInto)
                     : SkipStringLiteral(source, i);
                 // 末尾が求まらなければ読み取り不能
                 if (nested < 0) return -1;
+                // 入れ子がふつうの文字列なら、その中身も空白へ潰す(引用符は残す)
+                if (blankInto != null && c == '"' && !IsInterpolatedStart(source, i))
+                    for (var j = i + 1; j < nested; j++) Blank(j, force: true);
                 // 入れ子のリテラル全体を読み飛ばす
                 i = nested;
                 // 次の文字へ
@@ -633,13 +666,30 @@ public class ModelStateKeyPrefixMatchTests
             if (depth == 0 && c == '"')
             {
                 // 逐語的なら "" は引用符 1 つを表すので本文の一部
-                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"')
+                {
+                    // 文言としての引用符なので潰す対象に含める
+                    Blank(i); Blank(i + 1); i++; continue;
+                }
                 // それ以外はここが終端
                 return i;
             }
+            // ここまで来たのは、穴の外のふつうの文字（＝文言）か、穴の中のコード。
+            // 文言だけを潰す(穴の中は走査対象として残す)
+            Blank(i);
         }
         // 終端が見つからなかった
         return -1;
+
+        // 指定位置を空白へ潰すローカル関数(改行は行番号を保つため残す)。
+        // force を立てると穴の中でも潰す(穴の中のふつうの文字列の中身に使う)
+        void Blank(int at, bool force = false)
+        {
+            // 潰し先が無い(ビュー側)、範囲外、穴の中(force でない)なら何もしない
+            if (blankInto == null || at >= blankInto.Length || (depth > 0 && !force)) return;
+            // 改行以外を空白へ置き換える
+            if (blankInto[at] != '\n' && blankInto[at] != '\r') blankInto[at] = ' ';
+        }
     }
 
     /// <summary>
