@@ -25,12 +25,101 @@ using Microsoft.Extensions.Logging;
 namespace IncidentInsight.Web.Controllers.Internal;
 
 /// <summary>
-/// IncidentsController / CauseAnalysesController / IncidentMeasuresController が
-/// 共有する小さなヘルパ群。テストを増やすほどの責務は持たず、純粋な再利用関数のみ置く。
-/// 業務ルール(例: 「対策が1件以上」)は Controller 側に残し、ここには持ち込まない。
+/// 複数のコントローラが共有する小さなヘルパ群。テストを増やすほどの責務は持たず、
+/// 純粋な再利用関数のみ置く。業務ルール(例: 「対策が1件以上」)は Controller 側に残し、
+/// ここには持ち込まない。
+///
+/// <para>利用側はここに書き並べない(実際、当初挙げていた 3 コントローラ以外にも
+/// AnalyticsController / AuditLogsController / PreventiveMeasuresController が
+/// <c>ToExclusiveUpperBound</c> を使うようになり、一覧の方が先に古くなった)。
+/// 誰が使っているかは参照を辿れば分かるので、写しは持たない。</para>
 /// </summary>
 internal static class IncidentControllerHelpers
 {
+    /// <summary>
+    /// 一覧画面のフリーワード検索で、利用者が入力したキーワードを
+    /// 「DB 側の大文字化と突き合わせられる形」へ正規化する。
+    ///
+    /// <para><b>なぜ必要か。</b> 一覧の部分一致検索はいずれも
+    /// 「列を大文字化した結果に、大文字化したキーワードが含まれるか」で判定する。
+    /// <c>string.Contains</c> をそのまま使うと、SQLite / SQL Server では大文字小文字を区別しない
+    /// LIKE に翻訳されるのに Npgsql(PostgreSQL) は区別する比較に翻訳され、同じ検索語でも配備先で
+    /// 結果が変わってしまうため(DB プロバイダ非依存の原則)。</para>
+    ///
+    /// <para><b>なぜ <c>ToUpperInvariant</c> なのか。</b> 突き合わせる 2 つの辺は、
+    /// 大文字化する主体が違う。
+    /// <list type="bullet">
+    ///   <item>列の側 … 式ツリー内の <c>col.ToUpper()</c> は EF Core が SQL の <c>UPPER(col)</c> へ
+    ///     翻訳するので、大文字化するのは <b>DB</b>(その照合順序)であってアプリではない。</item>
+    ///   <item>キーワードの側 … C# で評価してパラメータとして渡すので、大文字化するのは <b>アプリ</b>。</item>
+    /// </list>
+    /// ここで引数なしの <c>ToUpper()</c> を使うと、アプリ側だけが
+    /// <see cref="System.Globalization.CultureInfo.CurrentCulture"/>(＝サーバ OS のロケール)に
+    /// 従ってしまう。トルコ語系ロケール(tr-TR / az-*)では <c>"incident".ToUpper()</c> が
+    /// <c>"İNCİDENT"</c>(U+0130 を含む)になる一方、標準的な照合順序の DB が返す
+    /// <c>UPPER('incident')</c> は <c>"INCIDENT"</c> なので、<b>正規の検索語が 1 件も
+    /// ヒットしなくなる</b>(実測で確認済み)。「配備先によらず同じ結果」を狙って入れた正規化が、
+    /// 逆にサーバのロケールという別の環境差を持ち込んでいたことになる
+    /// (CLAUDE.md §10 プラットフォーム差異ゼロ設計)。</para>
+    ///
+    /// <para><b>残る境界 1: DB 側の照合順序は「ロケール中立」であることを前提にしている。</b>
+    /// 「どの照合順序でも <c>UPPER('incident')</c> は <c>"INCIDENT"</c>」とは言えない。とくに
+    /// PostgreSQL の <c>upper()</c> は引数の照合順序(データベースの <c>lc_ctype</c>、または
+    /// 列・式に付けた ICU 照合順序)に従うため、<c>lc_ctype=tr_TR.UTF-8</c> で初期化した
+    /// クラスタでは <c>UPPER('incident')</c> が <c>'İNCİDENT'</c> を返す。その場合はアプリ側を
+    /// 不変規則にしても両辺は一致しない。<b>この関数が取り除くのは「アプリ側がサーバ OS の
+    /// ロケールで揺れる」ことだけ</b>で、DB 側までロケール中立にすることはできない
+    /// (それは配備時の照合順序の選択の問題であり、コードからは決められない)。
+    /// PostgreSQL / Supabase は CLAUDE.md §1 が挙げる一次配備先なので、トルコ語系の
+    /// <c>lc_ctype</c> でクラスタを作る場合はこの前提が崩れる点に注意する。</para>
+    ///
+    /// <para><b>残る境界 2: テストの InMemory プロバイダでは列の側もカルチャ依存になる。</b>
+    /// 本番では列の側を大文字化するのは DB だが、InMemory プロバイダには SQL が無く、
+    /// 式ツリーの <c>col.ToUpper()</c> は<b>アプリ内で</b>現在のカルチャに従って評価される。
+    /// つまり InMemory 上では列の側だけがカルチャ依存のまま残る。これはテスト実行環境に限った
+    /// 性質で、本番の経路(SQL への翻訳)には影響しない。そのためロケールを差し替える
+    /// テストは、列の側が影響を受けないよう<b>あらかじめ大文字の ASCII</b> を保存したうえで
+    /// 小文字のキーワードで引く形にしてある
+    /// (各 <c>*ControllerTests</c> の <c>...SearchUsesInvariantUpperCasing</c>)。</para>
+    ///
+    /// <para><b>残る境界 3: SQLite の <c>upper()</c> は ASCII しか畳まない（この PR 以前からの制約）。</b>
+    /// 既定プロバイダの SQLite は組み込みの <c>upper()</c> が <c>a-z</c> だけを大文字化する
+    /// (ICU 拡張を組み込まない限り)。一方アプリ側は <see cref="string.ToUpperInvariant"/> で
+    /// Unicode 全体を畳むため、<b>非 ASCII の小文字を含む検索語は既定プロバイダでだけ一致しない</b>:
+    /// 「café」を保存して「café」で検索すると、アプリ側は <c>"CAFÉ"</c>、SQLite 側は
+    /// <c>upper('café') = 'CAFé'</c> となり 0 件になる(全角の <c>ｉｃｕ</c> なども同様)。
+    /// SQL Server / PostgreSQL は正しく畳むので一致する。
+    /// <b>これは引数なしの <c>ToUpper()</c> だった頃から同じ</b>で、この PR が変えた点ではない
+    /// (どちらの規則でも é は É へ畳まれる)。ドメイン語彙が日本語であるこのアプリでは、
+    /// 仮名・漢字に大文字小文字の区別が無いため実害は限定的だが、
+    /// <b>「配備先によらず同じ結果」を完全に達成できているわけではない</b>点は明記しておく。
+    /// 塞ぐならプロバイダ非依存の別手段(照合順序の指定、正規化済み列の保持など)が要り、
+    /// この関数の差し替えでは足りない。</para>
+    ///
+    /// <para><b>残る境界 4: この規則にはソース走査の検出網が無い。</b>
+    /// ModelState のキーの前方一致には <c>ModelStateKeyPrefixMatchTests</c> があるが、
+    /// こちらの「キーワード側は <c>ToUpperInvariant</c>、列の側は <c>ToUpper</c>」という
+    /// 規則は<b>同じ形では機械化できない</b>。列の側は EF Core が SQL へ翻訳できる
+    /// <c>ToUpper()</c> でなければならず、素の <c>ToUpper()</c> を一律に禁じると
+    /// <b>必要な書き方まで違反として報告してしまう</b>。式ツリーの内側かどうかは
+    /// テキストの走査では判別できないため(構文解析が要る)、正しいコードを咎める
+    /// 検出網になるくらいなら置かない、という判断をしている。
+    /// <b>したがって新しい一覧検索を足すときは、次の 2 つを手で守ること。</b>
+    /// <list type="number">
+    ///   <item>キーワード側は必ずこの関数を通す(素の <c>ToUpper()</c> を書かない)。</item>
+    ///   <item>列の側にも <c>.ToUpper()</c> を付ける——付け忘れると PostgreSQL では
+    ///     大文字小文字を区別する比較に翻訳されて一致しなくなる一方、SQLite / SQL Server と
+    ///     テストの InMemory では一致してしまい、<b>特定の配備先でだけ</b>壊れる。</item>
+    /// </list>
+    /// 既存の 3 経路については、ロケールを差し替えるコントローラ級のテストが
+    /// 「この関数が実際に経路上にあること」まで固定している。</para>
+    /// </summary>
+    /// <param name="keyword">利用者が入力した検索キーワード。</param>
+    /// <returns>ロケールに依存しない規則で大文字化したキーワード。</returns>
+    public static string NormalizeSearchKeyword(string keyword)
+        // 実行環境のロケールに左右されない不変(invariant)規則で大文字化して返す
+        => keyword.ToUpperInvariant();
+
     /// <summary>
     /// 原因カテゴリのドロップダウン用に、親カテゴリでグルーピングした子カテゴリ一覧を作る。
     /// </summary>

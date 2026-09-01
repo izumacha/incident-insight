@@ -498,6 +498,133 @@ public class IncidentsControllerTests : IDisposable
         Assert.Single(_db.Incidents);
     }
 
+    // サブフォーム由来キーの一括除外が「序数比較」であることを固定する。
+    //
+    // 引数なしの string.StartsWith は現在のカルチャで比較するため、ICU が「無視できる文字」と
+    // みなす記号(ソフトハイフン U+00AD / ZWJ U+200D 等)を挟んだキーまで前方一致と判定してしまう
+    // (実測: "­CauseAnalysis.Why1".StartsWith("CauseAnalysis.") は true、
+    //  StringComparison.Ordinal を渡すと false)。
+    // 一致は「除去する側」に効くので、意図より多くの検証エラーを捨てる fail-open になり、
+    // しかも成立するかどうかがサーバの OS ロケールと ICU の版に左右される。
+    // ModelState のキーは画面が組み立てる識別子であって自然言語ではないため、序数比較が正しい。
+    [Fact]
+    public async Task Create_Post_SubFormKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 妥当な入力(これ単体なら保存される)を用意する
+        var vm = ValidViewModel();
+        // 前方一致の対象と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
+        // (先頭にソフトハイフン U+00AD を置いた、除外対象ではないキー)
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("­CauseAnalysis.Why1", "CauseAnalysis.");
+        _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効のままであること(カルチャ比較なら除外されて有効になってしまう)
+        Assert.False(_controller.ModelState.IsValid);
+        // 当該キーが除去されずに残っていること(この 1 行が序数比較かどうかを判別する)
+        Assert.True(_controller.ModelState.ContainsKey("­CauseAnalysis.Why1"));
+        // 検証エラーが残っている以上、インシデントは保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
+    // Create の「行ごと」の除外(Measures[i]. の前置詞)も序数比較であることを固定する。
+    //
+    // 3 つある前方一致のうち、ここが最も影響が大きい。所有コメント(IncidentsController の
+    // 同ループ)のとおり、この除外は「保存されない空行だけを消し、保存される行の
+    // 担当者・実施期限などの検証は残す」ことでデータ整合性を守っている。カルチャ比較で
+    // 保存対象の行にまで誤一致すると、DueDate=default(0001-01-01) のまま保存されて
+    // IsOverdue が常に true になる。
+    [Fact]
+    public async Task Create_Post_PerRowMeasureKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 対策内容ありの行(=保存対象。この行の検証は残されるべき)を持つ ViewModel を用意する
+        var vm = ValidViewModel();
+        // 空行(対策内容なし)を 2 行目として足し、行ごとの除外ループを実際に走らせる
+        vm.Measures.Add(new MeasureFormViewModel { Description = "" });
+        // 空行(index 1)の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む。
+        // ZWJ U+200D を語中に挟んであるので、序数比較なら除外対象にならない
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("Meas‍ures[1].DueDate", "Measures[1].");
+        _controller.ModelState.AddModelError("Meas‍ures[1].DueDate", "除外対象ではないエラー");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // 当該キーが除去されずに残っていること(この 1 行が序数比較かどうかを判別する)
+        Assert.True(_controller.ModelState.ContainsKey("Meas‍ures[1].DueDate"));
+        // 検証エラーが残っている以上、インシデントは保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
+    // Edit 側の一括除外も序数比較であることを固定する。
+    // 判定条件が Create と別の式で書かれているため、片方だけ直す取りこぼしを防ぐ意味で個別に見る。
+    // Edit の式は前置詞を 2 つ（CauseAnalysis. と Measures[）持つので、両方に 1 件ずつ積む。
+    // 片方だけを見ていると、もう片方を素の StartsWith へ戻しても振る舞いのテストは緑のまま通る。
+    [Fact]
+    public async Task Edit_Post_SubFormKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 編集対象のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = TestFixtures.Today,
+            // 報告日時を明示しておく。既定値(0001-01-01)のままだと
+            // ValidateOccurredAtNotAfterReportedAt が「発生日時 > 報告日時」で
+            // 常にエラーを積んでしまい、下の「ModelState が無効」「保存されていない」の
+            // 各表明が前方一致の比較方法と無関係に成立してしまう(検査が空振りする)
+            ReportedAt = TestFixtures.Today
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // それ以外は妥当な編集フォームを用意する
+        var vm = ValidViewModel();
+        vm.ConcurrencyToken = incident.ConcurrencyToken;
+        // Measures[ の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
+        // (ZWJ U+200D を語中に挟んだ、除外対象ではないキー)
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("Meas‍ures[0].DueDate", "Measures[");
+        _controller.ModelState.AddModelError("Meas‍ures[0].DueDate", "除外対象ではないエラー");
+        // もう一方の前置詞（CauseAnalysis.）にも同じ形のキーを積む。Edit の除去式は
+        // 2 つの前置詞を || で並べており、片方だけ素の StartsWith へ戻す変異を
+        // 取りこぼさないため、両方を 1 つのテストで押さえる
+        // こちらの前置詞についても前提（カルチャ比較なら誤一致すること）を表明する。
+        // 片方だけ表明していると、ICU の版で U+00AD だけが無視されなくなったとき
+        // CauseAnalysis. 側だけが黙って判別力を失う
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("­CauseAnalysis.Why1", "CauseAnalysis.");
+        _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
+
+        // Edit POST を実行する
+        var result = await _controller.Edit(incident.Id, vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効のままであること
+        Assert.False(_controller.ModelState.IsValid);
+        // 当該キーが除去されずに残っていること（2 つの前置詞それぞれについて見る）
+        Assert.True(_controller.ModelState.ContainsKey("Meas‍ures[0].DueDate"));
+        Assert.True(_controller.ModelState.ContainsKey("­CauseAnalysis.Why1"));
+        // 検証エラーが残っている以上、既存の状況説明が書き換わっていないこと
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal("編集前", reloaded!.Description);
+    }
+
     [Fact]
     public async Task Edit_Post_FutureOccurredAt_ReturnsView_AndDoesNotSave()
     {
@@ -882,6 +1009,48 @@ public class IncidentsControllerTests : IDisposable
 
         Assert.Equal(1, vm!.TotalCount);
         Assert.Contains("点滴", vm.Incidents[0].Description);
+    }
+
+    // 検索キーワードの大文字化が、サーバの OS ロケールに左右されないことを
+    // 「コントローラ経由で」固定する。
+    //
+    // 正規化はヘルパ 1 箇所に集約してあるが、それだけでは「コントローラが実際に
+    // そのヘルパを通っているか」は誰も見ていない(呼び出し側を素の ToUpper() へ戻すだけで
+    // 元の不具合が復活する)。ここはその経路を押さえる。各コントローラが
+    // 自分の呼び出し側を持つので、経路ごとに個別のテストを置く。
+    //
+    // 保存する状況説明を「あらかじめ大文字の ASCII」にしてあるのは、テストの InMemory
+    // プロバイダには SQL が無く、式ツリーの col.ToUpper() が本番と違ってアプリ内で
+    // 現在のカルチャに従って評価されるため。列の側を大文字のままにしておけば
+    // トルコ語ロケールでも変化せず、判定対象をキーワード側の規則だけに絞れる
+    // (この切り分けの根拠は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)。
+    [Fact]
+    public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
+    {
+        // 現在のスレッドのカルチャをトルコ語へ差し替える。前提（この環境で実際に
+        // 大文字化の規則が変わること）の確認と、抜けるときの復元はヘルパーが担う
+        using (LocaleSensitiveTest.UseTurkishCulture())
+        {
+            // 状況説明に大文字 ASCII を含むインシデントを 1 件用意する
+            _db.Incidents.Add(new Incident
+            {
+                Department = "ICU",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level2,
+                Description = "INCIDENT: 点滴ラインが抜けた",
+                ReporterName = "A",
+                OccurredAt = TestFixtures.Today
+            });
+            await _db.SaveChangesAsync();
+
+            // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
+            // 列側の "INCIDENT" に一致しなくなる
+            var result = await _controller.Index("incident", null, null, null, null, null, null, null, 1) as ViewResult;
+            var vm = result?.Model as IncidentListViewModel;
+
+            // ロケールに関わらず 1 件ヒットすること
+            Assert.Equal(1, vm!.TotalCount);
+        }
     }
 
     // --- Details GET ---

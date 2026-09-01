@@ -38,6 +38,31 @@ public class AuditLogsControllerTests : IDisposable
 
     // --- Index ---
 
+    // 変更者フィルタの大文字化が、サーバの OS ロケールに左右されないことを固定する。
+    // 各コントローラが自分の呼び出し側を持つので、経路ごとに個別に押さえる
+    // (呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
+    // 保存する変更者名を大文字 ASCII にしてある理由は
+    // IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照。
+    [Fact]
+    public async Task Index_ChangedBySearchUsesInvariantUpperCasing_NotServerLocale()
+    {
+        // 現在のスレッドのカルチャをトルコ語へ差し替える。前提（この環境で実際に
+        // 大文字化の規則が変わること）の確認と、抜けるときの復元はヘルパーが担う
+        using (LocaleSensitiveTest.UseTurkishCulture())
+        {
+            // 変更者名が大文字 ASCII の監査ログを 1 件用意する
+            _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
+            await _db.SaveChangesAsync();
+
+            // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
+            var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
+            var vm = result?.Model as AuditLogListViewModel;
+
+            // ロケールに関わらず 1 件ヒットすること
+            Assert.Equal(1, vm!.TotalCount);
+        }
+    }
+
     [Fact]
     public async Task Index_NoFilters_ReturnsAllLogsNewestFirst()
     {

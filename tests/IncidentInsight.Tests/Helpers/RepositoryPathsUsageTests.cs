@@ -71,8 +71,6 @@ public class RepositoryPathsUsageTests
         Path.Combine("tests", "IncidentInsight.Tests", "Helpers", "RepositoryPaths.cs"),
     };
 
-    // ビルド生成物が置かれるディレクトリ名(走査対象から外す)
-    private static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
 
     [Fact]
     public void RepositoryLayout_IsKnownOnlyToSharedHelper()
@@ -92,7 +90,7 @@ public class RepositoryPathsUsageTests
         foreach (var file in Directory.EnumerateFiles(testsRoot, "*.cs", SearchOption.AllDirectories))
         {
             // ビルド生成物(obj / bin 配下の自動生成コード)は検査対象から外す
-            if (IsBuildArtifact(file, testsRoot)) continue;
+            if (RepositoryPaths.IsBuildArtifact(file)) continue;
 
             // リポジトリルートからの相対パスに直して除外リストと突き合わせる
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, file);
@@ -126,16 +124,5 @@ public class RepositoryPathsUsageTests
             + "(過去に同じ探索が 5 箇所へ複製され、目印の条件まで食い違っていました)。"
             + $"必要なパスは {nameof(RepositoryPaths)} のプロパティから受け取ってください。次のファイルが目印を直接書いています:\n"
             + string.Join("\n", violations));
-    }
-
-    // obj / bin 配下(ビルド生成物)かどうかを判定する
-    private static bool IsBuildArtifact(string filePath, string scanRoot)
-    {
-        // 走査の起点からの相対パスをディレクトリ区切りで分解する
-        var segments = Path.GetRelativePath(scanRoot, filePath)
-            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        // 途中に obj / bin があれば生成物とみなす
-        return segments.Any(segment =>
-            BuildArtifactDirectoryNames.Contains(segment, StringComparer.OrdinalIgnoreCase));
     }
 }

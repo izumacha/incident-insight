@@ -79,12 +79,11 @@ public class IncidentsController : Controller
             .ScopedByUser(User);
 
         // フリーワード検索(状況または報告者名を部分一致・大文字小文字を区別しない)
-        // string.Contains は SQLite/SQL Server では大文字小文字を区別しない LIKE に翻訳されるが、
-        // Npgsql(PostgreSQL) は既定で大文字小文字を区別する比較に翻訳するため、ToUpper() 同士の
-        // 比較に統一してプロバイダ間で検索結果が変わらないようにする(DB プロバイダ非依存の原則)
+        // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
+        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (!string.IsNullOrWhiteSpace(search))
         {
-            var normalizedSearch = search.ToUpper();
+            var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);
             query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
         }
         // 部署で絞り込み
@@ -244,8 +243,19 @@ public class IncidentsController : Controller
         // 未送信のときに残る不要な Required エラーを取り除くため。ただし一括除外だけだと
         // 保存対象(IsSavable)の分析の MaxLength 違反まで一緒に破棄されてしまうので、
         // 保存対象の場合は直後の再検証ブロックで本物の検証エラーを積み直す。
+        // StringComparison.Ordinal を明示する。引数なしの StartsWith は現在のカルチャで比較するため、
+        // ICU が「無視できる文字」とみなす記号(ソフトハイフン U+00AD・ZWJ U+200D 等)を挟んだキーまで
+        // 前方一致と判定してしまう(実測: "­CauseAnalysis.Why1" が true になる)。この一致は
+        // 除去する側へ効く＝意図より多くの検証エラーを捨てる fail-open で、しかも成立するかどうかが
+        // サーバの OS ロケールと ICU の版に左右される(CLAUDE.md §10 プラットフォーム差異ゼロ設計)。
+        // ModelState のキーは画面が組み立てる識別子であって自然言語ではないので、序数比較が正しい。
+        // 前置詞は文字列直書きではなく nameof で組み立てる(§6。同じ規則をこのファイルの
+        // 再検証ブロックと Views/Incidents/Details.cshtml が既に守っている)。直書きだと
+        // ViewModel のプロパティを改名したとき、キーを組み立てる側だけが追随して
+        // 除去する側が取り残され、空行の Required エラーが消えなくなる——利用者には
+        // 「対応する入力欄が見当たらないエラー」で登録できない状態として現れる
         foreach (var key in ModelState.Keys
-            .Where(k => k.StartsWith("CauseAnalysis."))
+            .Where(k => k.StartsWith($"{nameof(vm.CauseAnalysis)}.", StringComparison.Ordinal))
             .ToList())
         {
             // 原因分析サブフォーム由来の各キーを ModelState から除去する
@@ -303,8 +313,13 @@ public class IncidentsController : Controller
             // 保存されない空行のキー(Measures[i].*)だけをまとめて除去する。
             // 末尾に "]." まで含めてプレフィックス照合する。"Measures[1]" のように
             // 角括弧で止めると "Measures[10]." 等の別の行にも誤一致してしまうため。
-            var rowPrefix = $"Measures[{i}].";
-            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix)).ToList())
+            // StringComparison.Ordinal を明示する理由は上の CauseAnalysis. 除外ループのコメントを参照。
+            // この行ごとの除外は 3 つの前方一致の中で最も影響が大きい: 上のコメントのとおり
+            // 「保存される行のフィールド検証は残す」ことでデータ整合性を守っているため、
+            // カルチャ比較で保存対象の行にまで誤一致すると DueDate=default(0001-01-01) のまま
+            // 保存され IsOverdue が常に true になる
+            var rowPrefix = $"{nameof(vm.Measures)}[{i}].";
+            foreach (var key in ModelState.Keys.Where(k => k.StartsWith(rowPrefix, StringComparison.Ordinal)).ToList())
             {
                 // 空行由来の各キーを ModelState から除去する
                 ModelState.Remove(key);
@@ -606,8 +621,10 @@ public class IncidentsController : Controller
 
         // Remove sub-form keys from ModelState
         // 原因分析・対策のサブフォーム由来の ModelState キーをまとめて除外
+        // StringComparison.Ordinal を明示する理由は Create 側の同じ除外ループのコメントを参照
         foreach (var key in ModelState.Keys
-            .Where(k => k.StartsWith("CauseAnalysis.") || k.StartsWith("Measures["))
+            .Where(k => k.StartsWith($"{nameof(vm.CauseAnalysis)}.", StringComparison.Ordinal)
+                     || k.StartsWith($"{nameof(vm.Measures)}[", StringComparison.Ordinal))
             .ToList())
         {
             ModelState.Remove(key);

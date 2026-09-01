@@ -88,12 +88,11 @@ public class PreventiveMeasuresController : Controller
         if (overdue == true)
             query = query.Where(PreventiveMeasure.OverdueOn(_clock.Today));
         // 担当者キーワードが指定されていれば氏名/部署名で部分一致検索(大文字小文字を区別しない)
-        // string.Contains は SQLite/SQL Server では大文字小文字を区別しない LIKE に翻訳されるが、
-        // Npgsql(PostgreSQL) は既定で大文字小文字を区別する比較に翻訳するため、ToUpper() 同士の
-        // 比較に統一してプロバイダ間で検索結果が変わらないようにする(DB プロバイダ非依存の原則)
+        // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
+        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
         if (!string.IsNullOrEmpty(responsible))
         {
-            var normalizedResponsible = responsible.ToUpper();
+            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible);
             query = query.Where(m => m.ResponsiblePerson.ToUpper().Contains(normalizedResponsible) || m.ResponsibleDepartment.ToUpper().Contains(normalizedResponsible));
         }
         // 担当部署が指定されていれば完全一致で絞る
