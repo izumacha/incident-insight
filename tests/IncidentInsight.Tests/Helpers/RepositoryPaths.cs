@@ -64,12 +64,46 @@ internal static class RepositoryPaths
     /// 生成物ディレクトリの除外)に直し漏れたテストだけが静かに検査範囲を取り違える状態だった。
     /// 走査条件の唯一の源としてここに集約する(CLAUDE.md §6 DRY)。
     /// </summary>
-    // Views 配下を再帰的に辿り .cshtml のパスを返す
+    // Web プロジェクト配下を再帰的に辿り .cshtml のパスを返す(生成物は除く)。
+    //
+    // 【走査の根を Views/ から Web プロジェクト全体へ広げた経緯】以前は Views/ 配下だけを
+    // 辿っていたが、これは fail-open だった: MVC の Areas(Areas/<Name>/Views/)や
+    // Razor Pages(Pages/)配下の .cshtml は Views/ の外にあり、走査対象から静かに外れる
+    // (実測: Pages/ に置いたビューが、これを使う全 guard-rail テストを素通りした)。
+    // 取りこぼしたビューは「検査したつもりで検査していない」状態になり、
+    // ConcurrencyTokenFormTests が守る楽観ロックの不変条件のように、失われても
+    // 誰も気づけない性質のものが含まれる。現在 Views/ の外に .cshtml は 1 つも無いので
+    // 挙動は変わらず、増えたときに自動的に検査対象へ入る
     public static IEnumerable<string> EnumerateViewFiles() =>
-        Directory.EnumerateFiles(Views, ViewFileSearchPattern, SearchOption.AllDirectories);
+        Directory.EnumerateFiles(WebProject, ViewFileSearchPattern, SearchOption.AllDirectories)
+            .Where(path => !IsBuildArtifact(path));
+
+    // Web プロジェクト配下を再帰的に辿り .cs のパスを返す(生成物は除く)
+    public static IEnumerable<string> EnumerateWebSourceFiles() =>
+        Directory.EnumerateFiles(WebProject, SourceFileSearchPattern, SearchOption.AllDirectories)
+            .Where(path => !IsBuildArtifact(path));
+
+    /// <summary>
+    /// ビルド生成物(obj / bin 配下)かどうかを返す。走査系のテストが共有する唯一の判定。
+    ///
+    /// <para>以前は走査するテストごとに書かれ、しかも条件が食い違っていた
+    /// (一方はパスを区切って大文字小文字を無視して照合、もう一方は区切り文字を挟んだ
+    /// 文字列の部分一致で大文字小文字を区別)。<c>Obj/</c> のような表記で判定が割れ、
+    /// 片方だけが生成物を走査して生成コードを違反として報告しうる。判定はここ 1 か所に置く。</para>
+    /// </summary>
+    public static bool IsBuildArtifact(string filePath) =>
+        // パスをディレクトリ区切りで分解し、途中に obj / bin があれば生成物とみなす
+        filePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(segment => BuildArtifactDirectoryNames.Contains(segment, StringComparer.OrdinalIgnoreCase));
+
+    // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)
+    private static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
 
     // Razor ビューのファイル名パターン(走査条件の唯一の源)
     private const string ViewFileSearchPattern = "*.cshtml";
+
+    // C# ソースのファイル名パターン(走査条件の唯一の源)
+    private const string SourceFileSearchPattern = "*.cs";
 
     // ビルド出力ディレクトリから上へ辿ってリポジトリルートを探す
     private static string FindRoot()

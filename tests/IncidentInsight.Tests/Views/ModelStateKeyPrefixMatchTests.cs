@@ -82,17 +82,14 @@ public class ModelStateKeyPrefixMatchTests
     {
         // Razor 側も .cs 側と同じくアセンブリ全体を根にする。
         //
-        // 当初は RepositoryPaths.EnumerateViewFiles()(Views/ 配下のみ)を使っていたが、
-        // .cs 側で「目印やディレクトリで絞ると fail-open になる」と結論した理由がそのまま
-        // 当てはまる: Areas/<Name>/Views/ や Pages/ 配下の .cshtml は Views/ の外にあり、
-        // 走査対象から静かに外れる(実測: Pages/Probe.cshtml に素の StartsWith を置くと
-        // 全件緑のまま通った)。片側だけ広げると、失敗メッセージが謳う
-        // 「Razor ビューの中の StartsWith をすべて対象にします」も嘘になる。
-        var viewFiles = Directory
-            .EnumerateFiles(RepositoryPaths.WebProject, "*.cshtml", SearchOption.AllDirectories)
-            // ビルド生成物(obj / bin)は自分たちのソースではないので除く
-            .Where(p => !IsBuildArtifact(p))
-            .ToList();
+        // 当初 EnumerateViewFiles は Views/ 配下だけを辿っており、それは fail-open だった
+        // (Areas/<Name>/Views/ や Pages/ 配下の .cshtml が走査対象から静かに外れる。
+        //  実測: Pages/Probe.cshtml に素の StartsWith を置くと全件緑のまま通った)。
+        // ここで自分だけ広い列挙を持つと、同じ列挙を使う 4 つの guard-rail テスト
+        // (ConcurrencyTokenFormTests など)は取りこぼしたままになり、しかも
+        // RepositoryPaths が「走査条件の唯一の源」だという宣言が嘘になる。
+        // そこで共有ヘルパー側を広げ、こちらはそれを使う。
+        var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
 
         // .cs 側は Web プロジェクト配下を丸ごと対象にする（ビルド生成物だけ除く）。
         //
@@ -108,12 +105,9 @@ public class ModelStateKeyPrefixMatchTests
         // 「当たっているかどうか自体が見えない条件」を持たない方が、この規模では安全側。
         // 言語的な比較を意図する呼び出しが将来出てきたら、失敗メッセージの案内に従って
         // 許可値を広げるか対象から外す判断をレビューで行う。
-        var controllerSources = Directory
-            .EnumerateFiles(RepositoryPaths.WebProject, "*.cs", SearchOption.AllDirectories)
-            // ビルド生成物(obj / bin)は自分たちのソースではないので除く
-            .Where(p => !IsBuildArtifact(p))
-            // 本文は 1 度だけ読み、コメントを潰した状態を後段でも使い回す
-            .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
+        var controllerSources = RepositoryPaths.EnumerateWebSourceFiles()
+            // 本文は 1 度だけ読み、コメントと文字列リテラルを潰した状態を後段でも使い回す
+            .Select(p => ReadFor(p))
             .ToList();
 
         // .cs が 1 つも無いなら、走査の根か配置が壊れている(空振り対策)
@@ -122,7 +116,7 @@ public class ModelStateKeyPrefixMatchTests
 
         // ビュー側も同じ形（パスとコメントを潰した本文の組）に揃えておく
         var viewSources = viewFiles
-            .Select(p => (Path: p, Source: StripComments(File.ReadAllText(p))))
+            .Select(p => ReadFor(p))
             .ToList();
 
         // 検出した違反(ファイル名・行番号・引数)を集める
@@ -135,7 +129,7 @@ public class ModelStateKeyPrefixMatchTests
         // CLAUDE.md §5 が 1 行ごとの日本語コメントを求めるため、説明のために
         // StartsWith("...") をコメントへ書くことは実際にありうる。コード上の欠陥が
         // 無いのにコメントで落ちる検出網は、いずれ緩められる方向へ倒れる）
-        foreach (var (path, source) in controllerSources.Concat(viewSources))
+        foreach (var (path, source, raw) in controllerSources.Concat(viewSources))
         {
             // 報告用にリポジトリルートからの相対パスにしておく
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, path);
@@ -173,7 +167,12 @@ public class ModelStateKeyPrefixMatchTests
                     && AllowedComparisons.Contains(StripArgumentName(topLevelArguments[^1]), StringComparer.Ordinal))
                     continue;
                 // 序数比較を渡していない(引数なし・CurrentCulture 等)ので違反として記録する
-                violations.Add($"{relativePath}:{LineNumberAt(source, index)}: StartsWith({arguments})");
+                // 報告には元のソースの綴りを使う。走査用の本文は文字列の中身を空白へ潰して
+                // あるので、そのまま出すと StartsWith("      ") のような読めない報告になる
+                // (無害化は位置を保つよう同じ長さの空白へ置換しているので、同じ範囲を
+                //  元のソースから切り出せば元の綴りが得られる)
+                violations.Add($"{relativePath}:{LineNumberAt(source, index)}: "
+                    + $"StartsWith({SameRange(raw, source, arguments, index)})");
             }
 
             // このファイルの検査件数を記録する
@@ -190,11 +189,15 @@ public class ModelStateKeyPrefixMatchTests
             "StringComparison.Ordinal を明示してください"
             + "(引数なし・CurrentCulture・InvariantCulture はいずれも ICU が無視できるとみなす文字を"
             + "挟んだ文字列に誤一致します。ModelState のキーではこれが検証エラーの捨てすぎに直結します)。"
-            + "【この検査の適用範囲】ModelState を触るコントローラと Razor ビューの中の StartsWith を"
-            + "すべて対象にします——受け手が ModelState のキーかどうかを構文解析なしに判別できないためで、"
-            + "意図して言語的な比較をしたい場合は、その旨が読み取れるよう "
-            + "StringComparison.CurrentCulture を明示したうえで、この検査の許可値を広げるか"
-            + "対象から外す判断をレビューで行ってください。違反箇所:"
+            + "(OrdinalIgnoreCase も可)。"
+            + "【この検査の適用範囲】Web プロジェクト配下の .cs と .cshtml にある StartsWith を"
+            + "すべて対象にします——受け手が ModelState のキーかどうかを構文解析なしに"
+            + "判別できないためです。"
+            + "【言語的な比較を意図している場合】許可値(AllowedComparisons)を広げてはいけません。"
+            + "そこへ CurrentCulture を足すと、この検査が本来守っている ModelState のキーの"
+            + "前方一致まで一斉に素通りします(この検査が存在する理由そのものが失われます)。"
+            + "その呼び出しだけを対象から外す仕組みは現状ありません。必要になった時点で、"
+            + "呼び出し単位の除外(理由付きの表)を足すところからレビューで設計してください。違反箇所:"
             + Environment.NewLine + string.Join(Environment.NewLine, violations));
 
         // 系統ごとの空振りを表明するローカル関数
@@ -259,11 +262,31 @@ public class ModelStateKeyPrefixMatchTests
         return parts;
     }
 
-    /// <summary>ビルド生成物(obj / bin 配下)かどうかを返す。自分たちのソースではないので走査しない。</summary>
-    private static bool IsBuildArtifact(string path) =>
-        // パス区切りを挟んだ obj / bin ディレクトリを含むかで判定する
-        path.Contains($"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}", StringComparison.Ordinal)
-        || path.Contains($"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}", StringComparison.Ordinal);
+    /// <summary>
+    /// 走査用（無害化済み）と報告用（元のまま）の本文を組にして読み込む。
+    /// 無害化は同じ長さの空白へ置換するので、両者の位置は 1 文字もずれない。
+    /// </summary>
+    private static (string Path, string Source, string Raw) ReadFor(string path)
+    {
+        // ファイル全体を 1 度だけ読む
+        var raw = File.ReadAllText(path);
+        // 走査用に無害化した本文と組にして返す
+        return (path, Neutralize(raw), raw);
+    }
+
+    /// <summary>
+    /// 無害化済み本文の中の引数と同じ範囲を、元のソースから切り出して返す。
+    /// 位置が対応しない場合（想定外）は無害化済みの綴りをそのまま返す。
+    /// </summary>
+    private static string SameRange(string raw, string source, string arguments, int callIndex)
+    {
+        // 引数が本文のどこから始まるかを、呼び出し位置以降で探す
+        var start = source.IndexOf(arguments, callIndex, StringComparison.Ordinal);
+        // 見つからない、または元のソースからはみ出すなら無害化済みの綴りで報告する
+        if (start < 0 || start + arguments.Length > raw.Length) return arguments;
+        // 同じ範囲を元のソースから切り出して返す
+        return raw[start..(start + arguments.Length)];
+    }
 
     /// <summary>
     /// 引数から名前付き引数の接頭辞(<c>comparisonType:</c> の形)を取り除いて値だけを返す。
@@ -299,11 +322,22 @@ public class ModelStateKeyPrefixMatchTests
     }
 
     /// <summary>
-    /// C# の <c>//</c>・<c>/* */</c> と Razor の <c>@* *@</c> を空白へ潰す。
+    /// 走査の邪魔になる領域を空白へ潰す: コメント(C# の <c>//</c>・<c>/* */</c> と
+    /// Razor の <c>@* *@</c>)と、<b>文字列リテラルの中身</b>。
+    ///
+    /// <para><b>文字列の中身まで潰す理由。</b> 走査範囲をアセンブリ全体へ広げた結果、
+    /// 「メソッド名を文言として含む文字列」がコード中に現れうるようになった
+    /// (実測: <c>const string M = "use StartsWith(prefix) carefully";</c> を足すと、
+    /// 前方一致を 1 つも持たないファイルが違反として報告された)。利用者向けメッセージや
+    /// ログの書式にメソッド名が出るのは自然なことで、それを咎める検出網は
+    /// いずれ緩められる方向へ倒れる。引用符は残して中身だけ潰すので、
+    /// <c>StartsWith("x", StringComparison.Ordinal)</c> は
+    /// <c>StartsWith("", StringComparison.Ordinal)</c> として正しく解釈でき、
+    /// 比較方法の引数(文字列ではない)はそのまま残る。</para>
     /// 文字列リテラルの中の同じ綴りはコメントとして扱わない。
     /// 位置(行番号)を保つため、取り除くのではなく改行以外を空白へ置き換える。
     /// </summary>
-    private static string StripComments(string source)
+    private static string Neutralize(string source)
     {
         // 書き換え用に 1 文字ずつ写せる配列にする
         var chars = source.ToCharArray();
@@ -317,13 +351,20 @@ public class ModelStateKeyPrefixMatchTests
             if (chars[i] == '"' || chars[i] == '\'')
             {
                 // 閉じ記号まで位置を進める
-                var end = chars[i] == '"' ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
+                var isString = chars[i] == '"';
+                var end = isString ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
                 // 閉じ記号が無ければ、その 1 文字はリテラルの開始ではなかったと解釈して読み進める。
                 // ここでファイル全体を打ち切ってはいけない: Razor の本文にある素のアポストロフィ
                 // (英文の don't など。Create.cshtml だけで 56 個ある)で以降のコメントが一切
                 // 潰されなくなり、§5 が求める日本語コメントに StartsWith( と書いてあるだけで
                 // 正しいコードが違反として報告される(実測)。誤検出は検出網を緩める圧力になる
                 if (end < 0) continue;
+                // 文字列リテラルは中身だけ空白へ潰す(引用符は残すので構文としては壊れない)。
+                // 文字リテラルは中身に括弧やカンマが入りうるので、潰さずそのまま読み飛ばす
+                // (IsCharLiteral が ',' や '(' を判別できる必要があるため)
+                if (isString)
+                    for (var j = i + 1; j < end; j++)
+                        if (chars[j] != '\n' && chars[j] != '\r') chars[j] = ' ';
                 // リテラル全体を読み飛ばす
                 i = end;
                 // 次の文字へ
@@ -427,7 +468,7 @@ public class ModelStateKeyPrefixMatchTests
     /// 引用符の位置から文字列リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
     ///
     /// <para>C# の 3 つの書き方を扱う。<b>1 つでも取り違えるとリテラルの終わりを
-    /// 見失い、そこから先の解釈が丸ごとずれる</b>——<c>StripComments</c> は以降の
+    /// 見失い、そこから先の解釈が丸ごとずれる</b>——<c>Neutralize</c> は以降の
     /// コメントを潰せなくなり、§5 が求める日本語コメントに <c>StartsWith(</c> と
     /// 書いてあるだけで正しいコードが違反として報告される。正しいコードを咎める
     /// 検出網はいずれ緩められる方向へ倒れるので、ここは網羅しておく。
