@@ -498,6 +498,78 @@ public class IncidentsControllerTests : IDisposable
         Assert.Single(_db.Incidents);
     }
 
+    // サブフォーム由来キーの一括除外が「序数比較」であることを固定する。
+    //
+    // 引数なしの string.StartsWith は現在のカルチャで比較するため、ICU が「無視できる文字」と
+    // みなす記号(ソフトハイフン U+00AD / ZWJ U+200D 等)を挟んだキーまで前方一致と判定してしまう
+    // (実測: "­CauseAnalysis.Why1".StartsWith("CauseAnalysis.") は true、
+    //  StringComparison.Ordinal を渡すと false)。
+    // 一致は「除去する側」に効くので、意図より多くの検証エラーを捨てる fail-open になり、
+    // しかも成立するかどうかがサーバの OS ロケールと ICU の版に左右される。
+    // ModelState のキーは画面が組み立てる識別子であって自然言語ではないため、序数比較が正しい。
+    [Fact]
+    public async Task Create_Post_SubFormKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 妥当な入力(これ単体なら保存される)を用意する
+        var vm = ValidViewModel();
+        // 前方一致の対象と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
+        // (先頭にソフトハイフン U+00AD を置いた、除外対象ではないキー)
+        _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
+
+        // Create を実行する
+        var result = await _controller.Create(vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効のままであること(カルチャ比較なら除外されて有効になってしまう)
+        Assert.False(_controller.ModelState.IsValid);
+        // 当該キーが除去されずに残っていること(この 1 行が序数比較かどうかを判別する)
+        Assert.True(_controller.ModelState.ContainsKey("­CauseAnalysis.Why1"));
+        // 検証エラーが残っている以上、インシデントは保存されていないこと
+        Assert.Empty(_db.Incidents);
+    }
+
+    // Edit 側の一括除外(CauseAnalysis. / Measures[ の 2 つの前置詞)も序数比較であることを固定する。
+    // 判定条件が Create と別の式で書かれているため、片方だけ直す取りこぼしを防ぐ意味で個別に見る。
+    [Fact]
+    public async Task Edit_Post_SubFormKeyFilter_UsesOrdinalPrefixMatch()
+    {
+        // 編集対象のインシデントを 1 件用意する
+        var incident = new Incident
+        {
+            Department = "内科病棟",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "編集前",
+            ReporterName = "担当",
+            OccurredAt = TestFixtures.Today
+        };
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+
+        // それ以外は妥当な編集フォームを用意する
+        var vm = ValidViewModel();
+        vm.ConcurrencyToken = incident.ConcurrencyToken;
+        // Measures[ の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
+        // (ZWJ U+200D を語中に挟んだ、除外対象ではないキー)
+        _controller.ModelState.AddModelError("Meas‍ures[0].DueDate", "除外対象ではないエラー");
+
+        // Edit POST を実行する
+        var result = await _controller.Edit(incident.Id, vm);
+
+        // 除外されていない＝エラーが残っているので、保存されずフォームが再描画されること
+        var viewResult = Assert.IsType<ViewResult>(result);
+        Assert.Null(viewResult.ViewName);
+        // ModelState は無効のままであること
+        Assert.False(_controller.ModelState.IsValid);
+        // 当該キーが除去されずに残っていること
+        Assert.True(_controller.ModelState.ContainsKey("Meas‍ures[0].DueDate"));
+        // 検証エラーが残っている以上、既存の状況説明が書き換わっていないこと
+        var reloaded = await _db.Incidents.FindAsync(incident.Id);
+        Assert.Equal("編集前", reloaded!.Description);
+    }
+
     [Fact]
     public async Task Edit_Post_FutureOccurredAt_ReturnsView_AndDoesNotSave()
     {
