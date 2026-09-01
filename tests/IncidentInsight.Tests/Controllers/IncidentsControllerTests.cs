@@ -1,5 +1,3 @@
-// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
-using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -516,15 +514,9 @@ public class IncidentsControllerTests : IDisposable
         var vm = ValidViewModel();
         // 前方一致の対象と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
         // (先頭にソフトハイフン U+00AD を置いた、除外対象ではないキー)
-        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
-        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
-        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
-        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
-        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
-        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
-        Assert.True("­CauseAnalysis.Why1".StartsWith("CauseAnalysis.", StringComparison.CurrentCulture),
-            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
-            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("­CauseAnalysis.Why1", "CauseAnalysis.");
         _controller.ModelState.AddModelError("­CauseAnalysis.Why1", "除外対象ではないエラー");
 
         // Create を実行する
@@ -557,15 +549,9 @@ public class IncidentsControllerTests : IDisposable
         vm.Measures.Add(new MeasureFormViewModel { Description = "" });
         // 空行(index 1)の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む。
         // ZWJ U+200D を語中に挟んであるので、序数比較なら除外対象にならない
-        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
-        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
-        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
-        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
-        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
-        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
-        Assert.True("Meas‍ures[1].DueDate".StartsWith("Measures[1].", StringComparison.CurrentCulture),
-            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
-            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("Meas‍ures[1].DueDate", "Measures[1].");
         _controller.ModelState.AddModelError("Meas‍ures[1].DueDate", "除外対象ではないエラー");
 
         // Create を実行する
@@ -610,15 +596,9 @@ public class IncidentsControllerTests : IDisposable
         vm.ConcurrencyToken = incident.ConcurrencyToken;
         // Measures[ の前置詞と「カルチャ比較でだけ」一致するキーへ検証エラーを積む
         // (ZWJ U+200D を語中に挟んだ、除外対象ではないキー)
-        // このテストの前提（カルチャ比較なら誤一致すること）をその場で表明する。
-        // ホストが globalization-invariant モード（DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1。
-        // slim/distroless 系のコンテナでよくある）だと CompareInfo が序数比較へ縮退し、
-        // 下のキーはカルチャ比較でも一致しなくなる。その状態では修正を戻しても
-        // このテストが通ってしまい、検出網が黙って死ぬ。前提を表明しておけば、
-        // 素通りする代わりにここで落ちて「前提が崩れた」と分かる（fail-closed）。
-        Assert.True("Meas‍ures[0].DueDate".StartsWith("Measures[", StringComparison.CurrentCulture),
-            "前提が崩れています: この実行環境ではカルチャ比較が誤一致しないため、"
-            + "このテストは序数比較かどうかを判別できません（globalization-invariant モードの可能性）。");
+        // 前提（カルチャ比較なら誤一致すること）を共有ヘルパーで表明する。
+        // 崩れていれば素通りせずその場で落ちる（理由は LocaleSensitiveTest を参照）
+        LocaleSensitiveTest.RequireCultureSensitivePrefixMatch("Meas‍ures[0].DueDate", "Measures[");
         _controller.ModelState.AddModelError("Meas‍ures[0].DueDate", "除外対象ではないエラー");
         // もう一方の前置詞（CauseAnalysis.）にも同じ形のキーを積む。Edit の除去式は
         // 2 つの前置詞を || で並べており、片方だけ素の StartsWith へ戻す変異を
@@ -1043,9 +1023,9 @@ public class IncidentsControllerTests : IDisposable
     [Fact]
     public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
     {
-        // 現在のスレッドのカルチャを退避しておく(他のテストへ影響を残さないため)
-        var original = CultureInfo.CurrentCulture;
-        try
+        // 現在のスレッドのカルチャをトルコ語へ差し替える。前提（この環境で実際に
+        // 大文字化の規則が変わること）の確認と、抜けるときの復元はヘルパーが担う
+        using (LocaleSensitiveTest.UseTurkishCulture())
         {
             // 状況説明に大文字 ASCII を含むインシデントを 1 件用意する
             _db.Incidents.Add(new Incident
@@ -1059,8 +1039,6 @@ public class IncidentsControllerTests : IDisposable
             });
             await _db.SaveChangesAsync();
 
-            // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
             // 列側の "INCIDENT" に一致しなくなる
@@ -1069,11 +1047,6 @@ public class IncidentsControllerTests : IDisposable
 
             // ロケールに関わらず 1 件ヒットすること
             Assert.Equal(1, vm!.TotalCount);
-        }
-        finally
-        {
-            // 退避しておいたカルチャへ必ず戻す
-            CultureInfo.CurrentCulture = original;
         }
     }
 

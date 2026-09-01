@@ -1,5 +1,3 @@
-// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
-using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -742,16 +740,14 @@ public class PreventiveMeasuresControllerTests : IDisposable
     [Fact]
     public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
     {
-        // 現在のスレッドのカルチャを退避しておく
-        var original = CultureInfo.CurrentCulture;
-        try
+        // 現在のスレッドのカルチャをトルコ語へ差し替える。前提（この環境で実際に
+        // 大文字化の規則が変わること）の確認と、抜けるときの復元はヘルパーが担う
+        using (LocaleSensitiveTest.UseTurkishCulture())
         {
             // 担当部署が大文字 ASCII の対策を 1 件投入する
             // (大文字にしておく理由は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
 
-            // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで担当者/担当部署を検索する
             // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)
@@ -761,11 +757,6 @@ public class PreventiveMeasuresControllerTests : IDisposable
             var view = Assert.IsType<ViewResult>(result);
             var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
             Assert.Single(measures);
-        }
-        finally
-        {
-            // 退避しておいたカルチャへ必ず戻す
-            CultureInfo.CurrentCulture = original;
         }
     }
 

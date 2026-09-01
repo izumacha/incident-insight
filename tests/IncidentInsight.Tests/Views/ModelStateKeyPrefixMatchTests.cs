@@ -2,13 +2,11 @@
 using IncidentInsight.Tests.Helpers;
 
 // ソース走査系の guard-rail テストが集まっている名前空間
-// (ChartAccessibilityTests / ConcurrencyTokenFormTests / RoleGatedNavigationTests などと同居させる。
-//  Razor ビューを走査するので、既存のビュー走査テストと同じ家に置くのが探しやすい)
+// (ChartAccessibilityTests / ConcurrencyTokenFormTests / RoleGatedNavigationTests などと同居させる)
 namespace IncidentInsight.Tests.Views;
 
 /// <summary>
-/// Guard-rail test: <b>ModelState のキーに対する前方一致は必ず <c>StringComparison</c> を明示する</b>
-/// ことを固定する。
+/// Guard-rail test: <b>ModelState のキーに対する前方一致は必ず序数比較で行う</b>ことを固定する。
 ///
 /// <para><b>なぜ機械的に見張るのか。</b> 引数なしの <c>string.StartsWith</c> は現在のカルチャで
 /// 比較するため、ICU が「無視できる文字」とみなす記号(ソフトハイフン U+00AD・ZWJ U+200D 等)を
@@ -20,61 +18,75 @@ namespace IncidentInsight.Tests.Views;
 ///
 /// <para><b>この検査が要る理由は、実際に 2 度取りこぼしたから。</b> 同じ構文はコントローラに
 /// 3 箇所・Razor ビューに 2 箇所あり、序数比較へ揃える作業を 2 回行ってなお 3 箇所が残っていた。
-/// 個別の振る舞いテストは「今ある呼び出し」しか押さえられず、次に増える箇所を止められない。
-/// ソースを走査して「<c>StringComparison</c> を伴わない前方一致が 1 つも無いこと」を条件に
-/// すれば、増えた側が自動的に検査対象になる。</para>
+/// 個別の振る舞いテストは「今ある呼び出し」しか押さえられず、次に増える箇所を止められない。</para>
 ///
-/// <para><b>引数の切り出しは行単位ではなく対応する括弧まで見る。</b> 初版は
-/// <c>StartsWith\((?&lt;args&gt;[^\r\n]*)</c> という正規表現で行末までを引数とみなしていたが、
-/// これは 2 つの意味で壊れていた: (1) 1 行に 2 つの呼び出しがあると最初の一致が行の残り全部を
-/// 飲み込み、後ろの <c>StringComparison</c> を自分の引数と誤認する。(2) <c>Regex.Matches</c> は
-/// 重なる一致を返さないので、後ろの呼び出しは<b>そもそも数えられない</b>。実測では
-/// <c>.Where(k =&gt; k.StartsWith("CauseAnalysis.") || k.StartsWith("Measures[", StringComparison.Ordinal))</c>
-/// と 1 行に書くだけで全 529 件が緑のまま通った——この検査が防ごうとしている当の回帰である。
-/// そこで各呼び出しの<b>対応する閉じ括弧まで</b>を数えて引数を切り出す
-/// (入れ子の括弧と文字列リテラルを追う)。複数行に折り返された式も同じ理由で
-/// 行単位ではなくファイル全体を対象にする。</para>
+/// <para><b>この検査自体も 2 度素通りさせた。</b> 直し方を記録しておく。
+/// <list type="number">
+///   <item>引数を行末まで取っていたため、1 行に 2 つ呼び出しがあると最初の一致が行の残りを
+///     飲み込み、後ろの呼び出しは <c>Regex.Matches</c> の非重複規則で数えられもしなかった
+///     (実測: 1 行に書き直すだけで全件緑)。→ 対応する閉じ括弧まで数えて切り出す。</item>
+///   <item>引数に <c>StringComparison</c> という綴りがあれば通していたため、
+///     <c>StringComparison.CurrentCulture</c> を渡す形が素通りした(実測: 全件緑)。
+///     「明示したか」ではなく<b>「序数比較か」</b>を見るのが正しい。→ 許可する値を
+///     <see cref="AllowedComparisons"/> に列挙して突き合わせる。</item>
+/// </list>
+/// どちらも「検査が形だけ通る条件」を見ていたのが原因で、<b>守りたい性質そのもの</b>を
+/// 条件にしていなかった。</para>
 /// </summary>
 public class ModelStateKeyPrefixMatchTests
 {
-    /// <summary>
-    /// 走査対象のうち <c>.cs</c> 側(Razor ビュー側は
-    /// <see cref="RepositoryPaths.EnumerateViewFiles"/> から導出するのでここには書かない)。
-    ///
-    /// <para>ModelState のキーを前方一致で扱う <c>.cs</c> はこのファイルだけ。走査対象を
-    /// アプリ全体の <c>.cs</c> へ広げると、自然言語の文字列に対する前方一致まで巻き込んで
-    /// 実行不能な指示を出す検出網になるため、範囲を絞っている。<b>ModelState のキーを
-    /// 前方一致で扱うコードを別の <c>.cs</c> へ足すときは、ここへ追加すること</b>。</para>
-    /// </summary>
-    private static readonly string[] ScannedSourceFiles =
+    // 許可する比較方法。ModelState のキーは画面が組み立てる識別子なので、
+    // ロケールに依存しない序数比較だけを認める(CurrentCulture / InvariantCulture は
+    // どちらも「文字を無視できる」規則を持ち込むため不可)
+    private static readonly string[] AllowedComparisons =
     {
-        Path.Combine(RepositoryPaths.WebProject, "Controllers", "IncidentsController.cs"),
+        "StringComparison.Ordinal",
+        "StringComparison.OrdinalIgnoreCase",
     };
 
     // 探す呼び出しの綴り(この後ろの開き括弧から対応する閉じ括弧までを引数とみなす)
     private const string StartsWithCall = "StartsWith(";
 
-    // 引数に必ず現れるべき綴り(序数比較などの比較方法の明示)
-    private const string RequiredArgument = "StringComparison";
+    // .cs 側の走査範囲を決める目印。ModelState のキー集合を触っているファイルだけを対象にする
+    private const string ModelStateKeysMarker = "ModelState.Keys";
 
     [Fact]
-    public void ModelStateKeyPrefixMatches_AlwaysSpecifyStringComparison()
+    public void ModelStateKeyPrefixMatches_AlwaysUseOrdinalComparison()
     {
+        // Razor ビューは共有の列挙から導出する(4 つのビュー走査テストが各自で列挙して
+        // ずれた経緯があり、RepositoryPaths.EnumerateViewFiles が唯一の源)。
+        // 2 度列挙して食い違う余地を作らないよう、1 度だけ実体化して使い回す
+        var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
+
+        // .cs 側は一覧を手で持たず、「Controllers 配下で ModelState.Keys に触っているファイル」
+        // という増えれば自動的に増える目印から導出する。手書きの一覧だと、別のコントローラへ
+        // 同じ構文を足したときに検査対象から静かに外れる(この検査が防ごうとしている形そのもの)
+        var controllerFiles = Directory
+            .EnumerateFiles(Path.Combine(RepositoryPaths.WebProject, "Controllers"), "*.cs", SearchOption.AllDirectories)
+            .Where(p => File.ReadAllText(p).Contains(ModelStateKeysMarker, StringComparison.Ordinal))
+            .ToList();
+
+        // 目印を持つコントローラが 1 つも無いなら、導出条件か配置が壊れている(空振り対策)
+        Assert.True(controllerFiles.Count > 0,
+            $"Controllers 配下に {ModelStateKeysMarker} を含むファイルが 1 つもありません。"
+            + "導出条件が壊れているか、ModelState のキー操作が別の場所へ移っています。");
+
         // 検出した違反(ファイル名・行番号・引数)を集める
         var violations = new List<string>();
         // ファイルごとに検査した呼び出し数を記録する。全体で 1 件でも見ていれば緑、では
-        // 「片方のファイルが丸ごと検査対象から外れた」ことを検出できない
-        // (例: ビュー側の判定を partial やヘルパへ切り出すと、そのファイルの寄与が 0 になる)。
-        // 空振りの判定はファイル単位で行う
-        var inspectedCallsByFile = new Dictionary<string, int>();
+        // 「片方の系統が丸ごと検査対象から外れた」ことを検出できないため、系統ごとに見る
+        var callsByFile = new Dictionary<string, int>();
 
-        // .cs 側の対象と、Razor ビュー側の対象(共有の列挙から導出)を合わせて走査する
-        foreach (var path in ScannedSourceFiles.Concat(RepositoryPaths.EnumerateViewFiles()))
+        // .cs 側とビュー側を合わせて走査する
+        foreach (var path in controllerFiles.Concat(viewFiles))
         {
             // 報告用にリポジトリルートからの相対パスにしておく
             var relativePath = Path.GetRelativePath(RepositoryPaths.Root, path);
-            // ファイル全体を読む(式が複数行へ折り返されていても取りこぼさないため)
-            var source = File.ReadAllText(path);
+            // ファイル全体を読み、コメントを取り除いてから走査する。
+            // CLAUDE.md §5 が 1 行ごとの日本語コメントを求めるため、説明のために
+            // StartsWith("...") をコメントへ書くことが実際にありうる。コード上の欠陥が
+            // 無いのにコメントで落ちる検出網は、いずれ緩められる方向へ倒れる
+            var source = StripComments(File.ReadAllText(path));
             // このファイルで見つけた呼び出しの数を数える
             var callsInFile = 0;
 
@@ -93,43 +105,116 @@ public class ModelStateKeyPrefixMatchTests
                 }
                 // 検査した呼び出しとして数える
                 callsInFile++;
-                // 比較方法が明示されていれば違反ではない
-                if (arguments.Contains(RequiredArgument, StringComparison.Ordinal))
+                // 許可した序数比較のいずれかを渡していれば違反ではない
+                if (AllowedComparisons.Any(c => arguments.Contains(c, StringComparison.Ordinal)))
                     continue;
-                // 明示が無い＝現在のカルチャで比較されるので違反として記録する
+                // 序数比較を渡していない(引数なし・CurrentCulture 等)ので違反として記録する
                 violations.Add($"{relativePath}:{LineNumberAt(source, index)}: StartsWith({arguments})");
             }
 
             // このファイルの検査件数を記録する
-            inspectedCallsByFile[relativePath] = callsInFile;
+            callsByFile[relativePath] = callsInFile;
         }
 
-        // .cs 側の対象は必ず 1 件以上の呼び出しを含むはず。0 件なら走査か対象指定が壊れている
-        foreach (var path in ScannedSourceFiles)
-        {
-            // 相対パスに直してから件数を引く
-            var relativePath = Path.GetRelativePath(RepositoryPaths.Root, path);
-            // 対象ファイルが実在することを確かめる(改名で走査が黙って空振りするのを防ぐ)
-            Assert.True(File.Exists(path), $"走査対象のファイルが見つかりません: {relativePath}");
-            // 1 件も検出できていなければ、このファイルは検査されていないのと同じなので落とす
-            Assert.True(inspectedCallsByFile.GetValueOrDefault(relativePath) > 0,
-                $"{relativePath} から StartsWith( を 1 件も検出できませんでした。"
-                + "前方一致を別の場所へ移したのなら、走査対象(ScannedSourceFiles)も併せて直してください。");
-        }
-
-        // Razor ビュー側も、全体で 1 件も見ていなければ検出網が死んでいる
-        Assert.True(
-            RepositoryPaths.EnumerateViewFiles()
-                .Select(p => inspectedCallsByFile.GetValueOrDefault(Path.GetRelativePath(RepositoryPaths.Root, p)))
-                .Sum() > 0,
-            "Razor ビューから StartsWith( を 1 件も検出できませんでした。走査条件が壊れています。");
+        // 系統ごとに「1 件も見ていない」状態を弾く。片方が 0 でも全体が 0 でなければ
+        // 気づけない、という前版の穴を塞ぐ
+        AssertScanned(controllerFiles, "Controllers 配下(.cs)");
+        AssertScanned(viewFiles, "Razor ビュー(.cshtml)");
 
         // 違反があれば、直し方まで示して落とす
         Assert.True(violations.Count == 0,
             "ModelState のキーに対する前方一致は StringComparison.Ordinal を明示してください"
-            + "(引数なしの StartsWith は現在のカルチャで比較され、ICU が無視できるとみなす文字を"
-            + "挟んだキーにも誤一致して検証エラーを捨てすぎます)。違反箇所:"
+            + "(引数なし・CurrentCulture・InvariantCulture はいずれも ICU が無視できるとみなす文字を"
+            + "挟んだキーに誤一致し、検証エラーを捨てすぎます)。違反箇所:"
             + Environment.NewLine + string.Join(Environment.NewLine, violations));
+
+        // 系統ごとの空振りを表明するローカル関数
+        void AssertScanned(List<string> files, string label)
+        {
+            // その系統で検査できた呼び出しの合計を求める
+            var total = files.Sum(p => callsByFile.GetValueOrDefault(Path.GetRelativePath(RepositoryPaths.Root, p)));
+            // 1 件も無ければ検出網が死んでいるので落とす
+            Assert.True(total > 0,
+                $"{label} から StartsWith( を 1 件も検出できませんでした。"
+                + "前方一致を別の場所へ移したのなら、走査対象の導出条件も併せて直してください。");
+        }
+    }
+
+    /// <summary>
+    /// C# の <c>//</c>・<c>/* */</c> と Razor の <c>@* *@</c> を空白へ潰す。
+    /// 文字列リテラルの中の同じ綴りはコメントとして扱わない。
+    /// 位置(行番号)を保つため、取り除くのではなく改行以外を空白へ置き換える。
+    /// </summary>
+    private static string StripComments(string source)
+    {
+        // 書き換え用に 1 文字ずつ写せる配列にする
+        var chars = source.ToCharArray();
+        // 先頭から順に見ていく
+        for (var i = 0; i < chars.Length; i++)
+        {
+            // 文字列リテラルはそのまま残す(中の // などをコメント扱いしないため)
+            if (chars[i] == '"')
+            {
+                // 閉じ引用符まで位置を進める
+                var end = SkipStringLiteral(source, i);
+                // 閉じ引用符が無ければこれ以上は解釈できないので打ち切る
+                if (end < 0) break;
+                // 文字列リテラル全体を読み飛ばす
+                i = end;
+                // 次の文字へ
+                continue;
+            }
+            // 行コメント(//)・ブロックコメント(/* */)・Razor コメント(@* *@)の開始を判定する
+            var (isComment, closing) = DetectCommentStart(source, i);
+            // コメントでなければ何もしない
+            if (!isComment) continue;
+            // 終端の綴りが空なら行末まで、そうでなければその綴りまでを潰す
+            var stop = closing.Length == 0
+                // 行コメントは改行の直前まで
+                ? IndexOfLineEnd(source, i)
+                // ブロック系は終端の綴りを含めた位置まで
+                : EndOfBlock(source, i, closing);
+            // 開始位置から終端までを空白へ置き換える(改行だけは残して行番号を保つ)
+            for (var j = i; j < stop; j++)
+                if (chars[j] != '\n' && chars[j] != '\r') chars[j] = ' ';
+            // 潰した領域の直後から走査を続ける
+            i = stop - 1;
+        }
+        // 潰し終えた内容を文字列に戻す
+        return new string(chars);
+    }
+
+    /// <summary>指定位置がコメントの開始かを判定し、開始なら終端の綴り(行コメントは空)を返す。</summary>
+    private static (bool IsComment, string Closing) DetectCommentStart(string source, int i)
+    {
+        // 2 文字読めないなら開始ではありえない
+        if (i + 1 >= source.Length) return (false, "");
+        // // なら行コメント(終端は行末なので綴りは空)
+        if (source[i] == '/' && source[i + 1] == '/') return (true, "");
+        // /* ならブロックコメント
+        if (source[i] == '/' && source[i + 1] == '*') return (true, "*/");
+        // @* なら Razor コメント
+        if (source[i] == '@' && source[i + 1] == '*') return (true, "*@");
+        // どれでもない
+        return (false, "");
+    }
+
+    /// <summary>指定位置から見た行末(改行の直前)の位置を返す。</summary>
+    private static int IndexOfLineEnd(string source, int from)
+    {
+        // 次の改行を探す
+        var newline = source.IndexOf('\n', from);
+        // 改行が無ければ終端までが行の残り
+        return newline < 0 ? source.Length : newline;
+    }
+
+    /// <summary>ブロックコメントの終端(終端綴りを含む)の位置を返す。見つからなければ終端。</summary>
+    private static int EndOfBlock(string source, int from, string closing)
+    {
+        // 終端の綴りを探す
+        var end = source.IndexOf(closing, from + 2, StringComparison.Ordinal);
+        // 見つからなければファイル終端まで、見つかれば綴りを含めた位置まで
+        return end < 0 ? source.Length : end + closing.Length;
     }
 
     /// <summary>

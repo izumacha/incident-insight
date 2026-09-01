@@ -1,5 +1,3 @@
-// ロケール(カルチャ)を差し替えて検索の不変性を検証するために使う
-using System.Globalization;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -48,16 +46,14 @@ public class AuditLogsControllerTests : IDisposable
     [Fact]
     public async Task Index_ChangedBySearchUsesInvariantUpperCasing_NotServerLocale()
     {
-        // 現在のスレッドのカルチャを退避しておく
-        var original = CultureInfo.CurrentCulture;
-        try
+        // 現在のスレッドのカルチャをトルコ語へ差し替える。前提（この環境で実際に
+        // 大文字化の規則が変わること）の確認と、抜けるときの復元はヘルパーが担う
+        using (LocaleSensitiveTest.UseTurkishCulture())
         {
             // 変更者名が大文字 ASCII の監査ログを 1 件用意する
             _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
             await _db.SaveChangesAsync();
 
-            // ドット無し I を持つトルコ語ロケールへ切り替える
-            CultureInfo.CurrentCulture = LocaleSensitiveTest.RequireTurkishCulture();
 
             // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
             var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
@@ -65,11 +61,6 @@ public class AuditLogsControllerTests : IDisposable
 
             // ロケールに関わらず 1 件ヒットすること
             Assert.Equal(1, vm!.TotalCount);
-        }
-        finally
-        {
-            // 退避しておいたカルチャへ必ず戻す
-            CultureInfo.CurrentCulture = original;
         }
     }
 
