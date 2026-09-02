@@ -164,15 +164,15 @@ public class PreventiveMeasuresController : Controller
             .Take(MaxDepartmentFilterOptions)
             .ToListAsync();
         // 適用中のフィルタ値が選択肢に含まれない場合(上限超過で切り捨てられた・
-        // 該当する対策が削除された等)は先頭に補完する。補完しないと、絞り込みが
-        // 効いているのに select は「全て」を表示して UI と実状態が食い違い、その
-        // フォームを再送信した時点でフィルタが利用者の意図なく無言で解除されてしまう
-        // (補完するのは実際に絞り込みへ使った値だけ。空白のみの入力は上で絞り込みに使って
-        //  いないため、ここでも選択肢に足さない ——足すと存在しない部署が選択肢に現れる)
-        if (SearchFilter.HasValue(responsibleDepartment) && !responsibleDepartmentOptions.Contains(responsibleDepartment))
+        // 該当する対策が削除された等)は先頭に補完する。補完の手順(既にあれば足さない・
+        // 無ければ先頭へ)と「なぜ先頭なのか」は共有ヘルパに集約してある ——
+        // /Incidents も同じ手順を使うので、位置の規則を画面ごとに書き写さない。
+        // ここで決めているのは「補完するかどうか」だけで、担当部署は自由記述のため
+        // 実際に絞り込みへ使った値なら無条件に補完する
+        // (空白のみの入力は上で絞り込みに使っていないため対象外。足すと存在しない部署が選択肢に現れる)
+        if (SearchFilter.HasValue(responsibleDepartment))
         {
-            // 適用中の部署名を選択肢の先頭に追加する
-            responsibleDepartmentOptions.Insert(0, responsibleDepartment);
+            IncidentControllerHelpers.EnsureAppliedValueIsSelectable(responsibleDepartmentOptions, responsibleDepartment);
         }
         // ドロップダウン選択肢としてビューへ渡す
         ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;

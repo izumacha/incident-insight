@@ -127,6 +127,48 @@ internal static class IncidentControllerHelpers
         => keyword.ToUpperInvariant();
 
     /// <summary>
+    /// 適用中の絞り込み値がドロップダウンの選択肢に無ければ、<b>先頭へ</b>補完する。
+    /// </summary>
+    /// <remarks>
+    /// <para>一覧画面が「補完」方式を採るときの共通手順。守る不変条件は
+    /// <b>絞り込みに使った値は必ず選択肢にある</b>こと 1 つで、
+    /// なぜそれが要るのか(壊れ方と、画面ごとの方式の割り当て)は
+    /// <see cref="Models.Validation.SearchFilter"/> の解説が正本
+    /// ——ここへ書き写すと、方針を変えたときにこちらが古くなる(issue #192)。</para>
+    ///
+    /// <para><b>先頭に置く理由。</b> 末尾へ足すと、選択肢が多い画面ではスクロールしないと
+    /// 現在値が見えず、「選ばれていない」と誤解した利用者が別の値を選んで絞り込みを失う。
+    /// 「(全て)」の直後という位置そのものが規則なので、画面ごとに書き写さず
+    /// ここ 1 か所に置く(<c>/Incidents</c> と <c>/PreventiveMeasures</c> の 2 画面が使う)。</para>
+    ///
+    /// <para><b>この関数は「補完するかどうか」を決めない。</b> それは画面ごとの方針で、
+    /// <c>/PreventiveMeasures</c> は無条件、<c>/Incidents</c> は実データにあるときだけ。
+    /// 判断の規則と理由は <c>Models.Validation.SearchFilter</c> の解説に集約してある。</para>
+    /// </remarks>
+    /// <para><b>この関数の 2 つの門番はテストから直接は動かせない。</b> 現在の 2 画面は
+    /// 空値をここへ渡す前に自前で弾いており（<c>SearchFilter.HasValue</c> / <c>null</c> 判定）、
+    /// この型は <c>internal</c> でテストからは呼べない。つまり空値の門番を消しても全件緑になる。
+    /// それでも置くのは、この関数を切り出した目的が「3 画面目が位置の規則を思い出さなくて
+    /// 済むようにする」ことで、同じ理由が空値の規則にも当てはまるため
+    /// ——守り忘れると「(全て)」の直後に画面上は見分けの付かない空の項目が並ぶ。
+    /// <b>この関数を触る差分は、2 つの門番が残っているかをレビューで確かめること。</b></para>
+    /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
+    /// <param name="appliedValue">実際に絞り込みへ使っている値。</param>
+    public static void EnsureAppliedValueIsSelectable(List<string> options, string appliedValue)
+    {
+        // 空・空白のみは足さない。足すと「(全て)」の直後に画面上は見分けの付かない
+        // 空の項目が並び、押しても何も起きない選択肢として残る。
+        // この判定を呼び出し側の記憶に任せないのは、位置の規則をここへ集めたのと同じ理由
+        // ——今の 2 画面は別々の形(SearchFilter.HasValue / null 判定)で自前に守っており、
+        // 3 画面目が同じことを思い出せるとは限らない
+        if (!SearchFilter.HasValue(appliedValue)) return;
+        // 既に選択肢にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
+        if (options.Contains(appliedValue)) return;
+        // 「(全て)」の直後に来るよう先頭へ差し込む
+        options.Insert(0, appliedValue);
+    }
+
+    /// <summary>
     /// 原因カテゴリのドロップダウン用に、親カテゴリでグルーピングした子カテゴリ一覧を作る。
     /// </summary>
     public static async Task<List<SelectListItem>> BuildCauseCategoryOptionsAsync(ApplicationDbContext db)
