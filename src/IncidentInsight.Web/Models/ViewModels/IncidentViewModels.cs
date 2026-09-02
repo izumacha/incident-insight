@@ -69,8 +69,9 @@ public class IncidentListViewModel
     //
     // 真偽値ではなく値そのものを持つのは、画面に「何を落としたか」を出すため。
     // 採用していない値は Department にも載らず select にもページャの URL にも現れないので、
-    // ここに持たないと利用者は自分が送った値を確認できない。表示する長さは
-    // 上限で切ってある(下の IgnoredDepartmentMaxDisplayLength を参照)
+    // ここに持たないと利用者は自分が送った値を確認できない。
+    // クエリ文字列がそのまま画面へ戻る唯一の経路なので、長さと文字種は
+    // IncidentsController.TruncateForDisplay が整えてから設定する(そこに理由も書いてある)
     public string? IgnoredDepartment { get; set; }
 }
 

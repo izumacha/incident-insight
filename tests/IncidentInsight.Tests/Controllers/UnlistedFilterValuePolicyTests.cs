@@ -1,5 +1,7 @@
 // ClaimsPrincipal(実行ロール)をテストから指定するために使う
 using System.Security.Claims;
+// Rune(サロゲートペアを 1 文字として扱う型)を使う
+using System.Text;
 // Razor ソースからコメントと foreach の対象を取り出すために使う
 using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
@@ -7,6 +9,8 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+// 文字数上限の唯一の真実の源(FieldLengths)を使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -48,26 +52,17 @@ namespace IncidentInsight.Tests.Controllers;
 ///
 /// <para><b>ここで固定できない境界: 照合順序(collation)によるずれ。</b>
 /// <c>/Incidents</c> の実装は、許可リストの判定を C# の<b>序数比較</b>で、
-/// どの行が一致するかの判定を<b>DB の照合順序</b>で行う。分担をこう切ってあるのは、
-/// アプリ側で綴りを畳むと既定プロバイダ(大文字小文字を区別する SQLite)で
-/// 「絞り込み無しなら見えている行が、絞り込むと 0 件になる」壊れ方をするため
-/// (<c>ResolveDepartmentFilterAsync</c> の「綴り違いをアプリ側で畳まない」を参照)。
+/// どの行が一致するかの判定を<b>DB の照合順序</b>で行う。分担をこう切った理由は
+/// <c>IncidentsController.ResolveDepartmentFilterAsync</c> の解説に書いてある
+/// (ここに書き写すと、実装が動いたときにこちらが古くなる)。
 /// アプリ側の分担は序数比較なので <b>InMemory でもそのまま動かせる</b> ——
 /// <c>Incidents_DepartmentStoredWithVariantSpelling_StaysReachable</c> が固定する。</para>
 ///
 /// <para>一方、<b>DB 側の分担はここでは動かせない</b>。InMemory も序数比較なので、
-/// 照合順序が大文字小文字を区別しない配備先だけで通る枝には入らない。具体的には次の 2 つで、
-/// どちらも実測で「消しても全件緑」だった:</para>
-///
-/// <list type="number">
-///   <item><description>綴りを 1 件取り出すときの <c>OrderBy(i =&gt; i.Id)</c>。
-///     綴り違いが<b>同時に</b>一致しうる配備先でのみ、結果を決定的にする働きを持つ。</description></item>
-///   <item><description>取り出した綴りが許可リストに既にある場合に補完を省く枝
-///     (<c>if (!options.Contains(storedDepartment))</c>)。序数比較では、そこへ到達した時点で
-///     綴りが許可リストと一致しないことが確定しているため<b>条件が常に真</b>になる。</description></item>
-/// </list>
-///
-/// <para>プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
+/// 照合順序が大文字小文字を区別しない配備先だけで通る枝には入らない。該当するのは
+/// 「取り出した綴りを 1 件に決める並べ替え」と「その綴りが既に選択肢にあるときに
+/// 補完を省く判定」の 2 つで、どちらも実測で「消しても全件緑」だった。
+/// プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
 /// <b>この付近を触る差分はレビューで「どちらの比較規則で判定しているか」
 /// 「同値行の並びを固定しているか」を確かめること。</b></para>
 /// </summary>
@@ -280,6 +275,61 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 採用しなかったことが、値ごと画面へ伝わっている
         // (何を落としたかはページの他のどこにも出ないため、値まで持つ)
         Assert.Equal(UnknownDepartment, vm.IgnoredDepartment);
+    }
+
+    // 注意書きへ出す値は、長さと文字種の両方を整えてから渡す。
+    // これはクエリ文字列がそのまま画面へ戻る唯一の経路で、Razor の自動エスケープは
+    // マークアップの混入しか防がない
+    [Fact]
+    public async Task Incidents_IgnoredDepartment_IsTruncatedForDisplay()
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 実在しうる部署名の上限をはっきり超える長さを送る
+        var tooLong = new string('あ', FieldLengths.ShortText + 50);
+        var vm = await IndexIncidentsAsync(tooLong);
+
+        // 省略記号 1 文字ぶんを足した長さで頭打ちになる
+        Assert.Equal(FieldLengths.ShortText + 1, vm.IgnoredDepartment!.Length);
+        Assert.EndsWith("…", vm.IgnoredDepartment);
+    }
+
+    // サロゲートペア(絵文字や一部の漢字)の途中で切らない。
+    // UTF-16 の符号単位で切ると片割れだけが残り、置換文字(U+FFFD)として描画される
+    // ——「何を送ったか」を確かめるための表示なので、そこが化けては意味がない
+    [Fact]
+    public async Task Incidents_IgnoredDepartment_DoesNotSplitSurrogatePairs()
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 上限のちょうど境界にサロゲートペアが来るように組み立てる
+        var value = new string('あ', FieldLengths.ShortText - 1) + "😀" + "うしろ";
+        var vm = await IndexIncidentsAsync(value);
+
+        // 対になっていないサロゲート(＝ペアの片割れ)が残っていない。
+        // 正しいペアは高位・低位の両方を含むので「低位サロゲートがあるか」では判定できない
+        // ——Rune として読めるかどうかで見る
+        Assert.True(vm.IgnoredDepartment!.EnumerateRunes().All(r => r != Rune.ReplacementChar),
+            $"対になっていないサロゲートが残っている: {vm.IgnoredDepartment}");
+        // 絵文字は 1 文字として残っている(切るなら手前で切る)
+        Assert.Contains("😀", vm.IgnoredDepartment);
+    }
+
+    // 双方向テキストの上書き(U+202E など)はエスケープを通り抜け、後続の文言の見た目を
+    // 反転させる。注意書きの意味が読み手にとって変わってしまうので落とす
+    [Fact]
+    public async Task Incidents_IgnoredDepartment_DropsInvisibleControlCharacters()
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 右から左への上書き指示と改行を混ぜた値を送る
+        var vm = await IndexIncidentsAsync("外来\u202E\n病棟");
+
+        // 表示しない文字は残っていない
+        Assert.Equal("外来病棟", vm.IgnoredDepartment);
     }
 
     // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
@@ -553,17 +603,23 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         //     最初の 1 つが条件を満たして通ってしまう ——そして絞り込み中は常に
         //     「(全て)」が選ばれる、という issue #192 そのものの状態になる。
         // ループ本体に限れば、どちらの逃げ道も塞がる
-        var loopBody = ExtractLoopBody(selectBlock);
-        Assert.True(loopBody != null,
+        var loopBodies = ExtractLoopBodies(selectBlock);
+        Assert.True(loopBodies.Count > 0,
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> の foreach に本体が無い。");
-        var selectedExpression = ExtractAttributeValue(loopBody!, "selected");
-        Assert.True(selectedExpression != null,
-            $"{viewFolder}/Index.cshtml のループが作る <option> に selected 属性が無い。"
-            + "現在値を示さないと select は先頭の「(全て)」を指し、"
-            + "再送信で絞り込みが無言で解除される(issue #192)。");
-        Assert.True(ContainsIdentifier(selectedExpression!, appliedValue),
-            $"{viewFolder}/Index.cshtml の selected は {appliedValue} と比べること。"
-            + $"実際の式: {selectedExpression}");
+        // すべてのループ本体を見る。最初の 1 つだけだと、2 つ目のループ(「補完した値を先に、
+        // 続けて許可リストを」のような分割)が丸ごと検査から外れる ——実測でも、
+        // selected を持たない 2 つ目のループを足すと全 580 件が緑のまま通った
+        Assert.All(loopBodies, body =>
+        {
+            var selectedExpression = ExtractAttributeValue(body, "selected");
+            Assert.True(selectedExpression != null,
+                $"{viewFolder}/Index.cshtml のループが作る <option> に selected 属性が無い。"
+                + "現在値を示さないと select は先頭の「(全て)」を指し、"
+                + "再送信で絞り込みが無言で解除される(issue #192)。");
+            Assert.True(ContainsIdentifier(selectedExpression!, appliedValue),
+                $"{viewFolder}/Index.cshtml の selected は {appliedValue} と比べること。"
+                + $"実際の式: {selectedExpression}");
+        });
     }
 
     // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。
@@ -573,7 +629,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
     // コントローラ級のテストは ViewModel までしか見ないので、@if のブロックごと消しても
-    // 全件緑のまま通る(実測)。そうなると DepartmentFilterIgnored は誰も読まない
+    // 全件緑のまま通る(実測)。そうなると IgnoredDepartment は誰も読まない
     // 書き込み専用のプロパティになり、利用者は黙って全件を見せられる ——
     // SearchFilter の表が「してはいけない」と書いている状態そのもの。
     // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ
@@ -625,36 +681,53 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     /// <summary>
-    /// ブロック内の最初の <c>foreach</c> の本体(<c>{ ... }</c> の中身)を取り出す。
-    /// 見つからなければ <c>null</c>。
+    /// ブロック内の <b>すべての</b> <c>foreach</c> の本体(<c>{ ... }</c> の中身)を取り出す。
     /// </summary>
     /// <remarks>
     /// selected の検査をループ本体へ限るために使う。ブロック全体を対象にすると、
     /// ループの外にある静的な <c>&lt;option&gt;</c> の selected で条件を満たせてしまう。
+    /// 最初の 1 つに限ると、2 つ目のループが丸ごと検査から外れる。
     /// </remarks>
-    private static string? ExtractLoopBody(string block)
+    private static List<string> ExtractLoopBodies(string block)
     {
-        // foreach の位置を探す
-        var keyword = block.IndexOf("foreach", StringComparison.Ordinal);
-        if (keyword < 0) return null;
-        // その後ろにある最初の波括弧が本体の開始
-        var open = block.IndexOf('{', keyword);
-        if (open < 0) return null;
+        // 見つかった本体をためる
+        var bodies = new List<string>();
+        // 走査の開始位置
+        var cursor = 0;
 
-        // 入れ子を数えながら対応する閉じ波括弧を探す
-        var depth = 0;
-        for (var i = open; i < block.Length; i++)
+        while (true)
         {
-            if (block[i] == '{') depth++;
-            else if (block[i] == '}')
+            // 次の foreach の位置を探す
+            var keyword = block.IndexOf("foreach", cursor, StringComparison.Ordinal);
+            if (keyword < 0) break;
+            // 見つからない形でも無限ループにしないよう、次はこの先から探す
+            cursor = keyword + "foreach".Length;
+            // その後ろにある最初の波括弧が本体の開始
+            var open = block.IndexOf('{', keyword);
+            if (open < 0) continue;
+
+            // 入れ子を数えながら対応する閉じ波括弧を探す
+            var depth = 0;
+            for (var i = open; i < block.Length; i++)
             {
-                depth--;
-                // 深さが 0 に戻った位置が本体の終わり
-                if (depth == 0) return block[(open + 1)..i];
+                if (block[i] == '{') depth++;
+                else if (block[i] == '}')
+                {
+                    depth--;
+                    // 深さが 0 に戻った位置が本体の終わり
+                    if (depth == 0)
+                    {
+                        bodies.Add(block[(open + 1)..i]);
+                        // 次のループはこの本体の外から探す
+                        cursor = i;
+                        break;
+                    }
+                }
             }
         }
-        // 閉じ波括弧が無ければ解析できない
-        return null;
+
+        // 見つかったすべての本体を返す
+        return bodies;
     }
 
     /// <summary>
@@ -669,7 +742,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     {
         // 属性名と等号・引用符までを目印に開始位置を探す
         var marker = $"{attributeName}=\"";
-        var start = block.IndexOf(marker, StringComparison.Ordinal);
+        var start = -1;
+        for (var i = block.IndexOf(marker, StringComparison.Ordinal); i >= 0;
+             i = block.IndexOf(marker, i + 1, StringComparison.Ordinal))
+        {
+            // 直前が属性名の区切り(空白かタグの開始)でなければ別の属性の一部。
+            // これを見ないと selected="..." が aria-selected="..." や data-selected="..." に
+            // 引っかかり、本物の selected が消えていても検査が通ってしまう
+            // (§7 で aria-selected を足すのは十分ありうる)
+            var before = i == 0 ? '<' : block[i - 1];
+            if (char.IsWhiteSpace(before) || before == '<')
+            {
+                start = i;
+                break;
+            }
+        }
         // 見つからなければ属性が無い
         if (start < 0) return null;
         // 値の開始位置(引用符の次)

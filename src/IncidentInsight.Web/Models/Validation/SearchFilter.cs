@@ -72,14 +72,14 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     明記する<b>可変の真実の源</b>で、部署名を入れ替えても<b>過去の行は古い部署名を保持し続ける</b>。
 ///     一律に捨てると実在の部署で業務データを絞り込めなくなり、一律に補完すると
 ///     打ち間違い・改ざんで<b>存在しない部署が選択肢に現れる</b>。そこで
-///     <c>Controllers.IncidentsController.ResolveDepartmentFilterAsync</c> が
+///     <c>IncidentsController.ResolveDepartmentFilterAsync</c>(private)が
 ///     <b>部署スコープ内の実データに存在するか</b>で 2 つの方式を振り分ける
 ///     (スコープを掛けるのは、Staff が他部署の部署名の有無を推測できないようにするため)。</description></item>
 /// </list>
 ///
 /// <para><b>「採用しない」ときは黙って落とさない(<c>/Incidents</c> のみ)。</b>
 /// 入力を受け取ったのに絞り込まなかった場合、<c>/Incidents</c> は画面に注意書きを出す
-/// (<c>IncidentListViewModel.DepartmentFilterIgnored</c>)。黙って落とすと、絞り込んだ
+/// (<see cref="ViewModels.IncidentListViewModel.IgnoredDepartment"/>)。黙って落とすと、絞り込んだ
 /// つもりの利用者に<b>全件</b>が返り、しかも「絞り込み中」バッジも出ないので取り違えに
 /// 気付けない(0 件になるならまだ分かる)。<c>/AuditLogs</c> に同じ手当てが要らないのは
 /// <b>判定の元が違う</b>から —— あちらの許可リストはコード側で決まっていて、利用者の

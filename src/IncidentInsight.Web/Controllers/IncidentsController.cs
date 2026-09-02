@@ -1,5 +1,7 @@
 // DataAnnotations 属性の手動再検証(Validator / ValidationContext / ValidationResult)を使う
 using System.ComponentModel.DataAnnotations;
+using System.Text;
+using System.Globalization;
 // 部署スコープ拡張メソッド(ScopedByUser)を使う
 using IncidentInsight.Web.Authorization;
 // 共通ヘルパ(原因カテゴリ一覧 / 認可判定)を使う
@@ -650,22 +652,61 @@ public class IncidentsController : Controller
     }
 
     /// <summary>
-    /// 採用しなかった絞り込み値を、画面に出してよい長さへ切り詰める。
+    /// 採用しなかった絞り込み値を、画面に出してよい形へ整える(制御文字を除いてから切り詰める)。
     /// </summary>
     /// <remarks>
-    /// クエリ文字列は長さが自由なので、受け取った値をそのまま注意書きへ入れると
-    /// 一画面を埋め尽くす文字列を送り込める。Razor が自動エスケープするので
-    /// マークアップとしては安全だが、レイアウトは壊れる。実在しうる部署名は
-    /// <see cref="FieldLengths.ShortText"/> に収まるので、それを超える分は
-    /// 省略記号にして「何を送ったか」が分かる程度だけ残す。
+    /// <para>この値は<b>クエリ文字列がそのまま画面へ戻る唯一の経路</b>なので、
+    /// 長さと文字種の両方を整えてから渡す。Razor の自動エスケープはマークアップの混入は
+    /// 防ぐが、次の 2 つは防がない:</para>
+    /// <list type="number">
+    ///   <item><description><b>長さ</b> — クエリ文字列に上限は無いので、一画面を埋める
+    ///     文字列を送り込める。実在しうる部署名は <see cref="FieldLengths.ShortText"/> に
+    ///     収まるので、超える分は省略記号にする。</description></item>
+    ///   <item><description><b>制御文字</b> — とくに双方向テキストの上書き(U+202E など)は
+    ///     エスケープを通り抜け、<b>後続の文言の見た目を反転させる</b>。注意書きの意味が
+    ///     読み手にとって変わってしまうので、表示しない文字は落とす。</description></item>
+    /// </list>
+    ///
+    /// <para>切り詰めは<b>テキスト要素(書記素クラスタ)単位</b>で行う。UTF-16 の符号単位で
+    /// 切ると絵文字や一部の漢字(サロゲートペア)の途中で割れ、置換文字(U+FFFD)になって
+    /// 「何を送ったか」を確かめるという目的そのものを損なう。</para>
     /// </remarks>
     /// <param name="value">利用者が送ってきた絞り込み値。</param>
-    /// <returns>表示用に切り詰めた文字列。</returns>
+    /// <returns>表示用に整えた文字列。</returns>
     private static string TruncateForDisplay(string value)
-        // 上限以下ならそのまま、超えていれば上限まで切って省略記号を付ける
-        => value.Length <= IgnoredDepartmentMaxDisplayLength
-            ? value
-            : value[..IgnoredDepartmentMaxDisplayLength] + "…";
+    {
+        // 表示しない文字(制御文字・書式指定文字)を落とす。
+        // 書式指定文字(UnicodeCategory.Format)に双方向の上書きが含まれる
+        var visible = new StringBuilder(value.Length);
+        // 1 文字ずつ見て、表示できるものだけを残す
+        foreach (var rune in value.EnumerateRunes())
+        {
+            // 制御文字と書式指定文字は落とす
+            var category = Rune.GetUnicodeCategory(rune);
+            if (category is UnicodeCategory.Control or UnicodeCategory.Format) continue;
+            // それ以外はそのまま積む
+            visible.Append(rune.ToString());
+        }
+        var cleaned = visible.ToString();
+
+        // テキスト要素(書記素クラスタ)単位で数えながら上限まで取る。
+        // 符号単位で切るとサロゲートペアの途中で割れる
+        var enumerator = StringInfo.GetTextElementEnumerator(cleaned);
+        // 取り出した分を積む
+        var kept = new StringBuilder();
+        // 取り出したテキスト要素の数
+        var count = 0;
+        while (enumerator.MoveNext())
+        {
+            // 上限に達したら、残りがあることを省略記号で示して終える
+            if (count == IgnoredDepartmentMaxDisplayLength) return kept.Append('…').ToString();
+            // まだ余裕があるので 1 要素積む
+            kept.Append((string)enumerator.Current);
+            count++;
+        }
+        // 上限以内に収まったのでそのまま返す
+        return kept.ToString();
+    }
 
     // 注意書きへ出す絞り込み値の最大文字数。実在しうる部署名の上限に合わせてある
     private const int IgnoredDepartmentMaxDisplayLength = FieldLengths.ShortText;
