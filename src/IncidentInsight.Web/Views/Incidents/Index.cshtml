@@ -60,14 +60,10 @@
                            その値を先頭へ補完して渡してくる。static 配列を直接回すと適用中の値に
                            一致する option が無くなり、select が「部署（全て）」を指して
                            再送信で絞り込みが無言で解除される(issue #192)。
-                           この注記を <select> の外へ出してあるのは、配線を見張る
-                           UnlistedFilterValuePolicyTests が select ブロックの中身を
-                           <b>ただの文字列として</b>検査するため。Razor のコメントも
-                           区別しないので、ブロックの中にコメントを置くと検査を
-                           すり抜けさせたり(移行を促す TODO に Model.DepartmentOptions と
-                           書くだけで「使っている」と判定される)、正しいコードを
-                           落としたり(説明のために静的配列の名前を書くと違反扱いになる)
-                           してしまう。<b>このブロックの中にコメントを足さないこと</b> *@
+                           配線は UnlistedFilterValuePolicyTests が見張っており、
+                           select ブロックの foreach が「何を」回しているかを直接見る
+                           (Razor のコメントは取り除いてから判定するので、この注記を
+                           ブロックの内外どちらに置いても検査の結果は変わらない) *@
                         <select name="department" class="form-select form-select-sm" aria-label="部署で絞り込み">
                             <option value="">部署（全て）</option>
                             @foreach (var d in Model.DepartmentOptions)
@@ -98,7 +94,10 @@
                         </select>
                     </div>
                     <div class="col-md-2">
-                        @* 原因分類フィルター（末端カテゴリのみを選択肢化済み） *@
+                        @* 原因分類フィルター。選択肢は「親カテゴリのみ」で、末端(子)カテゴリは並ばない。
+                           一方でコントローラの絞り込みは子カテゴリの id も受け付けるため、
+                           子の id を指す URL では一致する option が無い状態になる
+                           （部署で塞いだのと同じ食い違い。issue #195 として切り出し済み） *@
                         <select name="causeCategoryId" class="form-select form-select-sm" aria-label="原因分類で絞り込み">
                             <option value="">原因分類（全て）</option>
                             @foreach (var opt in Model.CauseCategoryOptions)

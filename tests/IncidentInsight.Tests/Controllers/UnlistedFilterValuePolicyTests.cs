@@ -1,3 +1,7 @@
+// ClaimsPrincipal(実行ロール)をテストから指定するために使う
+using System.Security.Claims;
+// Razor ソースからコメントと foreach の対象を取り出すために使う
+using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
@@ -43,24 +47,24 @@ namespace IncidentInsight.Tests.Controllers;
 /// 「DRY だから」という理由でこちら側を消さないこと(消すと表を守るものが無くなる)。</para>
 ///
 /// <para><b>ここで固定できない境界: 照合順序(collation)によるずれ。</b>
-/// <c>/Incidents</c> の実装は、許可リストの判定を C# の序数比較で、実在確認を DB の
-/// 照合順序で行う。SQL Server の既定(<c>Japanese_CI_AS</c> 等)は大文字小文字を区別せず
-/// 末尾空白も無視するので <c>?department=icu</c> が両者で違う答えになりうる。実装側は
-/// 「DB に保存されている綴りを持ち帰る」ことでこのずれを吸収しているが、
-/// <b>テストの InMemory プロバイダは序数比較なので、その分岐をここで動かすことはできない</b>
-/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。実装がこのずれを吸収する仕掛けは
-/// 3 つあり、<b>ここで確かめられるのは 1 つだけ</b>:</para>
+/// <c>/Incidents</c> の実装は、許可リストの判定を C# の<b>序数比較</b>で、
+/// どの行が一致するかの判定を<b>DB の照合順序</b>で行う。分担をこう切ってあるのは、
+/// アプリ側で綴りを畳むと既定プロバイダ(大文字小文字を区別する SQLite)で
+/// 「絞り込み無しなら見えている行が、絞り込むと 0 件になる」壊れ方をするため
+/// (<c>ResolveDepartmentFilterAsync</c> の「綴り違いをアプリ側で畳まない」を参照)。
+/// アプリ側の分担は序数比較なので <b>InMemory でもそのまま動かせる</b> ——
+/// <c>Incidents_DepartmentStoredWithVariantSpelling_StaysReachable</c> が固定する。</para>
+///
+/// <para>一方、<b>DB 側の分担はここでは動かせない</b>。InMemory も序数比較なので、
+/// 照合順序が大文字小文字を区別しない配備先だけで通る枝には入らない。具体的には次の 2 つで、
+/// どちらも実測で「消しても全件緑」だった:</para>
 ///
 /// <list type="number">
-///   <item><description><b>確かめられる</b>: 綴りの揺れを許して許可リストへ寄せる
-///     (<c>TryFindListedSpelling</c>)。判定が C# 側にあるので InMemory でも動く
-///     ——<c>Incidents_DepartmentDifferingOnlyInCaseOrSpacing_...</c> が固定する。</description></item>
-///   <item><description><b>確かめられない</b>: 綴りを 1 件取り出すときの <c>OrderBy</c>。
-///     綴り違いが同時に一致しうる配備先でのみ意味を持つ。実測でも、その 2 行を消す変異は
-///     全件緑のまま通った。</description></item>
-///   <item><description><b>確かめられない</b>: DB から取り出した綴りを許可リストへ寄せ直す枝。
-///     序数比較では、そこへ到達した時点で綴りが許可リストと一致しないことが確定しているため
-///     <b>枝そのものに入らない</b>。実測でも、この枝を消す変異は全件緑のまま通った。</description></item>
+///   <item><description>綴りを 1 件取り出すときの <c>OrderBy(i =&gt; i.Id)</c>。
+///     綴り違いが<b>同時に</b>一致しうる配備先でのみ、結果を決定的にする働きを持つ。</description></item>
+///   <item><description>取り出した綴りが許可リストに既にある場合に補完を省く枝
+///     (<c>if (!options.Contains(storedDepartment))</c>)。序数比較では、そこへ到達した時点で
+///     綴りが許可リストと一致しないことが確定しているため<b>条件が常に真</b>になる。</description></item>
 /// </list>
 ///
 /// <para>プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
@@ -118,8 +122,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return incident;
     }
 
-    // /Incidents を扱うコントローラを Admin ユーザーで用意する
-    private IncidentsController NewIncidentsController()
+    // /Incidents を扱うコントローラを用意する。
+    // 実行ロールは呼び出し側が渡す —— 既定を Admin にして呼び出し側で上書きさせると、
+    // AttachUser が ControllerContext を作り直すため「2 回目が勝つ」ことに依存した
+    // 二重配線になる。部署スコープを見るテストの担保がその暗黙の順序に乗るのは避けたい
+    private IncidentsController NewIncidentsController(ClaimsPrincipal? user = null)
     {
         // 実際の依存をそのまま渡す(Mock より InMemory を優先する方針)
         var controller = new IncidentsController(
@@ -128,8 +135,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance),
             new SystemClock(),
             NullLogger<IncidentsController>.Instance);
-        // 全部署を見られる Admin として実行する(部署スコープの影響を切り離すため)
-        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 指定が無ければ全部署を見られる Admin(部署スコープの影響を切り離すため)
+        UserContextHelper.AttachUser(controller, user ?? UserContextHelper.Admin());
         // 組み立てたコントローラを返す
         return controller;
     }
@@ -231,32 +238,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(Incident.Departments, vm.DepartmentOptions);
     }
 
-    // 大文字小文字・前後の空白だけが違う値は、許可リストの項目を指しているとみなして
-    // 許可リスト側の綴りへ寄せる。寄せないと、照合順序が大文字小文字を区別しない配備先で
-    // "icu" が選択肢へ補完され、本物の "ICU" と同じ行を指す 2 つの項目が並ぶ。
-    // 寄せる処理は C# 側にあるので、InMemory でもそのまま動かせる
-    // (照合順序そのものの違いは動かせない —— クラスの解説の「ここで固定できない境界」を参照)
-    [Theory]
-    // 大文字小文字だけが違う
-    [InlineData("icu")]
-    // 前後に空白が付いている(貼り付け・オートフィルで起きる)
-    [InlineData("  ICU  ")]
-    // 両方
-    [InlineData(" Icu ")]
-    public async Task Incidents_DepartmentDifferingOnlyInCaseOrSpacing_IsNormalisedToTheListedSpelling(string requested)
+    // 許可リストと大文字小文字だけが違う綴りで保存された行にも到達できる。
+    // Staff の部署クレームは自由記述で EnforceKnownDepartment の対象外なので、
+    // Department が "icu" の行は実在しうる。ここで許可リスト側の "ICU" へ畳むと、
+    // 大文字小文字を区別する SQLite(既定)/ PostgreSQL では 0 件になり、
+    // 「絞り込み無しなら見えている行が、絞り込むと消える」壊れ方になる。
+    // どの行が一致するかの判定は DB に委ね、アプリ側は序数比較に統一している
+    // (InMemory も序数比較なので、この経路はここで動かせる)
+    [Fact]
+    public async Task Incidents_DepartmentStoredWithVariantSpelling_StaysReachable()
     {
-        // 許可リストどおりの綴りでインシデントを 1 件用意する
-        await SeedIncidentAsync("ICU");
+        // 許可リストの "ICU" と大文字小文字だけが違う綴りで保存された行を用意する
+        await SeedIncidentAsync("icu");
 
-        // 綴りの揺れた値で絞り込む
-        var vm = await IndexIncidentsAsync(requested);
+        // 保存されている綴りそのままで絞り込む
+        var vm = await IndexIncidentsAsync("icu");
 
-        // 採用されるのは許可リスト側の綴り(利用者の入力そのままではない)
-        Assert.Equal("ICU", vm.Department);
-        // 絞り込みも効いている
+        // 行に到達できる(アプリ側で "ICU" へ畳むとここが 0 件になる)
         Assert.Equal(1, vm.TotalCount);
-        // 選択肢は許可リストのまま。揺れた綴りが別項目として増えていない
-        Assert.Equal(Incident.Departments, vm.DepartmentOptions);
+        // 採用されるのは保存されている綴り
+        Assert.Equal("icu", vm.Department);
+        // 許可リストに(序数で)無いので選択肢へ補完されている
+        // ——これが無いと select が「部署（全て）」を指し、再送信で無言解除される
+        Assert.Equal("icu", vm.DepartmentOptions[0]);
     }
 
     // 空白のみの入力は「絞り込み無し」。SearchFilter.HasValue の規則がこの経路でも効いていることと、
@@ -288,9 +292,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // Staff 本人の部署の行も 1 件用意する(一覧が空にならないようにする)
         await SeedIncidentAsync("ICU");
 
-        // 自部署 ICU の Staff としてアクセスする
-        var controller = NewIncidentsController();
-        UserContextHelper.AttachUser(controller, UserContextHelper.Staff("ICU"));
+        // 自部署 ICU の Staff としてアクセスする(ロールは組み立て時に指定する)
+        var controller = NewIncidentsController(UserContextHelper.Staff("ICU"));
         var result = await controller.Index(null, RetiredDepartment, null, null, null, null, null, null, 1) as ViewResult;
         var vm = Assert.IsType<IncidentListViewModel>(result!.Model);
 
@@ -406,14 +409,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「部署（全て）」を指す)。コントローラで正しく決めた結論を表示側が使わなければ
     // 意味がないので、その配線だけを Razor のソースから直接確かめる。
     //
-    // 検査は<b>対象の &lt;select&gt; ブロックの中身だけ</b>を見る。ファイル全体を対象に
-    // 「Model.DepartmentOptions を含む」「Incident.Departments を含む行が無い」で書くと、
-    // 実測で 2 通りに素通りした: (a) 前者はコメントに
-    // `@* TODO: Model.DepartmentOptions への移行は保留 *@` と書くだけで満たせる、
-    // (b) 後者は `@foreach (var d in` と `IncidentInsight.Web.Models.Incident.Departments)` を
-    // 2 行に折り返すと「1 行に両方」に当たらなくなる。どちらの場合も select は静的配列へ
-    // 戻っているのに全件緑のまま通った。ブロックを切り出して中身だけを見れば、
-    // どこで改行しようとコメントに何を書こうと結論は変わらない。
+    // 検査は対象の <select> ブロックだけを見て、<b>Razor のコメントを取り除いてから</b>
+    // 判定する。素朴に書くと 3 通りに素通りした(いずれも実測):
+    //   (a) ファイル全体を対象に「必要な文字列を含むか」を見ると、コメントに
+    //       `@* TODO: Model.DepartmentOptions へ移行 *@` と書くだけで満たせる。
+    //   (b) 「1 行に foreach と静的配列」で違反を探すと、2 行に折り返せば当たらない。
+    //   (c) ブロックへ絞ってもコメントを残したままだと、(a) と同じことが
+    //       <b>ブロックの中の</b>コメントでできてしまう(実際 /PreventiveMeasures の
+    //       select には元からコメントが 1 つ入っている)。
+    // コメントを落としたうえでブロック全体を文字列として見れば、どこで改行しようと
+    // コメントに何を書こうと結論は変わらない。
+    //
+    // 判定は「<b>foreach が回している対象</b>がコントローラの用意した名前を含むか」に絞る。
+    // 「禁止する名前を含まないか」という書き方はしない —— 画面ごとに「ありえない書き換え」を
+    // 予想して列挙することになり、/PreventiveMeasures では実際に空振りしていた
+    // (その画面が Incident.Departments を参照する筋書きは無く、検査が常に真だった)。
+    // 回している対象そのものを見れば、別の何に差し替えられても落ちる。
     //
     // 走査対象を「その画面の 1 ブロック」に限るのは、静的配列の参照自体は他の画面
     // (登録・編集フォーム)では正しい書き方だから ——一律に禁じると正しいコードを咎める
@@ -421,16 +432,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // <b>対象は「補完」方式の 2 画面</b>。補完はコントローラが選択肢を増やして初めて
     // 意味を持つので、表示側が別の出所から選択肢を作った瞬間に効果が消える。
-    // <c>/AuditLogs</c> を対象にしないのは方式が「採用しない」だから ——増やす選択肢が
+    // /AuditLogs を対象にしないのは方式が「採用しない」だから ——増やす選択肢が
     // 無く、ビューは許可リストをそのまま並べるのが正しい。ここに並んでいないことが
     // 「見落とし」ではなく「方式上いらない」であることを明記しておく
     [Theory]
     // /Incidents: 発生部署。選択肢は ViewModel(IncidentListViewModel.DepartmentOptions)から取る
-    [InlineData("Incidents", "department", "Model.DepartmentOptions", "Incident.Departments")]
+    [InlineData("Incidents", "department", "Model.DepartmentOptions")]
     // /PreventiveMeasures: 担当部署。選択肢は ViewBag.ResponsibleDepartmentOptions から取る
-    [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions", "Incident.Departments")]
+    [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions")]
     public void BackfillingScreens_BuildOptionsFromTheControllersResult(
-        string viewFolder, string selectName, string requiredSource, string forbiddenSource)
+        string viewFolder, string selectName, string requiredSource)
     {
         // 対象ビューの Razor ソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
         var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, "Index.cshtml");
@@ -449,18 +460,70 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
         var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
         Assert.True(selectEnd > selectStart, $"{viewFolder}/Index.cshtml の <select> に対応する </select> が見つからない。");
-        // 検査対象はこのブロックの中身だけ
-        var selectBlock = source[selectStart..selectEnd];
+        // Razor のコメント(@* ... *@)を取り除く。コメントで検査を満たしたり破ったりできないようにする
+        var selectBlock = RazorComment.Replace(source[selectStart..selectEnd], string.Empty);
 
-        // (1) コントローラが用意した選択肢を実際に回している。
-        //     ブロック内に限るので、他所のコメントに同じ文字列を書いても満たせない
-        Assert.Contains(requiredSource, selectBlock, StringComparison.Ordinal);
+        // ブロックの中の foreach が「何を」回しているかを取り出す
+        var loopSource = ExtractForeachSource(selectBlock);
+        // foreach が無ければ選択肢を組み立てていない(静的な option だけになっている)
+        Assert.True(loopSource != null,
+            $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> に "
+            + "選択肢を組み立てる foreach が見つからない。");
 
-        // (2) このブロックの中で静的配列を参照していない。
-        //     行単位ではなくブロック全体を見るので、改行を挟んでも検出できる
-        Assert.False(selectBlock.Contains(forbiddenSource, StringComparison.Ordinal),
-            $"{viewFolder} の選択肢は {requiredSource} から作る。{forbiddenSource} を直接回すと、"
-            + "コントローラが補完した値に一致する option が無くなり、"
-            + "再送信で絞り込みが無言で解除される(issue #192)。");
+        // 回している対象がコントローラの用意した名前を含んでいる。
+        // 別の出所へ差し替えるとここで落ちる ——コントローラが補完した値に一致する
+        // option が無くなり、再送信で絞り込みが無言で解除されるため(issue #192)
+        Assert.Contains(requiredSource, loopSource!, StringComparison.Ordinal);
+    }
+
+    // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。
+    // 入れ子は Razor 側が許さないので最短一致で足りる
+    private static readonly Regex RazorComment =
+        new(@"@\*.*?\*@", RegexOptions.Singleline | RegexOptions.Compiled);
+
+    /// <summary>
+    /// <c>foreach (var d in &lt;ここ&gt;)</c> の「ここ」(＝回している対象の式)を取り出す。
+    /// 見つからなければ <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// 括弧を数えて閉じ位置を探すのは、対象の式が括弧を含みうるため。
+    /// 実際 <c>/PreventiveMeasures</c> は <c>(List&lt;string&gt;)ViewBag.Xxx</c> とキャストしており、
+    /// 「最初の <c>)</c> まで」を取る正規表現ではキャストの閉じ括弧で切れて
+    /// <c>"(List&lt;string&gt;"</c> だけが取れてしまう(実測で落ちた)。
+    /// 検出網が対象を取り違えると、判定はいつも同じ答えになり黙って無力化される。
+    /// </remarks>
+    private static string? ExtractForeachSource(string block)
+    {
+        // foreach キーワードの位置を探す
+        var keyword = block.IndexOf("foreach", StringComparison.Ordinal);
+        // 無ければ選択肢を組み立てるループが存在しない
+        if (keyword < 0) return null;
+        // その直後の開き括弧を探す
+        var open = block.IndexOf('(', keyword);
+        if (open < 0) return null;
+
+        // 入れ子を数えながら対応する閉じ括弧を探す
+        var depth = 0;
+        var close = -1;
+        for (var i = open; i < block.Length; i++)
+        {
+            // 開き括弧で 1 段深くなる
+            if (block[i] == '(') depth++;
+            // 閉じ括弧で 1 段浅くなる
+            else if (block[i] == ')')
+            {
+                depth--;
+                // 深さが 0 に戻った位置が対応する閉じ括弧
+                if (depth == 0) { close = i; break; }
+            }
+        }
+        // 閉じ括弧が見つからなければ解析できない
+        if (close < 0) return null;
+
+        // 括弧の中身から「 in 」の後ろを取り出す(前後の空白は落とす)
+        var inside = block[(open + 1)..close];
+        var inKeyword = inside.IndexOf(" in ", StringComparison.Ordinal);
+        if (inKeyword < 0) return null;
+        return inside[(inKeyword + 4)..].Trim();
     }
 }
