@@ -42,8 +42,18 @@ public class IncidentListViewModel
     // 並び順の指定(最新/重症度/期限超過など)
     public string? SortBy { get; set; }   // "latest" | "severity" | "overdue"
 
-    // 原因分類ドロップダウンの選択肢
+    // 原因分類ドロップダウンの選択肢。
+    // 中身を決めるのは IncidentsController.ResolveCauseCategoryFilterAsync で、
+    // 上の CauseCategoryId と必ず対で設定する(片方だけ差し替えると食い違いが戻る)。
+    // 選択肢は親カテゴリのみだが、子カテゴリの id で絞り込んでいるときはその 1 件が
+    // 「親名 > 子名」の見出しで先頭に補完されている
+    // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #195)
     public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+
+    // 原因分類の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
+    // 黙って落とさない理由も、値そのものではなく真偽値にしている理由も、
+    // 下の DepartmentFilterIgnored と同じ(そちらの説明が正本)
+    public bool CauseCategoryFilterIgnored { get; set; }
 
     // 発生部署ドロップダウンの選択肢。
     // ビューが Incident.Departments を直接回さずこちらを使うのは、許可リストから外れた
