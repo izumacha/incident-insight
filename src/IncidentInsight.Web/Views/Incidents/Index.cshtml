@@ -23,19 +23,19 @@
    正しい URL でも該当インシデントが消えれば当てはまる。黙って落とすと、絞り込んだ
    つもりの利用者に全件が返り「絞り込み中」バッジも出ないため取り違えに気付けない。
    色だけに意味を持たせずアイコンと文言を併記する(§7) *@
-@if (Model.IgnoredDepartment != null)
+@if (Model.DepartmentFilterIgnored)
 {
     <div class="alert alert-warning d-flex align-items-start gap-2" role="alert">
         @* 装飾目的のアイコンなので支援技術からは隠す *@
         <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
         <div>
             <strong>部署の絞り込みは適用していません。</strong>
-            @* 受け取った値をそのまま見せる。何を送ったかはこのページの他のどこにも出ない
-               （採用していないので select は「部署（全て）」を指し、ページャの URL にも載らない）ため、
-               これが無いと「落とした」とだけ言われて確認のしようがない。
-               Razor が自動エスケープするので、値をそのまま出して問題ない *@
-            指定された部署「@Model.IgnoredDepartment」のインシデントが（表示できる範囲に）1 件も無いため、
-            絞り込まずに一覧を表示しています。
+            @* 送られてきた値そのものは出さない。外部由来の文字列をアプリ自身の文章へ
+               埋め込むと、整形するほど「表示した文字列」と「実際に照会した文字列」が
+               食い違い、事実と逆の案内になる(理由は IncidentListViewModel を参照)。
+               何を送ったかはアドレス欄に出ており、下の絞り込みパネルも開くので選び直せる *@
+            指定された部署のインシデントが（表示できる範囲に）1 件も無いため、絞り込まずに一覧を表示しています。
+            絞り込みたい部署は下の「絞り込み」から選び直してください。
         </div>
     </div>
 }
@@ -56,7 +56,7 @@
        注意書きが「適用していません」と言う横でバッジが「適用中」と言い、
        1 件も無い環境では効いていないフィルターを「クリアしてください」と促してしまう。
        一方パネルは開いておきたい: 送った値を選び直せる場所がそこにしか無いため *@
-    var showFilterPanel = anyFilter || Model.IgnoredDepartment != null;
+    var showFilterPanel = anyFilter || Model.DepartmentFilterIgnored;
 }
 <div class="card border-0 shadow-sm mb-3">
     @* クリックで折りたたみを開閉するヘッダ。div+role="button" だとキーボードで
@@ -86,11 +86,9 @@
                     </div>
                     <div class="col-md-2">
                         @* 部署フィルター。
-                           選択肢は部署一覧の static 配列を直接回さず ViewModel から受け取る。
-                           許可リストから外れた過去の部署名で絞り込んでいる場合、コントローラが
-                           その値を先頭へ補完して渡してくる。static 配列を直接回すと適用中の値に
-                           一致する option が無くなり、select が「部署（全て）」を指して
-                           再送信で絞り込みが無言で解除される(issue #192)。
+                           選択肢は部署一覧の static 配列を直接回さず ViewModel から受け取る
+                           （コントローラが補完した値ごと渡ってくる。なぜ補完が要るのかは
+                           Models/Validation/SearchFilter の解説が正本。issue #192）。
                            配線は UnlistedFilterValuePolicyTests が見張っており、
                            select ブロックの foreach が「何を」回しているかを直接見る
                            (Razor のコメントは取り除いてから判定するので、この注記を

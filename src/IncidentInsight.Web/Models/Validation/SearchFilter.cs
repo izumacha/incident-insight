@@ -79,7 +79,7 @@ namespace IncidentInsight.Web.Models.Validation;
 ///
 /// <para><b>「採用しない」ときは黙って落とさない(<c>/Incidents</c> のみ)。</b>
 /// 入力を受け取ったのに絞り込まなかった場合、<c>/Incidents</c> は画面に注意書きを出す
-/// (<see cref="ViewModels.IncidentListViewModel.IgnoredDepartment"/>)。黙って落とすと、絞り込んだ
+/// (<see cref="ViewModels.IncidentListViewModel.DepartmentFilterIgnored"/>)。黙って落とすと、絞り込んだ
 /// つもりの利用者に<b>全件</b>が返り、しかも「絞り込み中」バッジも出ないので取り違えに
 /// 気付けない(0 件になるならまだ分かる)。<c>/AuditLogs</c> に同じ手当てが要らないのは
 /// <b>判定の元が違う</b>から —— あちらの許可リストはコード側で決まっていて、利用者の

@@ -1,9 +1,5 @@
 // DataAnnotations 属性の手動再検証(Validator / ValidationContext / ValidationResult)を使う
 using System.ComponentModel.DataAnnotations;
-// StringBuilder(文字列の組み立て)と Rune(サロゲートペアを 1 文字として扱う型)を使う
-using System.Text;
-// StringInfo(文字を書記素クラスタ単位で数える)と UnicodeCategory(文字の種別)を使う
-using System.Globalization;
 // 部署スコープ拡張メソッド(ScopedByUser)を使う
 using IncidentInsight.Web.Authorization;
 // 共通ヘルパ(原因カテゴリ一覧 / 認可判定)を使う
@@ -188,7 +184,7 @@ public class IncidentsController : Controller
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える。
             // 判定は解決側が返す(呼び出し側で SearchFilter.HasValue を引き直すと、
             // 解決側の「入力なし」の規則を変えたときに片方だけ古くなる)
-            IgnoredDepartment = departmentFilter.IgnoredValue,
+            DepartmentFilterIgnored = departmentFilter.Ignored,
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,
@@ -594,13 +590,13 @@ public class IncidentsController : Controller
 
         // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
         if (!SearchFilter.HasValue(department))
-            return new DepartmentFilterSelection(null, options, IgnoredValue: null);
+            return new DepartmentFilterSelection(null, options, Ignored: false);
 
         // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
         // 比較は序数(完全一致)で行う。ここを大文字小文字を無視する比較にしてはいけない
         // —— 下の「綴り違いをアプリ側で畳まない」の項を参照
         if (options.Contains(department))
-            return new DepartmentFilterSelection(department, options, IgnoredValue: null);
+            return new DepartmentFilterSelection(department, options, Ignored: false);
 
         // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
         // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
@@ -641,9 +637,7 @@ public class IncidentsController : Controller
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
         if (storedDepartment == null)
-            // 画面へ出す値は、採用しないと決まったここで初めて整える
-            // (許可リストに載っている常用の経路では作っても捨てるだけなので走らせない)
-            return new DepartmentFilterSelection(null, options, IgnoredValue: TruncateForDisplay(department));
+            return new DepartmentFilterSelection(null, options, Ignored: true);
 
         // 実データにある＝許可リストから外れた過去の部署名。選択肢へ補完して絞り込みを維持する。
         // 「既にあれば足さない・無ければ先頭へ」の手順は /PreventiveMeasures と共通なので
@@ -652,126 +646,8 @@ public class IncidentsController : Controller
         IncidentControllerHelpers.EnsureAppliedValueIsSelectable(options, storedDepartment);
         // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
         // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
-        return new DepartmentFilterSelection(storedDepartment, options, IgnoredValue: null);
+        return new DepartmentFilterSelection(storedDepartment, options, Ignored: false);
     }
-
-    /// <summary>
-    /// 採用しなかった絞り込み値を、画面に出してよい形へ整える(制御文字を除いてから切り詰める)。
-    /// </summary>
-    /// <remarks>
-    /// <para>クエリ文字列を画面へ戻す箇所は他にもある(検索欄の <c>value="@Model.Search"</c> など)。
-    /// この値だけを特別扱いするのは、<b>採用しなかった値を地の文として読ませる</b>唯一の経路だから
-    /// —— 入力欄へ戻す値は枠の中に収まり、利用者も自分が打った内容として読む。
-    /// こちらはアプリ自身の文章に埋め込まれるので、長さも文字種も整えてから渡す。
-    /// Razor の自動エスケープはマークアップの混入は防ぐが、次の 2 つは防がない:</para>
-    /// <list type="number">
-    ///   <item><description><b>長さ</b> — クエリ文字列に上限は無いので、一画面を埋める
-    ///     文字列を送り込める。実在しうる部署名は <see cref="FieldLengths.ShortText"/> に
-    ///     収まるので、超える分は省略記号にする。上限は<b>2 つ掛ける</b>: 見た目の文字数
-    ///     (書記素クラスタ)と、生の長さ(UTF-16 の符号単位)。前者だけだと結合文字を
-    ///     連ねた入力(「あ」＋アクセント記号を数千個)が<b>1 文字</b>と数えられて素通りし、
-    ///     重なった記号が周囲のレイアウトへはみ出す(実測で確認)。後者だけだと
-    ///     絵文字 1 個で上限に達してしまうので、両方を見る。</description></item>
-    ///   <item><description><b>制御文字</b> — とくに双方向テキストの上書き(U+202E など)は
-    ///     エスケープを通り抜け、<b>後続の文言の見た目を反転させる</b>。注意書きの意味が
-    ///     読み手にとって変わってしまうので、表示しない文字は取り除く。</description></item>
-    /// </list>
-    ///
-    /// <para><b>取り除くのではなく置き換える。</b> 消してしまうと、表示した文字列と
-    /// 実際に照会した文字列が食い違い、<b>事実と逆の案内</b>が出る:
-    /// <c>?department=IC[U+00AD]U</c>(コピー時にソフトハイフンが紛れた形)は、
-    /// 消すと「ICU」と表示されるのに照会は生の値で行われて 0 件になり、
-    /// 実在してインシデントもある ICU について「1 件も無い」と断言してしまう。
-    /// しかも原因の文字は消えた側なので利用者には診断できない。置換文字(U+FFFD)に
-    /// 置き換えれば、表示は「IC�U」となって送った値と同じ形を保ち、
-    /// 「見えない文字が混ざっている」ことも読み取れる。</para>
-    ///
-    /// <para>切り詰めは<b>テキスト要素(書記素クラスタ)単位</b>で行う。UTF-16 の符号単位で
-    /// 切ると絵文字や一部の漢字(サロゲートペア)の途中で割れ、
-    /// 「何を送ったか」を確かめるという目的そのものを損なう。</para>
-    /// </remarks>
-    /// <param name="value">利用者が送ってきた絞り込み値。</param>
-    /// <returns>表示用に整えた文字列。</returns>
-    private static string TruncateForDisplay(string value)
-    {
-        // 表示しない文字(制御文字・書式指定文字)を置換文字へ置き換える。
-        // 書式指定文字(UnicodeCategory.Format)に双方向の上書きが含まれる。
-        // 消さずに置き換えるのは、表示した文字列と照会した文字列を食い違わせないため(上記)
-        var visible = new StringBuilder(value.Length);
-        // 1 文字ずつ見て、表示できないものだけを置換文字に差し替える
-        foreach (var rune in value.EnumerateRunes())
-        {
-            // 制御文字と書式指定文字は、そこに何かがあったことだけを残す
-            var category = Rune.GetUnicodeCategory(rune);
-            visible.Append(category is UnicodeCategory.Control or UnicodeCategory.Format
-                ? UnrenderableCharacterPlaceholder
-                : rune.ToString());
-        }
-        var cleaned = visible.ToString();
-
-        // テキスト要素(書記素クラスタ)単位で数えながら上限まで取る。
-        // 符号単位で切るとサロゲートペアの途中で割れる
-        var enumerator = StringInfo.GetTextElementEnumerator(cleaned);
-        // 取り出した分を積む
-        var kept = new StringBuilder();
-        // 取り出したテキスト要素の数(見た目の文字数)
-        var elements = 0;
-        while (enumerator.MoveNext())
-        {
-            // 次に積む 1 要素
-            var element = (string)enumerator.Current;
-            // 見た目の文字数か生の長さのどちらかが上限に達したら、
-            // 残りがあることを省略記号で示して終える。
-            // 生の長さも見るのは、結合文字を連ねると数千文字が 1 要素になるため
-            if (elements == IgnoredDepartmentMaxDisplayLength
-                || kept.Length + element.Length > IgnoredDepartmentMaxRawLength)
-            {
-                // ここまでに 1 文字も積めていない＝最初の 1 要素だけで生の上限を超える場合
-                // (「あ」＋結合文字を数千個のような入力)。省略記号だけを返すと
-                // 「指定された部署「…」」と何も名指ししない注意書きになるので、
-                // その要素の先頭を符号点の境界で切って中身を残す
-                if (kept.Length == 0) AppendRunePrefix(kept, element, IgnoredDepartmentMaxRawLength);
-                return kept.Append('…').ToString();
-            }
-            // まだ余裕があるので 1 要素積む
-            kept.Append(element);
-            elements++;
-        }
-        // 上限以内に収まったのでそのまま返す
-        return kept.ToString();
-    }
-
-    /// <summary>
-    /// <paramref name="element"/> の先頭を、<paramref name="maxLength"/> を超えない範囲で
-    /// <b>符号点の境界を割らずに</b> <paramref name="destination"/> へ積む。
-    /// </summary>
-    /// <remarks>
-    /// 1 つの書記素クラスタが単独で長さ上限を超える場合にだけ使う。
-    /// 符号単位で切るとサロゲートペアが割れるため、Rune 単位で積んでいく。
-    /// </remarks>
-    private static void AppendRunePrefix(StringBuilder destination, string element, int maxLength)
-    {
-        // 先頭から 1 符号点ずつ見ていく
-        foreach (var rune in element.EnumerateRunes())
-        {
-            // この 1 文字を足すと上限を超えるならそこで打ち切る
-            if (destination.Length + rune.Utf16SequenceLength > maxLength) return;
-            // まだ収まるので積む
-            destination.Append(rune.ToString());
-        }
-    }
-
-    // 表示できない文字(制御文字・書式指定文字)の代わりに出す 1 文字。
-    // 消さずにこれを置くことで、表示した文字列と照会した文字列の形がずれない
-    private const string UnrenderableCharacterPlaceholder = "\uFFFD";
-
-    // 注意書きへ出す絞り込み値の最大文字数(見た目の文字数)。実在しうる部署名の上限に合わせてある
-    private const int IgnoredDepartmentMaxDisplayLength = FieldLengths.ShortText;
-
-    // 同じく生の長さ(UTF-16 の符号単位)の上限。1 つの見た目の文字が何個の符号単位にも
-    // なりうるので、見た目の文字数だけでは長さを縛れない。絵文字(2)や結合文字列を
-    // 通常の範囲で収めつつ、はみ出しを防ぐ余裕として文字数上限の 4 倍を取る
-    private const int IgnoredDepartmentMaxRawLength = FieldLengths.ShortText * 4;
 
     /// <summary>
     /// <see cref="ResolveDepartmentFilterAsync"/> の結果。
@@ -791,9 +667,8 @@ public class IncidentsController : Controller
     /// 発生部署ドロップダウンに並べる選択肢。通常は <see cref="Incident.Departments"/> そのままで、
     /// 許可リストから外れた過去の部署名で絞り込んでいるときだけ、その値が先頭に補完されている。
     /// </param>
-    /// <param name="IgnoredValue">
-    /// <b>値を受け取ったのに採用しなかった</b>ときだけ、その値(表示用に切り詰め済み)。
-    /// それ以外は <c>null</c>。画面の注意書きの出し分けと文面に使う。
+    /// <param name="Ignored">
+    /// <b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。画面の注意書きの出し分けに使う。
     /// <para><see cref="Effective"/> が <c>null</c> になる理由は 2 つあり
     /// (「そもそも入力が無かった」と「入力はあったが実データに無かった」)、
     /// <b>注意書きを出してよいのは後者だけ</b>。前者でも出すと、絞り込みを使っていない
@@ -802,7 +677,7 @@ public class IncidentsController : Controller
     /// 呼び出し側で <c>SearchFilter.HasValue</c> を引き直さずここで受け取る
     /// ——引き直すと、解決側の「入力なし」の規則を変えたときに片方だけ古くなる。</para>
     /// </param>
-    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, string? IgnoredValue);
+    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, bool Ignored);
 
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
     // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は

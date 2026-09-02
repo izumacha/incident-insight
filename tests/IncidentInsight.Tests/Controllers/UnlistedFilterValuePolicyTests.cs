@@ -1,7 +1,5 @@
 // ClaimsPrincipal(実行ロール)をテストから指定するために使う
 using System.Security.Claims;
-// Rune(サロゲートペアを 1 文字として扱う型)を使う
-using System.Text;
 // Razor ソースからコメントと foreach の対象を取り出すために使う
 using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
@@ -272,136 +270,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 実データに無い部署名で絞り込もうとする
         var vm = await IndexIncidentsAsync(UnknownDepartment);
 
-        // 採用しなかったことが、値ごと画面へ伝わっている
-        // (何を落としたかはページの他のどこにも出ないため、値まで持つ)
-        Assert.Equal(UnknownDepartment, vm.IgnoredDepartment);
-    }
-
-    // 表示できない文字は「消す」のではなく置換文字へ「置き換える」。
-    // 消すと、表示した文字列と実際に照会した文字列が食い違い、事実と逆の案内が出る:
-    // ?department=IC[U+00AD]U(コピー時にソフトハイフンが紛れた形)は、消すと「ICU」と
-    // 表示されるのに照会は生の値で行われて 0 件になり、実在してインシデントもある ICU に
-    // ついて「1 件も無い」と断言してしまう。しかも原因の文字は消えた側なので診断できない
-    [Fact]
-    public async Task Incidents_IgnoredDepartment_KeepsTheShapeOfWhatWasSent()
-    {
-        // 許可リストどおりの綴りでインシデントを 1 件用意する
-        await SeedIncidentAsync("ICU");
-
-        // 「ICU」の途中にソフトハイフンが紛れた値を送る
-        var vm = await IndexIncidentsAsync("IC\u00ADU");
-
-        // 実在する "ICU" と見分けが付く形で表示される(「ICU」とは表示しない)
-        Assert.NotEqual("ICU", vm.IgnoredDepartment);
-        // そこに何かがあったことは残る
-        Assert.Equal("IC\uFFFDU", vm.IgnoredDepartment);
-    }
-
-    // 表示できない文字だけを送った場合も、何かを送ったことは分かる形にする
-    // (「指定された部署「」…」と何も名指ししない注意書きにはしない)
-    [Theory]
-    // ソフトハイフン(表示されない)
-    [InlineData("\u00AD")]
-    // ゼロ幅スペース
-    [InlineData("\u200B")]
-    // 双方向テキストの上書きだけ
-    [InlineData("\u202E")]
-    public async Task Incidents_InvisibleOnlyDepartment_IsShownAsAPlaceholder(string department)
-    {
-        // 一覧に 1 件だけ用意する
-        await SeedIncidentAsync("ICU");
-
-        // 見えない文字だけを送る
-        var vm = await IndexIncidentsAsync(department);
-
-        // 絞り込みは掛からない
-        Assert.Equal(1, vm.TotalCount);
-        Assert.Null(vm.Department);
-        // 注意書きは空にならず、置換文字が入る
-        Assert.Equal("\uFFFD", vm.IgnoredDepartment);
-    }
-
-    // 結合文字を連ねた入力は書記素クラスタとしては 1 文字なので、見た目の文字数だけでは
-    // 長さを縛れない。生の長さにも上限を掛けていることを固定する
-    // (掛けないと数千文字が「1 文字」として素通りし、重なった記号がレイアウトへはみ出す)
-    [Fact]
-    public async Task Incidents_IgnoredDepartment_IsBoundedEvenWhenCombiningMarksFormOneCluster()
-    {
-        // 一覧に 1 件だけ用意する
-        await SeedIncidentAsync("ICU");
-
-        // 「あ」に結合文字(アクセント記号)を大量に付けた 1 クラスタを送る
-        var zalgo = "あ" + new string('\u0301', 5000);
-        var vm = await IndexIncidentsAsync(zalgo);
-
-        // 見た目の文字数では 1 でも、生の長さで頭打ちになる
-        Assert.True(vm.IgnoredDepartment!.Length <= FieldLengths.ShortText * 4 + 1,
-            $"生の長さが縛れていない: {vm.IgnoredDepartment.Length} 文字");
-        // 省略記号だけにならない。1 要素で上限を超える場合でも中身を残す
-        // ——「指定された部署「…」」では何を送ったか分からない
-        Assert.NotEqual("…", vm.IgnoredDepartment);
-        // 比較は序数で行う。既定のカルチャ依存比較では「あ」＋結合文字が「あ」と
-        // 等価に畳まれず、先頭一致の判定が意図せず false になる
-        Assert.StartsWith("あ", vm.IgnoredDepartment, StringComparison.Ordinal);
-    }
-
-    // 注意書きへ出す値は、長さと文字種の両方を整えてから渡す。
-    // これはクエリ文字列がそのまま画面へ戻る唯一の経路で、Razor の自動エスケープは
-    // マークアップの混入しか防がない
-    [Fact]
-    public async Task Incidents_IgnoredDepartment_IsTruncatedForDisplay()
-    {
-        // 一覧に 1 件だけ用意する
-        await SeedIncidentAsync("ICU");
-
-        // 実在しうる部署名の上限をはっきり超える長さを送る
-        var tooLong = new string('あ', FieldLengths.ShortText + 50);
-        var vm = await IndexIncidentsAsync(tooLong);
-
-        // 省略記号 1 文字ぶんを足した長さで頭打ちになる
-        Assert.Equal(FieldLengths.ShortText + 1, vm.IgnoredDepartment!.Length);
-        Assert.EndsWith("…", vm.IgnoredDepartment);
-    }
-
-    // サロゲートペア(絵文字や一部の漢字)の途中で切らない。
-    // UTF-16 の符号単位で切ると片割れだけが残り、置換文字(U+FFFD)として描画される
-    // ——「何を送ったか」を確かめるための表示なので、そこが化けては意味がない
-    [Fact]
-    public async Task Incidents_IgnoredDepartment_DoesNotSplitSurrogatePairs()
-    {
-        // 一覧に 1 件だけ用意する
-        await SeedIncidentAsync("ICU");
-
-        // 上限のちょうど境界にサロゲートペアが来るように組み立てる
-        var value = new string('あ', FieldLengths.ShortText - 1) + "😀" + "うしろ";
-        var vm = await IndexIncidentsAsync(value);
-
-        // 対になっていないサロゲート(＝ペアの片割れ)が残っていない。
-        // 正しいペアは高位・低位の両方を含むので「低位サロゲートがあるか」では判定できない
-        // ——Rune として読めるかどうかで見る
-        Assert.True(vm.IgnoredDepartment!.EnumerateRunes().All(r => r != Rune.ReplacementChar),
-            $"対になっていないサロゲートが残っている: {vm.IgnoredDepartment}");
-        // 絵文字は 1 文字として残っている(切るなら手前で切る)
-        Assert.Contains("😀", vm.IgnoredDepartment);
-    }
-
-    // 双方向テキストの上書き(U+202E など)はエスケープを通り抜け、後続の文言の見た目を
-    // 反転させる。注意書きの意味が読み手にとって変わってしまうので、そのままは出さない。
-    // ただし消すのではなく置換文字に差し替える(消すと表示と照会した値が食い違うため。
-    // Incidents_IgnoredDepartment_KeepsTheShapeOfWhatWasSent を参照)
-    [Fact]
-    public async Task Incidents_IgnoredDepartment_ReplacesInvisibleControlCharacters()
-    {
-        // 一覧に 1 件だけ用意する
-        await SeedIncidentAsync("ICU");
-
-        // 右から左への上書き指示と改行を混ぜた値を送る
-        var vm = await IndexIncidentsAsync("外来\u202E\n病棟");
-
-        // 表示しない文字はそのまま出さず、あった位置に置換文字が入る
-        Assert.Equal("外来\uFFFD\uFFFD病棟", vm.IgnoredDepartment);
-        // 上書き指示そのものは残っていない(残ると後続の文言の向きが変わる)
-        Assert.DoesNotContain('\u202E', vm.IgnoredDepartment!);
+        // 採用しなかったことが画面へ伝わっている
+        Assert.True(vm.DepartmentFilterIgnored);
     }
 
     // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
@@ -423,7 +293,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var vm = await IndexIncidentsAsync(department);
 
         // 注意書きは出さない
-        Assert.Null(vm.IgnoredDepartment);
+        Assert.False(vm.DepartmentFilterIgnored);
     }
 
     // 採用できた場合も注意書きは出さない(過去の部署名で絞り込めているケース)
@@ -437,7 +307,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var vm = await IndexIncidentsAsync(RetiredDepartment);
 
         // 絞り込めているので注意書きは不要
-        Assert.Null(vm.IgnoredDepartment);
+        Assert.False(vm.DepartmentFilterIgnored);
     }
 
     // 空白のみの入力は「絞り込み無し」。SearchFilter.HasValue の規則がこの経路でも効いていることと、
@@ -718,7 +588,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
     // コントローラ級のテストは ViewModel までしか見ないので、@if のブロックごと消しても
-    // 全件緑のまま通る(実測)。そうなると IgnoredDepartment は誰も読まない
+    // 全件緑のまま通る(実測)。そうなると DepartmentFilterIgnored は誰も読まない
     // 書き込み専用のプロパティになり、利用者は黙って全件を見せられる ——
     // SearchFilter の表が「してはいけない」と書いている状態そのもの。
     // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ
@@ -737,7 +607,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 判定(anyFilter)からも参照しているので、注意書きのブロックを丸ごと消しても
         // その 1 行が条件を満たしてしまう(実測で全件緑のまま通った)。
         // 出し分けの構文そのものを探して、注意書きが実際に描画されることを確かめる
-        var flag = nameof(IncidentListViewModel.IgnoredDepartment);
+        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
         // 空白の有無や比較の書き方に依存しない形で探す。`@if (Model.X)` の完全一致で書くと、
         // `@if(Model.X)` のように同じ働きの正しい書き方を落としてしまい、
         // 次の人が動いているマークアップを「直し」に行く検出網になる
@@ -745,17 +615,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(header.Success,
             $"Views/Incidents/Index.cshtml が Model.{flag} で注意書きを出し分けていない。");
 
-        // 出し分けているだけでなく、そのブロックが値そのものを描画していることまで見る。
-        // ヘッダだけを見ると、@if は残したまま本文から「@Model.IgnoredDepartment」を
-        // 消す変異が素通りする(実測)。それは「何を落としたか」が画面から消えた状態で、
-        // 真偽値ではなく値を持たせた理由がまるごと失われる
+        // 出し分けているだけでなく、そのブロックに中身があることまで見る。
+        // ヘッダだけを見ると、本文を空にする変異が素通りする
         var blockBody = ExtractBraceBlock(source, header.Index);
         Assert.True(blockBody != null,
             $"Views/Incidents/Index.cshtml の @if (Model.{flag}) に本体が無い。");
-        Assert.True(ContainsIdentifier(blockBody!, $"Model.{flag}"),
-            $"注意書きの本文に Model.{flag} を出すこと。"
-            + "何を落としたかはこのページの他のどこにも現れないため、"
-            + "これが無いと利用者は自分が送った値を確認できない。");
+        Assert.Contains("alert", blockBody!, StringComparison.Ordinal);
+        Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
     }
 
     /// <summary>
