@@ -254,11 +254,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal("icu", vm.DepartmentOptions[0]);
     }
 
-    // 採用しなかったことを画面へ伝える。黙って落とすと、絞り込んだつもりの利用者に
-    // 全件が返り「絞り込み中」バッジも出ないので取り違えに気付けない。
-    // 採用しない条件は「見えている範囲の実データに無い」＝データ側の状態に依存するので、
-    // 打ち間違いだけでなく、正しくブックマークした URL でも該当行が消えれば当てはまる
-    // (その 2 つを見分ける手段は無いので、どちらも同じように知らせる)
+    // 採用しなかったことを画面へ伝える。
+    // 理由(採用しない条件がデータ側の状態に依存すること、黙るとどう取り違えられるか)は
+    // Models/Validation/SearchFilter の解説が正本
     [Fact]
     public async Task Incidents_WhenDepartmentIsNotAdopted_TheScreenIsToldAboutIt()
     {
@@ -317,9 +315,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public async Task Incidents_ListedDepartmentWithNoRows_StillFiltersInsteadOfShowingEverything()
     {
-        // 許可リストの 2 つの部署のうち、片方にだけインシデントを用意する
+        // 許可リストから 2 つ選び、片方にだけインシデントを用意する。
+        // 添字を決め打ちしない —— 部署一覧はマイグレーション無しで編集できる可変の配列なので、
+        // 1 件に絞られた配備では検査したい方針ではなく添字の例外で落ちてしまう
         var seeded = Incident.Departments[0];
-        var empty = Incident.Departments[1];
+        var empty = Incident.Departments.FirstOrDefault(d => d != seeded);
+        Assert.True(empty != null, "この検査には許可リストに 2 つ以上の部署が要る。");
         await SeedIncidentAsync(seeded);
 
         // 1 件も無い方の部署で絞り込む
@@ -829,8 +830,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     if (depth == 0)
                     {
                         bodies.Add(block[(open + 1)..i]);
-                        // 次のループはこの本体の外から探す
-                        cursor = i;
+                        // 次の探索は本体の中から続ける。入れ子のループ(<optgroup> での
+                        // グルーピングなど)も 1 件として数えるため —— 本体の外へ飛ばすと、
+                        // 数だけ見ている loopCount や ExtractForeachSources とずれて、
+                        // 正しいマークアップなのに「本体を取り出せていない」と落ちる
+                        cursor = open + 1;
                         break;
                     }
                 }
