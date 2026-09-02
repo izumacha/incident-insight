@@ -857,31 +857,31 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 旗の名前を ViewModel から機械的に導く。
     //
-    // <b>なぜ書き並べないのか。</b> 下の 2 つの検査(注意書きが描画されるか /
+    // なぜ書き並べないのか。 下の 2 つの検査(注意書きが描画されるか /
     // パネルを開くが「適用中」とは言わないか)は旗ごとに掛ける必要がある。
     // ここを [InlineData] の手書きにすると、3 つ目の旗を足した人が行を足し忘れた瞬間に
-    // <b>その旗だけが両方の検査から黙って外れる</b>(fail-open)。この repo が
+    // その旗だけが両方の検査から黙って外れる(fail-open)。この repo が
     // AuditSaveChangesInterceptor.AuditedEntities や LengthGovernedEntityTypes で
     // 繰り返し避けている「写しを持つ」形そのものなので、同じやり方で導出にする。
     // 実際この差分の 1 つ前の版がその状態で、CauseCategoryFilterIgnored を
     // 誰も読まない書き込み専用のプロパティにしても全件緑のまま通った。
     //
-    // <b>1 つも拾えなければ落とす</b> —— 命名規約ごと変えると「対象ゼロ＝全件緑」で
+    // 1 つも拾えなければ落とす —— 命名規約ごと変えると「対象ゼロ＝全件緑」で
     // 検出網が黙って死ぬため(fail-closed)。ただしこの門番だけでは
     // 「旗のうち 1 つだけが規約から外れる」改名を捕まえられない(残りが拾えるので 0 件にならない)。
     // そこは判定の手がかりを変えた <see cref="IgnoredFilterFlags_CoverEveryFlagTheControllerSets"/>
     // が受け持つ。
     //
-    // <b>覆っているのは /Incidents の 1 画面だけ</b>(この導出も、照合も、下の 2 つの
+    // 覆っているのは /Incidents の 1 画面だけ(この導出も、照合も、下の 2 つの
     // Razor 走査も、IncidentListViewModel / IncidentsController.cs /
-    // Views/Incidents/Index.cshtml を名指ししている)。<b>「旗を足せば必ず検査に入る」のは
-    // この画面の中の話</b>で、別の一覧画面が旗を持ち始めても自動では入らない。
+    // Views/Incidents/Index.cshtml を名指ししている)。「旗を足せば必ず検査に入る」のは
+    // この画面の中の話で、別の一覧画面が旗を持ち始めても自動では入らない。
     // 一般化していないのは、現在この方式(「採用しない」ときに知らせる)を採っているのが
     // この画面だけだから —— /PreventiveMeasures は無条件補完で、そもそも「採用しない」枝が
     // 無いので旗を持たない(SearchFilter の表を参照)。選択肢の出所を見る
     // BackfillingScreens_BuildOptionsFromTheControllersResult は 2 画面に掛かるが、
     // あちらは ViewModel と ViewBag という別々の受け渡し方を [InlineData] で吸収している。
-    // <b>2 画面目が旗を持ったときは、この 3 つの入り口を画面ごとに引数化すること</b>
+    // 2 画面目が旗を持ったときは、この 3 つの入り口を画面ごとに引数化すること
     // (そうしないと、その画面の旗だけが誰にも読まれない書き込み専用のプロパティになる)
     public static TheoryData<string> IgnoredFilterFlags()
     {
@@ -911,17 +911,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
 
-    // 上の導出(命名規約)が旗を取りこぼしていないことを、<b>判定とは独立な手がかり</b>で照合する。
+    // 上の導出(命名規約)が旗を取りこぼしていないことを、判定とは独立な手がかりで照合する。
     //
-    // 手がかりは<b>コントローラのソース</b>: 「採用しなかったか」は必ず解決関数が返す
+    // 手がかりはコントローラのソース: 「採用しなかったか」は必ず解決関数が返す
     // <c>Ignored</c> から ViewModel へ写されるので、<c>… = ….Ignored</c> という代入が
     // 旗の実際の一覧になる。これは命名規約とは別の宣言箇所なので、
-    // <b>片方だけが狭まったときに食い違いとして現れる</b>。
+    // 片方だけが狭まったときに食い違いとして現れる。
     //
-    // <b>なぜ要るのか(実測)。</b> 命名規約だけに頼ると、旗を 2 つ持つ状態で
+    // なぜ要るのか(実測)。 命名規約だけに頼ると、旗を 2 つ持つ状態で
     // 片方を規約から外れた名前(<c>CauseCategoryIgnoredFlag</c> など)へ改名すると、
     // もう片方が拾えるぶん「0 件」にはならず、上の門番をすり抜けて
-    // <b>改名した旗だけが 2 つの Razor 走査から黙って外れた</b>。
+    // 改名した旗だけが 2 つの Razor 走査から黙って外れた。
     // 同じ手がかりでガードを書くと導出が狭まったときにガードも一緒に狭まるので、
     // この repo が LengthGovernedTypes_CoverEveryOwnedDbSet でやっているのと同じく手がかりを変える
     [Fact]
@@ -960,7 +960,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ。
     //
     // 旗は現在 2 つあり(発生部署・原因分類)、どちらも同じ壊れ方をする。
-    // <b>片方だけを見る形にしない</b> —— 実測でも、原因分類の注意書きを足す前の版は
+    // 片方だけを見る形にしない —— 実測でも、原因分類の注意書きを足す前の版は
     // 部署の旗だけを見ていたので、新しい旗が誰にも読まれない書き込み専用のプロパティに
     // なっても全件緑のままだった。一覧は手書きせず IgnoredFilterFlags から導く
     [Theory]
