@@ -172,23 +172,38 @@ internal static class IncidentControllerHelpers
             return new DepartmentFilterSelection(department, options);
 
         // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
-        // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う
-        var existsInScope = await db.Incidents
+        // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
+        //
+        // 「あるか」ではなく「DB に入っている綴りそのもの」を取り出すのが要点。上の
+        // options.Contains は C# の序数比較(大文字小文字・末尾空白を区別する)なのに、
+        // ここの == は DB の照合順序に従うため、両者の判定が食い違う配備先がある。
+        // SQL Server の既定(Japanese_CI_AS など)は大文字小文字を区別せず末尾空白も無視するので、
+        // ?department=icu は「許可リストに無い(序数)」かつ「実データにある(照合順序)」となり、
+        // 利用者の綴りをそのまま補完すると本物の "ICU" の上に偽の "icu" が並ぶ。
+        // SQLite / PostgreSQL は区別するので同じ URL でも挙動が変わる —— テストの InMemory は
+        // 序数比較なので、全件緑のまま SQL Server 配備でだけ壊れる形になる(§10)。
+        // DB 側の綴りを持ち帰れば、どちらの経路を通っても選択肢に並ぶのは実在する値だけになる
+        var storedDepartment = await db.Incidents
             .AsNoTracking()
             .ScopedByUser(user)
-            // 1 件でもその部署のインシデントがあれば true(EXISTS に翻訳される)
-            .AnyAsync(i => i.Department == department);
+            // その部署のインシデントに絞る(照合順序による一致は DB の判断に委ねる)
+            .Where(i => i.Department == department)
+            // 保存されている綴りを 1 件だけ取り出す
+            .Select(i => i.Department)
+            .FirstOrDefaultAsync();
 
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
-        if (!existsInScope)
+        if (storedDepartment == null)
             return new DepartmentFilterSelection(null, options);
 
-        // 実データにある＝許可リストから外れた過去の部署名。選択肢の先頭へ補完して
-        // 絞り込みを維持する。補完しないと、この行たちへ二度と絞り込めなくなる
-        options.Insert(0, department);
-        // 採用した値と、補完済みの選択肢を返す
-        return new DepartmentFilterSelection(department, options);
+        // 取り出した綴りが許可リストに無いときだけ選択肢の先頭へ補完する。
+        // (照合順序の違いでここへ来た場合、綴りは既に選択肢にあるので足すと重複する)
+        if (!options.Contains(storedDepartment))
+            options.Insert(0, storedDepartment);
+        // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
+        // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
+        return new DepartmentFilterSelection(storedDepartment, options);
     }
 
     /// <summary>

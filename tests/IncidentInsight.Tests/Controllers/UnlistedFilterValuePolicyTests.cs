@@ -32,6 +32,25 @@ namespace IncidentInsight.Tests.Controllers;
 /// 画面だけが「絞り込み無し」に見え、<b>そのフォームを再送信した瞬間に絞り込みが解除される</b>。
 /// したがってどの画面でも守るべき不変条件は 1 つ——<b>「絞り込みに使った値は必ず選択肢にある」</b>。
 /// 補完(選択肢を増やす)と不採用(絞り込みをやめる)は、その不変条件を満たす 2 通りの解でしかない。</para>
+///
+/// <para><b>個別の <c>*ControllerTests</c> と重なるケースがあるのは承知のうえ。</b>
+/// <c>/AuditLogs</c> と <c>/PreventiveMeasures</c> の 3 件は、各コントローラのテストにも
+/// 同趣旨のものがある。それでもここへ置くのは、この 2 つが答えている問いが違うため:
+/// 個別のテストは「その画面が仕様どおり動くか」、ここは<b>「3 画面の方式の割り当てが
+/// 表のとおりか」</b>。方式を 1 画面だけ変えると個別のテストは新しい仕様に合わせて
+/// 書き換えられて緑のままだが、ここは<b>表と食い違ったまま落ちる</b>——それが狙いで、
+/// 落ちたときに直すべきは実装か表のどちらかだと分かる。<b>重複そのものが検出器</b>なので、
+/// 「DRY だから」という理由でこちら側を消さないこと(消すと表を守るものが無くなる)。</para>
+///
+/// <para><b>ここで固定できない境界: 照合順序(collation)によるずれ。</b>
+/// <c>/Incidents</c> の実装は、許可リストの判定を C# の序数比較で、実在確認を DB の
+/// 照合順序で行う。SQL Server の既定(<c>Japanese_CI_AS</c> 等)は大文字小文字を区別せず
+/// 末尾空白も無視するので <c>?department=icu</c> が両者で違う答えになりうる。実装側は
+/// 「DB に保存されている綴りを持ち帰る」ことでこのずれを吸収しているが、
+/// <b>テストの InMemory プロバイダは序数比較なので、この分岐をここで動かすことはできない</b>
+/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。プロバイダ依存の挙動は
+/// この repo が繰り返し当たっている死角なので、<b>この付近を触る差分はレビューで
+/// 「どちらの比較規則で判定しているか」を確かめること。</b></para>
 /// </summary>
 public class UnlistedFilterValuePolicyTests : IDisposable
 {
@@ -168,6 +187,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Null(vm.Department);
         // 選択肢にも足さない(存在しない部署を選べるようにしない)
         Assert.DoesNotContain(UnknownDepartment, vm.DepartmentOptions);
+        // 空の選択肢も現れない。
+        // 「実データに無い」と判定した値を捨て損ねると、DB から取れなかった値(null)が
+        // そのまま選択肢へ入り、画面には中身の無い <option> が「部署（全て）」の直下に並ぶ。
+        // 利用者にはどちらも空欄に見えるので、押しても何も起きない項目として残る。
+        // 上の 3 つの Assert はこの壊れ方を素通りさせた(変異で実測)ため、明示的に固定する
+        Assert.All(vm.DepartmentOptions, option => Assert.False(string.IsNullOrWhiteSpace(option),
+            "部署の選択肢に空の項目を入れない(画面では「部署（全て）」と見分けが付かない)。"));
     }
 
     // 現行の許可リストに載っている値は、追加の問い合わせ無しでそのまま採用する。
@@ -261,6 +287,36 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Null(vm.EntityName);
     }
 
+    // 操作種別もエンティティ名とまったく同じ「閉じた集合＋採用しない」方式。
+    // SearchFilter の表が /AuditLogs の行で 2 つとも名指ししているので、片方だけ固定して
+    // 「表は 2 つと言っているのにテストは 1 つ」という状態を作らない
+    // (表と検出網が食い違ったら、次はもう表を信じられなくなる)
+    [Fact]
+    public async Task AuditLogs_UnlistedOperation_IsNotAppliedAndNotEchoedBack()
+    {
+        // 許可リストに無い操作種別を持つ行を用意する
+        _db.AuditLogs.Add(new AuditLog
+        {
+            EntityName = "Incident",
+            Operation = "Purged",
+            ChangedBy = "admin",
+            EntityKey = "1",
+            ChangedAt = TestFixtures.Today
+        });
+        await _db.SaveChangesAsync();
+
+        // 許可リスト外の操作種別で絞り込もうとする
+        var controller = new AuditLogsController(_db);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        var result = await controller.Index(null, "Purged", null, null, null, null, 1) as ViewResult;
+        var vm = Assert.IsType<AuditLogListViewModel>(result!.Model);
+
+        // 絞り込みは掛からず全件が返る
+        Assert.Equal(1, vm.TotalCount);
+        // 画面へも返さない
+        Assert.Null(vm.Operation);
+    }
+
     // --- /PreventiveMeasures: 補完 -------------------------------------------
 
     // 担当部署は自由記述で許可リストが存在せず、選択肢は実データから件数上限付きで作る。
@@ -307,11 +363,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「部署（全て）」を指す)。コントローラで正しく決めた結論を表示側が使わなければ
     // 意味がないので、その配線だけを Razor のソースから直接確かめる。
     //
-    // 検査は「この 1 ファイルが Model.DepartmentOptions を回していること」と
-    // 「部署の select の選択肢づくりに static 配列を直接使っていないこと」の 2 点に絞る。
-    // 走査対象を 1 ファイルに限るのは、Incident.Departments の参照自体は他の画面
-    // (登録・編集フォーム)では正しい書き方だから ——一律に禁じると正しいコードを咎める
-    // 検出網になり、いずれ緩められる(この repo が繰り返し避けている形)
+    // 検査は<b>部署の &lt;select&gt; ブロックの中身だけ</b>を見る。ファイル全体を対象に
+    // 「Model.DepartmentOptions を含む」「Incident.Departments を含む行が無い」で書くと、
+    // 実測で 2 通りに素通りした: (a) 前者はコメントに
+    // `@* TODO: Model.DepartmentOptions への移行は保留 *@` と書くだけで満たせる、
+    // (b) 後者は `@foreach (var d in` と `IncidentInsight.Web.Models.Incident.Departments)` を
+    // 2 行に折り返すと「1 行に両方」に当たらなくなる。どちらの場合も select は静的配列へ
+    // 戻っているのに全件緑のまま通った。ブロックを切り出して中身だけを見れば、
+    // どこで改行しようとコメントに何を書こうと結論は変わらない。
+    //
+    // 走査対象を 1 ファイル・1 ブロックに限るのは、Incident.Departments の参照自体は
+    // 他の画面(登録・編集フォーム)では正しい書き方だから ——一律に禁じると正しいコードを
+    // 咎める検出網になり、いずれ緩められる(この repo が繰り返し避けている形)
     [Fact]
     public void IncidentsIndexView_BuildsDepartmentOptionsFromTheViewModel()
     {
@@ -321,21 +384,28 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
         var source = File.ReadAllText(viewPath);
 
-        // (1) ViewModel が用意した選択肢を実際に回している
-        Assert.Contains("Model.DepartmentOptions", source);
+        // 部署ドロップダウンの開始タグを探す(name="department" が目印)
+        var selectStart = source.IndexOf("<select name=\"department\"", StringComparison.Ordinal);
+        // 見つからなければ、ビューの構造が変わったか目印が消えている。
+        // 「見るべきブロックが無い＝緑」にすると検出網が黙って死ぬので fail-closed で落とす
+        Assert.True(selectStart >= 0,
+            "部署の <select name=\"department\"> が見つからない。この検査はこのブロックの中身だけを"
+            + "見るので、目印を変えるならこのテストも同じ変更セットで直すこと。");
+        // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
+        var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
+        Assert.True(selectEnd > selectStart, "部署の <select> に対応する </select> が見つからない。");
+        // 検査対象はこのブロックの中身だけ
+        var selectBlock = source[selectStart..selectEnd];
 
-        // (2) 部署の選択肢づくりで static 配列を直接回していない。
-        //     `Incident.Departments` を foreach の列挙対象にしている行だけを違反とみなす
-        //     (登録・編集フォームのような他の使い方はこの画面には無いが、
-        //      将来この画面へ足したときに巻き添えで落とさないよう書き方で絞る)
-        var offendingLines = source
-            .Split('\n')
-            .Where(line => line.Contains("foreach") && line.Contains("Incident.Departments"))
-            .ToList();
-        Assert.True(offendingLines.Count == 0,
+        // (1) ViewModel が用意した選択肢を実際に回している。
+        //     ブロック内に限るので、他所のコメントに同じ文字列を書いても満たせない
+        Assert.Contains("Model.DepartmentOptions", selectBlock);
+
+        // (2) このブロックの中で static 配列を参照していない。
+        //     行単位ではなくブロック全体を見るので、改行を挟んでも検出できる
+        Assert.False(selectBlock.Contains("Incident.Departments", StringComparison.Ordinal),
             "部署の選択肢は Model.DepartmentOptions から作る。Incident.Departments を直接回すと、"
             + "許可リストから外れた過去の部署名で絞り込んだときに一致する option が無くなり、"
-            + "再送信で絞り込みが無言で解除される(issue #192)。該当行: "
-            + string.Join(" / ", offendingLines.Select(l => l.Trim())));
+            + "再送信で絞り込みが無言で解除される(issue #192)。");
     }
 }
