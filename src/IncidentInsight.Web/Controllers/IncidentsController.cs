@@ -184,7 +184,7 @@ public class IncidentsController : Controller
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える。
             // 判定は解決側が返す(呼び出し側で SearchFilter.HasValue を引き直すと、
             // 解決側の「入力なし」の規則を変えたときに片方だけ古くなる)
-            DepartmentFilterIgnored = departmentFilter.Ignored,
+            IgnoredDepartment = departmentFilter.IgnoredValue,
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,
@@ -590,13 +590,13 @@ public class IncidentsController : Controller
 
         // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
         if (!SearchFilter.HasValue(department))
-            return new DepartmentFilterSelection(null, options, Ignored: false);
+            return new DepartmentFilterSelection(null, options, IgnoredValue: null);
 
         // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
         // 比較は序数(完全一致)で行う。ここを大文字小文字を無視する比較にしてはいけない
         // —— 下の「綴り違いをアプリ側で畳まない」の項を参照
         if (options.Contains(department))
-            return new DepartmentFilterSelection(department, options, Ignored: false);
+            return new DepartmentFilterSelection(department, options, IgnoredValue: null);
 
         // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
         // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
@@ -637,18 +637,38 @@ public class IncidentsController : Controller
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
         if (storedDepartment == null)
-            return new DepartmentFilterSelection(null, options, Ignored: true);
+            return new DepartmentFilterSelection(null, options, IgnoredValue: TruncateForDisplay(department));
 
-        // 取り出した綴りが許可リストに(序数で)無いときだけ選択肢の先頭へ補完する。
-        // 照合順序が大文字小文字を区別しない配備先では、DB が許可リストどおりの綴りを
-        // 返してくることがある(例: ?department=icu → 保存されている "ICU")。その場合は
-        // 既に選択肢にあるので足さない —— 足すと同じ項目が 2 つ並ぶ
-        if (!options.Contains(storedDepartment))
-            options.Insert(0, storedDepartment);
+        // 実データにある＝許可リストから外れた過去の部署名。選択肢へ補完して絞り込みを維持する。
+        // 「既にあれば足さない・無ければ先頭へ」の手順は /PreventiveMeasures と共通なので
+        // 共有ヘルパに寄せてある(照合順序が大文字小文字を区別しない配備先では、DB が
+        // 許可リストどおりの綴りを返してくることがある。その場合は足さないのが正しい)
+        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(options, storedDepartment);
         // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
         // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
-        return new DepartmentFilterSelection(storedDepartment, options, Ignored: false);
+        return new DepartmentFilterSelection(storedDepartment, options, IgnoredValue: null);
     }
+
+    /// <summary>
+    /// 採用しなかった絞り込み値を、画面に出してよい長さへ切り詰める。
+    /// </summary>
+    /// <remarks>
+    /// クエリ文字列は長さが自由なので、受け取った値をそのまま注意書きへ入れると
+    /// 一画面を埋め尽くす文字列を送り込める。Razor が自動エスケープするので
+    /// マークアップとしては安全だが、レイアウトは壊れる。実在しうる部署名は
+    /// <see cref="FieldLengths.ShortText"/> に収まるので、それを超える分は
+    /// 省略記号にして「何を送ったか」が分かる程度だけ残す。
+    /// </remarks>
+    /// <param name="value">利用者が送ってきた絞り込み値。</param>
+    /// <returns>表示用に切り詰めた文字列。</returns>
+    private static string TruncateForDisplay(string value)
+        // 上限以下ならそのまま、超えていれば上限まで切って省略記号を付ける
+        => value.Length <= IgnoredDepartmentMaxDisplayLength
+            ? value
+            : value[..IgnoredDepartmentMaxDisplayLength] + "…";
+
+    // 注意書きへ出す絞り込み値の最大文字数。実在しうる部署名の上限に合わせてある
+    private const int IgnoredDepartmentMaxDisplayLength = FieldLengths.ShortText;
 
     /// <summary>
     /// <see cref="ResolveDepartmentFilterAsync"/> の結果。
@@ -668,8 +688,9 @@ public class IncidentsController : Controller
     /// 発生部署ドロップダウンに並べる選択肢。通常は <see cref="Incident.Departments"/> そのままで、
     /// 許可リストから外れた過去の部署名で絞り込んでいるときだけ、その値が先頭に補完されている。
     /// </param>
-    /// <param name="Ignored">
-    /// <b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。画面の注意書きの出し分けに使う。
+    /// <param name="IgnoredValue">
+    /// <b>値を受け取ったのに採用しなかった</b>ときだけ、その値(表示用に切り詰め済み)。
+    /// それ以外は <c>null</c>。画面の注意書きの出し分けと文面に使う。
     /// <para><see cref="Effective"/> が <c>null</c> になる理由は 2 つあり
     /// (「そもそも入力が無かった」と「入力はあったが実データに無かった」)、
     /// <b>注意書きを出してよいのは後者だけ</b>。前者でも出すと、絞り込みを使っていない
@@ -678,7 +699,7 @@ public class IncidentsController : Controller
     /// 呼び出し側で <c>SearchFilter.HasValue</c> を引き直さずここで受け取る
     /// ——引き直すと、解決側の「入力なし」の規則を変えたときに片方だけ古くなる。</para>
     /// </param>
-    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, bool Ignored);
+    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, string? IgnoredValue);
 
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
     // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は

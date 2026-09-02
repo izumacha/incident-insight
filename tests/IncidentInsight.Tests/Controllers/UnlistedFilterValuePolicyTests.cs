@@ -277,8 +277,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 実データに無い部署名で絞り込もうとする
         var vm = await IndexIncidentsAsync(UnknownDepartment);
 
-        // 採用しなかったことが画面へ伝わっている
-        Assert.True(vm.DepartmentFilterIgnored);
+        // 採用しなかったことが、値ごと画面へ伝わっている
+        // (何を落としたかはページの他のどこにも出ないため、値まで持つ)
+        Assert.Equal(UnknownDepartment, vm.IgnoredDepartment);
     }
 
     // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
@@ -300,7 +301,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var vm = await IndexIncidentsAsync(department);
 
         // 注意書きは出さない
-        Assert.False(vm.DepartmentFilterIgnored);
+        Assert.Null(vm.IgnoredDepartment);
     }
 
     // 採用できた場合も注意書きは出さない(過去の部署名で絞り込めているケース)
@@ -314,7 +315,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var vm = await IndexIncidentsAsync(RetiredDepartment);
 
         // 絞り込めているので注意書きは不要
-        Assert.False(vm.DepartmentFilterIgnored);
+        Assert.Null(vm.IgnoredDepartment);
     }
 
     // 空白のみの入力は「絞り込み無し」。SearchFilter.HasValue の規則がこの経路でも効いていることと、
@@ -525,13 +526,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "選択肢を組み立てる foreach が見つからない。");
 
         // すべてのループがコントローラの用意した名前を回している。
+        // 照合は「部分文字列を含むか」ではなく識別子の境界まで見る(ContainsIdentifier)。
+        // 含むかだけで見ると、DepartmentOptions を DepartmentOptionsRaw のような
+        // 別の名前へ差し替えても前置詞が一致して通ってしまう。
         // 別の出所へ差し替えても、2 つ目のループを足しても、ここで落ちる ——
         // コントローラが補完した値に一致する option が無くなったり、
         // 別の出所の選択肢が混ざったりすると、再送信で絞り込みが無言で解除されるため(issue #192)。
         // <optgroup> でのグルーピングなど、意図して複数の出所を使うようになったときは
         // この検査を「どこまで許すか」から書き直すこと
-        Assert.All(loopSources, source =>
-            Assert.Contains(requiredSource, source, StringComparison.Ordinal));
+        Assert.All(loopSources, loop => Assert.True(ContainsIdentifier(loop, requiredSource),
+            $"{viewFolder}/Index.cshtml の選択肢は {requiredSource} から作る。"
+            + $"実際に回しているのは: {loop}"));
 
         // 適用中の値を selected に結び付けている。
         // 選択肢を正しく並べても、どれが現在値かを示さなければ症状はまったく同じになる
@@ -539,18 +544,26 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 実測でも、selected="@(Model.Department == d)" を消す変異は
         // 「回している対象」だけを見ていた頃の検査を全件緑で素通りした。
         //
-        // 判定は selected 属性の中身だけを取り出して行う。ブロック全体に対して
-        // 「Model.Department を含むか」と書くと、"Model.DepartmentOptions" を回している
-        // foreach の行がそれを満たしてしまい検査が空振りする(実測: selected の中身を
-        // Model.Search に差し替えても全 579 件が緑のまま通った)。
-        // 期待する名前が別の名前の前置詞になっているときに起きる事故なので、
-        // 「どこかに出てくるか」ではなく「どこに出てくるか」で見る
-        var selectedExpression = ExtractAttributeValue(selectBlock, "selected");
+        // 判定は「ループが作る <option> の selected 属性」だけを見る。範囲を絞る理由が 2 つある:
+        //   - ブロック全体に対して「Model.Department を含むか」と書くと、
+        //     "Model.DepartmentOptions" を回す foreach の行がそれを満たして空振りする
+        //     (実測: selected の中身を Model.Search に差し替えても全 579 件が緑で通った)。
+        //   - ブロック内の最初の selected を見るだけでも足りない。静的な「(全て)」の option へ
+        //     selected="@(Model.Department == null)" を足してループ側から外すと、
+        //     最初の 1 つが条件を満たして通ってしまう ——そして絞り込み中は常に
+        //     「(全て)」が選ばれる、という issue #192 そのものの状態になる。
+        // ループ本体に限れば、どちらの逃げ道も塞がる
+        var loopBody = ExtractLoopBody(selectBlock);
+        Assert.True(loopBody != null,
+            $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> の foreach に本体が無い。");
+        var selectedExpression = ExtractAttributeValue(loopBody!, "selected");
         Assert.True(selectedExpression != null,
-            $"{viewFolder}/Index.cshtml の <option> に selected 属性が無い。"
+            $"{viewFolder}/Index.cshtml のループが作る <option> に selected 属性が無い。"
             + "現在値を示さないと select は先頭の「(全て)」を指し、"
             + "再送信で絞り込みが無言で解除される(issue #192)。");
-        Assert.Contains(appliedValue, selectedExpression!, StringComparison.Ordinal);
+        Assert.True(ContainsIdentifier(selectedExpression!, appliedValue),
+            $"{viewFolder}/Index.cshtml の selected は {appliedValue} と比べること。"
+            + $"実際の式: {selectedExpression}");
     }
 
     // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。
@@ -579,8 +592,69 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 判定(anyFilter)からも参照しているので、注意書きのブロックを丸ごと消しても
         // その 1 行が条件を満たしてしまう(実測で全件緑のまま通った)。
         // 出し分けの構文そのものを探して、注意書きが実際に描画されることを確かめる
-        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
-        Assert.Contains($"@if (Model.{flag})", source, StringComparison.Ordinal);
+        var flag = nameof(IncidentListViewModel.IgnoredDepartment);
+        // 空白の有無や比較の書き方に依存しない形で探す。`@if (Model.X)` の完全一致で書くと、
+        // `@if(Model.X)` のように同じ働きの正しい書き方を落としてしまい、
+        // 次の人が動いているマークアップを「直し」に行く検出網になる
+        Assert.Matches($@"@if\s*\(\s*Model\.{flag}\b", source);
+    }
+
+    /// <summary>
+    /// <paramref name="text"/> が <paramref name="identifier"/> を<b>識別子として</b>含むか。
+    /// </summary>
+    /// <remarks>
+    /// 素の部分文字列検査だと、期待する名前が別の名前の<b>前置詞</b>のときに素通りする
+    /// (<c>Model.Department</c> は <c>Model.DepartmentOptions</c> に含まれる)。
+    /// 直後が識別子を構成する文字(英数字・アンダースコア)なら別の名前とみなす。
+    /// 直前は見ない —— <c>Model.Department</c> のように区切り文字込みで指定するため。
+    /// </remarks>
+    private static bool ContainsIdentifier(string text, string identifier)
+    {
+        // 出現位置を順に調べる
+        for (var i = text.IndexOf(identifier, StringComparison.Ordinal); i >= 0;
+             i = text.IndexOf(identifier, i + 1, StringComparison.Ordinal))
+        {
+            // 一致部分の直後の位置
+            var after = i + identifier.Length;
+            // 末尾で終わっているか、直後が識別子の文字でなければ「その名前」だと判断する
+            if (after >= text.Length || (!char.IsLetterOrDigit(text[after]) && text[after] != '_'))
+                return true;
+        }
+        // どの出現も別の名前の一部だった
+        return false;
+    }
+
+    /// <summary>
+    /// ブロック内の最初の <c>foreach</c> の本体(<c>{ ... }</c> の中身)を取り出す。
+    /// 見つからなければ <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// selected の検査をループ本体へ限るために使う。ブロック全体を対象にすると、
+    /// ループの外にある静的な <c>&lt;option&gt;</c> の selected で条件を満たせてしまう。
+    /// </remarks>
+    private static string? ExtractLoopBody(string block)
+    {
+        // foreach の位置を探す
+        var keyword = block.IndexOf("foreach", StringComparison.Ordinal);
+        if (keyword < 0) return null;
+        // その後ろにある最初の波括弧が本体の開始
+        var open = block.IndexOf('{', keyword);
+        if (open < 0) return null;
+
+        // 入れ子を数えながら対応する閉じ波括弧を探す
+        var depth = 0;
+        for (var i = open; i < block.Length; i++)
+        {
+            if (block[i] == '{') depth++;
+            else if (block[i] == '}')
+            {
+                depth--;
+                // 深さが 0 に戻った位置が本体の終わり
+                if (depth == 0) return block[(open + 1)..i];
+            }
+        }
+        // 閉じ波括弧が無ければ解析できない
+        return null;
     }
 
     /// <summary>

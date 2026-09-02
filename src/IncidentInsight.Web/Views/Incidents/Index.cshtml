@@ -23,14 +23,19 @@
    正しい URL でも該当インシデントが消えれば当てはまる。黙って落とすと、絞り込んだ
    つもりの利用者に全件が返り「絞り込み中」バッジも出ないため取り違えに気付けない。
    色だけに意味を持たせずアイコンと文言を併記する(§7) *@
-@if (Model.DepartmentFilterIgnored)
+@if (Model.IgnoredDepartment != null)
 {
     <div class="alert alert-warning d-flex align-items-start gap-2" role="alert">
         @* 装飾目的のアイコンなので支援技術からは隠す *@
         <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
         <div>
             <strong>部署の絞り込みは適用していません。</strong>
-            指定された部署のインシデントが（表示できる範囲に）1 件も無いため、絞り込まずに一覧を表示しています。
+            @* 受け取った値をそのまま見せる。何を送ったかはこのページの他のどこにも出ない
+               （採用していないので select は「部署（全て）」を指し、ページャの URL にも載らない）ため、
+               これが無いと「落とした」とだけ言われて確認のしようがない。
+               Razor が自動エスケープするので、値をそのまま出して問題ない *@
+            指定された部署「@Model.IgnoredDepartment」のインシデントが（表示できる範囲に）1 件も無いため、
+            絞り込まずに一覧を表示しています。
         </div>
     </div>
 }
@@ -40,22 +45,25 @@
     @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true）。
        文字列条件はコントローラが絞り込みを適用するときとまったく同じ SearchFilter.HasValue を通す。
        ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら全件を返す食い違いになる *@
-    @* 採用しなかった部署値もここでは「絞り込みを試みた」として数える。
-       採用しなかった値は Model.Department に載らない（載せると「絞り込み中」バッジと
-       ページャの URL に効いていない条件が出る）ので、この判定に入れないとパネルが
-       閉じたまま「インシデントがまだ登録されていません」の初回向け表示が出てしまい、
-       注意書きだけを読んだ利用者が自分の送った値を確認も修正もできなくなる *@
     var anyFilter = SearchFilter.HasValue(Model.Search) || SearchFilter.HasValue(Model.Department)
-                 || Model.DepartmentFilterIgnored
                  || Model.IncidentType.HasValue || Model.Severity.HasValue
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue || Model.CauseCategoryId.HasValue;
+
+    @* パネルを開くかどうかだけは「採用しなかった部署値」も数える。
+       anyFilter 自体には足さない —— あれは「絞り込みが実際に効いているか」で、
+       バッジ（フィルター適用中）と 0 件時の文言（「条件に一致しません／クリア」対
+       「まだ登録されていません」）の出し分けにも使う。採用しなかった値を混ぜると、
+       注意書きが「適用していません」と言う横でバッジが「適用中」と言い、
+       1 件も無い環境では効いていないフィルターを「クリアしてください」と促してしまう。
+       一方パネルは開いておきたい: 送った値を選び直せる場所がそこにしか無いため *@
+    var showFilterPanel = anyFilter || Model.IgnoredDepartment != null;
 }
 <div class="card border-0 shadow-sm mb-3">
     @* クリックで折りたたみを開閉するヘッダ。div+role="button" だとキーボードで
        フォーカス・操作できない(§7)ため、ネイティブにフォーカス可能な <a href> を使う *@
     <a class="card-header bg-white d-block text-decoration-none text-body" href="#filterPanel"
        data-bs-toggle="collapse" role="button"
-       aria-expanded="@(anyFilter ? "true" : "false")" aria-controls="filterPanel">
+       aria-expanded="@(showFilterPanel ? "true" : "false")" aria-controls="filterPanel">
         <i class="bi bi-funnel me-2"></i>絞り込み
         @* フィルター適用中の目印バッジ *@
         @if (anyFilter)
@@ -63,8 +71,8 @@
             <span class="badge bg-primary ms-2">フィルター適用中</span>
         }
     </a>
-    @* フィルター適用中は初期表示で開いておく *@
-    <div class="collapse @(anyFilter ? "show" : "")" id="filterPanel">
+    @* フィルター適用中、または採用しなかった値があるときは初期表示で開いておく *@
+    <div class="collapse @(showFilterPanel ? "show" : "")" id="filterPanel">
         <div class="card-body">
             @* GET で送信して URL に絞り込み条件を残す（共有・ブックマーク可能にする） *@
             <form method="get" asp-action="Index">

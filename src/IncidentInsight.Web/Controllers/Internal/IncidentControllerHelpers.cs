@@ -127,6 +127,35 @@ internal static class IncidentControllerHelpers
         => keyword.ToUpperInvariant();
 
     /// <summary>
+    /// 適用中の絞り込み値がドロップダウンの選択肢に無ければ、<b>先頭へ</b>補完する。
+    /// </summary>
+    /// <remarks>
+    /// <para>一覧画面が「補完」方式を採るときの共通手順。どの画面でも守る不変条件は 1 つで、
+    /// <b>絞り込みに使った値は必ず選択肢にある</b>こと。一致する <c>&lt;option&gt;</c> が無いと
+    /// ブラウザは <c>&lt;select&gt;</c> を先頭の「(全て)」の位置に置き、絞り込みが効いたまま
+    /// 画面だけが「絞り込み無し」に見える。その状態でフォームを再送信すると空値が送られ、
+    /// <b>絞り込みが利用者の意図なく解除される</b>(issue #192)。</para>
+    ///
+    /// <para><b>先頭に置く理由。</b> 末尾へ足すと、選択肢が多い画面ではスクロールしないと
+    /// 現在値が見えず、「選ばれていない」と誤解した利用者が別の値を選んで絞り込みを失う。
+    /// 「(全て)」の直後という位置そのものが規則なので、画面ごとに書き写さず
+    /// ここ 1 か所に置く(<c>/Incidents</c> と <c>/PreventiveMeasures</c> の 2 画面が使う)。</para>
+    ///
+    /// <para><b>この関数は「補完するかどうか」を決めない。</b> それは画面ごとの方針で、
+    /// <c>/PreventiveMeasures</c> は無条件、<c>/Incidents</c> は実データにあるときだけ。
+    /// 判断の規則と理由は <c>Models.Validation.SearchFilter</c> の解説に集約してある。</para>
+    /// </remarks>
+    /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
+    /// <param name="appliedValue">実際に絞り込みへ使っている値。</param>
+    public static void EnsureAppliedValueIsSelectable(List<string> options, string appliedValue)
+    {
+        // 既に選択肢にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
+        if (options.Contains(appliedValue)) return;
+        // 「(全て)」の直後に来るよう先頭へ差し込む
+        options.Insert(0, appliedValue);
+    }
+
+    /// <summary>
     /// 原因カテゴリのドロップダウン用に、親カテゴリでグルーピングした子カテゴリ一覧を作る。
     /// </summary>
     public static async Task<List<SelectListItem>> BuildCauseCategoryOptionsAsync(ApplicationDbContext db)

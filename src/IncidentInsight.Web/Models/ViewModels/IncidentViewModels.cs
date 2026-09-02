@@ -60,13 +60,18 @@ public class IncidentListViewModel
     // 移した以上その穴は新しく作ったものなので、同じ変更でふさいでおく
     public required List<string> DepartmentOptions { get; set; }
 
-    // 部署の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
+    // 受け取ったのに採用しなかった部署の絞り込み値。採用したか入力が無かったときは null。
+    //
     // 採用しない条件は「見えている範囲の実データに無い」で、これはデータ側の状態に依存する
     // ——打ち間違いだけでなく、正しくブックマークした URL でも、該当インシデントが削除・修正
     // された時点で条件が変わる。黙って落とすと、絞り込んだつもりの利用者に全件が返り、
     // しかも「絞り込み中」バッジも出ないので取り違えに気付けない(0 件になるならまだ分かる)。
-    // 何も言わずに入力を捨てないための旗(issue #192 のレビュー指摘)
-    public bool DepartmentFilterIgnored { get; set; }
+    //
+    // 真偽値ではなく値そのものを持つのは、画面に「何を落としたか」を出すため。
+    // 採用していない値は Department にも載らず select にもページャの URL にも現れないので、
+    // ここに持たないと利用者は自分が送った値を確認できない。表示する長さは
+    // 上限で切ってある(下の IgnoredDepartmentMaxDisplayLength を参照)
+    public string? IgnoredDepartment { get; set; }
 }
 
 // インシデント詳細画面のモデル
