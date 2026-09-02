@@ -41,6 +41,23 @@
     </div>
 }
 
+@* 原因分類の絞り込み値を受け取ったのに採用しなかったときの注意書き。
+   出す理由・値そのものを出さない理由は上の部署の注意書きと同じ（説明はそちらが正本）。
+   文面だけ分けているのは「採用しなかった理由」が違うため —— 部署は
+   「その部署の行が見える範囲に無い」、原因分類は「その分類がマスタに無い」 *@
+@if (Model.CauseCategoryFilterIgnored)
+{
+    <div class="alert alert-warning d-flex align-items-start gap-2" role="alert">
+        @* 装飾目的のアイコンなので支援技術からは隠す *@
+        <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+        <div>
+            <strong>原因分類の絞り込みは適用していません。</strong>
+            指定された原因分類が見つからないため、原因分類の条件を外して一覧を表示しています。
+            絞り込みたい原因分類は下の「絞り込み」から選び直してください。
+        </div>
+    </div>
+}
+
 @* 絞り込みパネル *@
 @{
     @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true）。
@@ -57,7 +74,7 @@
        注意書きが「適用していません」と言う横でバッジが「適用中」と言い、
        1 件も無い環境では効いていないフィルターを「クリアしてください」と促してしまう。
        一方パネルは開いておきたい: 送った値を選び直せる場所がそこにしか無いため *@
-    var showFilterPanel = anyFilter || Model.DepartmentFilterIgnored;
+    var showFilterPanel = anyFilter || Model.DepartmentFilterIgnored || Model.CauseCategoryFilterIgnored;
 }
 <div class="card border-0 shadow-sm mb-3">
     @* クリックで折りたたみを開閉するヘッダ。div+role="button" だとキーボードで
@@ -124,10 +141,12 @@
                         </select>
                     </div>
                     <div class="col-md-2">
-                        @* 原因分類フィルター。選択肢は「親カテゴリのみ」で、末端(子)カテゴリは並ばない。
-                           一方でコントローラの絞り込みは子カテゴリの id も受け付けるため、
-                           子の id を指す URL では一致する option が無い状態になる
-                           （部署で塞いだのと同じ食い違い。issue #195 として切り出し済み） *@
+                        @* 原因分類フィルター。選択肢は「親カテゴリのみ」だが、
+                           コントローラの絞り込みは子カテゴリの id も受け付けるため、
+                           子の id で絞り込んでいるときはその 1 件が「親名 > 子名」の見出しで
+                           先頭に補完されて渡ってくる（なぜ補完が要るのかは
+                           Models/Validation/SearchFilter の解説が正本。issue #195）。
+                           部署と同じく静的な一覧を直接回さず ViewModel から受け取る *@
                         <select name="causeCategoryId" class="form-select form-select-sm" aria-label="原因分類で絞り込み">
                             <option value="">原因分類（全て）</option>
                             @foreach (var opt in Model.CauseCategoryOptions)

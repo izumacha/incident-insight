@@ -116,11 +116,21 @@ public class IncidentsController : Controller
             // 翌日 0 時(または DateTime.MaxValue)より前の発生日時だけに絞る
             query = query.Where(i => i.OccurredAt < dateToExclusive);
         }
-        // 原因カテゴリで絞り込み(親カテゴリ指定時は子カテゴリも拾う)
-        if (causeCategoryId.HasValue)
+        // 原因分類で絞り込み。部署と同じく「ドロップダウンが表せる値か」まで決めるので、
+        // 判定と選択肢づくりを ResolveCauseCategoryFilterAsync にまとめてある
+        // (選択肢は親カテゴリだけで作る一方、絞り込みは子カテゴリの id も受け付けるため、
+        //  子の id は選択肢へ補完し、マスタに無い id は採用しない。issue #195)
+        var causeCategoryFilter = await ResolveCauseCategoryFilterAsync(causeCategoryId);
+        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)。
+        // パターンマッチでローカル変数へ取り出すのは、「null でないことの確認」と
+        // 「式ツリーが捕まえる値」を 1 か所で結び付けるため(HasValue と .Value に分けて書くと、
+        //  条件を直したときに片方だけ取り残される)
+        if (causeCategoryFilter.Effective is int effectiveCauseCategoryId)
+            // 親カテゴリ指定時は子カテゴリの分析も拾う(この「親を選ぶと子も拾う」仕様が、
+            // 選択肢(親のみ)と受け付ける値(子も可)のずれを生んでいる元)
             query = query.Where(i => i.CauseAnalyses.Any(ca =>
-                ca.CauseCategoryId == causeCategoryId.Value ||
-                ca.CauseCategory.ParentId == causeCategoryId.Value));
+                ca.CauseCategoryId == effectiveCauseCategoryId ||
+                ca.CauseCategory.ParentId == effectiveCauseCategoryId));
 
         // Sort
         // 並び替え: severity=重症度降順、overdue=期限超過あり優先、既定=発生日の新しい順
@@ -161,13 +171,6 @@ public class IncidentsController : Controller
             .Take(PageSize)
             .ToListAsync();
 
-        // Build cause category options (parent categories only)
-        // 原因カテゴリの絞り込みドロップダウン用に親カテゴリのみ取得
-        var parentCats = await _db.CauseCategories
-            .Where(c => c.ParentId == null)
-            .OrderBy(c => c.DisplayOrder)
-            .ToListAsync();
-
         // ビューに渡す ViewModel を組み立てる
         var vm = new IncidentListViewModel
         {
@@ -189,11 +192,14 @@ public class IncidentsController : Controller
             Severity = severity,
             DateFrom = dateFrom,
             DateTo = dateTo,
-            CauseCategoryId = causeCategoryId,
+            // 採用しなかった原因分類の id は画面へ返さない(部署と同じ扱い。
+            // 返すと絞り込みは効いていないのに「絞り込み中」バッジが出てページャの URL にも載る)
+            CauseCategoryId = causeCategoryFilter.Effective,
             SortBy = sortBy,
-            CauseCategoryOptions = parentCats
-                .Select(c => new SelectListItem(c.Name, c.Id.ToString()))
-                .ToList()
+            // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
+            CauseCategoryOptions = causeCategoryFilter.Options,
+            // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える(判定は解決側が返す)
+            CauseCategoryFilterIgnored = causeCategoryFilter.Ignored
         };
 
         // 一覧ビューへ ViewModel を渡して描画
@@ -690,6 +696,117 @@ public class IncidentsController : Controller
     /// ——引き直すと、解決側の「入力なし」の規則を変えたときに片方だけ古くなる。</para>
     /// </param>
     private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, bool Ignored);
+
+    /// <summary>
+    /// 原因分類の絞り込み値について「実際に絞り込みへ使う id」と
+    /// 「ドロップダウンに並べる選択肢」を決める。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか(issue #195)。</b> この画面のドロップダウンは
+    /// <b>親カテゴリだけ</b>で作るのに、絞り込みは<b>子カテゴリの id も受け付ける</b>
+    /// (「親を選ぶと子も拾う」仕様の裏返しで、子の id を直接指せば当然その子だけに絞れる)。
+    /// そのため子の id を指す URL では絞り込みが効いているのに一致する
+    /// <c>&lt;option&gt;</c> が無く、ブラウザが <c>&lt;select&gt;</c> を
+    /// 「原因分類（全て）」の位置に置き、<b>再送信した瞬間に絞り込みが無言で解除される</b>
+    /// ——発生部署で塞いだのとまったく同じ食い違い。</para>
+    ///
+    /// <para><b>方式は「実在すれば補完、無ければ採用しない」。</b> 選択肢の集合が
+    /// コード側で閉じておらず<b>実データ(原因分類マスタ)から作られる</b>うえ、
+    /// 受け付ける値がその表示用の部分集合(親のみ)より広いため、一律に捨てると
+    /// 「子カテゴリで絞り込む」経路そのものが失われる。逆に一律に補完すると
+    /// 打ち間違い・URL 改ざんの id が選択肢に現れる。方式の割り当てと理由の正本は
+    /// <see cref="Models.Validation.SearchFilter"/> の解説(そこの表がこの画面の行を持つ)。</para>
+    ///
+    /// <para><b>実在確認に部署スコープを掛けない</b>——発生部署のときとは違う判断で、
+    /// ここが取り違えやすい。あちらは実在確認の対象が<b>インシデントの行</b>なので、
+    /// スコープを外すと Staff が総当たりで他部署の部署名の有無を推測できてしまう。
+    /// こちらが照会するのは<b>原因分類マスタ</b>で、PHI ではないうえ
+    /// <see cref="Internal.IncidentControllerHelpers.BuildCauseCategoryOptionsAsync"/> が
+    /// 登録・詳細画面で全ロールへ子カテゴリまで並べている。つまり隠せていない情報であり、
+    /// ここだけスコープを掛けても防御にはならない。それどころか
+    /// <b>自部署にまだ 1 件も無い分類で絞り込めなくなる</b>(0 件と「絞り込めない」は別物)
+    /// という実害だけが残る。</para>
+    ///
+    /// <para><b>補完する子カテゴリは「親名 &gt; 子名」で並べる。</b> 選択肢の他の行は
+    /// 親カテゴリ名なので、子の名前を裸で先頭へ足すと<b>親と対等の分類に見える</b>。
+    /// 表記は <see cref="CauseCategory.FormatFullName"/>(<see cref="CauseCategory.FullName"/> と
+    /// 再発アラートの見出しが使う既存の規則)へ委ねる——ここで <c>$"{parent} &gt; {name}"</c> と
+    /// 書き直すと、区切り文字を変えたときに画面ごとに表記が食い違う(§6 DRY)。</para>
+    ///
+    /// <para><b>親の名前は追加の問い合わせをせず選択肢から引く。</b>
+    /// <paramref name="causeCategoryId"/> が子なら、その親は
+    /// <c>ParentId == null</c> の行なので既に <c>options</c> に載っている。
+    /// 3 階層目(孫)は現在のシード・画面にはないが、あった場合は親が
+    /// <c>options</c> に居ないため名前が引けない ——そのときは
+    /// <see cref="CauseCategory.FormatFullName"/> の <c>null</c> 分岐で
+    /// 自分の名前だけになる(選択肢に並ぶこと自体は保たれる)。</para>
+    /// </remarks>
+    /// <param name="causeCategoryId">クエリ文字列から届いた原因分類の絞り込み値(未指定なら <c>null</c>)。</param>
+    /// <returns>採用した絞り込み値(採用しないなら <c>null</c>)と、ドロップダウンの選択肢。</returns>
+    private async Task<CauseCategoryFilterSelection> ResolveCauseCategoryFilterAsync(int? causeCategoryId)
+    {
+        // 選択肢の土台は親カテゴリの一覧(表示順)。エンティティ全体ではなく
+        // 選択肢に要る 2 列だけを射影して取る(§8 過剰取得の回避)。
+        // SelectListItem への詰め替えを DB 側でやらせないのは、int.ToString() の
+        // SQL への翻訳可否がプロバイダで揃わないため(§10 プロバイダ非依存)
+        var parents = await _db.CauseCategories
+            .AsNoTracking()
+            .Where(c => c.ParentId == null)
+            .OrderBy(c => c.DisplayOrder)
+            .Select(c => new { c.Id, c.Name })
+            .ToListAsync();
+        // 補完する場合に先頭へ差し込むので、書き換えられるリストとして組み立てる
+        var options = parents
+            .Select(c => new SelectListItem(c.Name, c.Id.ToString()))
+            .ToList();
+
+        // 未指定は「絞り込み無し」。int? なので SearchFilter.HasValue(string 用)は使えず、
+        // 「値が入っているか」はこの型自身の HasValue で判定する
+        if (causeCategoryId is not int requestedId)
+            return new CauseCategoryFilterSelection(null, options, Ignored: false);
+
+        // 指定された id の分類をマスタから引く。親か子かは ParentId で分かるので、
+        // 「親の一覧に含まれるか」を options 側で調べ直さない(判定の出所を 1 つにする)
+        var requested = await _db.CauseCategories
+            .AsNoTracking()
+            .Where(c => c.Id == requestedId)
+            .Select(c => new { c.Name, c.ParentId })
+            .FirstOrDefaultAsync();
+
+        // マスタに無い id は採用しない。絞り込みも掛けず、画面へも値を返さない
+        // (「絞り込み無し・バッジ非表示・select は全て」の三者が揃う)
+        if (requested == null)
+            return new CauseCategoryFilterSelection(null, options, Ignored: true);
+
+        // 親カテゴリなら options に既に並んでいるので、そのまま採用する
+        if (requested.ParentId is int parentId)
+        {
+            // 親の名前は選択肢から引く(親は必ず ParentId == null の行なので載っている)。
+            // 3 階層目の場合だけ引けず null になり、下の FormatFullName が名前だけを返す
+            var parentName = options.FirstOrDefault(o => o.Value == parentId.ToString())?.Text;
+            // 子カテゴリを「親名 > 子名」の見出しで選択肢の先頭へ補完する。
+            // 「既にあれば足さない・無ければ先頭へ」の手順は共有ヘルパに寄せてある
+            IncidentControllerHelpers.EnsureAppliedValueIsSelectable(
+                options,
+                new SelectListItem(
+                    CauseCategory.FormatFullName(parentName, requested.Name),
+                    requestedId.ToString()));
+        }
+
+        // 実在する分類なので絞り込みを維持する(親はそのまま、子は補完済み)
+        return new CauseCategoryFilterSelection(requestedId, options, Ignored: false);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveCauseCategoryFilterAsync"/> の結果。
+    /// 意味と各要素の役割は <see cref="DepartmentFilterSelection"/> と同じ
+    /// (そちらの解説が正本。ここへ書き写すと片方だけ古くなる)。
+    /// </summary>
+    /// <param name="Effective">絞り込みに使う原因分類 id。採用しない場合は <c>null</c>。</param>
+    /// <param name="Options">原因分類ドロップダウンに並べる選択肢(親カテゴリ＋補完した子)。</param>
+    /// <param name="Ignored"><b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。</param>
+    private readonly record struct CauseCategoryFilterSelection(
+        int? Effective, List<SelectListItem> Options, bool Ignored);
 
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
     // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は

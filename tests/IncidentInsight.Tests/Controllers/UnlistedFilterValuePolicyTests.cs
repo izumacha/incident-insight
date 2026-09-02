@@ -374,6 +374,193 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Null(vm.Department);
     }
 
+    // --- /Incidents: 原因分類はマスタにあれば補完 -----------------------------
+
+    // 親カテゴリ 1 件とその子カテゴリ 1 件を用意し、(親, 子)を返す。
+    // 親には子と紛らわしくない名前を付けておく(補完の見出しが「親名 > 子名」であることを
+    // 子の名前だけで判定できないようにするため)
+    private async Task<(CauseCategory Parent, CauseCategory Child)> SeedCauseCategoryTreeAsync()
+    {
+        // 大分類(ドロップダウンに並ぶ側)
+        var parent = new CauseCategory { Name = "ヒューマンファクター", DisplayOrder = 1 };
+        // 小分類(ドロップダウンには並ばないが絞り込みには使える側)
+        var child = new CauseCategory { Name = "確認不足", DisplayOrder = 1, Parent = parent };
+        // まとめて保存する
+        _db.CauseCategories.AddRange(parent, child);
+        await _db.SaveChangesAsync();
+        // 呼び出し側が Id を使えるよう返す
+        return (parent, child);
+    }
+
+    // 指定した原因分類の分析を 1 件持つインシデントを保存する
+    private async Task SeedIncidentWithCauseAnalysisAsync(CauseCategory category)
+    {
+        // 一覧に出るだけの最小限のインシデントを用意する
+        var incident = await SeedIncidentAsync("ICU");
+        // その分類のなぜなぜ分析をぶら下げる(絞り込みが実際に一致する状態を作る)
+        _db.CauseAnalyses.Add(new CauseAnalysis
+        {
+            IncidentId = incident.Id,
+            CauseCategoryId = category.Id,
+            Why1 = "なぜ1"
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    // /Incidents の一覧を原因分類だけで絞り込んで ViewModel を取り出す
+    private async Task<IncidentListViewModel> IndexByCauseCategoryAsync(int? causeCategoryId)
+    {
+        // 原因分類以外の絞り込みは指定しない
+        var result = await NewIncidentsController()
+            .Index(null, null, null, null, null, null, causeCategoryId, null, 1) as ViewResult;
+        // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<IncidentListViewModel>(result!.Model);
+    }
+
+    // issue #195 の再現手順そのもの。子カテゴリの id で絞り込んだとき、
+    // 絞り込みが効いたまま select が「原因分類（全て）」を指す状態にならないことを固定する
+    [Fact]
+    public async Task Incidents_ChildCauseCategory_IsKeptAndBackfilledIntoOptions()
+    {
+        var (_, child) = await SeedCauseCategoryTreeAsync();
+        await SeedIncidentWithCauseAnalysisAsync(child);
+
+        // 子カテゴリの id で絞り込む(詳細画面のリンクや古いブックマークからの到達を想定)
+        var vm = await IndexByCauseCategoryAsync(child.Id);
+
+        // 絞り込みは維持される(画面へも返るのでページャの URL に載り、バッジも出る)
+        Assert.Equal(child.Id, vm.CauseCategoryId);
+        // かつ選択肢に現れる ——「絞り込みに使った値は必ず選択肢にある」
+        Assert.Contains(vm.CauseCategoryOptions, o => o.Value == child.Id.ToString());
+        // 実際に絞り込みが効いている(その分析を持つ 1 件だけが出る)
+        Assert.Single(vm.Incidents);
+        // 採用したので注意書きは出さない
+        Assert.False(vm.CauseCategoryFilterIgnored);
+    }
+
+    // 補完した子カテゴリは「親名 > 子名」で並べる。裸の子名だと、他の行が親カテゴリ名なので
+    // 親と対等の分類に見える。表記は CauseCategory.FormatFullName(既存の規則)へ委ねている
+    [Fact]
+    public async Task Incidents_BackfilledChildCauseCategory_IsLabelledWithItsParent()
+    {
+        var (parent, child) = await SeedCauseCategoryTreeAsync();
+        await SeedIncidentWithCauseAnalysisAsync(child);
+
+        var vm = await IndexByCauseCategoryAsync(child.Id);
+
+        // 補完された選択肢を取り出す
+        var backfilled = Assert.Single(vm.CauseCategoryOptions, o => o.Value == child.Id.ToString());
+        // 見出しは親子関係の読める表記。書式そのものは既存の規則から引く
+        // (ここへ "親 > 子" と書き写すと、区切り文字を変えたときにこちらだけ古くなる)
+        Assert.Equal(CauseCategory.FormatFullName(parent.Name, child.Name), backfilled.Text);
+    }
+
+    // 補完は「(全て)」の直後＝先頭に置く。末尾だとスクロールしないと現在値が見えず、
+    // 「選ばれていない」と誤解した利用者が別の値を選んで絞り込みを失う(部署と同じ規則)
+    [Fact]
+    public async Task Incidents_BackfilledChildCauseCategory_IsPlacedFirst()
+    {
+        var (_, child) = await SeedCauseCategoryTreeAsync();
+        await SeedIncidentWithCauseAnalysisAsync(child);
+        // 補完が末尾でも先頭でも成り立たないよう、親カテゴリをもう 1 件足しておく
+        _db.CauseCategories.Add(new CauseCategory { Name = "設備要因", DisplayOrder = 2 });
+        await _db.SaveChangesAsync();
+
+        var vm = await IndexByCauseCategoryAsync(child.Id);
+
+        // 先頭が補完した子カテゴリであること
+        Assert.Equal(child.Id.ToString(), vm.CauseCategoryOptions[0].Value);
+    }
+
+    // 親カテゴリの id はもともと選択肢に並んでいる。補完で 2 つ並べないことを固定する
+    // (同じ id が 2 行あると、どちらを選んでも同じ結果になる紛らわしい選択肢が残る)
+    [Fact]
+    public async Task Incidents_ParentCauseCategory_IsAppliedWithoutDuplicatingItsOption()
+    {
+        var (parent, child) = await SeedCauseCategoryTreeAsync();
+        await SeedIncidentWithCauseAnalysisAsync(child);
+
+        // 親の id で絞り込む(「親を選ぶと子も拾う」仕様どおり子の分析も一致する)
+        var vm = await IndexByCauseCategoryAsync(parent.Id);
+
+        // 絞り込みは維持され、注意書きは出ない
+        Assert.Equal(parent.Id, vm.CauseCategoryId);
+        Assert.False(vm.CauseCategoryFilterIgnored);
+        // 選択肢にちょうど 1 回だけ現れる。見出しは親カテゴリ名のまま(補完していない)
+        var option = Assert.Single(vm.CauseCategoryOptions, o => o.Value == parent.Id.ToString());
+        Assert.Equal(parent.Name, option.Text);
+        // 子の分析を持つインシデントも拾えている
+        Assert.Single(vm.Incidents);
+    }
+
+    // マスタに無い id は採用しない。絞り込みも掛けず、画面へも値を返さない
+    // (返すと「絞り込み中」バッジが出てページャの URL にも載る食い違いになる)
+    [Fact]
+    public async Task Incidents_UnknownCauseCategory_IsNotAppliedAndNotEchoedBack()
+    {
+        var (parent, _) = await SeedCauseCategoryTreeAsync();
+        await SeedIncidentAsync("ICU");
+
+        // どの分類にも当たらない id で絞り込む(打ち間違い・URL 改ざん・削除済み分類の想定)
+        var vm = await IndexByCauseCategoryAsync(parent.Id + 10_000);
+
+        // 画面へ返さない
+        Assert.Null(vm.CauseCategoryId);
+        // 選択肢は親カテゴリのままで、存在しない id は並ばない
+        Assert.Equal(new[] { parent.Id.ToString() }, vm.CauseCategoryOptions.Select(o => o.Value));
+        // 絞り込みは掛かっていないので全件が出る(0 件ではない)
+        Assert.Single(vm.Incidents);
+        // ただし黙って落とさず、採用しなかったことを画面へ伝える
+        Assert.True(vm.CauseCategoryFilterIgnored);
+    }
+
+    // 未指定は「絞り込み無し」であって「採用しなかった」ではない。
+    // ここを取り違えると、絞り込みを使っていない普通の一覧表示で警告が出続ける
+    [Fact]
+    public async Task Incidents_WhenNoCauseCategoryWasRequested_NoNoticeIsShown()
+    {
+        await SeedCauseCategoryTreeAsync();
+        await SeedIncidentAsync("ICU");
+
+        var vm = await IndexByCauseCategoryAsync(null);
+
+        Assert.Null(vm.CauseCategoryId);
+        Assert.False(vm.CauseCategoryFilterIgnored);
+    }
+
+    // 実在確認は原因分類マスタに対して行い、部署スコープは掛けない。
+    // 掛けると「自部署にまだ 1 件も無い分類で絞り込めない」という実害だけが出る
+    // (0 件と「絞り込めない」は別物。マスタは PHI ではなく、登録画面が全ロールへ
+    //  子カテゴリまで並べているので隠せてもいない ——理由の正本は SearchFilter の表)
+    [Fact]
+    public async Task Incidents_Staff_CanFilterByCategoryWithNoRowsInOwnScope()
+    {
+        var (_, child) = await SeedCauseCategoryTreeAsync();
+        // その分類の分析は他部署にだけある状態を作る
+        var otherIncident = await SeedIncidentAsync("外来");
+        _db.CauseAnalyses.Add(new CauseAnalysis
+        {
+            IncidentId = otherIncident.Id,
+            CauseCategoryId = child.Id,
+            Why1 = "なぜ1"
+        });
+        // Staff 本人の部署にも別のインシデントを 1 件置く
+        await SeedIncidentAsync("ICU");
+        await _db.SaveChangesAsync();
+
+        // 自部署 ICU の Staff としてその分類で絞り込む
+        var controller = NewIncidentsController(UserContextHelper.Staff("ICU"));
+        var result = await controller.Index(null, null, null, null, null, null, child.Id, null, 1) as ViewResult;
+        var vm = Assert.IsType<IncidentListViewModel>(result!.Model);
+
+        // 絞り込みは成立する(選択肢にも並ぶ)。結果が 0 件になるのは正しい振る舞いで、
+        // 「絞り込めないので全件」とは意味が違う
+        Assert.Equal(child.Id, vm.CauseCategoryId);
+        Assert.Contains(vm.CauseCategoryOptions, o => o.Value == child.Id.ToString());
+        Assert.False(vm.CauseCategoryFilterIgnored);
+        Assert.Empty(vm.Incidents);
+    }
+
     // --- /AuditLogs: 採用しない ----------------------------------------------
 
     // 監査ログのエンティティ名はコード側で閉じた集合(AuditedEntities)で、過去行も必ずその中に収まる。
@@ -549,6 +736,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     // /Incidents: 発生部署。選択肢は ViewModel(IncidentListViewModel.DepartmentOptions)から取る
     [InlineData("Incidents", "department", "Model.DepartmentOptions", "Model.Department")]
+    // /Incidents: 原因分類。選択肢は ViewModel(IncidentListViewModel.CauseCategoryOptions)から取る。
+    // この画面は元から ViewModel 経由だったが、コントローラが選択肢を増やすようになった
+    // (子カテゴリの補完。issue #195)以上、出所を静的な一覧へ戻されると効果が消える
+    [InlineData("Incidents", "causeCategoryId", "Model.CauseCategoryOptions", "Model.CauseCategoryId")]
     // /PreventiveMeasures: 担当部署。選択肢は ViewBag.ResponsibleDepartmentOptions から取る
     [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions", "ViewBag.FilterResponsibleDepartment")]
     public void BackfillingScreens_BuildOptionsFromTheControllersResult(
@@ -665,9 +856,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 全件緑のまま通る(実測)。そうなると DepartmentFilterIgnored は誰も読まない
     // 書き込み専用のプロパティになり、利用者は黙って全件を見せられる ——
     // SearchFilter の表が「してはいけない」と書いている状態そのもの。
-    // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ
-    [Fact]
-    public void IncidentsIndexView_RendersTheIgnoredFilterNotice()
+    // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ。
+    //
+    // 旗は 2 つあり(発生部署・原因分類)、どちらも同じ壊れ方をする。
+    // <b>片方だけを見る形にしない</b> —— 実測でも、原因分類の注意書きを足す前の版は
+    // 部署の旗だけを見ていたので、新しい旗が誰にも読まれない書き込み専用のプロパティに
+    // なっても全件緑のままだった。旗を増やす人はここへ 1 件足すこと
+    [Theory]
+    [InlineData(nameof(IncidentListViewModel.DepartmentFilterIgnored))]
+    [InlineData(nameof(IncidentListViewModel.CauseCategoryFilterIgnored))]
+    public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag)
     {
         // 一覧ビューの Razor ソースを読む(ビルド出力にはコピーされない)
         var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
@@ -680,8 +878,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 「名前がどこかに出てくるか」では足りない —— この旗は絞り込みパネルを開くかどうかの
         // 判定(anyFilter)からも参照しているので、注意書きのブロックを丸ごと消しても
         // その 1 行が条件を満たしてしまう(実測で全件緑のまま通った)。
-        // 出し分けの構文そのものを探して、注意書きが実際に描画されることを確かめる
-        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
+        // 出し分けの構文そのものを探して、注意書きが実際に描画されることを確かめる。
         // 空白の有無や比較の書き方に依存しない形で探す。`@if (Model.X)` の完全一致で書くと、
         // `@if(Model.X)` のように同じ働きの正しい書き方を落としてしまい、
         // 次の人が動いているマークアップを「直し」に行く検出網になる
@@ -732,15 +929,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //   - anyFilter（バッジと 0 件時の文言）に入れると、「適用していません」の横で
     //     バッジが「フィルター適用中」と言い、1 件も無い環境では効いていないフィルターを
     //     「クリアしてください」と促す。
-    // どちらの差し戻しも実測で全件緑のまま通ったので、ソースの形で固定する
-    [Fact]
-    public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive()
+    // どちらの差し戻しも実測で全件緑のまま通ったので、ソースの形で固定する。
+    // 注意書きの検査と同じく、旗を 1 つずつ見る(片方だけの検査にすると新しい旗が素通りする)
+    [Theory]
+    [InlineData(nameof(IncidentListViewModel.DepartmentFilterIgnored))]
+    [InlineData(nameof(IncidentListViewModel.CauseCategoryFilterIgnored))]
+    public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag)
     {
         // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
         var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
         Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
         var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
-        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
 
         // パネルの開閉を決める式を取り出す
         var panel = Regex.Match(source, @"var\s+showFilterPanel\s*=(?<expr>[^;]*);");

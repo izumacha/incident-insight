@@ -169,6 +169,39 @@ internal static class IncidentControllerHelpers
     }
 
     /// <summary>
+    /// <see cref="SelectListItem"/> で選択肢を作る画面向けの
+    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string)"/>。
+    /// 表示文字列と送信値が別々になるだけで、守る不変条件も置く位置も同じ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>重複を承知で 2 つ置いている理由。</b> 選択肢の要素型が違うだけで
+    /// 判定は「空でないか」「既にあるか」「先頭へ入れる」の 3 つとも同じなので、
+    /// <b>位置の規則が 2 か所に分かれないように隣同士へ置く</b>
+    /// ——型で共通化しようとすると、片方だけが持つ「同値の判定は <c>Value</c> で行う」
+    /// (表示文字列は違っても同じ選択肢)という性質を表せる抽象が要り、
+    /// 2 つの利用側のために作る抽象としては大きすぎる(§6 の「将来を見越した過度な抽象化」)。
+    /// <b>3 つ目の要素型が出てきたら、そのとき共通化を検討すること。</b></para>
+    ///
+    /// <para><b>同値の判定は <c>Value</c> だけで行う</b>(<c>Text</c> は見ない)。
+    /// <c>&lt;select&gt;</c> がサーバへ送るのは <c>Value</c> なので、
+    /// 「絞り込みに使った値が選択肢にある」かどうかを決めるのはそちらだけ。
+    /// 表示文字列まで一致条件に混ぜると、同じ id を別の見出しで 2 回並べてしまう
+    /// (例: <c>/Incidents</c> は補完する子カテゴリだけ「親名 &gt; 子名」で出すので、
+    ///  同じ id でも <c>Text</c> は既存の選択肢と一致しないことがある)。</para>
+    /// </remarks>
+    /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
+    /// <param name="appliedItem">実際に絞り込みへ使っている値の選択肢。</param>
+    public static void EnsureAppliedValueIsSelectable(List<SelectListItem> options, SelectListItem appliedItem)
+    {
+        // 送信値が空・空白のみなら足さない(理由は上のオーバーロードと同じ)
+        if (!SearchFilter.HasValue(appliedItem.Value)) return;
+        // 同じ送信値の選択肢が既にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
+        if (options.Any(o => o.Value == appliedItem.Value)) return;
+        // 「(全て)」の直後に来るよう先頭へ差し込む
+        options.Insert(0, appliedItem);
+    }
+
+    /// <summary>
     /// 原因カテゴリのドロップダウン用に、親カテゴリでグルーピングした子カテゴリ一覧を作る。
     /// </summary>
     public static async Task<List<SelectListItem>> BuildCauseCategoryOptionsAsync(ApplicationDbContext db)
