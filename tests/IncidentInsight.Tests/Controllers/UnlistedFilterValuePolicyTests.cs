@@ -47,13 +47,25 @@ namespace IncidentInsight.Tests.Controllers;
 /// 照合順序で行う。SQL Server の既定(<c>Japanese_CI_AS</c> 等)は大文字小文字を区別せず
 /// 末尾空白も無視するので <c>?department=icu</c> が両者で違う答えになりうる。実装側は
 /// 「DB に保存されている綴りを持ち帰る」ことでこのずれを吸収しているが、
-/// <b>テストの InMemory プロバイダは序数比較なので、この分岐をここで動かすことはできない</b>
-/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。
-/// 同じ理由で、綴りを 1 件取り出すときの <c>OrderBy</c>(綴り違いが同時に一致しうる配備先で
-/// 結果を決定的にするためのもの)も<b>ここでは効果を確かめられない</b>——実測でも、
-/// その 2 行を消す変異は全件緑のまま通った。プロバイダ依存の挙動は
-/// この repo が繰り返し当たっている死角なので、<b>この付近を触る差分はレビューで
-/// 「どちらの比較規則で判定しているか」「同値行の並びを固定しているか」を確かめること。</b></para>
+/// <b>テストの InMemory プロバイダは序数比較なので、その分岐をここで動かすことはできない</b>
+/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。実装がこのずれを吸収する仕掛けは
+/// 3 つあり、<b>ここで確かめられるのは 1 つだけ</b>:</para>
+///
+/// <list type="number">
+///   <item><description><b>確かめられる</b>: 綴りの揺れを許して許可リストへ寄せる
+///     (<c>TryFindListedSpelling</c>)。判定が C# 側にあるので InMemory でも動く
+///     ——<c>Incidents_DepartmentDifferingOnlyInCaseOrSpacing_...</c> が固定する。</description></item>
+///   <item><description><b>確かめられない</b>: 綴りを 1 件取り出すときの <c>OrderBy</c>。
+///     綴り違いが同時に一致しうる配備先でのみ意味を持つ。実測でも、その 2 行を消す変異は
+///     全件緑のまま通った。</description></item>
+///   <item><description><b>確かめられない</b>: DB から取り出した綴りを許可リストへ寄せ直す枝。
+///     序数比較では、そこへ到達した時点で綴りが許可リストと一致しないことが確定しているため
+///     <b>枝そのものに入らない</b>。実測でも、この枝を消す変異は全件緑のまま通った。</description></item>
+/// </list>
+///
+/// <para>プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
+/// <b>この付近を触る差分はレビューで「どちらの比較規則で判定しているか」
+/// 「同値行の並びを固定しているか」を確かめること。</b></para>
 /// </summary>
 public class UnlistedFilterValuePolicyTests : IDisposable
 {
@@ -216,6 +228,34 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(1, vm.TotalCount);
         Assert.Equal(listed, vm.Department);
         // 選択肢は許可リストそのまま(補完も削除も起きていない)
+        Assert.Equal(Incident.Departments, vm.DepartmentOptions);
+    }
+
+    // 大文字小文字・前後の空白だけが違う値は、許可リストの項目を指しているとみなして
+    // 許可リスト側の綴りへ寄せる。寄せないと、照合順序が大文字小文字を区別しない配備先で
+    // "icu" が選択肢へ補完され、本物の "ICU" と同じ行を指す 2 つの項目が並ぶ。
+    // 寄せる処理は C# 側にあるので、InMemory でもそのまま動かせる
+    // (照合順序そのものの違いは動かせない —— クラスの解説の「ここで固定できない境界」を参照)
+    [Theory]
+    // 大文字小文字だけが違う
+    [InlineData("icu")]
+    // 前後に空白が付いている(貼り付け・オートフィルで起きる)
+    [InlineData("  ICU  ")]
+    // 両方
+    [InlineData(" Icu ")]
+    public async Task Incidents_DepartmentDifferingOnlyInCaseOrSpacing_IsNormalisedToTheListedSpelling(string requested)
+    {
+        // 許可リストどおりの綴りでインシデントを 1 件用意する
+        await SeedIncidentAsync("ICU");
+
+        // 綴りの揺れた値で絞り込む
+        var vm = await IndexIncidentsAsync(requested);
+
+        // 採用されるのは許可リスト側の綴り(利用者の入力そのままではない)
+        Assert.Equal("ICU", vm.Department);
+        // 絞り込みも効いている
+        Assert.Equal(1, vm.TotalCount);
+        // 選択肢は許可リストのまま。揺れた綴りが別項目として増えていない
         Assert.Equal(Incident.Departments, vm.DepartmentOptions);
     }
 

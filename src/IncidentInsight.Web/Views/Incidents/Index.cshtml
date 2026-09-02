@@ -61,9 +61,13 @@
                            一致する option が無くなり、select が「部署（全て）」を指して
                            再送信で絞り込みが無言で解除される(issue #192)。
                            この注記を <select> の外へ出してあるのは、配線を見張る
-                           UnlistedFilterValuePolicyTests が select ブロックの中身だけを
-                           文字列として検査するため(コメントで検査を満たしたり破ったり
-                           できないよう、意図的にコメントを読み分けない作りにしてある) *@
+                           UnlistedFilterValuePolicyTests が select ブロックの中身を
+                           <b>ただの文字列として</b>検査するため。Razor のコメントも
+                           区別しないので、ブロックの中にコメントを置くと検査を
+                           すり抜けさせたり(移行を促す TODO に Model.DepartmentOptions と
+                           書くだけで「使っている」と判定される)、正しいコードを
+                           落としたり(説明のために静的配列の名前を書くと違反扱いになる)
+                           してしまう。<b>このブロックの中にコメントを足さないこと</b> *@
                         <select name="department" class="form-select form-select-sm" aria-label="部署で絞り込み">
                             <option value="">部署（全て）</option>
                             @foreach (var d in Model.DepartmentOptions)

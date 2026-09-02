@@ -1,5 +1,7 @@
 // DataAnnotations 属性の手動再検証(Validator / ValidationContext / ValidationResult)を使う
 using System.ComponentModel.DataAnnotations;
+// [NotNullWhen] 属性(true を返したとき out 引数が非 null だとコンパイラへ伝える)を使う
+using System.Diagnostics.CodeAnalysis;
 // 部署スコープ拡張メソッド(ScopedByUser)を使う
 using IncidentInsight.Web.Authorization;
 // 共通ヘルパ(原因カテゴリ一覧 / 認可判定)を使う
@@ -568,9 +570,10 @@ public class IncidentsController : Controller
         if (!SearchFilter.HasValue(department))
             return new DepartmentFilterSelection(null, options);
 
-        // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)
-        if (options.Contains(department))
-            return new DepartmentFilterSelection(department, options);
+        // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
+        // 綴りは許可リスト側へ寄せる —— 下の照合順序の項を参照
+        if (TryFindListedSpelling(options, department, out var listedSpelling))
+            return new DepartmentFilterSelection(listedSpelling, options);
 
         // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
         // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
@@ -606,13 +609,60 @@ public class IncidentsController : Controller
         if (storedDepartment == null)
             return new DepartmentFilterSelection(null, options);
 
-        // 取り出した綴りが許可リストに無いときだけ選択肢の先頭へ補完する。
-        // (照合順序の違いでここへ来た場合、綴りは既に選択肢にあるので足すと重複する)
-        if (!options.Contains(storedDepartment))
-            options.Insert(0, storedDepartment);
+        // 取り出した綴りが許可リストの項目と(綴り違いも含めて)同じものを指すなら、
+        // 補完せず許可リスト側の綴りを採用する。ここでも同じ寛容な照合を通すのは、
+        // DB 側の綴り自体が許可リストと大文字小文字だけ違う場合があるため
+        // (Staff の部署クレームは自由記述で EnforceKnownDepartment の対象外なので、
+        //  "icu" のような行が実在しうる)。素通しすると "icu" と "ICU" が別項目として
+        // 並び、どちらを選んでも同じ行が出る紛らわしい選択肢になる
+        if (TryFindListedSpelling(options, storedDepartment, out var listedStoredSpelling))
+            return new DepartmentFilterSelection(listedStoredSpelling, options);
+
+        // 許可リストのどれとも違う＝外された過去の部署名。選択肢の先頭へ補完する
+        options.Insert(0, storedDepartment);
         // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
         // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
         return new DepartmentFilterSelection(storedDepartment, options);
+    }
+
+    /// <summary>
+    /// 発生部署の値が <see cref="Incident.Departments"/> のどれを指しているかを、
+    /// <b>綴りの揺れを許して</b>探す。見つかれば許可リスト側の綴り(正)を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ完全一致では足りないのか。</b> 許可リストの判定は C# の文字列比較だが、
+    /// 実データとの突き合わせは DB の照合順序に従う。SQL Server の既定
+    /// (<c>Japanese_CI_AS</c> 等)は大文字小文字を区別せず末尾空白も無視するため、
+    /// <c>?department=icu</c> は「許可リストに無い(完全一致)」のに「実データにある(照合順序)」
+    /// という状態になる。そのまま進むと <c>"icu"</c> が選択肢へ補完され、本物の
+    /// <c>"ICU"</c> と<b>同じ行を指す 2 つの項目</b>がドロップダウンに並ぶ。
+    /// どちらが出るかは Id の並び次第なので、行を 1 件足すだけで表示が入れ替わる。</para>
+    ///
+    /// <para><b>どこまで寛容にするか。</b> 大文字小文字と前後の空白まで。
+    /// 照合順序が畳みうる差(全角半角・かなカナ・アクセント等)をすべて再現することは
+    /// アプリ側にはできないので、<b>DB の照合順序と完全に一致させることは狙っていない</b>。
+    /// 現実に起きるのは「クレームの打ち間違い」「URL の手入力」由来の大文字小文字と
+    /// 空白の揺れなので、そこだけを吸収する。ここで拾えなかった差は、その綴りが
+    /// 選択肢へ補完される(＝利用者には見える)ので黙って壊れることはない。</para>
+    ///
+    /// <para>比較は <see cref="StringComparison.OrdinalIgnoreCase"/> で行う。
+    /// カルチャ依存の比較にすると、サーバの OS ロケールで結果が変わる
+    /// (<c>IncidentControllerHelpers.NormalizeSearchKeyword</c> が避けているのと同じ問題)。</para>
+    /// </remarks>
+    /// <param name="listedDepartments">許可リスト(<see cref="Incident.Departments"/> の複製)。</param>
+    /// <param name="candidate">照合したい値(クエリ文字列由来、または DB から取り出した綴り)。</param>
+    /// <param name="listedSpelling">見つかった場合は許可リスト側の綴り。</param>
+    /// <returns>許可リストのいずれかを指していれば <c>true</c>。</returns>
+    private static bool TryFindListedSpelling(
+        List<string> listedDepartments, string candidate, [NotNullWhen(true)] out string? listedSpelling)
+    {
+        // 前後の空白を落としてから比べる(末尾空白を無視する照合順序に合わせる)
+        var trimmed = candidate.Trim();
+        // 大文字小文字を区別せず、ロケールにも依存しない規則で許可リストを走査する
+        listedSpelling = listedDepartments
+            .FirstOrDefault(d => string.Equals(d, trimmed, StringComparison.OrdinalIgnoreCase));
+        // 見つかったかどうかを呼び出し側へ返す
+        return listedSpelling != null;
     }
 
     /// <summary>

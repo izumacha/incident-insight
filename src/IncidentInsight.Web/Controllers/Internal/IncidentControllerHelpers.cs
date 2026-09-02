@@ -335,4 +335,3 @@ internal static class IncidentControllerHelpers
         };
     }
 }
-
