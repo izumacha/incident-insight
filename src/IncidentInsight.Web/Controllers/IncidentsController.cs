@@ -740,6 +740,17 @@ public class IncidentsController : Controller
     /// <c>options</c> に居ないため名前が引けない ——そのときは
     /// <see cref="CauseCategory.FormatFullName"/> の <c>null</c> 分岐で
     /// 自分の名前だけになる(選択肢に並ぶこと自体は保たれる)。</para>
+    ///
+    /// <para><b>分岐の基準は「親か子か」ではなく「選択肢にあるか」。</b>
+    /// この関数が守る不変条件が後者そのものなので、基準を揃えておくと
+    /// <b>どの枝を通っても不変条件が構造的に成り立つ</b>。<c>ParentId</c> で分けると
+    /// 「親＝選択肢にあるはず」という推論が要り、それは
+    /// <b>選択肢を作る問い合わせと id を引く問い合わせが同じ瞬間を見ている</b>
+    /// という(スナップショットを取っていない以上、保証の無い)前提に寄りかかる
+    /// ——2 つの読みの間に親カテゴリが 1 行増えれば、その id は「補完しない」のに
+    /// 選択肢には無い、という issue #195 そのものの状態になる。
+    /// あわせて、利用者が実際に押す経路(選択肢から親を選ぶ)では
+    /// マスタへの問い合わせが 1 本まるごと消える。</para>
     /// </remarks>
     /// <param name="causeCategoryId">クエリ文字列から届いた原因分類の絞り込み値(未指定なら <c>null</c>)。</param>
     /// <returns>採用した絞り込み値(採用しないなら <c>null</c>)と、ドロップダウンの選択肢。</returns>
@@ -765,8 +776,27 @@ public class IncidentsController : Controller
         if (causeCategoryId is not int requestedId)
             return new CauseCategoryFilterSelection(null, options, Ignored: false);
 
-        // 指定された id の分類をマスタから引く。親か子かは ParentId で分かるので、
-        // 「親の一覧に含まれるか」を options 側で調べ直さない(判定の出所を 1 つにする)
+        // 送信値の文字列表現。選択肢の同値判定にも補完する項目にも使うので一度だけ作る
+        var requestedValue = requestedId.ToString();
+
+        // 既に選択肢にある id は、それ以上何も調べずそのまま採用してよい。
+        // <b>判定の基準を「親か子か」ではなく「選択肢にあるか」に置くのが要点</b>——
+        // この関数が守る不変条件は「絞り込みに使った値は必ず選択肢にある」だから、
+        // その条件そのものを見れば分岐の意味と不変条件がずれない。
+        // 「ParentId が null なら親＝選択肢にあるはず」と推論する形にしていたが、
+        // それは <b>選択肢を作った問い合わせと id を引く問い合わせが同じ瞬間を見ている</b>
+        // という(スナップショットを取っていない以上、保証の無い)前提に寄りかかっていた。
+        // 2 つの読みの間に親カテゴリが 1 行増えると、その id は
+        // 「ParentId が null＝補完しない」なのに選択肢には無い、という
+        // issue #195 そのものの状態になる。
+        // 副産物として、利用者が実際に押す経路(選択肢から親を選ぶ)では
+        // 下の問い合わせが 1 本まるごと消える —— 一覧画面は毎ページ通る hot path なので、
+        // 「不変条件が構造的に成り立つ」と「常用経路が軽い」が同じ形で手に入る
+        if (options.Any(o => o.Value == requestedValue))
+            return new CauseCategoryFilterSelection(requestedId, options, Ignored: false);
+
+        // ここから先は「選択肢に無い id」。子カテゴリなのか、打ち間違い・改ざんなのかを
+        // 原因分類マスタで見分ける(部署スコープは掛けない。理由は上の解説を参照)
         var requested = await _db.CauseCategories
             .AsNoTracking()
             .Where(c => c.Id == requestedId)
@@ -778,22 +808,19 @@ public class IncidentsController : Controller
         if (requested == null)
             return new CauseCategoryFilterSelection(null, options, Ignored: true);
 
-        // 親カテゴリなら options に既に並んでいるので、そのまま採用する
-        if (requested.ParentId is int parentId)
-        {
-            // 親の名前は選択肢から引く(親は必ず ParentId == null の行なので載っている)。
-            // 3 階層目の場合だけ引けず null になり、下の FormatFullName が名前だけを返す
-            var parentName = options.FirstOrDefault(o => o.Value == parentId.ToString())?.Text;
-            // 子カテゴリを「親名 > 子名」の見出しで選択肢の先頭へ補完する。
-            // 「既にあれば足さない・無ければ先頭へ」の手順は共有ヘルパに寄せてある
-            IncidentControllerHelpers.EnsureAppliedValueIsSelectable(
-                options,
-                new SelectListItem(
-                    CauseCategory.FormatFullName(parentName, requested.Name),
-                    requestedId.ToString()));
-        }
+        // 実在する＝選択肢に無いだけの分類。親の名前を選択肢から引いて見出しに添える
+        // (子カテゴリの通常経路。親自身が選択肢から漏れていた場合や 3 階層目では
+        //  引けず null になり、FormatFullName が自分の名前だけを返す)
+        var parentName = requested.ParentId is int parentId
+            ? options.FirstOrDefault(o => o.Value == parentId.ToString())?.Text
+            : null;
+        // 「親名 > 子名」の見出しで選択肢の先頭へ補完する。
+        // 「空なら足さない・既にあれば足さない・無ければ先頭へ」の手順は共有ヘルパに寄せてある
+        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(
+            options,
+            new SelectListItem(CauseCategory.FormatFullName(parentName, requested.Name), requestedValue));
 
-        // 実在する分類なので絞り込みを維持する(親はそのまま、子は補完済み)
+        // 実在する分類なので絞り込みを維持する(選択肢には補完済み)
         return new CauseCategoryFilterSelection(requestedId, options, Ignored: false);
     }
 

@@ -851,6 +851,95 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private static readonly Regex RazorComment =
         new(@"@\*.*?\*@", RegexOptions.Singleline | RegexOptions.Compiled);
 
+    // 「採用しなかったことを画面へ伝える」旗の命名規約。ViewModel のプロパティ名の接尾辞で、
+    // 下の 2 つの Razor 走査はこの規約で拾った旗の 1 つずつに掛かる
+    private const string IgnoredFlagSuffix = "FilterIgnored";
+
+    // 旗の名前を ViewModel から機械的に導く。
+    //
+    // <b>なぜ書き並べないのか。</b> 下の 2 つの検査(注意書きが描画されるか /
+    // パネルを開くが「適用中」とは言わないか)は旗ごとに掛ける必要がある。
+    // ここを [InlineData] の手書きにすると、3 つ目の旗を足した人が行を足し忘れた瞬間に
+    // <b>その旗だけが両方の検査から黙って外れる</b>(fail-open)。この repo が
+    // AuditSaveChangesInterceptor.AuditedEntities や LengthGovernedEntityTypes で
+    // 繰り返し避けている「写しを持つ」形そのものなので、同じやり方で導出にする。
+    // 実際この差分の 1 つ前の版がその状態で、CauseCategoryFilterIgnored を
+    // 誰も読まない書き込み専用のプロパティにしても全件緑のまま通った。
+    //
+    // <b>1 つも拾えなければ落とす</b> —— 命名規約ごと変えると「対象ゼロ＝全件緑」で
+    // 検出網が黙って死ぬため(fail-closed)。ただしこの門番だけでは
+    // 「旗のうち 1 つだけが規約から外れる」改名を捕まえられない(残りが拾えるので 0 件にならない)。
+    // そこは判定の手がかりを変えた <see cref="IgnoredFilterFlags_CoverEveryFlagTheControllerSets"/>
+    // が受け持つ
+    public static TheoryData<string> IgnoredFilterFlags()
+    {
+        // 命名規約に当てはまる bool のプロパティだけを拾う
+        var flags = DeclaredIgnoredFilterFlags();
+
+        // 1 つも見つからないのは「旗が無くなった」より「命名規約が変わった」可能性が高い。
+        // 黙って 0 件の Theory にすると検出網が消えるので、ここで落として人に決めさせる
+        Assert.True(flags.Count > 0,
+            $"{nameof(IncidentListViewModel)} に *{IgnoredFlagSuffix} という名前の bool プロパティが 1 つも無い。"
+            + "命名規約を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var flag in flags) data.Add(flag);
+        return data;
+    }
+
+    // ViewModel に宣言されている旗の名前(命名規約で拾い、並びを固定して返す)
+    private static List<string> DeclaredIgnoredFilterFlags() =>
+        typeof(IncidentListViewModel)
+            .GetProperties()
+            .Where(p => p.PropertyType == typeof(bool) && p.Name.EndsWith(IgnoredFlagSuffix, StringComparison.Ordinal))
+            .Select(p => p.Name)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+    // 上の導出(命名規約)が旗を取りこぼしていないことを、<b>判定とは独立な手がかり</b>で照合する。
+    //
+    // 手がかりは<b>コントローラのソース</b>: 「採用しなかったか」は必ず解決関数が返す
+    // <c>Ignored</c> から ViewModel へ写されるので、<c>… = ….Ignored</c> という代入が
+    // 旗の実際の一覧になる。これは命名規約とは別の宣言箇所なので、
+    // <b>片方だけが狭まったときに食い違いとして現れる</b>。
+    //
+    // <b>なぜ要るのか(実測)。</b> 命名規約だけに頼ると、旗を 2 つ持つ状態で
+    // 片方を規約から外れた名前(<c>CauseCategoryIgnoredFlag</c> など)へ改名すると、
+    // もう片方が拾えるぶん「0 件」にはならず、上の門番をすり抜けて
+    // <b>改名した旗だけが 2 つの Razor 走査から黙って外れた</b>。
+    // 同じ手がかりでガードを書くと導出が狭まったときにガードも一緒に狭まるので、
+    // この repo が LengthGovernedTypes_CoverEveryOwnedDbSet でやっているのと同じく手がかりを変える
+    [Fact]
+    public void IgnoredFilterFlags_CoverEveryFlagTheControllerSets()
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        var source = File.ReadAllText(controllerPath);
+
+        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う
+        var assigned = Regex.Matches(source, @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
+            .Select(m => m.Groups["flag"].Value)
+            .Distinct(StringComparer.Ordinal)
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 代入が 1 つも読めないなら、書き方が変わって手がかりが死んでいる。
+        // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
+        Assert.True(assigned.Count > 0,
+            $"{nameof(IncidentsController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
+            + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
+        // 逆に画面へ渡らなくなった旗が ViewModel に残っている
+        Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
+    }
+
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
     // コントローラ級のテストは ViewModel までしか見ないので、@if のブロックごと消しても
     // 全件緑のまま通る(実測)。そうなると DepartmentFilterIgnored は誰も読まない
@@ -858,13 +947,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // SearchFilter の表が「してはいけない」と書いている状態そのもの。
     // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ。
     //
-    // 旗は 2 つあり(発生部署・原因分類)、どちらも同じ壊れ方をする。
+    // 旗は現在 2 つあり(発生部署・原因分類)、どちらも同じ壊れ方をする。
     // <b>片方だけを見る形にしない</b> —— 実測でも、原因分類の注意書きを足す前の版は
     // 部署の旗だけを見ていたので、新しい旗が誰にも読まれない書き込み専用のプロパティに
-    // なっても全件緑のままだった。旗を増やす人はここへ 1 件足すこと
+    // なっても全件緑のままだった。一覧は手書きせず IgnoredFilterFlags から導く
     [Theory]
-    [InlineData(nameof(IncidentListViewModel.DepartmentFilterIgnored))]
-    [InlineData(nameof(IncidentListViewModel.CauseCategoryFilterIgnored))]
+    [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag)
     {
         // 一覧ビューの Razor ソースを読む(ビルド出力にはコピーされない)
@@ -932,8 +1020,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // どちらの差し戻しも実測で全件緑のまま通ったので、ソースの形で固定する。
     // 注意書きの検査と同じく、旗を 1 つずつ見る(片方だけの検査にすると新しい旗が素通りする)
     [Theory]
-    [InlineData(nameof(IncidentListViewModel.DepartmentFilterIgnored))]
-    [InlineData(nameof(IncidentListViewModel.CauseCategoryFilterIgnored))]
+    [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag)
     {
         // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
