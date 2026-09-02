@@ -277,6 +277,50 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(UnknownDepartment, vm.IgnoredDepartment);
     }
 
+    // 見える文字が 1 つも無い入力は「入力なし」と同じ扱いにする。
+    // char.IsWhiteSpace が false を返す不可視の文字(ソフトハイフン・ゼロ幅スペース等)は
+    // SearchFilter.HasValue の網から漏れるが、利用者には空欄と見分けが付かない。
+    // 注意書きを出すと「指定された部署「」のインシデントが…」と何も名指ししない文になり、
+    // 真偽値ではなく値を持たせた意味が失われる
+    [Theory]
+    // ソフトハイフン(表示されない)
+    [InlineData("\u00AD")]
+    // ゼロ幅スペース
+    [InlineData("\u200B")]
+    // 双方向テキストの上書きだけ
+    [InlineData("\u202E")]
+    public async Task Incidents_InvisibleOnlyDepartment_IsTreatedAsNoInput(string department)
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 見えない文字だけを送る
+        var vm = await IndexIncidentsAsync(department);
+
+        // 絞り込みは掛からず、注意書きも出さない(空欄を送ったのと同じ)
+        Assert.Equal(1, vm.TotalCount);
+        Assert.Null(vm.Department);
+        Assert.Null(vm.IgnoredDepartment);
+    }
+
+    // 結合文字を連ねた入力は書記素クラスタとしては 1 文字なので、見た目の文字数だけでは
+    // 長さを縛れない。生の長さにも上限を掛けていることを固定する
+    // (掛けないと数千文字が「1 文字」として素通りし、重なった記号がレイアウトへはみ出す)
+    [Fact]
+    public async Task Incidents_IgnoredDepartment_IsBoundedEvenWhenCombiningMarksFormOneCluster()
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 「あ」に結合文字(アクセント記号)を大量に付けた 1 クラスタを送る
+        var zalgo = "あ" + new string('\u0301', 5000);
+        var vm = await IndexIncidentsAsync(zalgo);
+
+        // 見た目の文字数では 1 でも、生の長さで頭打ちになる
+        Assert.True(vm.IgnoredDepartment!.Length <= FieldLengths.ShortText * 4 + 1,
+            $"生の長さが縛れていない: {vm.IgnoredDepartment.Length} 文字");
+    }
+
     // 注意書きへ出す値は、長さと文字種の両方を整えてから渡す。
     // これはクエリ文字列がそのまま画面へ戻る唯一の経路で、Razor の自動エスケープは
     // マークアップの混入しか防がない
@@ -652,7 +696,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 空白の有無や比較の書き方に依存しない形で探す。`@if (Model.X)` の完全一致で書くと、
         // `@if(Model.X)` のように同じ働きの正しい書き方を落としてしまい、
         // 次の人が動いているマークアップを「直し」に行く検出網になる
-        Assert.Matches($@"@if\s*\(\s*Model\.{flag}\b", source);
+        var header = Regex.Match(source, $@"@if\s*\(\s*Model\.{flag}\b");
+        Assert.True(header.Success,
+            $"Views/Incidents/Index.cshtml が Model.{flag} で注意書きを出し分けていない。");
+
+        // 出し分けているだけでなく、そのブロックが値そのものを描画していることまで見る。
+        // ヘッダだけを見ると、@if は残したまま本文から「@Model.IgnoredDepartment」を
+        // 消す変異が素通りする(実測)。それは「何を落としたか」が画面から消えた状態で、
+        // 真偽値ではなく値を持たせた理由がまるごと失われる
+        var blockBody = ExtractBraceBlock(source, header.Index);
+        Assert.True(blockBody != null,
+            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) に本体が無い。");
+        Assert.True(ContainsIdentifier(blockBody!, $"Model.{flag}"),
+            $"注意書きの本文に Model.{flag} を出すこと。"
+            + "何を落としたかはこのページの他のどこにも現れないため、"
+            + "これが無いと利用者は自分が送った値を確認できない。");
     }
 
     /// <summary>
@@ -678,6 +736,36 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         }
         // どの出現も別の名前の一部だった
         return false;
+    }
+
+    /// <summary>
+    /// <paramref name="from"/> 以降にある最初の <c>{ ... }</c> の中身を取り出す。
+    /// 見つからなければ <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// <c>@if</c> の本体を切り出して「条件だけでなく中身も見る」ために使う。
+    /// 条件の有無だけを見ると、本体を空にする変異が素通りする。
+    /// </remarks>
+    private static string? ExtractBraceBlock(string source, int from)
+    {
+        // 本体の開始となる波括弧を探す
+        var open = source.IndexOf('{', from);
+        if (open < 0) return null;
+
+        // 入れ子を数えながら対応する閉じ波括弧を探す
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            if (source[i] == '{') depth++;
+            else if (source[i] == '}')
+            {
+                depth--;
+                // 深さが 0 に戻った位置が本体の終わり
+                if (depth == 0) return source[(open + 1)..i];
+            }
+        }
+        // 閉じ波括弧が無ければ解析できない
+        return null;
     }
 
     /// <summary>

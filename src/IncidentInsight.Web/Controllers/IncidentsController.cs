@@ -594,6 +594,17 @@ public class IncidentsController : Controller
         if (!SearchFilter.HasValue(department))
             return new DepartmentFilterSelection(null, options, IgnoredValue: null);
 
+        // 採用しなかったときに画面へ出す表示用の値を先に作る。
+        // ここで見える文字が 1 つも残らないなら(例: ソフトハイフン U+00AD だけ、
+        // ゼロ幅スペースだけ)、利用者には空欄と見分けが付かないので「入力なし」と同じ扱いにする。
+        // SearchFilter.HasValue が空白のみをそう扱うのと同じ理由で、char.IsWhiteSpace が
+        // false を返す不可視の文字がその網から漏れているぶんをここで拾う。
+        // そうしないと「指定された部署「」のインシデントが…」と、何も名指ししない
+        // 注意書きが出る(値を持つ意味がなくなる)
+        var displayValue = TruncateForDisplay(department);
+        if (displayValue.Length == 0)
+            return new DepartmentFilterSelection(null, options, IgnoredValue: null);
+
         // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
         // 比較は序数(完全一致)で行う。ここを大文字小文字を無視する比較にしてはいけない
         // —— 下の「綴り違いをアプリ側で畳まない」の項を参照
@@ -639,7 +650,7 @@ public class IncidentsController : Controller
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
         if (storedDepartment == null)
-            return new DepartmentFilterSelection(null, options, IgnoredValue: TruncateForDisplay(department));
+            return new DepartmentFilterSelection(null, options, IgnoredValue: displayValue);
 
         // 実データにある＝許可リストから外れた過去の部署名。選択肢へ補完して絞り込みを維持する。
         // 「既にあれば足さない・無ければ先頭へ」の手順は /PreventiveMeasures と共通なので
@@ -655,13 +666,19 @@ public class IncidentsController : Controller
     /// 採用しなかった絞り込み値を、画面に出してよい形へ整える(制御文字を除いてから切り詰める)。
     /// </summary>
     /// <remarks>
-    /// <para>この値は<b>クエリ文字列がそのまま画面へ戻る唯一の経路</b>なので、
-    /// 長さと文字種の両方を整えてから渡す。Razor の自動エスケープはマークアップの混入は
-    /// 防ぐが、次の 2 つは防がない:</para>
+    /// <para>クエリ文字列を画面へ戻す箇所は他にもある(検索欄の <c>value="@Model.Search"</c> など)。
+    /// この値だけを特別扱いするのは、<b>採用しなかった値を地の文として読ませる</b>唯一の経路だから
+    /// —— 入力欄へ戻す値は枠の中に収まり、利用者も自分が打った内容として読む。
+    /// こちらはアプリ自身の文章に埋め込まれるので、長さも文字種も整えてから渡す。
+    /// Razor の自動エスケープはマークアップの混入は防ぐが、次の 2 つは防がない:</para>
     /// <list type="number">
     ///   <item><description><b>長さ</b> — クエリ文字列に上限は無いので、一画面を埋める
     ///     文字列を送り込める。実在しうる部署名は <see cref="FieldLengths.ShortText"/> に
-    ///     収まるので、超える分は省略記号にする。</description></item>
+    ///     収まるので、超える分は省略記号にする。上限は<b>2 つ掛ける</b>: 見た目の文字数
+    ///     (書記素クラスタ)と、生の長さ(UTF-16 の符号単位)。前者だけだと結合文字を
+    ///     連ねた入力(「あ」＋アクセント記号を数千個)が<b>1 文字</b>と数えられて素通りし、
+    ///     重なった記号が周囲のレイアウトへはみ出す(実測で確認)。後者だけだと
+    ///     絵文字 1 個で上限に達してしまうので、両方を見る。</description></item>
     ///   <item><description><b>制御文字</b> — とくに双方向テキストの上書き(U+202E など)は
     ///     エスケープを通り抜け、<b>後続の文言の見た目を反転させる</b>。注意書きの意味が
     ///     読み手にとって変わってしまうので、表示しない文字は落とす。</description></item>
@@ -694,22 +711,33 @@ public class IncidentsController : Controller
         var enumerator = StringInfo.GetTextElementEnumerator(cleaned);
         // 取り出した分を積む
         var kept = new StringBuilder();
-        // 取り出したテキスト要素の数
-        var count = 0;
+        // 取り出したテキスト要素の数(見た目の文字数)
+        var elements = 0;
         while (enumerator.MoveNext())
         {
-            // 上限に達したら、残りがあることを省略記号で示して終える
-            if (count == IgnoredDepartmentMaxDisplayLength) return kept.Append('…').ToString();
+            // 次に積む 1 要素
+            var element = (string)enumerator.Current;
+            // 見た目の文字数か生の長さのどちらかが上限に達したら、
+            // 残りがあることを省略記号で示して終える。
+            // 生の長さも見るのは、結合文字を連ねると数千文字が 1 要素になるため
+            if (elements == IgnoredDepartmentMaxDisplayLength
+                || kept.Length + element.Length > IgnoredDepartmentMaxRawLength)
+                return kept.Append('…').ToString();
             // まだ余裕があるので 1 要素積む
-            kept.Append((string)enumerator.Current);
-            count++;
+            kept.Append(element);
+            elements++;
         }
         // 上限以内に収まったのでそのまま返す
         return kept.ToString();
     }
 
-    // 注意書きへ出す絞り込み値の最大文字数。実在しうる部署名の上限に合わせてある
+    // 注意書きへ出す絞り込み値の最大文字数(見た目の文字数)。実在しうる部署名の上限に合わせてある
     private const int IgnoredDepartmentMaxDisplayLength = FieldLengths.ShortText;
+
+    // 同じく生の長さ(UTF-16 の符号単位)の上限。1 つの見た目の文字が何個の符号単位にも
+    // なりうるので、見た目の文字数だけでは長さを縛れない。絵文字(2)や結合文字列を
+    // 通常の範囲で収めつつ、はみ出しを防ぐ余裕として文字数上限の 4 倍を取る
+    private const int IgnoredDepartmentMaxRawLength = FieldLengths.ShortText * 4;
 
     /// <summary>
     /// <see cref="ResolveDepartmentFilterAsync"/> の結果。
