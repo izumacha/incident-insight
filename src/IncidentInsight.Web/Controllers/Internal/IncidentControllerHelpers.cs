@@ -127,6 +127,71 @@ internal static class IncidentControllerHelpers
         => keyword.ToUpperInvariant();
 
     /// <summary>
+    /// <c>/Incidents</c> の発生部署フィルタについて、<b>実際に絞り込みへ使う値</b>と
+    /// <b>ドロップダウンに並べる選択肢</b>を同時に決める。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ 2 つを一緒に返すのか。</b> この 2 つは<b>必ず整合していなければならない</b>。
+    /// 絞り込みに使った値が選択肢に無いと、ブラウザは <c>&lt;select&gt;</c> を「部署（全て）」の位置に置く。
+    /// 絞り込みは効いたままなので画面と実状態が食い違い、利用者がそのフォームを再送信した瞬間に
+    /// <c>department=""</c> が送られて<b>絞り込みが無言で解除される</b>(issue #192 の再現手順)。
+    /// 別々の関数にすると片方だけ直したときにこの食い違いが戻るので、1 か所で決めて一緒に返す。</para>
+    ///
+    /// <para><b>判断の規則そのもの</b>(3 画面のどれが「補完」でどれが「採用しない」か、その理由)は
+    /// <see cref="SearchFilter"/> の解説に集約してある。ここはそのうち <c>/Incidents</c> の
+    /// 「実データにあれば補完、無ければ採用しない」を実装する。</para>
+    ///
+    /// <para><b>実在確認に部署スコープを掛ける理由。</b> 存在するかどうかの答えは
+    /// 「その部署名の選択肢が出るか」という形で画面に現れる。スコープを外すと、Staff が
+    /// <c>?department=...</c> を総当たりして<b>他部署にインシデントがあるかどうかを推測できる</b>
+    /// (§9 最小公開)。一覧本体と同じ <c>ScopedByUser</c> を通しておけば、見える範囲の外は
+    /// 「存在しない」と等しく扱われる。</para>
+    ///
+    /// <para><b>問い合わせは許可リストを外れたときだけ走る。</b> 通常の操作では値が
+    /// <see cref="Incident.Departments"/> に載っているため、追加のクエリは発生しない。
+    /// 走る場合も <c>Incident(Department, IncidentType)</c> インデックスに乗る
+    /// <c>EXISTS</c> 1 本で済む(§8)。</para>
+    /// </remarks>
+    /// <param name="db">インシデントを読むための DbContext。</param>
+    /// <param name="user">実在確認に部署スコープを掛けるためのログインユーザー。</param>
+    /// <param name="department">クエリ文字列から届いた発生部署の絞り込み値(未指定なら <c>null</c>)。</param>
+    /// <returns>採用した絞り込み値(採用しないなら <c>null</c>)と、ドロップダウンの選択肢。</returns>
+    public static async Task<DepartmentFilterSelection> ResolveDepartmentFilterAsync(
+        ApplicationDbContext db, ClaimsPrincipal user, string? department)
+    {
+        // 選択肢の土台は常に Incident.Departments(部署一覧の唯一の真実の源)。
+        // 補完する場合に先頭へ差し込むので、書き換えられるリストとして複製しておく
+        var options = Incident.Departments.ToList();
+
+        // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
+        if (!SearchFilter.HasValue(department))
+            return new DepartmentFilterSelection(null, options);
+
+        // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)
+        if (options.Contains(department))
+            return new DepartmentFilterSelection(department, options);
+
+        // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
+        // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う
+        var existsInScope = await db.Incidents
+            .AsNoTracking()
+            .ScopedByUser(user)
+            // 1 件でもその部署のインシデントがあれば true(EXISTS に翻訳される)
+            .AnyAsync(i => i.Department == department);
+
+        // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
+        // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
+        if (!existsInScope)
+            return new DepartmentFilterSelection(null, options);
+
+        // 実データにある＝許可リストから外れた過去の部署名。選択肢の先頭へ補完して
+        // 絞り込みを維持する。補完しないと、この行たちへ二度と絞り込めなくなる
+        options.Insert(0, department);
+        // 採用した値と、補完済みの選択肢を返す
+        return new DepartmentFilterSelection(department, options);
+    }
+
+    /// <summary>
     /// 原因カテゴリのドロップダウン用に、親カテゴリでグルーピングした子カテゴリ一覧を作る。
     /// </summary>
     public static async Task<List<SelectListItem>> BuildCauseCategoryOptionsAsync(ApplicationDbContext db)
@@ -335,3 +400,23 @@ internal static class IncidentControllerHelpers
         };
     }
 }
+
+/// <summary>
+/// <see cref="IncidentControllerHelpers.ResolveDepartmentFilterAsync"/> の結果。
+/// 「実際に絞り込みへ使う値」と「ドロップダウンに並べる選択肢」を組にして運ぶ。
+/// </summary>
+/// <remarks>
+/// 2 つを 1 つの型にまとめてあるのは、片方だけを受け取って使う書き方をできなくするため。
+/// タプルではなく名前付きの型にしているのは、呼び出し側で <c>Item1</c> / <c>Item2</c> の
+/// 取り違えが起きないようにするのと、この解説の置き場所を作るため。
+/// </remarks>
+/// <param name="Effective">
+/// 絞り込みに使う発生部署名。採用しなかった場合(空入力・実データに無い値)は <c>null</c>。
+/// ViewModel へもこの値を載せる——採用しなかった値を画面へ返すと、絞り込みは効いていないのに
+/// 「絞り込み中」バッジが出る食い違いになるため。
+/// </param>
+/// <param name="Options">
+/// 発生部署ドロップダウンに並べる選択肢。通常は <see cref="Incident.Departments"/> そのままで、
+/// 許可リストから外れた過去の部署名で絞り込んでいるときだけ、その値が先頭に補完されている。
+/// </param>
+internal readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options);

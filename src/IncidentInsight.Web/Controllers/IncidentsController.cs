@@ -89,9 +89,14 @@ public class IncidentsController : Controller
             var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);
             query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
         }
-        // 部署で絞り込み(空白のみは絞り込み無し)
-        if (SearchFilter.HasValue(department))
-            query = query.Where(i => i.Department == department);
+        // 部署で絞り込み。「空白のみか」に加えて「ドロップダウンが表せる値か」まで決めるので、
+        // 判定とドロップダウンの選択肢づくりを ResolveDepartmentFilterAsync にまとめてある
+        // (許可リストから外れた過去の部署名は選択肢へ補完し、実データに無い値は採用しない。
+        //  どちらを選ぶかの規則と理由は SearchFilter の解説に集約。issue #192)
+        var departmentFilter = await IncidentControllerHelpers.ResolveDepartmentFilterAsync(_db, User, department);
+        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
+        if (departmentFilter.Effective != null)
+            query = query.Where(i => i.Department == departmentFilter.Effective);
         // インシデント種別で絞り込み
         if (incidentType.HasValue)
             query = query.Where(i => i.IncidentType == incidentType.Value);
@@ -171,7 +176,11 @@ public class IncidentsController : Controller
             Page = page,
             PageSize = PageSize,
             Search = search,
-            Department = department,
+            // 採用しなかった部署値は画面へ返さない。返すと、絞り込みは効いていないのに
+            // 「絞り込み中」バッジが出てページャの URL にも載る食い違いになる(/AuditLogs と同じ扱い)
+            Department = departmentFilter.Effective,
+            // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
+            DepartmentOptions = departmentFilter.Options,
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,

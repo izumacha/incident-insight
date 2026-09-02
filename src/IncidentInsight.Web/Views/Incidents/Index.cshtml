@@ -57,7 +57,12 @@
                         @* 部署フィルター *@
                         <select name="department" class="form-select form-select-sm" aria-label="部署で絞り込み">
                             <option value="">部署（全て）</option>
-                            @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                            @* 選択肢は Incident.Departments を直接回さず ViewModel から受け取る。
+                               許可リストから外れた過去の部署名で絞り込んでいる場合、コントローラが
+                               その値を先頭へ補完して渡してくる。ここで static 配列を直接回すと
+                               適用中の値に一致する option が無くなり、select が「部署（全て）」を指して
+                               再送信で絞り込みが無言で解除される(issue #192) *@
+                            @foreach (var d in Model.DepartmentOptions)
                             {
                                 @* 現在値と一致すれば selected に *@
                                 <option value="@d" selected="@(Model.Department == d)">@d</option>

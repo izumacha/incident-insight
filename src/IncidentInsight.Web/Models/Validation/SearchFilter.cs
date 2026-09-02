@@ -40,6 +40,54 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 検索語の大文字化(ロケール非依存の正規化)は
 /// <c>Controllers.Internal.IncidentControllerHelpers.NormalizeSearchKeyword</c> が担当する
 /// ——こちらは EF Core のクエリを組み立てる経路でしか使わないためコントローラ側に置いてある。</para>
+///
+/// <para><b>ドロップダウンが表せない適用値をどう扱うか(issue #192)。</b>
+/// <see cref="HasValue"/> は「入力があるか」しか答えない。その先に
+/// 「<b>適用中の値が選択肢のどれにも一致しない</b>とき、絞り込みを維持するか捨てるか」
+/// という別の判断があり、これを画面ごとに決め打ちすると三者三様になる(実際そうなっていた)。
+/// 一致する <c>&lt;option&gt;</c> が無いと、ブラウザは <c>&lt;select&gt;</c> を先頭の
+/// 「(全て)」の位置に置く。絞り込みは効いたままなので<b>画面と実状態が食い違い</b>、
+/// 利用者がそのフォームを再送信した時点で<b>意図せず絞り込みが解除される</b>。
+/// 逃げ道は 2 つしかなく、どちらを採るかは<b>値の集合の性質</b>で決まる:</para>
+///
+/// <list type="bullet">
+///   <item><description><b>補完する</b>(適用値を選択肢の先頭へ足す)…
+///     選択肢が<b>実データから作られる</b>、または<b>過去の行が現在の許可リストに無い値を持ちうる</b>場合。
+///     捨てると「実在するデータへ絞り込めない」損失が出るため、到達性を優先する。</description></item>
+///   <item><description><b>採用しない</b>(絞り込みを掛けず、画面へも値を返さない)…
+///     値の集合が<b>コード側で閉じていて過去の行も必ずその中に収まる</b>場合。
+///     リスト外は不正入力・古いブックマークなので、絞り込み無しの状態で揃える。</description></item>
+/// </list>
+///
+/// <para><b>現在の割り当てと理由。</b></para>
+/// <list type="table">
+///   <item><description><c>/PreventiveMeasures</c> の担当部署 … <b>補完</b>。
+///     <c>ResponsibleDepartment</c> は<b>自由記述</b>で許可リストが存在せず、選択肢は実データから
+///     件数上限付きで作るため、上限超過で切り捨てられた値も表せない。補完しか採れない。</description></item>
+///   <item><description><c>/AuditLogs</c> のエンティティ名・操作種別 … <b>採用しない</b>。
+///     どちらも <c>AuditSaveChangesInterceptor.AuditedEntities</c> / 操作種別という
+///     <b>コード側で閉じた集合</b>で、過去行が持つ値も必ずその中にある。</description></item>
+///   <item><description><c>/Incidents</c> の発生部署 … <b>実データにあれば補完、無ければ採用しない</b>。
+///     <c>Incident.Departments</c> は閉じた語彙だが CLAUDE.md が「値追加は static 配列を更新」と
+///     明記する<b>可変の真実の源</b>で、部署名を入れ替えても<b>過去の行は古い部署名を保持し続ける</b>。
+///     一律に捨てると実在の部署で業務データを絞り込めなくなり、一律に補完すると
+///     打ち間違い・改ざんで<b>存在しない部署が選択肢に現れる</b>。そこで
+///     <c>Controllers.Internal.IncidentControllerHelpers.ResolveDepartmentFilterAsync</c> が
+///     <b>部署スコープ内の実データに存在するか</b>で 2 つの方式を振り分ける
+///     (スコープを掛けるのは、Staff が他部署の部署名の有無を推測できないようにするため)。</description></item>
+/// </list>
+///
+/// <para>この表は文章なので放っておけば実装から離れる。3 画面の実際の挙動は
+/// <c>Controllers.UnlistedFilterValuePolicyTests</c> が 1 ファイルにまとめて固定しており、
+/// どれかの画面が表と違う振る舞いに変われば落ちる。<b>方式を変えるときは表とそのテストを
+/// 同じ変更セットで直す。</b></para>
+///
+/// <para><b>同じ性質だが手当てが要らない入力もある。</b> <c>/Incidents</c> の <c>sortBy</c>
+/// (<c>"latest" | "severity" | "overdue"</c>)もクエリ文字列から届く閉じた語彙だが、
+/// 適用側の <c>switch</c> の既定枝が <c>latest</c> に落ち、表示側の <c>&lt;option&gt;</c> も
+/// 「severity でも overdue でもなければ最新順を選択」と書いてあるため、
+/// 不正値では<b>両方が既定へ倒れて一致する</b>。再送信しても状態が変わらないので
+/// 上の振り分けは要らない(値を足すときはこの対応が崩れないか確認すること)。</para>
 /// </summary>
 public static class SearchFilter
 {

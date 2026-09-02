@@ -44,6 +44,14 @@ public class IncidentListViewModel
 
     // 原因分類ドロップダウンの選択肢
     public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+
+    // 発生部署ドロップダウンの選択肢。
+    // ビューが Incident.Departments を直接回さずこちらを使うのは、許可リストから外れた
+    // 過去の部署名で絞り込んでいるときに、その値を選択肢へ補完して渡す必要があるため。
+    // 補完しないと select が「部署（全て）」を指し、再送信で絞り込みが無言で解除される(issue #192)。
+    // 中身を決めるのは IncidentControllerHelpers.ResolveDepartmentFilterAsync で、
+    // 上の Department と必ず対で設定する(片方だけ差し替えると食い違いが戻る)
+    public List<string> DepartmentOptions { get; set; } = new();
 }
 
 // インシデント詳細画面のモデル
