@@ -764,6 +764,12 @@ public class IncidentsController : Controller
             .AsNoTracking()
             .Where(c => c.ParentId == null)
             .OrderBy(c => c.DisplayOrder)
+            // 主キーのタイブレーカーを付ける。CauseCategory(ParentId, DisplayOrder) は
+            // 一意ではないので、表示順が同じ親カテゴリは実在しうる。DB は同値行の並び順を
+            // 保証しないため、これが無いと<b>同じリクエストでも選択肢の並びが揺れる</b>
+            // ——同じ絞り込みのまま次ページへ進んだだけでドロップダウンの項目が入れ替わる。
+            // 一覧のページングや ResolveDepartmentFilterAsync が Id を足しているのと同じ理由
+            .ThenBy(c => c.Id)
             .Select(c => new { c.Id, c.Name })
             .ToListAsync();
         // 補完する場合に先頭へ差し込むので、書き換えられるリストとして組み立てる
@@ -811,9 +817,12 @@ public class IncidentsController : Controller
         // 実在する＝選択肢に無いだけの分類。親の名前を選択肢から引いて見出しに添える
         // (子カテゴリの通常経路。親自身が選択肢から漏れていた場合や 3 階層目では
         //  引けず null になり、FormatFullName が自分の名前だけを返す)
-        var parentName = requested.ParentId is int parentId
-            ? options.FirstOrDefault(o => o.Value == parentId.ToString())?.Text
-            : null;
+        // 親の送信値も一度だけ作る(ラムダの中で作ると選択肢の数だけ文字列を作ることになる。
+        // 上の requestedValue と規則を揃えておかないと、次に読む人がどちらが意図か分からない)
+        var parentValue = requested.ParentId?.ToString();
+        var parentName = parentValue == null
+            ? null
+            : options.FirstOrDefault(o => o.Value == parentValue)?.Text;
         // 「親名 > 子名」の見出しで選択肢の先頭へ補完する。
         // 「空なら足さない・既にあれば足さない・無ければ先頭へ」の手順は共有ヘルパに寄せてある
         IncidentControllerHelpers.EnsureAppliedValueIsSelectable(

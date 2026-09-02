@@ -870,7 +870,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 検出網が黙って死ぬため(fail-closed)。ただしこの門番だけでは
     // 「旗のうち 1 つだけが規約から外れる」改名を捕まえられない(残りが拾えるので 0 件にならない)。
     // そこは判定の手がかりを変えた <see cref="IgnoredFilterFlags_CoverEveryFlagTheControllerSets"/>
-    // が受け持つ
+    // が受け持つ。
+    //
+    // <b>覆っているのは /Incidents の 1 画面だけ</b>(この導出も、照合も、下の 2 つの
+    // Razor 走査も、IncidentListViewModel / IncidentsController.cs /
+    // Views/Incidents/Index.cshtml を名指ししている)。<b>「旗を足せば必ず検査に入る」のは
+    // この画面の中の話</b>で、別の一覧画面が旗を持ち始めても自動では入らない。
+    // 一般化していないのは、現在この方式(「採用しない」ときに知らせる)を採っているのが
+    // この画面だけだから —— /PreventiveMeasures は無条件補完で、そもそも「採用しない」枝が
+    // 無いので旗を持たない(SearchFilter の表を参照)。選択肢の出所を見る
+    // BackfillingScreens_BuildOptionsFromTheControllersResult は 2 画面に掛かるが、
+    // あちらは ViewModel と ViewBag という別々の受け渡し方を [InlineData] で吸収している。
+    // <b>2 画面目が旗を持ったときは、この 3 つの入り口を画面ごとに引数化すること</b>
+    // (そうしないと、その画面の旗だけが誰にも読まれない書き込み専用のプロパティになる)
     public static TheoryData<string> IgnoredFilterFlags()
     {
         // 命名規約に当てはまる bool のプロパティだけを拾う
