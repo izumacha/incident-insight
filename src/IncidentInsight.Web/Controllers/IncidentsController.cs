@@ -181,6 +181,9 @@ public class IncidentsController : Controller
             Department = departmentFilter.Effective,
             // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
             DepartmentOptions = departmentFilter.Options,
+            // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える。
+            // 「入力があった(HasValue)」かつ「採用しなかった(Effective が null)」が条件
+            DepartmentFilterIgnored = SearchFilter.HasValue(department) && departmentFilter.Effective == null,
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,
@@ -616,9 +619,13 @@ public class IncidentsController : Controller
             // EnforceKnownDepartment は Staff を対象外にしているため綴り違いが実在しうる)。
             // 並びを決めずに先頭を取ると同じ URL でもリクエストごとに違う綴りが返り、
             // 選択肢の増減もページャの URL も揺れる。DB は同値行の並び順を保証しないので、
-            // 一覧のページングが Id のタイブレーカーを付けているのと同じ理由で並びを固定する
-            .OrderBy(i => i.Department)
-            .ThenBy(i => i.Id)
+            // 一覧のページングが Id のタイブレーカーを付けているのと同じ理由で並びを固定する。
+            // キーが Id だけなのは、上の Where を通った行は Department が(DB 自身の
+            // 照合順序で)すべて同値だから —— Department を第 1 キーに足しても必ずタイになり、
+            // 結果は変わらないまま SQL にソート列が増える。しかも Incident(Department,
+            // IncidentType) インデックスは Department の中を IncidentType 順に並べるので、
+            // Department, Id で並べ替えると seek だけでは済まず整列が要る
+            .OrderBy(i => i.Id)
             // 保存されている綴りを 1 件だけ取り出す
             .Select(i => i.Department)
             .FirstOrDefaultAsync();

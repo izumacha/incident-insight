@@ -263,6 +263,60 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal("icu", vm.DepartmentOptions[0]);
     }
 
+    // 採用しなかったことを画面へ伝える。黙って落とすと、絞り込んだつもりの利用者に
+    // 全件が返り「絞り込み中」バッジも出ないので取り違えに気付けない。
+    // 採用しない条件は「見えている範囲の実データに無い」＝データ側の状態に依存するので、
+    // 打ち間違いだけでなく、正しくブックマークした URL でも該当行が消えれば当てはまる
+    // (その 2 つを見分ける手段は無いので、どちらも同じように知らせる)
+    [Fact]
+    public async Task Incidents_WhenDepartmentIsNotAdopted_TheScreenIsToldAboutIt()
+    {
+        // 現行の部署名を持つ行だけを用意する
+        await SeedIncidentAsync("ICU");
+
+        // 実データに無い部署名で絞り込もうとする
+        var vm = await IndexIncidentsAsync(UnknownDepartment);
+
+        // 採用しなかったことが画面へ伝わっている
+        Assert.True(vm.DepartmentFilterIgnored);
+    }
+
+    // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
+    // ここを区別しないと、絞り込みを使っていない普通の一覧表示でも注意書きが出続け、
+    // 利用者は読まなくなる ——出しっぱなしの警告は無いのと同じ
+    [Theory]
+    // 未指定
+    [InlineData(null)]
+    // 空文字
+    [InlineData("")]
+    // 空白のみ
+    [InlineData("   ")]
+    public async Task Incidents_WhenNoDepartmentWasRequested_NoNoticeIsShown(string? department)
+    {
+        // 一覧に 1 件だけ用意する
+        await SeedIncidentAsync("ICU");
+
+        // 部署を指定せずに(または空白のみで)一覧を引く
+        var vm = await IndexIncidentsAsync(department);
+
+        // 注意書きは出さない
+        Assert.False(vm.DepartmentFilterIgnored);
+    }
+
+    // 採用できた場合も注意書きは出さない(過去の部署名で絞り込めているケース)
+    [Fact]
+    public async Task Incidents_WhenDepartmentIsAdopted_NoNoticeIsShown()
+    {
+        // 許可リストから外れた過去の部署名を持つ行を用意する
+        await SeedIncidentAsync(RetiredDepartment);
+
+        // その値で絞り込む(補完されて採用される)
+        var vm = await IndexIncidentsAsync(RetiredDepartment);
+
+        // 絞り込めているので注意書きは不要
+        Assert.False(vm.DepartmentFilterIgnored);
+    }
+
     // 空白のみの入力は「絞り込み無し」。SearchFilter.HasValue の規則がこの経路でも効いていることと、
     // 空白が選択肢へ補完されない(＝空白だけの選択肢が現れない)ことを同時に固定する
     [Fact]
@@ -437,11 +491,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「見落とし」ではなく「方式上いらない」であることを明記しておく
     [Theory]
     // /Incidents: 発生部署。選択肢は ViewModel(IncidentListViewModel.DepartmentOptions)から取る
-    [InlineData("Incidents", "department", "Model.DepartmentOptions")]
+    [InlineData("Incidents", "department", "Model.DepartmentOptions", "Model.Department")]
     // /PreventiveMeasures: 担当部署。選択肢は ViewBag.ResponsibleDepartmentOptions から取る
-    [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions")]
+    [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions", "ViewBag.FilterResponsibleDepartment")]
     public void BackfillingScreens_BuildOptionsFromTheControllersResult(
-        string viewFolder, string selectName, string requiredSource)
+        string viewFolder, string selectName, string requiredSource, string appliedValue)
     {
         // 対象ビューの Razor ソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
         var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, "Index.cshtml");
@@ -474,6 +528,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 別の出所へ差し替えるとここで落ちる ——コントローラが補完した値に一致する
         // option が無くなり、再送信で絞り込みが無言で解除されるため(issue #192)
         Assert.Contains(requiredSource, loopSource!, StringComparison.Ordinal);
+
+        // 適用中の値を selected に結び付けている。
+        // 選択肢を正しく並べても、どれが現在値かを示さなければ症状はまったく同じになる
+        // ——ブラウザは先頭の「(全て)」を選択状態にし、再送信で絞り込みが解除される。
+        // 実測でも、selected="@(Model.Department == d)" を消す変異は
+        // 「回している対象」だけを見ていた頃の検査を全件緑で素通りした
+        Assert.Contains("selected", selectBlock, StringComparison.Ordinal);
+        Assert.Contains(appliedValue, selectBlock, StringComparison.Ordinal);
     }
 
     // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。

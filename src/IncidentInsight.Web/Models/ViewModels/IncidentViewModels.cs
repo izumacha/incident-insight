@@ -52,6 +52,14 @@ public class IncidentListViewModel
     // 中身を決めるのは IncidentsController.ResolveDepartmentFilterAsync で、
     // 上の Department と必ず対で設定する(片方だけ差し替えると食い違いが戻る)
     public List<string> DepartmentOptions { get; set; } = new();
+
+    // 部署の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
+    // 採用しない条件は「見えている範囲の実データに無い」で、これはデータ側の状態に依存する
+    // ——打ち間違いだけでなく、正しくブックマークした URL でも、該当インシデントが削除・修正
+    // された時点で条件が変わる。黙って落とすと、絞り込んだつもりの利用者に全件が返り、
+    // しかも「絞り込み中」バッジも出ないので取り違えに気付けない(0 件になるならまだ分かる)。
+    // 何も言わずに入力を捨てないための旗(issue #192 のレビュー指摘)
+    public bool DepartmentFilterIgnored { get; set; }
 }
 
 // インシデント詳細画面のモデル
