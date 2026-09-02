@@ -1,6 +1,8 @@
 // DataAnnotations 属性の手動再検証(Validator / ValidationContext / ValidationResult)を使う
 using System.ComponentModel.DataAnnotations;
+// StringBuilder(文字列の組み立て)と Rune(サロゲートペアを 1 文字として扱う型)を使う
 using System.Text;
+// StringInfo(文字を書記素クラスタ単位で数える)と UnicodeCategory(文字の種別)を使う
 using System.Globalization;
 // 部署スコープ拡張メソッド(ScopedByUser)を使う
 using IncidentInsight.Web.Authorization;
@@ -594,17 +596,6 @@ public class IncidentsController : Controller
         if (!SearchFilter.HasValue(department))
             return new DepartmentFilterSelection(null, options, IgnoredValue: null);
 
-        // 採用しなかったときに画面へ出す表示用の値を先に作る。
-        // ここで見える文字が 1 つも残らないなら(例: ソフトハイフン U+00AD だけ、
-        // ゼロ幅スペースだけ)、利用者には空欄と見分けが付かないので「入力なし」と同じ扱いにする。
-        // SearchFilter.HasValue が空白のみをそう扱うのと同じ理由で、char.IsWhiteSpace が
-        // false を返す不可視の文字がその網から漏れているぶんをここで拾う。
-        // そうしないと「指定された部署「」のインシデントが…」と、何も名指ししない
-        // 注意書きが出る(値を持つ意味がなくなる)
-        var displayValue = TruncateForDisplay(department);
-        if (displayValue.Length == 0)
-            return new DepartmentFilterSelection(null, options, IgnoredValue: null);
-
         // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
         // 比較は序数(完全一致)で行う。ここを大文字小文字を無視する比較にしてはいけない
         // —— 下の「綴り違いをアプリ側で畳まない」の項を参照
@@ -650,7 +641,9 @@ public class IncidentsController : Controller
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
         if (storedDepartment == null)
-            return new DepartmentFilterSelection(null, options, IgnoredValue: displayValue);
+            // 画面へ出す値は、採用しないと決まったここで初めて整える
+            // (許可リストに載っている常用の経路では作っても捨てるだけなので走らせない)
+            return new DepartmentFilterSelection(null, options, IgnoredValue: TruncateForDisplay(department));
 
         // 実データにある＝許可リストから外れた過去の部署名。選択肢へ補完して絞り込みを維持する。
         // 「既にあれば足さない・無ければ先頭へ」の手順は /PreventiveMeasures と共通なので
@@ -681,28 +674,38 @@ public class IncidentsController : Controller
     ///     絵文字 1 個で上限に達してしまうので、両方を見る。</description></item>
     ///   <item><description><b>制御文字</b> — とくに双方向テキストの上書き(U+202E など)は
     ///     エスケープを通り抜け、<b>後続の文言の見た目を反転させる</b>。注意書きの意味が
-    ///     読み手にとって変わってしまうので、表示しない文字は落とす。</description></item>
+    ///     読み手にとって変わってしまうので、表示しない文字は取り除く。</description></item>
     /// </list>
     ///
+    /// <para><b>取り除くのではなく置き換える。</b> 消してしまうと、表示した文字列と
+    /// 実際に照会した文字列が食い違い、<b>事実と逆の案内</b>が出る:
+    /// <c>?department=IC[U+00AD]U</c>(コピー時にソフトハイフンが紛れた形)は、
+    /// 消すと「ICU」と表示されるのに照会は生の値で行われて 0 件になり、
+    /// 実在してインシデントもある ICU について「1 件も無い」と断言してしまう。
+    /// しかも原因の文字は消えた側なので利用者には診断できない。置換文字(U+FFFD)に
+    /// 置き換えれば、表示は「IC�U」となって送った値と同じ形を保ち、
+    /// 「見えない文字が混ざっている」ことも読み取れる。</para>
+    ///
     /// <para>切り詰めは<b>テキスト要素(書記素クラスタ)単位</b>で行う。UTF-16 の符号単位で
-    /// 切ると絵文字や一部の漢字(サロゲートペア)の途中で割れ、置換文字(U+FFFD)になって
+    /// 切ると絵文字や一部の漢字(サロゲートペア)の途中で割れ、
     /// 「何を送ったか」を確かめるという目的そのものを損なう。</para>
     /// </remarks>
     /// <param name="value">利用者が送ってきた絞り込み値。</param>
     /// <returns>表示用に整えた文字列。</returns>
     private static string TruncateForDisplay(string value)
     {
-        // 表示しない文字(制御文字・書式指定文字)を落とす。
-        // 書式指定文字(UnicodeCategory.Format)に双方向の上書きが含まれる
+        // 表示しない文字(制御文字・書式指定文字)を置換文字へ置き換える。
+        // 書式指定文字(UnicodeCategory.Format)に双方向の上書きが含まれる。
+        // 消さずに置き換えるのは、表示した文字列と照会した文字列を食い違わせないため(上記)
         var visible = new StringBuilder(value.Length);
-        // 1 文字ずつ見て、表示できるものだけを残す
+        // 1 文字ずつ見て、表示できないものだけを置換文字に差し替える
         foreach (var rune in value.EnumerateRunes())
         {
-            // 制御文字と書式指定文字は落とす
+            // 制御文字と書式指定文字は、そこに何かがあったことだけを残す
             var category = Rune.GetUnicodeCategory(rune);
-            if (category is UnicodeCategory.Control or UnicodeCategory.Format) continue;
-            // それ以外はそのまま積む
-            visible.Append(rune.ToString());
+            visible.Append(category is UnicodeCategory.Control or UnicodeCategory.Format
+                ? UnrenderableCharacterPlaceholder
+                : rune.ToString());
         }
         var cleaned = visible.ToString();
 
@@ -722,7 +725,14 @@ public class IncidentsController : Controller
             // 生の長さも見るのは、結合文字を連ねると数千文字が 1 要素になるため
             if (elements == IgnoredDepartmentMaxDisplayLength
                 || kept.Length + element.Length > IgnoredDepartmentMaxRawLength)
+            {
+                // ここまでに 1 文字も積めていない＝最初の 1 要素だけで生の上限を超える場合
+                // (「あ」＋結合文字を数千個のような入力)。省略記号だけを返すと
+                // 「指定された部署「…」」と何も名指ししない注意書きになるので、
+                // その要素の先頭を符号点の境界で切って中身を残す
+                if (kept.Length == 0) AppendRunePrefix(kept, element, IgnoredDepartmentMaxRawLength);
                 return kept.Append('…').ToString();
+            }
             // まだ余裕があるので 1 要素積む
             kept.Append(element);
             elements++;
@@ -730,6 +740,30 @@ public class IncidentsController : Controller
         // 上限以内に収まったのでそのまま返す
         return kept.ToString();
     }
+
+    /// <summary>
+    /// <paramref name="element"/> の先頭を、<paramref name="maxLength"/> を超えない範囲で
+    /// <b>符号点の境界を割らずに</b> <paramref name="destination"/> へ積む。
+    /// </summary>
+    /// <remarks>
+    /// 1 つの書記素クラスタが単独で長さ上限を超える場合にだけ使う。
+    /// 符号単位で切るとサロゲートペアが割れるため、Rune 単位で積んでいく。
+    /// </remarks>
+    private static void AppendRunePrefix(StringBuilder destination, string element, int maxLength)
+    {
+        // 先頭から 1 符号点ずつ見ていく
+        foreach (var rune in element.EnumerateRunes())
+        {
+            // この 1 文字を足すと上限を超えるならそこで打ち切る
+            if (destination.Length + rune.Utf16SequenceLength > maxLength) return;
+            // まだ収まるので積む
+            destination.Append(rune.ToString());
+        }
+    }
+
+    // 表示できない文字(制御文字・書式指定文字)の代わりに出す 1 文字。
+    // 消さずにこれを置くことで、表示した文字列と照会した文字列の形がずれない
+    private const string UnrenderableCharacterPlaceholder = "\uFFFD";
 
     // 注意書きへ出す絞り込み値の最大文字数(見た目の文字数)。実在しうる部署名の上限に合わせてある
     private const int IgnoredDepartmentMaxDisplayLength = FieldLengths.ShortText;

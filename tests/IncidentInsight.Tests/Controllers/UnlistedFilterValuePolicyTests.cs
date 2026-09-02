@@ -277,11 +277,28 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(UnknownDepartment, vm.IgnoredDepartment);
     }
 
-    // 見える文字が 1 つも無い入力は「入力なし」と同じ扱いにする。
-    // char.IsWhiteSpace が false を返す不可視の文字(ソフトハイフン・ゼロ幅スペース等)は
-    // SearchFilter.HasValue の網から漏れるが、利用者には空欄と見分けが付かない。
-    // 注意書きを出すと「指定された部署「」のインシデントが…」と何も名指ししない文になり、
-    // 真偽値ではなく値を持たせた意味が失われる
+    // 表示できない文字は「消す」のではなく置換文字へ「置き換える」。
+    // 消すと、表示した文字列と実際に照会した文字列が食い違い、事実と逆の案内が出る:
+    // ?department=IC[U+00AD]U(コピー時にソフトハイフンが紛れた形)は、消すと「ICU」と
+    // 表示されるのに照会は生の値で行われて 0 件になり、実在してインシデントもある ICU に
+    // ついて「1 件も無い」と断言してしまう。しかも原因の文字は消えた側なので診断できない
+    [Fact]
+    public async Task Incidents_IgnoredDepartment_KeepsTheShapeOfWhatWasSent()
+    {
+        // 許可リストどおりの綴りでインシデントを 1 件用意する
+        await SeedIncidentAsync("ICU");
+
+        // 「ICU」の途中にソフトハイフンが紛れた値を送る
+        var vm = await IndexIncidentsAsync("IC\u00ADU");
+
+        // 実在する "ICU" と見分けが付く形で表示される(「ICU」とは表示しない)
+        Assert.NotEqual("ICU", vm.IgnoredDepartment);
+        // そこに何かがあったことは残る
+        Assert.Equal("IC\uFFFDU", vm.IgnoredDepartment);
+    }
+
+    // 表示できない文字だけを送った場合も、何かを送ったことは分かる形にする
+    // (「指定された部署「」…」と何も名指ししない注意書きにはしない)
     [Theory]
     // ソフトハイフン(表示されない)
     [InlineData("\u00AD")]
@@ -289,7 +306,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [InlineData("\u200B")]
     // 双方向テキストの上書きだけ
     [InlineData("\u202E")]
-    public async Task Incidents_InvisibleOnlyDepartment_IsTreatedAsNoInput(string department)
+    public async Task Incidents_InvisibleOnlyDepartment_IsShownAsAPlaceholder(string department)
     {
         // 一覧に 1 件だけ用意する
         await SeedIncidentAsync("ICU");
@@ -297,10 +314,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 見えない文字だけを送る
         var vm = await IndexIncidentsAsync(department);
 
-        // 絞り込みは掛からず、注意書きも出さない(空欄を送ったのと同じ)
+        // 絞り込みは掛からない
         Assert.Equal(1, vm.TotalCount);
         Assert.Null(vm.Department);
-        Assert.Null(vm.IgnoredDepartment);
+        // 注意書きは空にならず、置換文字が入る
+        Assert.Equal("\uFFFD", vm.IgnoredDepartment);
     }
 
     // 結合文字を連ねた入力は書記素クラスタとしては 1 文字なので、見た目の文字数だけでは
@@ -319,6 +337,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 見た目の文字数では 1 でも、生の長さで頭打ちになる
         Assert.True(vm.IgnoredDepartment!.Length <= FieldLengths.ShortText * 4 + 1,
             $"生の長さが縛れていない: {vm.IgnoredDepartment.Length} 文字");
+        // 省略記号だけにならない。1 要素で上限を超える場合でも中身を残す
+        // ——「指定された部署「…」」では何を送ったか分からない
+        Assert.NotEqual("…", vm.IgnoredDepartment);
+        // 比較は序数で行う。既定のカルチャ依存比較では「あ」＋結合文字が「あ」と
+        // 等価に畳まれず、先頭一致の判定が意図せず false になる
+        Assert.StartsWith("あ", vm.IgnoredDepartment, StringComparison.Ordinal);
     }
 
     // 注意書きへ出す値は、長さと文字種の両方を整えてから渡す。
@@ -362,9 +386,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     // 双方向テキストの上書き(U+202E など)はエスケープを通り抜け、後続の文言の見た目を
-    // 反転させる。注意書きの意味が読み手にとって変わってしまうので落とす
+    // 反転させる。注意書きの意味が読み手にとって変わってしまうので、そのままは出さない。
+    // ただし消すのではなく置換文字に差し替える(消すと表示と照会した値が食い違うため。
+    // Incidents_IgnoredDepartment_KeepsTheShapeOfWhatWasSent を参照)
     [Fact]
-    public async Task Incidents_IgnoredDepartment_DropsInvisibleControlCharacters()
+    public async Task Incidents_IgnoredDepartment_ReplacesInvisibleControlCharacters()
     {
         // 一覧に 1 件だけ用意する
         await SeedIncidentAsync("ICU");
@@ -372,8 +398,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 右から左への上書き指示と改行を混ぜた値を送る
         var vm = await IndexIncidentsAsync("外来\u202E\n病棟");
 
-        // 表示しない文字は残っていない
-        Assert.Equal("外来病棟", vm.IgnoredDepartment);
+        // 表示しない文字はそのまま出さず、あった位置に置換文字が入る
+        Assert.Equal("外来\uFFFD\uFFFD病棟", vm.IgnoredDepartment);
+        // 上書き指示そのものは残っていない(残ると後続の文言の向きが変わる)
+        Assert.DoesNotContain('\u202E', vm.IgnoredDepartment!);
     }
 
     // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
@@ -614,6 +642,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
         // ブロックの中の foreach が「何を」回しているかをすべて取り出す
         var loopSources = ExtractForeachSources(selectBlock);
+
+        // 解析できた数が、ブロック内の foreach の数と一致していることを先に確かめる。
+        // ExtractForeachSources はヘッダに " in " が見つからないループを読み飛ばすが、
+        // ExtractLoopBodies は波括弧しか見ないので同じループを本体として拾う。
+        // 両者がずれると「出所の検査だけが素通りする」fail-open になる ——実測でも、
+        // `@foreach (var d in` と対象を 2 行に分けた 2 つ目のループを足すと
+        // loopSources が 1 件のままで全 25 件が緑のまま通った。
+        // 解析できない書き方が現れたらここで落として、書き方か解析のどちらを直すか人に決めさせる
+        var loopCount = Regex.Matches(selectBlock, @"\bforeach\b").Count;
+        Assert.True(loopSources.Count == loopCount,
+            $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> にある foreach {loopCount} 件のうち "
+            + $"{loopSources.Count} 件しか解析できていない。解析できないループは検査から外れるので、"
+            + "書き方を揃えるか ExtractForeachSources を直すこと。");
         // foreach が無ければ選択肢を組み立てていない(静的な option だけになっている)
         Assert.True(loopSources.Count > 0,
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> に "
@@ -648,6 +689,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         //     「(全て)」が選ばれる、という issue #192 そのものの状態になる。
         // ループ本体に限れば、どちらの逃げ道も塞がる
         var loopBodies = ExtractLoopBodies(selectBlock);
+        // 本体の数もループの数と一致していること(片方だけ拾えている状態を許さない)
+        Assert.True(loopBodies.Count == loopCount,
+            $"{viewFolder}/Index.cshtml の foreach {loopCount} 件のうち "
+            + $"{loopBodies.Count} 件しか本体を取り出せていない。");
         Assert.True(loopBodies.Count > 0,
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> の foreach に本体が無い。");
         // すべてのループ本体を見る。最初の 1 つだけだと、2 つ目のループ(「補完した値を先に、
