@@ -93,7 +93,7 @@ public class IncidentsController : Controller
         // 判定とドロップダウンの選択肢づくりを ResolveDepartmentFilterAsync にまとめてある
         // (許可リストから外れた過去の部署名は選択肢へ補完し、実データに無い値は採用しない。
         //  どちらを選ぶかの規則と理由は SearchFilter の解説に集約。issue #192)
-        var departmentFilter = await IncidentControllerHelpers.ResolveDepartmentFilterAsync(_db, User, department);
+        var departmentFilter = await ResolveDepartmentFilterAsync(department);
         // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
         if (departmentFilter.Effective != null)
             query = query.Where(i => i.Department == departmentFilter.Effective);
@@ -527,6 +527,113 @@ public class IncidentsController : Controller
         // Staff がフォームを送信しても常にバリデーションエラーになってしまう(issue #63)。
         ModelState.Remove(nameof(vm.Department));
     }
+
+    /// <summary>
+    /// <c>/Incidents</c> の発生部署フィルタについて、<b>実際に絞り込みへ使う値</b>と
+    /// <b>ドロップダウンに並べる選択肢</b>を同時に決める。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ 2 つを一緒に返すのか。</b> この 2 つは<b>必ず整合していなければならない</b>。
+    /// 絞り込みに使った値が選択肢に無いと、ブラウザは <c>&lt;select&gt;</c> を「部署（全て）」の位置に置く。
+    /// 絞り込みは効いたままなので画面と実状態が食い違い、利用者がそのフォームを再送信した瞬間に
+    /// <c>department=""</c> が送られて<b>絞り込みが無言で解除される</b>(issue #192 の再現手順)。
+    /// 別々の関数にすると片方だけ直したときにこの食い違いが戻るので、1 か所で決めて一緒に返す。</para>
+    ///
+    /// <para><b>判断の規則そのもの</b>(3 画面のどれが「補完」でどれが「採用しない」か、その理由)は
+    /// <see cref="SearchFilter"/> の解説に集約してある。ここはそのうち <c>/Incidents</c> の
+    /// 「実データにあれば補完、無ければ採用しない」を実装する。</para>
+    ///
+    /// <para><b>実在確認に部署スコープを掛ける理由。</b> 存在するかどうかの答えは
+    /// 「その部署名の選択肢が出るか」という形で画面に現れる。スコープを外すと、Staff が
+    /// <c>?department=...</c> を総当たりして<b>他部署にインシデントがあるかどうかを推測できる</b>
+    /// (§9 最小公開)。一覧本体と同じ <c>ScopedByUser</c> を通しておけば、見える範囲の外は
+    /// 「存在しない」と等しく扱われる。</para>
+    ///
+    /// <para><b>問い合わせは許可リストを外れたときだけ走る。</b> 通常の操作では値が
+    /// <see cref="Incident.Departments"/> に載っているため、追加のクエリは発生しない。
+    /// 走る場合も <c>Incident(Department, IncidentType)</c> インデックスに乗る問い合わせ 1 本で済む(§8)。
+    /// 返すのは真偽値ではなく<b>保存されている綴りそのもの</b>(先頭 1 件の射影)である点が要で、
+    /// 下の照合順序の項がその理由。<c>Any()</c> へ「戻す」と、コメントは残ったまま
+    /// 照合順序のずれが黙って復活する。</para>
+    /// </remarks>
+    /// <param name="department">クエリ文字列から届いた発生部署の絞り込み値(未指定なら <c>null</c>)。</param>
+    /// <returns>採用した絞り込み値(採用しないなら <c>null</c>)と、ドロップダウンの選択肢。</returns>
+    private async Task<DepartmentFilterSelection> ResolveDepartmentFilterAsync(string? department)
+    {
+        // 選択肢の土台は常に Incident.Departments(部署一覧の唯一の真実の源)。
+        // 補完する場合に先頭へ差し込むので、書き換えられるリストとして複製しておく
+        var options = Incident.Departments.ToList();
+
+        // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
+        if (!SearchFilter.HasValue(department))
+            return new DepartmentFilterSelection(null, options);
+
+        // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)
+        if (options.Contains(department))
+            return new DepartmentFilterSelection(department, options);
+
+        // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
+        // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
+        //
+        // 「あるか」ではなく「DB に入っている綴りそのもの」を取り出すのが要点。上の
+        // options.Contains は C# の序数比較(大文字小文字・末尾空白を区別する)なのに、
+        // ここの == は DB の照合順序に従うため、両者の判定が食い違う配備先がある。
+        // SQL Server の既定(Japanese_CI_AS など)は大文字小文字を区別せず末尾空白も無視するので、
+        // ?department=icu は「許可リストに無い(序数)」かつ「実データにある(照合順序)」となり、
+        // 利用者の綴りをそのまま補完すると本物の "ICU" の上に偽の "icu" が並ぶ。
+        // SQLite / PostgreSQL は区別するので同じ URL でも挙動が変わる —— テストの InMemory は
+        // 序数比較なので、全件緑のまま SQL Server 配備でだけ壊れる形になる(§10)。
+        // DB 側の綴りを持ち帰れば、どちらの経路を通っても選択肢に並ぶのは実在する値だけになる
+        var storedDepartment = await _db.Incidents
+            .AsNoTracking()
+            .ScopedByUser(User)
+            // その部署のインシデントに絞る(照合順序による一致は DB の判断に委ねる)
+            .Where(i => i.Department == department)
+            // 並びを固定してから先頭を取る。照合順序が大文字小文字を区別しない配備先では
+            // "ICU" と "icu" が同時に一致しうる(Staff の部署クレームは自由記述で、
+            // EnforceKnownDepartment は Staff を対象外にしているため綴り違いが実在しうる)。
+            // 並びを決めずに先頭を取ると同じ URL でもリクエストごとに違う綴りが返り、
+            // 選択肢の増減もページャの URL も揺れる。DB は同値行の並び順を保証しないので、
+            // 一覧のページングが Id のタイブレーカーを付けているのと同じ理由で並びを固定する
+            .OrderBy(i => i.Department)
+            .ThenBy(i => i.Id)
+            // 保存されている綴りを 1 件だけ取り出す
+            .Select(i => i.Department)
+            .FirstOrDefaultAsync();
+
+        // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
+        // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
+        if (storedDepartment == null)
+            return new DepartmentFilterSelection(null, options);
+
+        // 取り出した綴りが許可リストに無いときだけ選択肢の先頭へ補完する。
+        // (照合順序の違いでここへ来た場合、綴りは既に選択肢にあるので足すと重複する)
+        if (!options.Contains(storedDepartment))
+            options.Insert(0, storedDepartment);
+        // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
+        // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
+        return new DepartmentFilterSelection(storedDepartment, options);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveDepartmentFilterAsync"/> の結果。
+    /// 「実際に絞り込みへ使う値」と「ドロップダウンに並べる選択肢」を組にして運ぶ。
+    /// </summary>
+    /// <remarks>
+    /// 2 つを 1 つの型にまとめてあるのは、片方だけを受け取って使う書き方をできなくするため。
+    /// タプルではなく名前付きの型にしているのは、呼び出し側で <c>Item1</c> / <c>Item2</c> の
+    /// 取り違えが起きないようにするのと、この解説の置き場所を作るため。
+    /// </remarks>
+    /// <param name="Effective">
+    /// 絞り込みに使う発生部署名。採用しなかった場合(空入力・実データに無い値)は <c>null</c>。
+    /// ViewModel へもこの値を載せる——採用しなかった値を画面へ返すと、絞り込みは効いていないのに
+    /// 「絞り込み中」バッジが出る食い違いになるため。
+    /// </param>
+    /// <param name="Options">
+    /// 発生部署ドロップダウンに並べる選択肢。通常は <see cref="Incident.Departments"/> そのままで、
+    /// 許可リストから外れた過去の部署名で絞り込んでいるときだけ、その値が先頭に補完されている。
+    /// </param>
+    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options);
 
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
     // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は

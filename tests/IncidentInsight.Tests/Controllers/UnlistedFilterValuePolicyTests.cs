@@ -48,9 +48,12 @@ namespace IncidentInsight.Tests.Controllers;
 /// 末尾空白も無視するので <c>?department=icu</c> が両者で違う答えになりうる。実装側は
 /// 「DB に保存されている綴りを持ち帰る」ことでこのずれを吸収しているが、
 /// <b>テストの InMemory プロバイダは序数比較なので、この分岐をここで動かすことはできない</b>
-/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。プロバイダ依存の挙動は
+/// (<c>ResolveDepartmentFilterAsync</c> の解説を参照)。
+/// 同じ理由で、綴りを 1 件取り出すときの <c>OrderBy</c>(綴り違いが同時に一致しうる配備先で
+/// 結果を決定的にするためのもの)も<b>ここでは効果を確かめられない</b>——実測でも、
+/// その 2 行を消す変異は全件緑のまま通った。プロバイダ依存の挙動は
 /// この repo が繰り返し当たっている死角なので、<b>この付近を触る差分はレビューで
-/// 「どちらの比較規則で判定しているか」を確かめること。</b></para>
+/// 「どちらの比較規則で判定しているか」「同値行の並びを固定しているか」を確かめること。</b></para>
 /// </summary>
 public class UnlistedFilterValuePolicyTests : IDisposable
 {
@@ -363,7 +366,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「部署（全て）」を指す)。コントローラで正しく決めた結論を表示側が使わなければ
     // 意味がないので、その配線だけを Razor のソースから直接確かめる。
     //
-    // 検査は<b>部署の &lt;select&gt; ブロックの中身だけ</b>を見る。ファイル全体を対象に
+    // 検査は<b>対象の &lt;select&gt; ブロックの中身だけ</b>を見る。ファイル全体を対象に
     // 「Model.DepartmentOptions を含む」「Incident.Departments を含む行が無い」で書くと、
     // 実測で 2 通りに素通りした: (a) 前者はコメントに
     // `@* TODO: Model.DepartmentOptions への移行は保留 *@` と書くだけで満たせる、
@@ -372,40 +375,52 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 戻っているのに全件緑のまま通った。ブロックを切り出して中身だけを見れば、
     // どこで改行しようとコメントに何を書こうと結論は変わらない。
     //
-    // 走査対象を 1 ファイル・1 ブロックに限るのは、Incident.Departments の参照自体は
-    // 他の画面(登録・編集フォーム)では正しい書き方だから ——一律に禁じると正しいコードを
-    // 咎める検出網になり、いずれ緩められる(この repo が繰り返し避けている形)
-    [Fact]
-    public void IncidentsIndexView_BuildsDepartmentOptionsFromTheViewModel()
+    // 走査対象を「その画面の 1 ブロック」に限るのは、静的配列の参照自体は他の画面
+    // (登録・編集フォーム)では正しい書き方だから ——一律に禁じると正しいコードを咎める
+    // 検出網になり、いずれ緩められる(この repo が繰り返し避けている形)。
+    //
+    // <b>対象は「補完」方式の 2 画面</b>。補完はコントローラが選択肢を増やして初めて
+    // 意味を持つので、表示側が別の出所から選択肢を作った瞬間に効果が消える。
+    // <c>/AuditLogs</c> を対象にしないのは方式が「採用しない」だから ——増やす選択肢が
+    // 無く、ビューは許可リストをそのまま並べるのが正しい。ここに並んでいないことが
+    // 「見落とし」ではなく「方式上いらない」であることを明記しておく
+    [Theory]
+    // /Incidents: 発生部署。選択肢は ViewModel(IncidentListViewModel.DepartmentOptions)から取る
+    [InlineData("Incidents", "department", "Model.DepartmentOptions", "Incident.Departments")]
+    // /PreventiveMeasures: 担当部署。選択肢は ViewBag.ResponsibleDepartmentOptions から取る
+    [InlineData("PreventiveMeasures", "responsibleDepartment", "ResponsibleDepartmentOptions", "Incident.Departments")]
+    public void BackfillingScreens_BuildOptionsFromTheControllersResult(
+        string viewFolder, string selectName, string requiredSource, string forbiddenSource)
     {
-        // 一覧ビューの Razor ソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
+        // 対象ビューの Razor ソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, "Index.cshtml");
         // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
         Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
         var source = File.ReadAllText(viewPath);
 
-        // 部署ドロップダウンの開始タグを探す(name="department" が目印)
-        var selectStart = source.IndexOf("<select name=\"department\"", StringComparison.Ordinal);
+        // 対象ドロップダウンの開始タグを探す(name 属性が目印)
+        var selectStart = source.IndexOf($"<select name=\"{selectName}\"", StringComparison.Ordinal);
         // 見つからなければ、ビューの構造が変わったか目印が消えている。
         // 「見るべきブロックが無い＝緑」にすると検出網が黙って死ぬので fail-closed で落とす
         Assert.True(selectStart >= 0,
-            "部署の <select name=\"department\"> が見つからない。この検査はこのブロックの中身だけを"
-            + "見るので、目印を変えるならこのテストも同じ変更セットで直すこと。");
+            $"{viewFolder}/Index.cshtml に <select name=\"{selectName}\"> が見つからない。"
+            + "この検査はこのブロックの中身だけを見るので、目印を変えるならこのテストも"
+            + "同じ変更セットで直すこと。");
         // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
         var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
-        Assert.True(selectEnd > selectStart, "部署の <select> に対応する </select> が見つからない。");
+        Assert.True(selectEnd > selectStart, $"{viewFolder}/Index.cshtml の <select> に対応する </select> が見つからない。");
         // 検査対象はこのブロックの中身だけ
         var selectBlock = source[selectStart..selectEnd];
 
-        // (1) ViewModel が用意した選択肢を実際に回している。
+        // (1) コントローラが用意した選択肢を実際に回している。
         //     ブロック内に限るので、他所のコメントに同じ文字列を書いても満たせない
-        Assert.Contains("Model.DepartmentOptions", selectBlock);
+        Assert.Contains(requiredSource, selectBlock, StringComparison.Ordinal);
 
-        // (2) このブロックの中で static 配列を参照していない。
+        // (2) このブロックの中で静的配列を参照していない。
         //     行単位ではなくブロック全体を見るので、改行を挟んでも検出できる
-        Assert.False(selectBlock.Contains("Incident.Departments", StringComparison.Ordinal),
-            "部署の選択肢は Model.DepartmentOptions から作る。Incident.Departments を直接回すと、"
-            + "許可リストから外れた過去の部署名で絞り込んだときに一致する option が無くなり、"
+        Assert.False(selectBlock.Contains(forbiddenSource, StringComparison.Ordinal),
+            $"{viewFolder} の選択肢は {requiredSource} から作る。{forbiddenSource} を直接回すと、"
+            + "コントローラが補完した値に一致する option が無くなり、"
             + "再送信で絞り込みが無言で解除される(issue #192)。");
     }
 }

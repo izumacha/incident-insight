@@ -72,7 +72,7 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     明記する<b>可変の真実の源</b>で、部署名を入れ替えても<b>過去の行は古い部署名を保持し続ける</b>。
 ///     一律に捨てると実在の部署で業務データを絞り込めなくなり、一律に補完すると
 ///     打ち間違い・改ざんで<b>存在しない部署が選択肢に現れる</b>。そこで
-///     <c>Controllers.Internal.IncidentControllerHelpers.ResolveDepartmentFilterAsync</c> が
+///     <c>Controllers.IncidentsController.ResolveDepartmentFilterAsync</c> が
 ///     <b>部署スコープ内の実データに存在するか</b>で 2 つの方式を振り分ける
 ///     (スコープを掛けるのは、Staff が他部署の部署名の有無を推測できないようにするため)。</description></item>
 /// </list>
@@ -81,6 +81,15 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>Controllers.UnlistedFilterValuePolicyTests</c> が 1 ファイルにまとめて固定しており、
 /// どれかの画面が表と違う振る舞いに変われば落ちる。<b>方式を変えるときは表とそのテストを
 /// 同じ変更セットで直す。</b></para>
+///
+/// <para><b>この表がまだ覆っていない入力がある(issue #195)。</b> <c>/Incidents</c> の
+/// <c>causeCategoryId</c> は、ドロップダウンを親カテゴリだけで作る一方で絞り込みは
+/// 子カテゴリの id も受け付けるため、<b>同じ食い違いが起きる</b>(子の id を指す URL は
+/// 絞り込みが効くのに一致する <c>&lt;option&gt;</c> が無い)。挙動は issue #192 の対応前後で
+/// 変わらない既存の課題なので、「1 コミット = 1 論理変更」(CLAUDE.md §12)に従って
+/// 別の変更へ切り出した。<b>ここに書いてあるのは「まだ決めていない」という状態そのもの</b>で、
+/// 表から抜けているのと書いていないのとでは意味が違う(抜けていると、次に見た人は
+/// 「検討済みで手当て不要」と読んでしまう)。決めたらこの段落を表の行へ移すこと。</para>
 ///
 /// <para><b>同じ性質だが手当てが要らない入力もある。</b> <c>/Incidents</c> の <c>sortBy</c>
 /// (<c>"latest" | "severity" | "overdue"</c>)もクエリ文字列から届く閉じた語彙だが、
