@@ -634,14 +634,24 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // selected を持たない 2 つ目のループを足すと全件緑のまま通った
         Assert.All(loopBodies, body =>
         {
-            var selectedExpression = ExtractAttributeValue(body, "selected");
-            Assert.True(selectedExpression != null,
-                $"{viewFolder}/Index.cshtml のループが作る <option> に selected 属性が無い。"
+            // ループ本体が作る <option> の数と、selected 属性の数が一致していること。
+            // 最初の 1 つだけを見ると、本体が 2 つの <option> を出して片方にしか
+            // selected を付けない書き方が素通りする ——現在値を持つ側に付いていなければ
+            // select は先頭の「(全て)」を指し、再送信で絞り込みが無言で解除される
+            var optionCount = Regex.Matches(body, "<option").Count;
+            var selectedExpressions = ExtractAttributeValues(body, "selected");
+            Assert.True(optionCount > 0,
+                $"{viewFolder}/Index.cshtml のループ本体に <option> が無い。");
+            Assert.True(selectedExpressions.Count == optionCount,
+                $"{viewFolder}/Index.cshtml のループが作る <option> {optionCount} 件のうち "
+                + $"{selectedExpressions.Count} 件にしか selected 属性が無い。"
                 + "現在値を示さないと select は先頭の「(全て)」を指し、"
                 + "再送信で絞り込みが無言で解除される(issue #192)。");
-            Assert.True(ContainsIdentifier(selectedExpression!, appliedValue),
-                $"{viewFolder}/Index.cshtml の selected は {appliedValue} と比べること。"
-                + $"実際の式: {selectedExpression}");
+            // そのすべてが適用中の値と比べていること
+            Assert.All(selectedExpressions, expression =>
+                Assert.True(ContainsIdentifier(expression, appliedValue),
+                    $"{viewFolder}/Index.cshtml の selected は {appliedValue} と比べること。"
+                    + $"実際の式: {expression}"));
         });
     }
 
@@ -752,7 +762,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 判定の「定義」だけでなく「使われ方」も見る。
         // anyFilter の定義を正しく保ったまま、バッジや 0 件時の文言の側を
         // showFilterPanel へ差し替えれば同じ矛盾が戻る（実測で全件緑のまま通った）。
-        // anyFilter を読むのはこの 2 箇所だけなので、両方が anyFilter を見ていることを確かめる
+        //
+        // anyFilter の読み手は現在 3 つある: showFilterPanel の定義、「フィルター適用中」
+        // バッジ、0 件時の文言。このうち<b>「絞り込みが効いている」と主張する 2 つ</b>を
+        // ここで固定する（showFilterPanel は「開くかどうか」なので対象外）。
+        // <b>この列挙は自動では追随しない</b> ——「絞り込み中だけ出す」表示を新しく足す人は、
+        // それを anyFilter で出し分けたうえでここへ 1 件足すこと。
+        // showFilterPanel で出し分けると、注意書きの横で「絞り込み中」と主張する
+        // 表示がまた増える
         var badge = Regex.Match(source, @"@if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*フィルター適用中");
         Assert.True(badge.Success, "「フィルター適用中」バッジの出し分けが見つからない。");
         Assert.Equal("anyFilter", badge.Groups["flag"].Value);
@@ -846,18 +863,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     /// <summary>
-    /// HTML 属性 <c>name="&lt;ここ&gt;"</c> の「ここ」を取り出す。見つからなければ <c>null</c>。
+    /// ブロック内の <b>すべての</b> HTML 属性 <c>name="&lt;ここ&gt;"</c> の「ここ」を取り出す。
     /// </summary>
     /// <remarks>
     /// ブロック全体に対する部分文字列検査の代わりに使う。期待する名前が別の名前の
     /// <b>前置詞</b>になっている場合(<c>Model.Department</c> と <c>Model.DepartmentOptions</c>)、
     /// 「どこかに出てくるか」では別の行が条件を満たして検査が空振りするため。
     /// </remarks>
-    private static string? ExtractAttributeValue(string block, string attributeName)
+    private static List<string> ExtractAttributeValues(string block, string attributeName)
     {
-        // 属性名と等号・引用符までを目印に開始位置を探す
+        // 見つかった値をためる
+        var values = new List<string>();
+        // 属性名と等号・引用符までを目印にする
         var marker = $"{attributeName}=\"";
-        var start = -1;
         for (var i = block.IndexOf(marker, StringComparison.Ordinal); i >= 0;
              i = block.IndexOf(marker, i + 1, StringComparison.Ordinal))
         {
@@ -866,22 +884,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             // 引っかかり、本物の selected が消えていても検査が通ってしまう
             // (§7 で aria-selected を足すのは十分ありうる)
             var before = i == 0 ? '<' : block[i - 1];
-            if (char.IsWhiteSpace(before) || before == '<')
-            {
-                start = i;
-                break;
-            }
+            if (!char.IsWhiteSpace(before) && before != '<') continue;
+            // 値の開始位置(引用符の次)
+            var valueStart = i + marker.Length;
+            // 閉じ引用符を探す(Razor の式に生の " は現れない)
+            var valueEnd = block.IndexOf('"', valueStart);
+            // 閉じ引用符が無ければこの 1 件は解析できない
+            if (valueEnd < 0) continue;
+            // 引用符の中身を積む
+            values.Add(block[valueStart..valueEnd]);
         }
-        // 見つからなければ属性が無い
-        if (start < 0) return null;
-        // 値の開始位置(引用符の次)
-        var valueStart = start + marker.Length;
-        // 閉じ引用符を探す(Razor の式に生の " は現れない)
-        var valueEnd = block.IndexOf('"', valueStart);
-        // 閉じ引用符が無ければ解析できない
-        if (valueEnd < 0) return null;
-        // 引用符の中身を返す
-        return block[valueStart..valueEnd];
+        // 見つかったすべての値を返す
+        return values;
     }
 
     /// <summary>
