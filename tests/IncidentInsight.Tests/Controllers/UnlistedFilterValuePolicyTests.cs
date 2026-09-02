@@ -308,6 +308,31 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.False(vm.DepartmentFilterIgnored);
     }
 
+    // 許可リストに載っている部署は、該当インシデントが 1 件も無くても絞り込む。
+    // この経路（載っている値の即時採用）が抜けると、実在確認へ回って「実データに無い」と
+    // 判定され、利用者は 0 件ではなく全件を見せられたうえ「1 件も無いため絞り込まずに」と
+    // 説明される ——絞り込んでいない条件について語る、事実と違う案内になる。
+    // 他の /Incidents のテストはどれも先に該当行を用意しているので、この組み合わせだけ
+    // 検出網の外にあった（実測: 即時採用の 2 行を消しても全件緑）
+    [Fact]
+    public async Task Incidents_ListedDepartmentWithNoRows_StillFiltersInsteadOfShowingEverything()
+    {
+        // 許可リストの 2 つの部署のうち、片方にだけインシデントを用意する
+        var seeded = Incident.Departments[0];
+        var empty = Incident.Departments[1];
+        await SeedIncidentAsync(seeded);
+
+        // 1 件も無い方の部署で絞り込む
+        var vm = await IndexIncidentsAsync(empty);
+
+        // 絞り込みは効いて 0 件になる(全件が返ってはいけない)
+        Assert.Equal(0, vm.TotalCount);
+        // 値も画面へ戻る(select が「部署（全て）」を指さない)
+        Assert.Equal(empty, vm.Department);
+        // 採用しているので注意書きは出さない
+        Assert.False(vm.DepartmentFilterIgnored);
+    }
+
     // 空白のみの入力は「絞り込み無し」。SearchFilter.HasValue の規則がこの経路でも効いていることと、
     // 空白が選択肢へ補完されない(＝空白だけの選択肢が現れない)ことを同時に固定する
     [Fact]
