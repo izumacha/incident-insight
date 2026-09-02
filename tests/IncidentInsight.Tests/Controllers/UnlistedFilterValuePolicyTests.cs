@@ -7,8 +7,6 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
-// 文字数上限の唯一の真実の源(FieldLengths)を使う
-using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -451,7 +449,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 上のコントローラ級テストは ViewModel までしか見ないので、**ビューが選択肢を
     // どこから取るか**は見ていない。実測すると、ビューを元どおり
-    // `@foreach (var d in Incident.Departments)` へ戻しても上の 8 件は全件緑のまま通り、
+    // `@foreach (var d in Incident.Departments)` へ戻しても上の Assert は素通りし、
     // 画面だけが issue #192 の壊れ方に戻る(補完した値の option が消えて select が
     // 「部署（全て）」を指す)。コントローラで正しく決めた結論を表示側が使わなければ
     // 意味がないので、その配線だけを Razor のソースから直接確かめる。
@@ -518,7 +516,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // ExtractLoopBodies は波括弧しか見ないので同じループを本体として拾う。
         // 両者がずれると「出所の検査だけが素通りする」fail-open になる ——実測でも、
         // `@foreach (var d in` と対象を 2 行に分けた 2 つ目のループを足すと
-        // loopSources が 1 件のままで全 25 件が緑のまま通った。
+        // loopSources が 1 件のままで全件緑のまま通った。
         // 解析できない書き方が現れたらここで落として、書き方か解析のどちらを直すか人に決めさせる
         var loopCount = Regex.Matches(selectBlock, @"\bforeach\b").Count;
         Assert.True(loopSources.Count == loopCount,
@@ -552,7 +550,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 判定は「ループが作る <option> の selected 属性」だけを見る。範囲を絞る理由が 2 つある:
         //   - ブロック全体に対して「Model.Department を含むか」と書くと、
         //     "Model.DepartmentOptions" を回す foreach の行がそれを満たして空振りする
-        //     (実測: selected の中身を Model.Search に差し替えても全 579 件が緑で通った)。
+        //     (実測: selected の中身を Model.Search に差し替えても全件緑で通った)。
         //   - ブロック内の最初の selected を見るだけでも足りない。静的な「(全て)」の option へ
         //     selected="@(Model.Department == null)" を足してループ側から外すと、
         //     最初の 1 つが条件を満たして通ってしまう ——そして絞り込み中は常に
@@ -567,7 +565,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> の foreach に本体が無い。");
         // すべてのループ本体を見る。最初の 1 つだけだと、2 つ目のループ(「補完した値を先に、
         // 続けて許可リストを」のような分割)が丸ごと検査から外れる ——実測でも、
-        // selected を持たない 2 つ目のループを足すと全 580 件が緑のまま通った
+        // selected を持たない 2 つ目のループを足すと全件緑のまま通った
         Assert.All(loopBodies, body =>
         {
             var selectedExpression = ExtractAttributeValue(body, "selected");
@@ -647,6 +645,43 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         }
         // どの出現も別の名前の一部だった
         return false;
+    }
+
+    // 注意書きが案内する先（絞り込みパネル）が実際に開くこと、そして
+    // 「フィルター適用中」の判定には混ざらないことを、両方まとめて固定する。
+    //
+    // この 2 つは同じ旗を使うが役割が逆で、片方へ寄せるとどちらかが必ず壊れる:
+    //   - パネルの開閉に入れないと、「下の絞り込みから選び直してください」と書いてある
+    //     のにパネルは閉じたまま。送った値は画面のどこにも無いので手掛かりが消える。
+    //   - anyFilter（バッジと 0 件時の文言）に入れると、「適用していません」の横で
+    //     バッジが「フィルター適用中」と言い、1 件も無い環境では効いていないフィルターを
+    //     「クリアしてください」と促す。
+    // どちらの差し戻しも実測で全件緑のまま通ったので、ソースの形で固定する
+    [Fact]
+    public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive()
+    {
+        // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
+        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
+        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
+        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
+
+        // パネルの開閉を決める式を取り出す
+        var panel = Regex.Match(source, @"var\s+showFilterPanel\s*=(?<expr>[^;]*);");
+        Assert.True(panel.Success, "showFilterPanel の判定が見つからない。");
+        // 「絞り込みが効いているか」を決める式を取り出す
+        var active = Regex.Match(source, @"var\s+anyFilter\s*=(?<expr>[^;]*);");
+        Assert.True(active.Success, "anyFilter の判定が見つからない。");
+
+        // パネルは開く
+        Assert.True(ContainsIdentifier(panel.Groups["expr"].Value, $"Model.{flag}"),
+            $"採用しなかった値があるときも絞り込みパネルを開くこと(showFilterPanel に Model.{flag} を含める)。"
+            + "開かないと、注意書きが案内する「下の絞り込みから選び直す」先が閉じたままになる。");
+        // ただし「適用中」ではない
+        Assert.False(ContainsIdentifier(active.Groups["expr"].Value, $"Model.{flag}"),
+            $"anyFilter に Model.{flag} を混ぜないこと。"
+            + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出て、"
+            + "0 件のときは効いていないフィルターの「クリア」を促してしまう。");
     }
 
     /// <summary>
