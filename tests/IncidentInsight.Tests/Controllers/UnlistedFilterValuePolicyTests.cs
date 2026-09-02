@@ -445,6 +445,46 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(UnknownDepartment, options[0]);
     }
 
+    // 既に選択肢にある値で絞り込んでも、選択肢が二重にならない。
+    // 補完の手順は共有ヘルパ(EnsureAppliedValueIsSelectable)にあり、その中の
+    // 「既にあれば足さない」判定を消すと、担当部署のドロップダウンに同じ項目が 2 つ並ぶ。
+    // 補完側(値が無い場合)しか試していないとこの経路は無防備になる ——
+    // ヘルパは 2 画面が共有しているので、抜けたときの影響範囲も 2 倍になる
+    [Fact]
+    public async Task PreventiveMeasures_ResponsibleDepartmentAlreadyInOptions_IsNotDuplicated()
+    {
+        // 対策 1 件と、その親インシデントを用意する
+        var incident = await SeedIncidentAsync("ICU");
+        // 選択肢の生成元となる担当部署を持つ対策を保存する
+        _db.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            IncidentId = incident.Id,
+            Description = "対策",
+            ResponsiblePerson = "担当者",
+            ResponsibleDepartment = "医療安全室",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            Status = MeasureStatus.Planned,
+            DueDate = TestFixtures.Today
+        });
+        await _db.SaveChangesAsync();
+
+        // 実データから選択肢に載る値で絞り込む
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new SystemClock(),
+            NullLogger<PreventiveMeasuresController>.Instance);
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        await controller.Index(null, null, "医療安全室", null, null);
+
+        // 選択肢にちょうど 1 回だけ現れる。
+        // ViewBag は dynamic なので、いったん静的な型の変数へ受けてから LINQ を使う
+        // (dynamic のままだとラムダを渡す呼び出しがコンパイルできない)
+        object rawOptions = controller.ViewBag.ResponsibleDepartmentOptions;
+        var options = Assert.IsType<List<string>>(rawOptions);
+        Assert.Equal(1, options.Count(d => d == "医療安全室"));
+    }
+
     // --- 表示側(Razor)がコントローラの結論を実際に使っているか -----------------
 
     // 上のコントローラ級テストは ViewModel までしか見ないので、**ビューが選択肢を
@@ -682,6 +722,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"anyFilter に Model.{flag} を混ぜないこと。"
             + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出て、"
             + "0 件のときは効いていないフィルターの「クリア」を促してしまう。");
+
+        // 判定の「定義」だけでなく「使われ方」も見る。
+        // anyFilter の定義を正しく保ったまま、バッジや 0 件時の文言の側を
+        // showFilterPanel へ差し替えれば同じ矛盾が戻る（実測で全件緑のまま通った）。
+        // anyFilter を読むのはこの 2 箇所だけなので、両方が anyFilter を見ていることを確かめる
+        var badge = Regex.Match(source, @"@if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*フィルター適用中");
+        Assert.True(badge.Success, "「フィルター適用中」バッジの出し分けが見つからない。");
+        Assert.Equal("anyFilter", badge.Groups["flag"].Value);
+
+        var emptyState = Regex.Match(source, @"if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*一致するインシデントはありません");
+        Assert.True(emptyState.Success, "0 件時の文言の出し分けが見つからない。");
+        Assert.Equal("anyFilter", emptyState.Groups["flag"].Value);
     }
 
     /// <summary>
