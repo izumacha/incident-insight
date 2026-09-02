@@ -144,7 +144,7 @@ internal static class IncidentControllerHelpers
     /// <para><b>この関数は「補完するかどうか」を決めない。</b> それは画面ごとの方針で、
     /// <c>/PreventiveMeasures</c> は無条件、<c>/Incidents</c> は実データにあるときだけ。
     /// 判断の規則と理由は <c>Models.Validation.SearchFilter</c> の解説に集約してある。</para>
-    /// </remarks>
+    ///
     /// <para><b>この関数の 2 つの門番はテストから直接は動かせない。</b> 現在の 2 画面は
     /// 空値をここへ渡す前に自前で弾いており（<c>SearchFilter.HasValue</c> / <c>null</c> 判定）、
     /// この型は <c>internal</c> でテストからは呼べない。つまり空値の門番を消しても全件緑になる。
@@ -152,6 +152,7 @@ internal static class IncidentControllerHelpers
     /// 済むようにする」ことで、同じ理由が空値の規則にも当てはまるため
     /// ——守り忘れると「(全て)」の直後に画面上は見分けの付かない空の項目が並ぶ。
     /// <b>この関数を触る差分は、2 つの門番が残っているかをレビューで確かめること。</b></para>
+    /// </remarks>
     /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
     /// <param name="appliedValue">実際に絞り込みへ使っている値。</param>
     public static void EnsureAppliedValueIsSelectable(List<string> options, string appliedValue)
