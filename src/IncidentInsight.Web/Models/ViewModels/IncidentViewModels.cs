@@ -50,8 +50,15 @@ public class IncidentListViewModel
     // 過去の部署名で絞り込んでいるときに、その値を選択肢へ補完して渡す必要があるため。
     // 補完しないと select が「部署（全て）」を指し、再送信で絞り込みが無言で解除される(issue #192)。
     // 中身を決めるのは IncidentsController.ResolveDepartmentFilterAsync で、
-    // 上の Department と必ず対で設定する(片方だけ差し替えると食い違いが戻る)
-    public List<string> DepartmentOptions { get; set; } = new();
+    // 上の Department と必ず対で設定する(片方だけ差し替えると食い違いが戻る)。
+    //
+    // required にして既定値を持たせないのは、設定し忘れを実行時ではなくコンパイル時に
+    // 落とすため。空リストを既定にすると、この ViewModel を組み立てる経路が増えたときに
+    // 部署の絞り込みが「部署（全て）」だけの空のドロップダウンになり、例外もテストの
+    // 失敗も出ないまま画面から機能が消える。以前はビュー側が Incident.Departments を
+    // 直接回していたので設定漏れという状態が存在しなかったが、出所を呼び出し側へ
+    // 移した以上その穴は新しく作ったものなので、同じ変更でふさいでおく
+    public required List<string> DepartmentOptions { get; set; }
 
     // 部署の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
     // 採用しない条件は「見えている範囲の実データに無い」で、これはデータ側の状態に依存する

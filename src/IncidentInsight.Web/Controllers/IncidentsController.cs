@@ -182,8 +182,9 @@ public class IncidentsController : Controller
             // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
             DepartmentOptions = departmentFilter.Options,
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える。
-            // 「入力があった(HasValue)」かつ「採用しなかった(Effective が null)」が条件
-            DepartmentFilterIgnored = SearchFilter.HasValue(department) && departmentFilter.Effective == null,
+            // 判定は解決側が返す(呼び出し側で SearchFilter.HasValue を引き直すと、
+            // 解決側の「入力なし」の規則を変えたときに片方だけ古くなる)
+            DepartmentFilterIgnored = departmentFilter.Ignored,
             IncidentType = incidentType,
             Severity = severity,
             DateFrom = dateFrom,
@@ -589,13 +590,13 @@ public class IncidentsController : Controller
 
         // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
         if (!SearchFilter.HasValue(department))
-            return new DepartmentFilterSelection(null, options);
+            return new DepartmentFilterSelection(null, options, Ignored: false);
 
         // 現在の許可リストに載っている値は、そのまま採用してよい(選択肢にも既に並んでいる)。
         // 比較は序数(完全一致)で行う。ここを大文字小文字を無視する比較にしてはいけない
         // —— 下の「綴り違いをアプリ側で畳まない」の項を参照
         if (options.Contains(department))
-            return new DepartmentFilterSelection(department, options);
+            return new DepartmentFilterSelection(department, options, Ignored: false);
 
         // ここから先は「現在の許可リストに無い値」。過去の部署名なのか、打ち間違い・改ざんなのかを
         // 実データで見分ける。判定は見えている範囲(部署スコープ)の中だけで行う。
@@ -622,9 +623,12 @@ public class IncidentsController : Controller
             // 一覧のページングが Id のタイブレーカーを付けているのと同じ理由で並びを固定する。
             // キーが Id だけなのは、上の Where を通った行は Department が(DB 自身の
             // 照合順序で)すべて同値だから —— Department を第 1 キーに足しても必ずタイになり、
-            // 結果は変わらないまま SQL にソート列が増える。しかも Incident(Department,
-            // IncidentType) インデックスは Department の中を IncidentType 順に並べるので、
-            // Department, Id で並べ替えると seek だけでは済まず整列が要る
+            // 結果は変わらないまま SQL にソート列が増えるだけ。
+            // なお Id だけにしても整列そのものは消えない: Incident(Department, IncidentType)
+            // インデックスは Department の中を IncidentType 順に並べるので、Id 順に読むには
+            // その部署の行を並べ替える必要がある。決定性のために整列 1 回を払う判断で、
+            // 「seek だけで済む」わけではない(この問い合わせは許可リストを外れた値の
+            //  ときだけ走るので、その頻度でこの費用は許容している)
             .OrderBy(i => i.Id)
             // 保存されている綴りを 1 件だけ取り出す
             .Select(i => i.Department)
@@ -633,7 +637,7 @@ public class IncidentsController : Controller
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
         // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
         if (storedDepartment == null)
-            return new DepartmentFilterSelection(null, options);
+            return new DepartmentFilterSelection(null, options, Ignored: true);
 
         // 取り出した綴りが許可リストに(序数で)無いときだけ選択肢の先頭へ補完する。
         // 照合順序が大文字小文字を区別しない配備先では、DB が許可リストどおりの綴りを
@@ -643,7 +647,7 @@ public class IncidentsController : Controller
             options.Insert(0, storedDepartment);
         // 以降は利用者の入力ではなく DB 側の綴りを使う。これで
         // 「絞り込みに使った値は必ず選択肢にある」が照合順序によらず成り立つ
-        return new DepartmentFilterSelection(storedDepartment, options);
+        return new DepartmentFilterSelection(storedDepartment, options, Ignored: false);
     }
 
     /// <summary>
@@ -664,7 +668,17 @@ public class IncidentsController : Controller
     /// 発生部署ドロップダウンに並べる選択肢。通常は <see cref="Incident.Departments"/> そのままで、
     /// 許可リストから外れた過去の部署名で絞り込んでいるときだけ、その値が先頭に補完されている。
     /// </param>
-    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options);
+    /// <param name="Ignored">
+    /// <b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。画面の注意書きの出し分けに使う。
+    /// <para><see cref="Effective"/> が <c>null</c> になる理由は 2 つあり
+    /// (「そもそも入力が無かった」と「入力はあったが実データに無かった」)、
+    /// <b>注意書きを出してよいのは後者だけ</b>。前者でも出すと、絞り込みを使っていない
+    /// 普通の一覧表示で警告が出続け、利用者は読まなくなる。
+    /// この区別は <see cref="ResolveDepartmentFilterAsync"/> の中にしかないので、
+    /// 呼び出し側で <c>SearchFilter.HasValue</c> を引き直さずここで受け取る
+    /// ——引き直すと、解決側の「入力なし」の規則を変えたときに片方だけ古くなる。</para>
+    /// </param>
+    private readonly record struct DepartmentFilterSelection(string? Effective, List<string> Options, bool Ignored);
 
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
     // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は

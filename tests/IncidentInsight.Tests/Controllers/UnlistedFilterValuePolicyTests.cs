@@ -517,25 +517,40 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // Razor のコメント(@* ... *@)を取り除く。コメントで検査を満たしたり破ったりできないようにする
         var selectBlock = RazorComment.Replace(source[selectStart..selectEnd], string.Empty);
 
-        // ブロックの中の foreach が「何を」回しているかを取り出す
-        var loopSource = ExtractForeachSource(selectBlock);
+        // ブロックの中の foreach が「何を」回しているかをすべて取り出す
+        var loopSources = ExtractForeachSources(selectBlock);
         // foreach が無ければ選択肢を組み立てていない(静的な option だけになっている)
-        Assert.True(loopSource != null,
+        Assert.True(loopSources.Count > 0,
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> に "
             + "選択肢を組み立てる foreach が見つからない。");
 
-        // 回している対象がコントローラの用意した名前を含んでいる。
-        // 別の出所へ差し替えるとここで落ちる ——コントローラが補完した値に一致する
-        // option が無くなり、再送信で絞り込みが無言で解除されるため(issue #192)
-        Assert.Contains(requiredSource, loopSource!, StringComparison.Ordinal);
+        // すべてのループがコントローラの用意した名前を回している。
+        // 別の出所へ差し替えても、2 つ目のループを足しても、ここで落ちる ——
+        // コントローラが補完した値に一致する option が無くなったり、
+        // 別の出所の選択肢が混ざったりすると、再送信で絞り込みが無言で解除されるため(issue #192)。
+        // <optgroup> でのグルーピングなど、意図して複数の出所を使うようになったときは
+        // この検査を「どこまで許すか」から書き直すこと
+        Assert.All(loopSources, source =>
+            Assert.Contains(requiredSource, source, StringComparison.Ordinal));
 
         // 適用中の値を selected に結び付けている。
         // 選択肢を正しく並べても、どれが現在値かを示さなければ症状はまったく同じになる
         // ——ブラウザは先頭の「(全て)」を選択状態にし、再送信で絞り込みが解除される。
         // 実測でも、selected="@(Model.Department == d)" を消す変異は
-        // 「回している対象」だけを見ていた頃の検査を全件緑で素通りした
-        Assert.Contains("selected", selectBlock, StringComparison.Ordinal);
-        Assert.Contains(appliedValue, selectBlock, StringComparison.Ordinal);
+        // 「回している対象」だけを見ていた頃の検査を全件緑で素通りした。
+        //
+        // 判定は selected 属性の中身だけを取り出して行う。ブロック全体に対して
+        // 「Model.Department を含むか」と書くと、"Model.DepartmentOptions" を回している
+        // foreach の行がそれを満たしてしまい検査が空振りする(実測: selected の中身を
+        // Model.Search に差し替えても全 579 件が緑のまま通った)。
+        // 期待する名前が別の名前の前置詞になっているときに起きる事故なので、
+        // 「どこかに出てくるか」ではなく「どこに出てくるか」で見る
+        var selectedExpression = ExtractAttributeValue(selectBlock, "selected");
+        Assert.True(selectedExpression != null,
+            $"{viewFolder}/Index.cshtml の <option> に selected 属性が無い。"
+            + "現在値を示さないと select は先頭の「(全て)」を指し、"
+            + "再送信で絞り込みが無言で解除される(issue #192)。");
+        Assert.Contains(appliedValue, selectedExpression!, StringComparison.Ordinal);
     }
 
     // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。
@@ -543,9 +558,59 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private static readonly Regex RazorComment =
         new(@"@\*.*?\*@", RegexOptions.Singleline | RegexOptions.Compiled);
 
+    // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
+    // コントローラ級のテストは ViewModel までしか見ないので、@if のブロックごと消しても
+    // 全件緑のまま通る(実測)。そうなると DepartmentFilterIgnored は誰も読まない
+    // 書き込み専用のプロパティになり、利用者は黙って全件を見せられる ——
+    // SearchFilter の表が「してはいけない」と書いている状態そのもの。
+    // 選択肢の配線を Razor のソースで見張っているのと同じ理由・同じやり方で塞ぐ
+    [Fact]
+    public void IncidentsIndexView_RendersTheIgnoredFilterNotice()
+    {
+        // 一覧ビューの Razor ソースを読む(ビルド出力にはコピーされない)
+        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
+        // Razor のコメントは落としてから見る(コメントで満たせないようにする)
+        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+
+        // 旗で表示を出し分けている。
+        // 「名前がどこかに出てくるか」では足りない —— この旗は絞り込みパネルを開くかどうかの
+        // 判定(anyFilter)からも参照しているので、注意書きのブロックを丸ごと消しても
+        // その 1 行が条件を満たしてしまう(実測で全件緑のまま通った)。
+        // 出し分けの構文そのものを探して、注意書きが実際に描画されることを確かめる
+        var flag = nameof(IncidentListViewModel.DepartmentFilterIgnored);
+        Assert.Contains($"@if (Model.{flag})", source, StringComparison.Ordinal);
+    }
+
     /// <summary>
-    /// <c>foreach (var d in &lt;ここ&gt;)</c> の「ここ」(＝回している対象の式)を取り出す。
-    /// 見つからなければ <c>null</c>。
+    /// HTML 属性 <c>name="&lt;ここ&gt;"</c> の「ここ」を取り出す。見つからなければ <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// ブロック全体に対する部分文字列検査の代わりに使う。期待する名前が別の名前の
+    /// <b>前置詞</b>になっている場合(<c>Model.Department</c> と <c>Model.DepartmentOptions</c>)、
+    /// 「どこかに出てくるか」では別の行が条件を満たして検査が空振りするため。
+    /// </remarks>
+    private static string? ExtractAttributeValue(string block, string attributeName)
+    {
+        // 属性名と等号・引用符までを目印に開始位置を探す
+        var marker = $"{attributeName}=\"";
+        var start = block.IndexOf(marker, StringComparison.Ordinal);
+        // 見つからなければ属性が無い
+        if (start < 0) return null;
+        // 値の開始位置(引用符の次)
+        var valueStart = start + marker.Length;
+        // 閉じ引用符を探す(Razor の式に生の " は現れない)
+        var valueEnd = block.IndexOf('"', valueStart);
+        // 閉じ引用符が無ければ解析できない
+        if (valueEnd < 0) return null;
+        // 引用符の中身を返す
+        return block[valueStart..valueEnd];
+    }
+
+    /// <summary>
+    /// ブロック内の <b>すべての</b> <c>foreach (var d in &lt;ここ&gt;)</c> について
+    /// 「ここ」(＝回している対象の式)を取り出す。
     /// </summary>
     /// <remarks>
     /// 括弧を数えて閉じ位置を探すのは、対象の式が括弧を含みうるため。
@@ -554,38 +619,55 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <c>"(List&lt;string&gt;"</c> だけが取れてしまう(実測で落ちた)。
     /// 検出網が対象を取り違えると、判定はいつも同じ答えになり黙って無力化される。
     /// </remarks>
-    private static string? ExtractForeachSource(string block)
+    private static List<string> ExtractForeachSources(string block)
     {
-        // foreach キーワードの位置を探す
-        var keyword = block.IndexOf("foreach", StringComparison.Ordinal);
-        // 無ければ選択肢を組み立てるループが存在しない
-        if (keyword < 0) return null;
-        // その直後の開き括弧を探す
-        var open = block.IndexOf('(', keyword);
-        if (open < 0) return null;
+        // 見つかった対象の式をためる
+        var sources = new List<string>();
+        // 走査の開始位置
+        var cursor = 0;
 
-        // 入れ子を数えながら対応する閉じ括弧を探す
-        var depth = 0;
-        var close = -1;
-        for (var i = open; i < block.Length; i++)
+        // ブロック内の foreach をすべて拾う。1 つ目だけを見ると、あとから
+        // <optgroup> のグルーピング等で 2 つ目のループが足されたときに見えなくなる
+        // (この repo は原因分類のドロップダウンで実際に入れ子の構造を使っている)
+        while (true)
         {
-            // 開き括弧で 1 段深くなる
-            if (block[i] == '(') depth++;
-            // 閉じ括弧で 1 段浅くなる
-            else if (block[i] == ')')
-            {
-                depth--;
-                // 深さが 0 に戻った位置が対応する閉じ括弧
-                if (depth == 0) { close = i; break; }
-            }
-        }
-        // 閉じ括弧が見つからなければ解析できない
-        if (close < 0) return null;
+            // 次の foreach キーワードを探す
+            var keyword = block.IndexOf("foreach", cursor, StringComparison.Ordinal);
+            // 無ければ走査を終える
+            if (keyword < 0) break;
+            // 次の周回はこのキーワードの先から探す(見つからない形でも無限ループにしない)
+            cursor = keyword + "foreach".Length;
 
-        // 括弧の中身から「 in 」の後ろを取り出す(前後の空白は落とす)
-        var inside = block[(open + 1)..close];
-        var inKeyword = inside.IndexOf(" in ", StringComparison.Ordinal);
-        if (inKeyword < 0) return null;
-        return inside[(inKeyword + 4)..].Trim();
+            // その直後の開き括弧を探す
+            var open = block.IndexOf('(', keyword);
+            if (open < 0) continue;
+
+            // 入れ子を数えながら対応する閉じ括弧を探す
+            var depth = 0;
+            var close = -1;
+            for (var i = open; i < block.Length; i++)
+            {
+                // 開き括弧で 1 段深くなる
+                if (block[i] == '(') depth++;
+                // 閉じ括弧で 1 段浅くなる
+                else if (block[i] == ')')
+                {
+                    depth--;
+                    // 深さが 0 に戻った位置が対応する閉じ括弧
+                    if (depth == 0) { close = i; break; }
+                }
+            }
+            // 閉じ括弧が見つからなければこの 1 件は解析できない
+            if (close < 0) continue;
+
+            // 括弧の中身から「 in 」の後ろを取り出す(前後の空白は落とす)
+            var inside = block[(open + 1)..close];
+            var inKeyword = inside.IndexOf(" in ", StringComparison.Ordinal);
+            if (inKeyword < 0) continue;
+            sources.Add(inside[(inKeyword + 4)..].Trim());
+        }
+
+        // 見つかったすべての対象を返す
+        return sources;
     }
 }

@@ -40,7 +40,13 @@
     @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true）。
        文字列条件はコントローラが絞り込みを適用するときとまったく同じ SearchFilter.HasValue を通す。
        ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら全件を返す食い違いになる *@
+    @* 採用しなかった部署値もここでは「絞り込みを試みた」として数える。
+       採用しなかった値は Model.Department に載らない（載せると「絞り込み中」バッジと
+       ページャの URL に効いていない条件が出る）ので、この判定に入れないとパネルが
+       閉じたまま「インシデントがまだ登録されていません」の初回向け表示が出てしまい、
+       注意書きだけを読んだ利用者が自分の送った値を確認も修正もできなくなる *@
     var anyFilter = SearchFilter.HasValue(Model.Search) || SearchFilter.HasValue(Model.Department)
+                 || Model.DepartmentFilterIgnored
                  || Model.IncidentType.HasValue || Model.Severity.HasValue
                  || Model.DateFrom.HasValue || Model.DateTo.HasValue || Model.CauseCategoryId.HasValue;
 }
