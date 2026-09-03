@@ -17,6 +17,9 @@ public class IncidentCreateEditViewModelTests
     // 必須項目を満たした状態で有効なフォームを作るヘルパー
     private static IncidentCreateEditViewModel CreateValidForm() => new()
     {
+        // 選択肢は POST ボディに含まれないので、モデルバインド直後と同じ空の状態にする
+        // (この検査が見るのは属性による入力検証だけで、ドロップダウンの中身とは無関係)
+        DepartmentOptions = new List<string>(),
         OccurredAt = DateTime.Today,
         Department = "内科病棟",
         IncidentType = IncidentTypeKind.Medication,

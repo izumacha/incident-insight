@@ -112,8 +112,9 @@ public class CauseAnalysesController : Controller
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, analysis.Incident, Policies.CanEditIncident))
             return Forbid();
 
-        // ドロップダウン選択肢はサーバーで補完するのでバリデーション対象外
-        ModelState.Remove("CauseCategoryOptions");
+        // 選択肢の ModelState 除外はもう要らない ——CauseAnalysisFormViewModel.CauseCategoryOptions は
+        // [BindNever] / [ValidateNever] になったので、そもそも ModelState にキーが現れない(issue #196)。
+        // 成立しない理由付けのまま残すと、除外範囲を狭める判断を誤らせる(§6 デッドコードを残さない)
         // 選択された原因カテゴリが実在しない場合は入力不備として扱い、存在しない外部キーによる
         // INSERT 失敗(未捕捉の DbUpdateException = HTTP 500)を未然に防ぐ
         if (vm.CauseCategoryId > 0
@@ -176,9 +177,7 @@ public class CauseAnalysesController : Controller
         if (!await IncidentControllerHelpers.IsAuthorizedForAsync(_auth, User, incident, Policies.CanEditIncident))
             return Forbid();
 
-        // ドロップダウン選択肢はバリデーション対象外
-        // (prefix バインドのため ModelState 上のキーも「NewCauseAnalysis.」付きになる)
-        ModelState.Remove($"{nameof(IncidentDetailViewModel.NewCauseAnalysis)}.{nameof(vm.CauseCategoryOptions)}");
+        // 選択肢の ModelState 除外はもう要らない(理由は EditCauseAnalysis 側の同じ箇所を参照。issue #196)
         // 選択された原因カテゴリが実在しない場合は入力不備として扱い、存在しない外部キーによる
         // INSERT 失敗(未捕捉の DbUpdateException = HTTP 500)を未然に防ぐ
         if (vm.CauseCategoryId > 0

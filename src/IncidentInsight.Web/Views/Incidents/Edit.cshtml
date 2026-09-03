@@ -41,8 +41,11 @@
                     <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                     <select asp-for="Department" class="form-select">
                         <option value="">-- 選択してください --</option>
-                        @* Incident.Departments を列挙 *@
-                        @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                        @* 選択肢はコントローラが決めたものを回す。許可リストから外された部署名を
+                           持つインシデントでは、その 1 件が先頭に補完されている(issue #196)。
+                           静的な Incident.Departments へ戻すと、一致する option が無くなり
+                           別項目だけ直した保存で発生部署が書き換わる *@
+                        @foreach (var d in Model.DepartmentOptions)
                         {
                             <option value="@d">@d</option>
                         }

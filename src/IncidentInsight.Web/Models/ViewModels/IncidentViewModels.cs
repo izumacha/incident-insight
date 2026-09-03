@@ -6,6 +6,10 @@ using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.Enums;
 // ドロップダウン用の SelectListItem を使えるようにする
 using Microsoft.AspNetCore.Mvc.Rendering;
+// [BindNever](モデルバインドの対象から外す)を使うために取り込む
+using Microsoft.AspNetCore.Mvc.ModelBinding;
+// [ValidateNever](入力検証の対象から外す)を使うために取り込む
+using Microsoft.AspNetCore.Mvc.ModelBinding.Validation;
 
 // ViewModel 群の名前空間(置き場所)を宣言している
 namespace IncidentInsight.Web.Models.ViewModels;
@@ -131,6 +135,40 @@ public class IncidentCreateEditViewModel
     [Display(Name = "発生部署")]
     public string Department { get; set; } = "";
 
+    // 発生部署ドロップダウンに並べる選択肢。
+    // ビューが Incident.Departments を直接回さずこちらを使うのは、許可リストから外された
+    // 部署名を持つ既存インシデントを編集するとき、その 1 件だけを選択肢へ足す必要があるため
+    // (規則と理由は IncidentsController.ResolveDepartmentSaveSelection の解説が正本。issue #196)。
+    // 中身を決めるのは同メソッドで、保存を通す例外(Grandfathered)と必ず対で決まる
+    // ——片方だけ差し替えると「画面では選べるのに保存で弾かれる」食い違いが戻る。
+    //
+    // required にして既定値を持たせない理由は IncidentListViewModel.DepartmentOptions と同じ
+    // (設定し忘れを実行時ではなくコンパイル時に落とす)。ただし守備範囲はあちらより狭い:
+    // この ViewModel は POST のモデルバインド経由でも作られ、その経路は Activator による
+    // 生成なので required の検査が掛からず、DepartmentOptions は null のまま届く。
+    // つまりコンパイラが守るのは GET 側の組み立てだけで、POST の再描画で設定し忘れると
+    // ビューの foreach が NullReferenceException(HTTP 500)になる。空リストを既定にすると
+    // 同じ設定漏れが「例外もテストの失敗も出ないまま部署の選択肢が消える」という
+    // 気付けない壊れ方になるので、あえて既定値を置かず大きな音で落ちる側を選んでいる
+    // (再描画の 2 経路は UnlistedDepartmentSavePolicyTests が固定する)。
+    //
+    // [BindNever] / [ValidateNever] が必須(実測)。この 2 つが無いと Create / Edit の
+    // POST がすべて失敗する ——プロジェクトは <Nullable>enable</Nullable> なので、MVC は
+    // 非 null 許容の参照型プロパティに [Required] を自動で足す
+    // (MvcOptions.SuppressImplicitRequiredAttributeForNonNullableReferenceTypes は既定の false)。
+    // フォームは選択肢を送らないため、モデルバインド後この値は null のまま
+    // ——初期値を持つ CauseCategoryOptions と違い required は初期値を置かないので、
+    // 自動で足された [Required] が必ず落ちる。実測では ModelState に
+    // 「The DepartmentOptions field is required.」(日本語 UI に英語の既定メッセージ)が積まれ、
+    // ModelState.IsValid が常に false になって<b>インシデントを 1 件も登録・編集できなくなる</b>。
+    // しかも対応する入力欄が画面に無いので、利用者には直しようがない。
+    // コントローラ級のテストは ModelState を手で組み立てるためこの経路を通らず、全件緑のまま通る
+    // (FormViewModelBindingMetadataTests が実際のモデルメタデータを見て固定する)。
+    // [BindNever] は併せて overposting も塞ぐ(利用者が選択肢を送り込めないようにする)。
+    [BindNever]
+    [ValidateNever]
+    public required List<string> DepartmentOptions { get; set; }
+
     // インシデント種別。必須で初期値「その他」
     // EnumDataType: モデルバインドは未定義の整数(例:99以外の未使用値)もそのまま
     // (IncidentTypeKind)値 として束縛してしまうため、Enum.IsDefined 相当の検証を追加し、
@@ -175,7 +213,13 @@ public class IncidentCreateEditViewModel
     // Tab 2: Cause Analysis
     // ウィザードのなぜなぜ分析タブ用モデル
     public CauseAnalysisFormViewModel CauseAnalysis { get; set; } = new();
-    // 原因分類のドロップダウン選択肢
+    // 原因分類のドロップダウン選択肢。
+    // 上の DepartmentOptions と同じ理由で、モデルバインドと入力検証の両方から外す
+    // ——こちらは初期値(= new())があるおかげで自動で足された [Required] を今は通せているが、
+    // 初期値を外した瞬間に同じ「全 POST が失敗する」状態になる。役割が同じプロパティの
+    // 片方だけ守ると、その差が次の人には読み取れない(検出網も分類ごとに穴が空く)
+    [BindNever]
+    [ValidateNever]
     public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
 
     // Tab 3: Preventive Measures (at least one required)
@@ -245,7 +289,12 @@ public class CauseAnalysisFormViewModel
     [Display(Name = "補足メモ")]
     public string? AdditionalNotes { get; set; }
 
-    // 原因分類ドロップダウンの選択肢
+    // 原因分類ドロップダウンの選択肢。
+    // この ViewModel も POST でモデルバインドされる(登録ウィザードの入れ子と
+    // CauseAnalysesController の単独 POST の両方)ので、DepartmentOptions と同じ理由で
+    // モデルバインドと入力検証の対象から外す
+    [BindNever]
+    [ValidateNever]
     public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
 
     /// <summary>
