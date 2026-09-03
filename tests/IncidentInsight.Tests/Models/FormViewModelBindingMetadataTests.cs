@@ -66,13 +66,37 @@ public class FormViewModelBindingMetadataTests
     /// 足し忘れるとその型だけが検査から外れる。ただし壊れ方は静かではない ——
     /// 選択肢を持つ POST 束縛の型を足せば、その画面の POST が最初の手動確認で必ず失敗する。</para>
     /// </remarks>
-    public static TheoryData<Type> BoundFormViewModels() => new()
+    /// <remarks>
+    /// <para><b>選択肢をまだ持たない型も載せる。</b> 検査は「今ある選択肢を守る」だけでなく
+    /// 「選択肢を<b>足したとき</b>に守らせる」ためのもので、後者の方が実際の事故に近い
+    /// ——この PR 自体が「既存の画面へ選択肢のプロパティを足して全 POST を壊した」変更だった。
+    /// 載っていない型へ足すと、その型だけが黙って検査の外に出る。</para>
+    /// </remarks>
+    public static TheoryData<Type> BoundFormViewModels()
+    {
+        // xUnit の [MemberData] が読める形へ詰め直す(一覧そのものは下の定数が持つ)
+        var data = new TheoryData<Type>();
+        foreach (var type in BoundFormViewModelTypes) data.Add(type);
+        return data;
+    }
+
+    // 上の一覧の実体。TheoryData のままだと LINQ で走査できないため、
+    // 「列挙全体を見る門番」と共有できるよう素のリストで持つ(写しは作らない)
+    private static readonly IReadOnlyList<Type> BoundFormViewModelTypes = new[]
     {
         // インシデント登録・編集ウィザード(発生部署・原因分類の 2 つの選択肢を持つ)
         typeof(IncidentCreateEditViewModel),
         // なぜなぜ分析のサブフォーム(上の入れ子としても、単独の POST でも束縛される)
         typeof(CauseAnalysisFormViewModel),
+        // 再発防止策のサブフォーム。現在は選択肢のプロパティを持たない(担当部署の
+        // ドロップダウンは /PreventiveMeasures が ViewBag で渡している)が、
+        // この PR と同じ移行 —— ViewBag から ViewModel へ選択肢を移す —— をしたときに
+        // 検査へ入っていなければ、同じ「全 POST が失敗する」状態を作れてしまう。
+        // 束縛箇所は PreventiveMeasuresController の Create / Edit、
+        // IncidentMeasuresController.AddMeasure、および上のウィザードの Measures[i]
+        typeof(MeasureFormViewModel),
     };
+
 
     // 選択肢のプロパティが、モデルバインドと入力検証のどちらの対象にもなっていないこと。
     //
@@ -110,12 +134,10 @@ public class FormViewModelBindingMetadataTests
                         && p.PropertyName.EndsWith(OptionsSuffix, StringComparison.Ordinal))
             .ToList();
 
-        // 1 つも見つからないのは「選択肢が無くなった」より「命名規約が変わった」可能性が高い。
-        // 黙って 0 件で緑にすると検出網が消えるので、ここで落として人に決めさせる
-        Assert.True(optionProperties.Count > 0,
-            $"{viewModelType.Name} に *{OptionsSuffix} という名前のプロパティが 1 つも無い。"
-            + "命名規約を変えたなら、この検査も同じ変更セットで直すこと"
-            + "(直さないと、選択肢のプロパティが検査から黙って外れる)。");
+        // ここでは「0 件なら落とす」をしない —— 選択肢をまだ持たない型も
+        // 意図的に列挙へ載せてあるため(BoundFormViewModels の解説を参照)。
+        // 検出網が命名規約ごと死んでいないことは、列挙全体を見る
+        // OptionsSuffix_MatchesSomething が別途 fail-closed で確かめる。
 
         // モデルバインドの対象になっていないこと([BindNever])。
         // 対象のままだと、利用者がフォームへ選択肢を送り込める(overposting)
@@ -146,7 +168,10 @@ public class FormViewModelBindingMetadataTests
                 .Where(entry => entry.Key == property.PropertyName
                                 || entry.Key.StartsWith($"{property.PropertyName}.", StringComparison.Ordinal)
                                 || entry.Key.StartsWith($"{property.PropertyName}[", StringComparison.Ordinal))
-                .SelectMany(entry => entry.Value.Errors.Select(e => $"{entry.Key}: {e.ErrorMessage}"))
+                // ModelStateDictionary は KeyValuePair<string, ModelStateEntry?> として列挙するので、
+                // 値が null でないものだけに絞ってから中身を読む(素で読むと CS8602 が出る)
+                .Where(entry => entry.Value is not null)
+                .SelectMany(entry => entry.Value!.Errors.Select(e => $"{entry.Key}: {e.ErrorMessage}"))
                 .ToList();
 
             Assert.True(errors.Count == 0,
@@ -156,6 +181,40 @@ public class FormViewModelBindingMetadataTests
                 + "その画面の POST が 1 件も通らなくなる。"
                 + $"実際に積まれたエラー: {string.Join(" / ", errors)}");
         }
+    }
+
+    // 命名規約とコレクションという 2 つの手がかりが、どちらも生きていることを確かめる。
+    //
+    // 型ごとに「0 件なら落とす」と書けない —— 選択肢をまだ持たない型
+    // (MeasureFormViewModel)を意図的に列挙へ載せているため、型ごとの門番にすると
+    // その型で必ず落ちる。かといって門番を丸ごと外すと、命名規約を変えたり
+    // ViewModel の形が変わったりしたときに<b>全部の型で対象ゼロ＝全件緑</b>になり、
+    // 検出網が黙って死ぬ(この repo が繰り返し当たっている形)。
+    // そこで判定は型ごとに掛けたまま、<b>門番だけを列挙全体へ移す</b>。
+    // 「どこかに 1 つは選択肢がある」「どこかに 1 つはコレクションがある」は、
+    // 列挙に選択肢を持つ型が 1 つでもある限り必ず成り立つ
+    [Fact]
+    public void OptionsSuffix_MatchesSomething()
+    {
+        // 列挙した型すべてのプロパティを集める
+        var allProperties = BoundFormViewModelTypes
+            .SelectMany(type => type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            .ToList();
+
+        // 命名規約に当てはまるプロパティが列挙全体で 1 つも無いなら、
+        // 規約が変わったか対象の型がすべて外れている
+        Assert.True(
+            allProperties.Any(p => p.Name.EndsWith(OptionsSuffix, StringComparison.Ordinal)),
+            $"列挙した ViewModel のどれにも *{OptionsSuffix} という名前のプロパティが無い。"
+            + "命名規約を変えたなら、この検査も同じ変更セットで直すこと"
+            + "(直さないと、選択肢のプロパティが検査から黙って外れる)。");
+
+        // コレクションという手がかりも生きていること(取りこぼし照合が空振りしないため)
+        Assert.True(
+            allProperties.Any(p => p.PropertyType != typeof(string)
+                                   && typeof(System.Collections.IEnumerable).IsAssignableFrom(p.PropertyType)),
+            "列挙した ViewModel のどれにもコレクション型のプロパティが無い。"
+            + "取りこぼしの照合はコレクションを手がかりにしているので、形が変わったならここも直すこと。");
     }
 
     // 上の命名規約が選択肢のプロパティを取りこぼしていないことを、判定とは独立な手がかりで照合する。
@@ -181,10 +240,9 @@ public class FormViewModelBindingMetadataTests
             .Select(p => p.Name)
             .ToList();
 
-        // コレクションが 1 つも読めないなら手がかりが死んでいる。fail-closed で落とす
-        Assert.True(collectionProperties.Count > 0,
-            $"{viewModelType.Name} にコレクション型のプロパティが 1 つも無い。"
-            + "この照合はコレクションを手がかりにしているので、形が変わったならここも直すこと。");
+        // ここでも「0 件なら落とす」はしない —— コレクションを 1 つも持たない型
+        // (MeasureFormViewModel)を意図的に載せているため。手がかりが死んでいないことは
+        // 列挙全体を見る OptionsSuffix_MatchesSomething が確かめる。
 
         // 選択肢でないコレクション = フォームが実際に送るサブフォームの繰り返し。
         // 現在は登録ウィザードの対策リストだけで、これは利用者の入力なので束縛・検証の対象で正しい。

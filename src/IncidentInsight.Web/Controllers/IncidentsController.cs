@@ -263,8 +263,11 @@ public class IncidentsController : Controller
     public async Task<IActionResult> Create(IncidentCreateEditViewModel vm)
     {
         // なぜなぜ分析サブフォーム由来の ModelState キーをいったん除外する。
-        // Why2–5 などの任意項目やドロップダウン選択肢(CauseCategoryOptions)が
-        // 未送信のときに残る不要な Required エラーを取り除くため。ただし一括除外だけだと
+        // Why2–5 などの任意項目が未送信のときに残る不要な Required エラーを取り除くため。
+        // (ドロップダウン選択肢の CauseCategoryOptions もかつてはここで拾われていたが、
+        //  現在は [BindNever] / [ValidateNever] を付けたのでそもそも ModelState に現れない
+        //  ——issue #196。この除外を Why* だけに狭めるかどうかは、任意項目の側だけで判断すること)。
+        // ただし一括除外だけだと
         // 保存対象(IsSavable)の分析の MaxLength 違反まで一緒に破棄されてしまうので、
         // 保存対象の場合は直後の再検証ブロックで本物の検証エラーを積み直す。
         // StringComparison.Ordinal を明示する。引数なしの StartsWith は現在のカルチャで比較するため、
