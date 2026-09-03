@@ -31,18 +31,26 @@ namespace IncidentInsight.Tests.Controllers;
 ///
 /// <para><b>規則の正本は <c>IncidentsController.ResolveDepartmentSaveSelection</c> の解説。</b>
 /// 要点は 2 つ: (1) <b>現在保存されている値に限り</b>選択肢へ足して保存も通す、
-/// (2) <b>新規登録では例外を作らない</b>(許可リストから外した部署名を新しい行へ付けられない)。</para>
+/// (2) <b>新規登録では例外を作らない</b>(許可リストから外した部署名を新しい行へ付けられない)。
+/// ただし (2) が覆うのは<b>この規則が作る例外だけ</b>で、Staff のクレーム経由で
+/// 許可リスト外の部署名が新しい行へ入るのは意図的に残してある(理由は
+/// <c>CreatePost_StaffWithUnlistedClaim_SavesWithThatDepartment</c> のコメント)。</para>
 ///
 /// <para><b>ここで守る不変条件は「表示側と適用側が同じ判定を通る」こと。</b>
 /// 選択肢の方が広ければ、利用者が画面で選べる値で保存が弾かれる(何を選べば通るのか
 /// 画面からは分からない)。許可の方が広ければ、画面に出ない値をフォーム改ざんで保存できる。
 /// <c>EditForm_EveryOfferedOption_IsAcceptedOnSave</c> がこの一致そのものを固定する。</para>
 ///
-/// <para><b>Staff はこの規則の対象外で、対象外のまま安全。</b> <c>EnforceKnownDepartment</c> は
-/// Staff を検証しないが、<c>SameDepartmentHandler</c> が「インシデントの発生部署 == 本人の
-/// クレーム」の行しか編集させないため、<c>EnforceOwnDepartmentForStaff</c> による上書きは
-/// 同じ値の代入にしかならない。この「対象外だが書き換わらない」性質は暗黙の前提なので
-/// <c>EditPost_Staff...</c> が固定する ——認可側の判定基準が変わると黙って崩れるため。</para>
+/// <para><b>Staff はこの規則の対象外で、編集と登録で意味が違う。</b>
+/// <c>EnforceKnownDepartment</c> は Staff を検証しないが、
+/// <b>編集</b>では書き換わらない —— <c>SameDepartmentHandler</c> が「インシデントの発生部署 ==
+/// 本人のクレーム」の行しか編集させないため、<c>EnforceOwnDepartmentForStaff</c> による
+/// 上書きは同じ値の代入にしかならない(<c>EditPost_StaffOwningAnUnlistedDepartment_KeepsIt</c>)。
+/// 一方<b>登録</b>では、クレームが許可リストから外れている Staff の新しい行にその部署名が
+/// 入る —— これは塞ぐとロックアウトになるため<b>意図的に残してある</b>
+/// (<c>CreatePost_StaffWithUnlistedClaim_SavesWithThatDepartment</c>)。
+/// どちらも暗黙の前提なので固定する ——前者は認可側の判定基準が変わると黙って崩れ、
+/// 後者は暗黙のままだと「塞ぎ忘れ」と読まれて塞がれてしまう。</para>
 ///
 /// <para><b>失敗したときは</b>、実装だけを直すのではなく
 /// <c>ResolveDepartmentSaveSelection</c> の解説と <c>SearchFilter</c> の該当段落も
@@ -301,7 +309,18 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
             ReporterName = "報告者",
             Measures = new List<MeasureFormViewModel>
             {
-                new() { Description = "対策", DueDate = TestFixtures.Today }
+                // 保存まで到達するテストがあるので、保存に必要な項目をすべて埋める
+                // (テストではモデルバインドが走らず [Required] が効かないため、
+                //  埋めないと Create の保存処理が null 参照で落ちる)
+                new()
+                {
+                    Description = "対策",
+                    MeasureType = MeasureTypeKind.ShortTerm,
+                    ResponsiblePerson = "担当者",
+                    ResponsibleDepartment = Incident.Departments[0],
+                    DueDate = TestFixtures.Today.AddDays(30),
+                    Priority = 2
+                }
             }
         };
 
@@ -331,6 +350,61 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
 
         Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal(RetiredDepartment, await StoredDepartmentAsync(incident.Id));
+    }
+
+    // 新規登録で許可リスト外の部署名が入りうる経路は Staff のクレームだけで、これは意図的。
+    //
+    // EnforceOwnDepartmentForStaff がフォームの値をクレームで上書きし、
+    // EnforceKnownDepartment は Staff を対象にしないので、クレームが許可リストから
+    // 外れている Staff の登録はその部署名のまま保存される。
+    // Staff も検証対象にすれば塞げるが、そうすると部署名を入れ替えた直後に
+    // その部署の Staff 全員がインシデントを報告できなくなる ——原因は自分では直せない
+    // クレーム(管理者管理下の値)なので復旧手段が無い。「報告できない」の方が重い障害なので
+    // こちらを選んでいる(判断の正本は EnforceKnownDepartment のコメント。issue #196 の前からある)。
+    //
+    // 意図した挙動なので固定する。暗黙にしておくと、次に読む人がこれを
+    // 「塞ぎ忘れ」と読んで塞ぎに行き、上のロックアウトを起こす
+    [Fact]
+    public async Task CreatePost_StaffWithUnlistedClaim_SavesWithThatDepartment()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        // 所属部署クレームが許可リスト外の値になっている Staff(部署名変更直後の実在の状態)
+        var controller = NewIncidentsController(UserContextHelper.Staff(RetiredDepartment));
+
+        // 部署はフォームで何を送っても EnforceOwnDepartmentForStaff がクレームで上書きする
+        var vm = new IncidentCreateEditViewModel
+        {
+            DepartmentOptions = new List<string>(),
+            OccurredAt = TestFixtures.Today,
+            Department = Incident.Departments[0],
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "説明",
+            ReporterName = "報告者",
+            Measures = new List<MeasureFormViewModel>
+            {
+                // 保存まで到達するテストがあるので、保存に必要な項目をすべて埋める
+                // (テストではモデルバインドが走らず [Required] が効かないため、
+                //  埋めないと Create の保存処理が null 参照で落ちる)
+                new()
+                {
+                    Description = "対策",
+                    MeasureType = MeasureTypeKind.ShortTerm,
+                    ResponsiblePerson = "担当者",
+                    ResponsibleDepartment = Incident.Departments[0],
+                    DueDate = TestFixtures.Today.AddDays(30),
+                    Priority = 2
+                }
+            }
+        };
+
+        var result = await controller.Create(vm);
+
+        // 保存される(報告そのものを塞がない)
+        Assert.IsType<RedirectToActionResult>(result);
+        // 発生部署はクレームの値(許可リスト外)になる
+        var saved = await _db.Incidents.AsNoTracking().SingleAsync();
+        Assert.Equal(RetiredDepartment, saved.Department);
     }
 
     // --- 表示側と適用側が同じ判定を通っていること -----------------------------
