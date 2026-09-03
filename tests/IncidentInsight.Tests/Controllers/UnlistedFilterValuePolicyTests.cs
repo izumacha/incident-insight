@@ -775,7 +775,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // `@foreach (var d in` と対象を 2 行に分けた 2 つ目のループを足すと
         // loopSources が 1 件のままで全件緑のまま通った。
         // 解析できない書き方が現れたらここで落として、書き方か解析のどちらを直すか人に決めさせる
-        var loopCount = Regex.Matches(selectBlock, @"\bforeach\b").Count;
+        var loopCount = RazorSource.CountForeach(selectBlock);
         Assert.True(loopSources.Count == loopCount,
             $"{viewFolder}/Index.cshtml の <select name=\"{selectName}\"> にある foreach {loopCount} 件のうち "
             + $"{loopSources.Count} 件しか解析できていない。解析できないループは検査から外れるので、"
@@ -846,10 +846,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         });
     }
 
-    // Razor のコメント(@* ... *@)。改行をまたぐので Singleline を付ける。
-    // 入れ子は Razor 側が許さないので最短一致で足りる
-    private static readonly Regex RazorComment =
-        new(@"@\*.*?\*@", RegexOptions.Singleline | RegexOptions.Compiled);
+    // Razor のコメント(@* ... *@)を落とす正規表現。判定の前にコメントを取り除くのは、
+    // コメントで検査を満たしたり破ったりできないようにするため(理由の正本は RazorSource)。
+    // 定義そのものは登録・編集フォーム側の走査(UnlistedDepartmentSavePolicyTests)と共有する
+    private static readonly Regex RazorComment = RazorSource.Comment;
 
     // 「採用しなかったことを画面へ伝える」旗の命名規約。ViewModel のプロパティ名の接尾辞で、
     // 下の 2 つの Razor 走査はこの規約で拾った旗の 1 つずつに掛かる
@@ -995,30 +995,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
     }
 
-    /// <summary>
-    /// <paramref name="text"/> が <paramref name="identifier"/> を<b>識別子として</b>含むか。
-    /// </summary>
-    /// <remarks>
-    /// 素の部分文字列検査だと、期待する名前が別の名前の<b>前置詞</b>のときに素通りする
-    /// (<c>Model.Department</c> は <c>Model.DepartmentOptions</c> に含まれる)。
-    /// 直後が識別子を構成する文字(英数字・アンダースコア)なら別の名前とみなす。
-    /// 直前は見ない —— <c>Model.Department</c> のように区切り文字込みで指定するため。
-    /// </remarks>
-    private static bool ContainsIdentifier(string text, string identifier)
-    {
-        // 出現位置を順に調べる
-        for (var i = text.IndexOf(identifier, StringComparison.Ordinal); i >= 0;
-             i = text.IndexOf(identifier, i + 1, StringComparison.Ordinal))
-        {
-            // 一致部分の直後の位置
-            var after = i + identifier.Length;
-            // 末尾で終わっているか、直後が識別子の文字でなければ「その名前」だと判断する
-            if (after >= text.Length || (!char.IsLetterOrDigit(text[after]) && text[after] != '_'))
-                return true;
-        }
-        // どの出現も別の名前の一部だった
-        return false;
-    }
+    // 名前を「識別子として」照合する(部分文字列だと Model.Department が
+    // Model.DepartmentOptions に一致して素通りする)。判定の正本は RazorSource で、
+    // 登録・編集フォーム側の走査と共有している
+    private static bool ContainsIdentifier(string text, string identifier) =>
+        RazorSource.ContainsIdentifier(text, identifier);
 
     // 注意書きが案内する先（絞り込みパネル）が実際に開くこと、そして
     // 「フィルター適用中」の判定には混ざらないことを、両方まとめて固定する。
@@ -1196,66 +1177,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return values;
     }
 
-    /// <summary>
-    /// ブロック内の <b>すべての</b> <c>foreach (var d in &lt;ここ&gt;)</c> について
-    /// 「ここ」(＝回している対象の式)を取り出す。
-    /// </summary>
-    /// <remarks>
-    /// 括弧を数えて閉じ位置を探すのは、対象の式が括弧を含みうるため。
-    /// 実際 <c>/PreventiveMeasures</c> は <c>(List&lt;string&gt;)ViewBag.Xxx</c> とキャストしており、
-    /// 「最初の <c>)</c> まで」を取る正規表現ではキャストの閉じ括弧で切れて
-    /// <c>"(List&lt;string&gt;"</c> だけが取れてしまう(実測で落ちた)。
-    /// 検出網が対象を取り違えると、判定はいつも同じ答えになり黙って無力化される。
-    /// </remarks>
-    private static List<string> ExtractForeachSources(string block)
-    {
-        // 見つかった対象の式をためる
-        var sources = new List<string>();
-        // 走査の開始位置
-        var cursor = 0;
-
-        // ブロック内の foreach をすべて拾う。1 つ目だけを見ると、あとから
-        // <optgroup> のグルーピング等で 2 つ目のループが足されたときに見えなくなる
-        // (この repo は原因分類のドロップダウンで実際に入れ子の構造を使っている)
-        while (true)
-        {
-            // 次の foreach キーワードを探す
-            var keyword = block.IndexOf("foreach", cursor, StringComparison.Ordinal);
-            // 無ければ走査を終える
-            if (keyword < 0) break;
-            // 次の周回はこのキーワードの先から探す(見つからない形でも無限ループにしない)
-            cursor = keyword + "foreach".Length;
-
-            // その直後の開き括弧を探す
-            var open = block.IndexOf('(', keyword);
-            if (open < 0) continue;
-
-            // 入れ子を数えながら対応する閉じ括弧を探す
-            var depth = 0;
-            var close = -1;
-            for (var i = open; i < block.Length; i++)
-            {
-                // 開き括弧で 1 段深くなる
-                if (block[i] == '(') depth++;
-                // 閉じ括弧で 1 段浅くなる
-                else if (block[i] == ')')
-                {
-                    depth--;
-                    // 深さが 0 に戻った位置が対応する閉じ括弧
-                    if (depth == 0) { close = i; break; }
-                }
-            }
-            // 閉じ括弧が見つからなければこの 1 件は解析できない
-            if (close < 0) continue;
-
-            // 括弧の中身から「 in 」の後ろを取り出す(前後の空白は落とす)
-            var inside = block[(open + 1)..close];
-            var inKeyword = inside.IndexOf(" in ", StringComparison.Ordinal);
-            if (inKeyword < 0) continue;
-            sources.Add(inside[(inKeyword + 4)..].Trim());
-        }
-
-        // 見つかったすべての対象を返す
-        return sources;
-    }
+    // foreach が「何を」回しているかを取り出す。括弧を数える理由と、解析できないループを
+    // 読み飛ばす性質(呼び出し側で件数を照合する必要がある)は RazorSource の解説が正本。
+    // 登録・編集フォーム側の走査と共有している
+    private static List<string> ExtractForeachSources(string block) =>
+        RazorSource.ExtractForeachSources(block);
 }

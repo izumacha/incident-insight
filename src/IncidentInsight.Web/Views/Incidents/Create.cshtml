@@ -184,12 +184,14 @@
                             <span asp-validation-for="OccurredAt" class="text-danger small"></span>
                         </div>
                         <div class="col-md-4">
-                            @* 発生部署（Incident の静的リストから選択） *@
+                            @* 発生部署（コントローラが決めた選択肢から選択） *@
                             <label asp-for="Department" class="form-label fw-medium"></label> <span class="text-danger">*</span>
                             <select asp-for="Department" class="form-select">
                                 <option value="">-- 選択してください --</option>
-                                @* Incident.Departments の全部署を順にオプション化 *@
-                                @foreach (var d in IncidentInsight.Web.Models.Incident.Departments)
+                                @* 選択肢はコントローラが決めたものを回す。新規登録では許可リスト
+                                   そのままだが、出所を編集画面とそろえておく ——別々の出所にすると
+                                   片方だけ直したときに issue #196 の食い違いが戻る *@
+                                @foreach (var d in Model.DepartmentOptions)
                                 {
                                     <option value="@d">@d</option>
                                 }

@@ -131,6 +131,24 @@ public class IncidentCreateEditViewModel
     [Display(Name = "発生部署")]
     public string Department { get; set; } = "";
 
+    // 発生部署ドロップダウンに並べる選択肢。
+    // ビューが Incident.Departments を直接回さずこちらを使うのは、許可リストから外された
+    // 部署名を持つ既存インシデントを編集するとき、その 1 件だけを選択肢へ足す必要があるため
+    // (規則と理由は IncidentsController.ResolveDepartmentSaveSelection の解説が正本。issue #196)。
+    // 中身を決めるのは同メソッドで、保存を通す例外(Grandfathered)と必ず対で決まる
+    // ——片方だけ差し替えると「画面では選べるのに保存で弾かれる」食い違いが戻る。
+    //
+    // required にして既定値を持たせない理由は IncidentListViewModel.DepartmentOptions と同じ
+    // (設定し忘れを実行時ではなくコンパイル時に落とす)。ただし守備範囲はあちらより狭い:
+    // この ViewModel は POST のモデルバインド経由でも作られ、その経路は Activator による
+    // 生成なので required の検査が掛からず、DepartmentOptions は null のまま届く。
+    // つまりコンパイラが守るのは GET 側の組み立てだけで、POST の再描画で設定し忘れると
+    // ビューの foreach が NullReferenceException(HTTP 500)になる。空リストを既定にすると
+    // 同じ設定漏れが「例外もテストの失敗も出ないまま部署の選択肢が消える」という
+    // 気付けない壊れ方になるので、あえて既定値を置かず大きな音で落ちる側を選んでいる
+    // (再描画の 2 経路は UnlistedDepartmentSavePolicyTests が固定する)。
+    public required List<string> DepartmentOptions { get; set; }
+
     // インシデント種別。必須で初期値「その他」
     // EnumDataType: モデルバインドは未定義の整数(例:99以外の未使用値)もそのまま
     // (IncidentTypeKind)値 として束縛してしまうため、Enum.IsDefined 相当の検証を追加し、

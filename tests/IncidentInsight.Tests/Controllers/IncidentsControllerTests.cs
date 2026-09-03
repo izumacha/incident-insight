@@ -45,6 +45,10 @@ public class IncidentsControllerTests : IDisposable
 
     private IncidentCreateEditViewModel ValidViewModel(string dept = "内科病棟") => new()
     {
+        // 選択肢は POST ボディに含まれず、本番でもモデルバインドは空のまま束縛する。
+        // 空リストにしておくと、コントローラが再描画時に詰め直すのを忘れた場合に
+        // 「選択肢が空のまま返る」として観測できる(UnlistedDepartmentSavePolicyTests が固定)
+        DepartmentOptions = new List<string>(),
         // TestFixtures.Today を使い実行日時に依存しない決定論的テストにする
         OccurredAt = TestFixtures.Today,
         Department = dept,
@@ -110,7 +114,8 @@ public class IncidentsControllerTests : IDisposable
     public async Task Create_Post_InvalidModel_ReturnsCreateView()
     {
         _controller.ModelState.AddModelError("Department", "Required");
-        var vm = new IncidentCreateEditViewModel();
+        // 選択肢は POST ボディに含まれないので、モデルバインド直後と同じ空の状態から始める
+        var vm = new IncidentCreateEditViewModel { DepartmentOptions = new List<string>() };
 
         var result = await _controller.Create(vm);
 

@@ -248,7 +248,9 @@ public class IncidentsController : Controller
                     MeasureType = MeasureTypeKind.ShortTerm            // 種別の初期選択: 短期対策
                 }
             },
-            CauseCategoryOptions = await BuildCauseCategoryOptions()
+            CauseCategoryOptions = await BuildCauseCategoryOptions(),
+            // 新規登録なので保存されている値は無い＝許可リストそのまま(過去の部署名は選べない)
+            DepartmentOptions = ResolveDepartmentSaveSelection(null).Options
         };
         // 登録フォームを描画
         return View(vm);
@@ -351,8 +353,12 @@ public class IncidentsController : Controller
         // 部署スコープを強制する: Staff は自分の所属部署にしか登録できない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
 
+        // 発生部署の選択肢と「保存を通す例外」を決める。新規登録なので保存されている値は無く、
+        // 例外も生じない(許可リストから外れた部署名を新しい行へ付けられないようにするため)
+        var departmentSelection = ResolveDepartmentSaveSelection(null);
+
         // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
-        EnforceKnownDepartment(vm);
+        EnforceKnownDepartment(vm, departmentSelection.Grandfathered);
 
         // 発生日時が未来でないかをサーバ側で検証する(未来のインシデントは報告できない)
         ValidateOccurredAtNotInFuture(vm);
@@ -403,6 +409,9 @@ public class IncidentsController : Controller
             // null 合体代入で空リストを保証し、View 側の foreach で NullReferenceException を防ぐ
             vm.Measures ??= new List<MeasureFormViewModel>();
             vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
+            // 選択肢は POST ボディに含まれないため、再描画のたびに詰め直す
+            // (詰め忘れるとビューの foreach が null を回して HTTP 500 になる)
+            vm.DepartmentOptions = departmentSelection.Options;
             return View(vm);
         }
 
@@ -835,8 +844,89 @@ public class IncidentsController : Controller
     private readonly record struct CauseCategoryFilterSelection(
         int? Effective, List<SelectListItem> Options, bool Ignored);
 
+    /// <summary>
+    /// 登録・編集フォームの発生部署について、<b>ドロップダウンに並べる選択肢</b>と
+    /// <b>許可リスト外でも保存を通す 1 件</b>を同時に決める。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか(issue #196)。</b> <see cref="Incident.Departments"/> は
+    /// CLAUDE.md が「値追加は static 配列を更新」と明記する<b>可変の真実の源</b>なので、
+    /// 部署名を入れ替えると<b>過去の行はリストに無い部署名を持ち続ける</b>。
+    /// そのインシデントの編集画面を開くと <c>asp-for="Department"</c> に一致する
+    /// <c>&lt;option&gt;</c> が無く、ブラウザは「-- 選択してください --」を選択状態にする。
+    /// 説明文だけを直して保存すると <c>Department=""</c> が飛んで
+    /// <c>[Required]</c> で弾かれ、保存を通すには許可リストのどれかを選ぶしかない
+    /// ——<b>そのインシデントの発生部署が黙って書き換わる</b>。一覧の絞り込みが
+    /// 解除されるだけだった <see cref="ResolveDepartmentFilterAsync"/> と違い、
+    /// こちらは<b>保存された業務データが変わる</b>。</para>
+    ///
+    /// <para><b>規則: 現在保存されている値に限り、その 1 件だけ選択肢へ足す。</b>
+    /// 一律に補完しないのは、過去の部署名が<b>新規登録でも選べる</b>ようになり
+    /// 許可リストから外した意図に反するため。したがって新規登録
+    /// (保存されている値が無い)では許可リストそのままで、例外も作らない。</para>
+    ///
+    /// <para><b>絞り込み側の表(<see cref="SearchFilter"/>)を保存側へ広げないこと。</b>
+    /// あちらの 2 択(補完 / 採用しない)はどちらも「どの行を見るか」の話で、
+    /// 保存される値には当てはまらない。この関数がその保存側の規則の正本。</para>
+    ///
+    /// <para><b>なぜ選択肢と例外を一緒に返すのか。</b> この 2 つは<b>必ず整合していなければ
+    /// ならない</b>。画面に出す選択肢が保存の許可より広ければ、利用者が選べる値で保存が
+    /// 弾かれる(何を選べば通るのか画面からは分からない)。逆に許可の方が広ければ、
+    /// 画面に出ないはずの値をフォーム改ざんで保存できる。別々の関数にすると片方だけ
+    /// 直したときにこの食い違いが戻るので、1 か所で決めて一緒に返す
+    /// ——<see cref="ResolveDepartmentFilterAsync"/> が値と選択肢を組で返すのと同じ構図。</para>
+    ///
+    /// <para><b>比較は序数(完全一致)で行う。</b> 例外を「大文字小文字を無視して同じ」まで
+    /// 広げると、保存される綴りが編集のたびに揺れる(<c>"icu"</c> の行を開いて保存すると
+    /// <c>"ICU"</c> になる等)。選択肢を組み立てる <c>Contains</c> も同じ序数比較なので、
+    /// 表示側と適用側が同じ判定を通る ——この一致は
+    /// <c>UnlistedDepartmentSavePolicyTests</c> が「編集画面が出す選択肢はすべて保存が通る」
+    /// という形で固定している。</para>
+    /// </remarks>
+    /// <param name="storedDepartment">
+    /// 現在 DB に保存されている発生部署(新規登録なら <c>null</c>)。
+    /// <b>必ず DB から読んだ値を渡すこと</b> ——フォームから届いた値を渡すと、
+    /// 「自分で送った値が自分を許可する」ことになり検証そのものが無意味になる。
+    /// </param>
+    /// <returns>ドロップダウンに並べる選択肢と、許可リスト外でも保存を通す 1 件。</returns>
+    private static DepartmentSaveSelection ResolveDepartmentSaveSelection(string? storedDepartment)
+    {
+        // 選択肢の土台は常に Incident.Departments(部署一覧の唯一の真実の源)。
+        // 補完する場合に先頭へ差し込むので、書き換えられるリストとして複製しておく
+        var options = Incident.Departments.ToList();
+
+        // 保存されている値が無い(新規登録)なら許可リストそのまま。例外も作らない
+        if (!SearchFilter.HasValue(storedDepartment))
+            return new DepartmentSaveSelection(options, null);
+
+        // 既に許可リストにある値なら、選択肢にも並んでいるので足す必要も例外も無い
+        if (options.Contains(storedDepartment))
+            return new DepartmentSaveSelection(options, null);
+
+        // ここから先は「許可リストから外された過去の部署名」。選択肢へ補完して、
+        // その 1 件だけ保存も通す(部署を触らない編集を通すため)。
+        // 「既にあれば足さない・無ければ先頭へ」の手順は一覧画面と共通なので共有ヘルパに寄せてある
+        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(options, storedDepartment);
+        return new DepartmentSaveSelection(options, storedDepartment);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveDepartmentSaveSelection"/> の結果。
+    /// 「画面に並べる選択肢」と「許可リスト外でも保存を通す 1 件」を組にして運ぶ。
+    /// </summary>
+    /// <remarks>
+    /// 2 つを 1 つの型にまとめてある理由は <see cref="DepartmentFilterSelection"/> と同じ
+    /// (片方だけを受け取って使う書き方をできなくする / 取り違えを防ぐ / 解説の置き場所)。
+    /// </remarks>
+    /// <param name="Options">発生部署ドロップダウンに並べる選択肢。</param>
+    /// <param name="Grandfathered">
+    /// 許可リストに無いが保存を通す値。無ければ <c>null</c>。
+    /// 新規登録では<b>常に <c>null</c></b> ——過去の部署名を新しい行へ付けられないようにするため。
+    /// </param>
+    private readonly record struct DepartmentSaveSelection(List<string> Options, string? Grandfathered);
+
     // 発生部署が Incident.Departments(唯一の真実の源)の許可リストに含まれているか検証する。
-    // Create/Edit 画面の <select> はこの配列だけを選択肢として描画するが、Admin/RiskManager は
+    // Create/Edit 画面の <select> はこの配列を土台に選択肢を描画するが、Admin/RiskManager は
     // EnforceOwnDepartmentForStaff で上書きされずフォームの値がそのまま使われるため、
     // フォーム改ざん(未定義文字列の直接 POST)をサーバ側で拒否しないと、任意の文字列が
     // Department として保存されてしまう(IncidentType/Severity の EnumDataType 検証と同じ
@@ -846,17 +936,28 @@ public class IncidentsController : Controller
     // 上書きされるため、フォーム改ざんの経路が存在しない。もし対象にすると、クレームの
     // 値が(部署名変更やタイポで)許可リストと一時的に食い違っただけで本人が復旧できない
     // ままロックアウトされてしまう。
-    private void EnforceKnownDepartment(IncidentCreateEditViewModel vm)
+    // なお Staff がこの検証を素通りしても発生部署は書き換わらない: SameDepartmentHandler が
+    // 「インシデントの発生部署 == 本人のクレーム」の行しか編集させないため、上書きは同じ値の
+    // 代入にしかならない(許可リストから外れた部署名の行を編集できるのは、その部署の Staff 本人だけ)。
+    private void EnforceKnownDepartment(IncidentCreateEditViewModel vm, string? grandfathered)
     {
         // Admin/RiskManager 以外(=Staff)はフォーム改ざんの経路が無いため検証をスキップする
         if (!User.IsInRole(AppRoles.Admin) && !User.IsInRole(AppRoles.RiskManager))
             return;
 
-        // 許可リストに含まれない値なら不正入力としてエラーを積む
-        if (!Incident.Departments.Contains(vm.Department))
-        {
-            ModelState.AddModelError(nameof(vm.Department), "部署の値が不正です。");
-        }
+        // 許可リストに含まれる値なら、そのまま通してよい
+        if (Incident.Departments.Contains(vm.Department))
+            return;
+
+        // 許可リスト外でも「現在保存されている値と同じ」なら通す(issue #196)。
+        // これで部署を触らない編集は通り、別の許可リスト外の値へ「変える」ことはできない。
+        // 比較を序数にする理由と、選択肢を組み立てる側と同じ判定でなければならない理由は
+        // ResolveDepartmentSaveSelection の解説を参照
+        if (grandfathered != null && string.Equals(vm.Department, grandfathered, StringComparison.Ordinal))
+            return;
+
+        // どちらにも当てはまらない値は不正入力としてエラーを積む
+        ModelState.AddModelError(nameof(vm.Department), "部署の値が不正です。");
     }
 
     // 発生日時(OccurredAt)が未来の日時でないかをサーバ側で検証する。
@@ -919,7 +1020,10 @@ public class IncidentsController : Controller
             Description = incident.Description,
             ImmediateActions = incident.ImmediateActions,
             ReporterName = incident.ReporterName,
-            CauseCategoryOptions = await BuildCauseCategoryOptions()
+            CauseCategoryOptions = await BuildCauseCategoryOptions(),
+            // 保存されている発生部署が許可リストから外れていれば、その 1 件だけ選択肢へ足す。
+            // 足さないと一致する <option> が無く、別項目だけ直した保存で部署が書き換わる(issue #196)
+            DepartmentOptions = ResolveDepartmentSaveSelection(incident.Department).Options
         };
         // 編集ビューを描画
         return View(vm);
@@ -953,8 +1057,15 @@ public class IncidentsController : Controller
         // 他部署への付け替えもできない(issue #63)
         EnforceOwnDepartmentForStaff(vm);
 
-        // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
-        EnforceKnownDepartment(vm);
+        // 発生部署の選択肢と「保存を通す例外」を決める。基準は DB に保存されている現在値で、
+        // フォームから届いた vm.Department ではない ——フォームの値を渡すと「自分で送った値が
+        // 自分を許可する」ことになり、許可リストの検証そのものが無意味になる。
+        // incident.Department はまだ書き換えていない(下の反映は検証を通ってから)ので現在値そのもの
+        var departmentSelection = ResolveDepartmentSaveSelection(incident.Department);
+
+        // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)。
+        // 保存されている値と同じであれば許可リスト外でも通す(issue #196)
+        EnforceKnownDepartment(vm, departmentSelection.Grandfathered);
 
         // 発生日時が未来でないかをサーバ側で検証する(Create と同じ業務ルールを編集でも守る)
         ValidateOccurredAtNotInFuture(vm);
@@ -966,6 +1077,10 @@ public class IncidentsController : Controller
         if (!ModelState.IsValid)
         {
             vm.CauseCategoryOptions = await BuildCauseCategoryOptions();
+            // 選択肢は POST ボディに含まれないため、再描画のたびに詰め直す。
+            // 補完した過去の部署名もここで戻さないと、再描画された画面から現在値が消え、
+            // 次の送信で issue #196 の書き換えがそのまま起きる
+            vm.DepartmentOptions = departmentSelection.Options;
             return View(vm);
         }
 

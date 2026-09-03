@@ -109,6 +109,8 @@ public class ConcurrencyTests : IDisposable
 
         var vm = new IncidentCreateEditViewModel
         {
+            // 選択肢は POST ボディに含まれないので、モデルバインド直後と同じ空の状態にする
+            DepartmentOptions = new List<string>(),
             Id = incident.Id,
             ConcurrencyToken = Guid.NewGuid(), // stale token
             OccurredAt = incident.OccurredAt,
@@ -279,6 +281,8 @@ public class ConcurrencyTests : IDisposable
 
         var vm = new IncidentCreateEditViewModel
         {
+            // 選択肢は POST ボディに含まれないので、モデルバインド直後と同じ空の状態にする
+            DepartmentOptions = new List<string>(),
             Id = incident.Id,
             ConcurrencyToken = incident.ConcurrencyToken,
             OccurredAt = incident.OccurredAt,
