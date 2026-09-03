@@ -174,6 +174,22 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
             ReporterName = incident.ReporterName
         };
 
+    // 保存されている発生部署を指定の値へ戻す(周回ごとに前提を揃えるため)。
+    // コントローラを通さず直接書き戻すのは、ここが「検査の前提を作る」処理であって
+    // 検査対象ではないから ——コントローラ経由にすると、通したい値が許可リスト外のときに
+    // まさに検査したい規則へ依存してしまう
+    private async Task ResetStoredDepartmentAsync(int id, string department)
+    {
+        // 追跡中の状態を捨ててから読み直す
+        _db.ChangeTracker.Clear();
+        var incident = await _db.Incidents.FirstAsync(i => i.Id == id);
+        // 部署だけを元の値へ戻す
+        incident.Department = department;
+        await _db.SaveChangesAsync();
+        // 次の読み直しがメモリ上の同じインスタンスを返さないよう追跡から外す
+        _db.ChangeTracker.Clear();
+    }
+
     // DB から発生部署を読み直す(コントローラが書き換えたかどうかを確かめる)
     private async Task<string> StoredDepartmentAsync(int id)
     {
@@ -465,6 +481,16 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
 
         foreach (var option in offered)
         {
+            // 各周回の前に、保存されている部署を必ず元の(許可リスト外の)値へ戻す。
+            //
+            // 戻さないと検査が<b>選択肢の並び順に依存する</b>: 1 周目で許可リスト内の値を
+            // 保存してしまうと、2 周目以降は「保存されている値」がその許可リスト内の値になり、
+            // 補完された部署名に対する例外が消える。今は補完が先頭に入るおかげでたまたま
+            // 1 周目に当たって通っているだけで、EnsureAppliedValueIsSelectable の位置の規則を
+            // 末尾へ変えた瞬間、この検査は「選択肢が保存で弾かれた」と<b>位置とは無関係の
+            // 見出しで</b>落ちる ——直す人が原因を取り違える
+            await ResetStoredDepartmentAsync(incident.Id, RetiredDepartment);
+
             // 毎回新しいコントローラを使う(ModelState は前の送信を持ち越さない)
             var controller = NewIncidentsController();
             // 現在の DB の値を読み直してからトークン込みで送る

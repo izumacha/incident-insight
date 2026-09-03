@@ -94,6 +94,14 @@ public class FormViewModelBindingMetadataTests
         // 束縛箇所は PreventiveMeasuresController の Create / Edit、
         // IncidentMeasuresController.AddMeasure、および上のウィザードの Measures[i]
         typeof(MeasureFormViewModel),
+        // 効果評価フォーム。現在は選択肢のプロパティを持たないが、Review.cshtml が
+        // 段階の一覧(EffectivenessScale.All)をビューで直接回しているため、
+        // それをコントローラへ移す変更が起きうる ——そのとき検査へ入っていないと
+        // /PreventiveMeasures/Review が送信できなくなる
+        typeof(ReviewViewModel),
+        // ログインフォーム。選択肢を持つ見込みは薄いが、POST で束縛される型を
+        // 「持ちそうか」で選ぶと判断がぶれる。束縛される型はすべて載せる
+        typeof(LoginViewModel),
     };
 
 

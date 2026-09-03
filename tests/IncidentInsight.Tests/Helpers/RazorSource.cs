@@ -104,12 +104,18 @@ public static class RazorSource
 
         while (true)
         {
-            // 次の foreach キーワードを探す
-            var keyword = block.IndexOf("foreach", cursor, StringComparison.Ordinal);
+            // 次の foreach キーワードを探す。CountForeach と<b>同じ語境界つきの照合</b>を使う
+            // ——素の部分文字列検索にすると、走査対象に foreach を含む識別子
+            // (class="js-foreach-host" など)があったときにこちらだけが 1 件多く数え、
+            // しかもその位置から次の括弧を拾って重複した対象を返す。
+            // 呼び出し側は両者の件数一致を fail-closed の門番にしているので、
+            // 数え方がずれると「解析できないループがある」という<b>実在しない問題</b>で落ちる
+            var match = ForeachKeyword.Match(block, cursor);
             // 無ければ走査を終える
-            if (keyword < 0) break;
+            if (!match.Success) break;
+            var keyword = match.Index;
             // 次の周回はこのキーワードの先から探す(見つからない形でも無限ループにしない)
-            cursor = keyword + "foreach".Length;
+            cursor = keyword + match.Length;
 
             // その直後の開き括弧を探す
             var open = block.IndexOf('(', keyword);
@@ -154,5 +160,17 @@ public static class RazorSource
     /// </remarks>
     /// <param name="block">走査する Razor のブロック(コメントは落としてから渡す)。</param>
     /// <returns>ブロック内の <c>foreach</c> の数。</returns>
-    public static int CountForeach(string block) => Regex.Matches(block, @"\bforeach\b").Count;
+    public static int CountForeach(string block) => ForeachKeyword.Matches(block).Count;
+
+    /// <summary>
+    /// <c>foreach</c> キーワード。語境界つきで照合する(<c>js-foreach-host</c> のような
+    /// 識別子の一部に当たらないようにするため)。
+    /// </summary>
+    /// <remarks>
+    /// <b>数える側と取り出す側で同じものを使う。</b> 呼び出し側は
+    /// <see cref="CountForeach"/> と <see cref="ExtractForeachSources"/> の件数一致を
+    /// fail-closed の門番にしているので、照合の仕方が分かれると実在しない解析エラーで落ちる。
+    /// </remarks>
+    private static readonly Regex ForeachKeyword =
+        new(@"\bforeach\b", RegexOptions.Compiled);
 }
