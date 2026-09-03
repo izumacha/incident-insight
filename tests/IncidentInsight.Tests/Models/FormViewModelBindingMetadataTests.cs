@@ -65,8 +65,7 @@ public class FormViewModelBindingMetadataTests
     /// <para><b>フォーム ViewModel を新しく足す人がここへ 1 行足すこと。</b>
     /// 足し忘れるとその型だけが検査から外れる。ただし壊れ方は静かではない ——
     /// 選択肢を持つ POST 束縛の型を足せば、その画面の POST が最初の手動確認で必ず失敗する。</para>
-    /// </remarks>
-    /// <remarks>
+    ///
     /// <para><b>選択肢をまだ持たない型も載せる。</b> 検査は「今ある選択肢を守る」だけでなく
     /// 「選択肢を<b>足したとき</b>に守らせる」ためのもので、後者の方が実際の事故に近い
     /// ——この PR 自体が「既存の画面へ選択肢のプロパティを足して全 POST を壊した」変更だった。
@@ -149,9 +148,28 @@ public class FormViewModelBindingMetadataTests
         }
 
         // モデルバインド直後の状態を再現する。選択肢は POST ボディに含まれないので、
-        // 初期値を持たないプロパティは null のまま検証へ入る
+        // バインダはこのプロパティに触れない
         // (required でも Activator 経由の生成は検査されないので、本番と同じ状態になる)
         var boundModel = Activator.CreateInstance(viewModelType)!;
+
+        // 選択肢のプロパティを明示的に null にしてから検証へ入れる。
+        //
+        // これが無いと<b>初期値(= new())を持つ選択肢では検査が空振りする</b>——
+        // 非 null なら自動で足された [Required] は満たされてしまうので、
+        // [ValidateNever] を外しても何のエラーも出ない。実測で、CauseCategoryOptions の
+        // [ValidateNever] を 2 か所とも消しても全件緑・件数も不変のまま通った。
+        // それではこのクラスの解説が約束している「初期値の有無に依存しない」が成り立たず、
+        // 実際に守られているのは初期値を持たない DepartmentOptions だけになる。
+        // null に揃えれば、どの選択肢も同じ条件(バインダが触れなかった状態)で検査に掛かる
+        foreach (var property in optionProperties)
+        {
+            // メタデータのプロパティ名から実際の CLR プロパティを引く
+            var clrProperty = viewModelType.GetProperty(property.PropertyName!);
+            // 書き込めないプロパティは飛ばす(計算プロパティなど)
+            if (clrProperty?.CanWrite != true) continue;
+            // バインダが触れなかった状態＝null にする
+            clrProperty.SetValue(boundModel, null);
+        }
 
         // 実際の検証器へ通す(本番のリクエストで走るのと同じ経路)
         var modelState = new ModelStateDictionary();
@@ -246,17 +264,22 @@ public class FormViewModelBindingMetadataTests
 
         // 選択肢でないコレクション = フォームが実際に送るサブフォームの繰り返し。
         // 現在は登録ウィザードの対策リストだけで、これは利用者の入力なので束縛・検証の対象で正しい。
-        // ここへ足すのは「利用者が送るコレクション」だけ ——選択肢を足して黙らせないこと
-        var postedCollections = new HashSet<string>(StringComparer.Ordinal)
+        // ここへ足すのは「利用者が送るコレクション」だけ ——選択肢を足して黙らせないこと。
+        //
+        // キーは<b>(型, プロパティ名)の組</b>にする。名前だけで持つと、別の型に同じ名前の
+        // コレクションが現れたとき——それが本当は選択肢でも——巻き添えで除外され、
+        // 命名規約の検査も [BindNever] / [ValidateNever] の検査も同時に素通りする。
+        // この repo が LengthGovernanceExclusions で完全修飾名をキーにしているのと同じ理由
+        var postedCollections = new HashSet<(Type Owner, string Property)>
         {
             // 再発防止策のサブフォーム(利用者が入力し、そのまま保存される)
-            nameof(IncidentCreateEditViewModel.Measures),
+            (typeof(IncidentCreateEditViewModel), nameof(IncidentCreateEditViewModel.Measures)),
         };
 
         foreach (var name in collectionProperties)
         {
-            // 利用者が送るコレクションとして登録済みなら対象外
-            if (postedCollections.Contains(name)) continue;
+            // その型のプロパティとして「利用者が送るコレクション」に登録済みなら対象外
+            if (postedCollections.Contains((viewModelType, name))) continue;
             // それ以外のコレクションは選択肢のはずなので、命名規約に当てはまっていること
             Assert.True(name.EndsWith(OptionsSuffix, StringComparison.Ordinal),
                 $"{viewModelType.Name}.{name} はコレクションだが *{OptionsSuffix} という名前ではない。"

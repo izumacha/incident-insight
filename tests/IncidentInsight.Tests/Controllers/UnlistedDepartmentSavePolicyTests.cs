@@ -69,6 +69,13 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
     // 許可リストにも実データにも無い部署名(フォーム改ざん・打ち間違いの想定)
     private const string UnknownDepartment = "存在しない部署";
 
+    // 上と同じ「許可リストから外された部署名」だが、こちらは大文字小文字の違いを作れるよう
+    // ラテン文字を含む。序数比較(完全一致)であることを確かめる検査で使う
+    private const string RetiredDepartmentWithLetters = "旧 ICU";
+
+    // その大文字小文字だけを変えた綴り。序数比較なら別の値として扱われる
+    private const string RetiredDepartmentCaseVariant = "旧 icu";
+
     public UnlistedDepartmentSavePolicyTests()
     {
         var options = new DbContextOptionsBuilder<ApplicationDbContext>()
@@ -270,6 +277,35 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
         Assert.True(controller.ModelState.ContainsKey(nameof(IncidentCreateEditViewModel.Department)));
         // DB の値は変わっていない
         Assert.Equal(RetiredDepartment, await StoredDepartmentAsync(incident.Id));
+    }
+
+    // 例外の判定は序数(完全一致)。大文字小文字だけが違う綴りは別の値として弾く。
+    //
+    // 緩めて OrdinalIgnoreCase にしても、他の検査は全件緑のまま通る(実測。件数も変わらない)。
+    // それでは ResolveDepartmentSaveSelection の解説が「保存される綴りが編集のたびに揺れる」
+    // として禁じている状態がそのまま通ってしまう。実害は綴りが変わることだけに留まらない:
+    // 大文字小文字を区別する既定プロバイダ(SQLite / PostgreSQL)では、書き換わった行が
+    // 元の綴りでの絞り込み(?department=旧 ICU)に一致しなくなり、一覧から到達できなくなる。
+    //
+    // 選択肢を組み立てる側の Contains も序数なので、緩めると表示側と適用側の判定もずれる
+    // ——画面には「旧 ICU」しか出ないのに、保存では「旧 icu」も通る状態になる
+    [Fact]
+    public async Task EditPost_CaseVariantOfStoredDepartment_IsRejected()
+    {
+        RequireOutsideAllowList(RetiredDepartmentWithLetters);
+        RequireOutsideAllowList(RetiredDepartmentCaseVariant);
+        var incident = await SeedIncidentAsync(RetiredDepartmentWithLetters);
+        var controller = NewIncidentsController();
+
+        // 保存されている綴りの大文字小文字だけを変えて送る
+        var result = await controller.Edit(
+            incident.Id, EditSubmission(incident, RetiredDepartmentCaseVariant));
+
+        // 保存されず再描画される
+        Assert.IsType<ViewResult>(result);
+        Assert.True(controller.ModelState.ContainsKey(nameof(IncidentCreateEditViewModel.Department)));
+        // DB の綴りは元のまま(揺れない)
+        Assert.Equal(RetiredDepartmentWithLetters, await StoredDepartmentAsync(incident.Id));
     }
 
     // 許可リスト外から許可リスト内へ直すのは通る。
