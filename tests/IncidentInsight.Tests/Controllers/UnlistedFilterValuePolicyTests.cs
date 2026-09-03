@@ -1105,11 +1105,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
         while (true)
         {
-            // 次の foreach の位置を探す
-            var keyword = block.IndexOf("foreach", cursor, StringComparison.Ordinal);
+            // 次の foreach の位置を探す。数える側(RazorSource.CountForeach)と同じ入口を通す
+            // ——素の部分文字列検索にすると、走査対象に foreach を含む識別子
+            // (class="js-foreach-host" 等)があったときだけ件数が食い違い、
+            // 下の「本体を取り出せていない」という門番が実在しない問題で落ちる
+            var keyword = RazorSource.NextForeachKeyword(block, cursor);
             if (keyword < 0) break;
             // 見つからない形でも無限ループにしないよう、次はこの先から探す
-            cursor = keyword + "foreach".Length;
+            cursor = keyword + RazorSource.ForeachKeywordLength;
             // その後ろにある最初の波括弧が本体の開始
             var open = block.IndexOf('{', keyword);
             if (open < 0) continue;

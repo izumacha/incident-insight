@@ -110,12 +110,11 @@ public static class RazorSource
             // しかもその位置から次の括弧を拾って重複した対象を返す。
             // 呼び出し側は両者の件数一致を fail-closed の門番にしているので、
             // 数え方がずれると「解析できないループがある」という<b>実在しない問題</b>で落ちる
-            var match = ForeachKeyword.Match(block, cursor);
+            var keyword = NextForeachKeyword(block, cursor);
             // 無ければ走査を終える
-            if (!match.Success) break;
-            var keyword = match.Index;
+            if (keyword < 0) break;
             // 次の周回はこのキーワードの先から探す(見つからない形でも無限ループにしない)
-            cursor = keyword + match.Length;
+            cursor = keyword + ForeachKeywordLength;
 
             // その直後の開き括弧を探す
             var open = block.IndexOf('(', keyword);
@@ -163,14 +162,52 @@ public static class RazorSource
     public static int CountForeach(string block) => ForeachKeyword.Matches(block).Count;
 
     /// <summary>
-    /// <c>foreach</c> キーワード。語境界つきで照合する(<c>js-foreach-host</c> のような
-    /// 識別子の一部に当たらないようにするため)。
+    /// <paramref name="startAt"/> 以降にある次の <c>foreach</c> キーワードの位置を返す。
+    /// 無ければ <c>-1</c>。
     /// </summary>
     /// <remarks>
-    /// <b>数える側と取り出す側で同じものを使う。</b> 呼び出し側は
+    /// <b>foreach を探す処理はすべてここを通すこと。</b> 素の部分文字列検索を各所で書くと、
+    /// <see cref="CountForeach"/> の語境界つきの照合とずれる ——走査対象に
+    /// <c>class="js-foreach-host"</c> のような識別子があるだけで件数が食い違い、
+    /// 呼び出し側の「解析できた数と foreach の数が一致するか」という門番が
+    /// <b>実在しない解析エラー</b>で落ちる(正しいマークアップを咎める検出網は、いずれ緩められる)。
+    /// </remarks>
+    /// <param name="block">走査する Razor のブロック(コメントは落としてから渡す)。</param>
+    /// <param name="startAt">探し始める位置。</param>
+    /// <returns>見つかった位置。無ければ <c>-1</c>。</returns>
+    public static int NextForeachKeyword(string block, int startAt)
+    {
+        // 語境界つきで次の 1 件を探す(数える側とまったく同じ照合)
+        var match = ForeachKeyword.Match(block, startAt);
+        // 見つからなければ -1 を返す
+        return match.Success ? match.Index : -1;
+    }
+
+    /// <summary>
+    /// <c>foreach</c> キーワードの文字数。走査位置を進めるときに使う。
+    /// </summary>
+    public const int ForeachKeywordLength = 7;
+
+    /// <summary>
+    /// <c>foreach</c> <b>文</b>の開始。キーワードに続く開き括弧まで見て照合する。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>語境界(<c>\bforeach\b</c>)だけでは足りない(実測)。</b> 正規表現の語境界は
+    /// ハイフンを単語の区切りとみなすため、<c>class="js-foreach-host"</c> のような
+    /// <b>正しいマークアップ</b>の中の <c>foreach</c> に当たってしまう。実際に
+    /// <c>&lt;select name="department" class="js-foreach-host"&gt;</c> を置くと
+    /// 件数が 1 対 2 に食い違い、呼び出し側の門番が
+    /// 「本体を取り出せていない」という<b>実在しない問題</b>で落ちた。
+    /// 正しいコードを咎める検出網はいずれ緩められるので、精度側に寄せる。</para>
+    ///
+    /// <para>実際に数えたいのは <c>foreach</c> <b>文</b>なので、C# の構文どおり
+    /// 「キーワードの直後に(空白を挟んで)開き括弧が来る」ことまで要求する。
+    /// 属性値やクラス名の中の <c>foreach</c> には括弧が続かないため当たらない。</para>
+    ///
+    /// <para><b>数える側と取り出す側で同じものを使う。</b> 呼び出し側は
     /// <see cref="CountForeach"/> と <see cref="ExtractForeachSources"/> の件数一致を
-    /// fail-closed の門番にしているので、照合の仕方が分かれると実在しない解析エラーで落ちる。
+    /// fail-closed の門番にしているので、照合の仕方が分かれると実在しない解析エラーで落ちる。</para>
     /// </remarks>
     private static readonly Regex ForeachKeyword =
-        new(@"\bforeach\b", RegexOptions.Compiled);
+        new(@"\bforeach\s*\(", RegexOptions.Compiled);
 }
