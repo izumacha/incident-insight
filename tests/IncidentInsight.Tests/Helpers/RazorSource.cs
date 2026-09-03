@@ -186,7 +186,16 @@ public static class RazorSource
     /// <summary>
     /// <c>foreach</c> キーワードの文字数。走査位置を進めるときに使う。
     /// </summary>
-    public const int ForeachKeywordLength = 7;
+    /// <remarks>
+    /// <b>裸の数値を書かず綴りから導く。</b> 走査は
+    /// 「<see cref="NextForeachKeyword"/> が返した位置 ＋ この長さ」で次の周回へ進むので、
+    /// 正規表現が探す綴りとこの値は必ず対で正しい必要がある。書き写すと、
+    /// 進む幅が綴りより短くなったときに<b>同じ位置を何度も見つけて</b>同じループを
+    /// 積み続け、呼び出し側の門番が「foreach N 件のうち M 件しか解析できていない」
+    /// (M &gt; N)という意味の通らない診断で落ちる ——直す人はビューを疑ってこの定数へは
+    /// たどり着けない。0 なら無限ループになる(§6 マジックナンバーを避ける)。
+    /// </remarks>
+    public static readonly int ForeachKeywordLength = ForeachKeywordText.Length;
 
     /// <summary>
     /// <c>foreach</c> <b>文</b>の開始。キーワードに続く開き括弧まで見て照合する。
@@ -209,5 +218,11 @@ public static class RazorSource
     /// fail-closed の門番にしているので、照合の仕方が分かれると実在しない解析エラーで落ちる。</para>
     /// </remarks>
     private static readonly Regex ForeachKeyword =
-        new(@"\bforeach\s*\(", RegexOptions.Compiled);
+        new($@"\b{ForeachKeywordText}\s*\(", RegexOptions.Compiled);
+
+    /// <summary>
+    /// <c>foreach</c> キーワードの綴り。正規表現と <see cref="ForeachKeywordLength"/> の
+    /// <b>唯一の出所</b>。
+    /// </summary>
+    private const string ForeachKeywordText = "foreach";
 }
