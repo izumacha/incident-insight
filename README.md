@@ -75,7 +75,7 @@ flowchart LR
 
 | 要素 | 採用技術 |
 |------|---------|
-| バックエンド | ASP.NET Core 8.0 MVC + EF Core 8 |
+| バックエンド | ASP.NET Core 8.0 MVC + EF Core 9 |
 | データベース | SQLite（開発デフォルト）/ SQL Server / PostgreSQL 対応（ランタイム切替） |
 | フロントエンド | Bootstrap 5 + Bootstrap Icons + Chart.js 4（CDN） |
 | バリデーション | jQuery Validation Unobtrusive（クライアント側）+ DataAnnotations（サーバー側） |
