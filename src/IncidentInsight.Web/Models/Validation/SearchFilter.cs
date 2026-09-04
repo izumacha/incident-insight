@@ -186,8 +186,18 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>/Analytics</c> は JSON のキー、カンバンは <c>ViewBag</c>)ため、
 /// 旗の持たせ方と検出網の掛け方をまとめて決め直す必要があり、
 /// 「1 コミット = 1 論理変更」(CLAUDE.md §12)に収まらないから。
-/// 解決処理側(<c>MalformedFilterValueResolver.Resolve</c>)は画面に依存しない形
-/// (<c>ModelState</c> と名前だけを受ける)にしてあるので、広げるときは配線だけで済む。
+/// <b>解決処理側</b>(<c>MalformedFilterValueResolver.Resolve</c>)は画面に依存しない形
+/// (<c>ModelState</c> と名前だけを受ける)にしてあるので、そちらは配線だけで済む
+/// ——ただし<b>注意書きの見せ方は別で、そのままでは持ち出せない</b>:
+/// パーシャル <c>_FilterIgnoredNotice</c> は <c>Views/Incidents/</c> に置いてあり、
+/// Razor のパーシャル解決は <c>/Views/{コントローラ名}/</c> と <c>/Views/Shared/</c> しか
+/// 見ないので、他の画面から名前で呼ぶと実行時に見つからない。広げるときは
+/// このパーシャル(と <c>FilterIgnoredNotice</c>)を <c>Views/Shared/</c> へ移すこと
+/// (<c>_Pager</c> / <c>_ConcurrencyTokenFields</c> がその置き方)。
+/// <b>先回りで移していない</b>のは、今の利用者が 1 画面しか無いため
+/// ——複数画面で使う前に共有の場所へ置くのは§6 が避けろと書いている
+/// 「将来を見越した過度な抽象化」で、しかも <c>/Analytics</c> の伝え先は JSON、
+/// カンバンは <c>ViewBag</c> なので、実際に何を共有できるかは広げる時点で決まる。
 /// <b>この段落を消すときは、実際に全画面へ広げたときにすること</b>
 /// ——消しただけでは、残った画面が表からも検出網からも同時に外れる。</para>
 ///
