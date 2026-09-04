@@ -1025,8 +1025,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var body = ExtractMethodBody(source, methodName);
 
         // DB から読んだ綴り(どちらのメソッドでも storedDepartment)を採用する前に
-        // 空値の門番を通していること。null 判定へ戻す・門番ごと消す、のどちらでも落ちる
-        Assert.Contains($"!{nameof(SearchFilter)}.{nameof(SearchFilter.HasValue)}(storedDepartment)", body);
+        // 空値の門番を通していること。null 判定へ戻す・門番ごと消す、のどちらでも落ちる。
+        // 空白の有無に依存しない形で探すのは、注意書きの走査(下)と同じ理由 ——
+        // 完全一致で書くと `HasValue( storedDepartment )` のような同じ働きの書き方を落とし、
+        // 次の人が動いているコードを「直し」に行く検出網になる(dotnet format でも赤くなる)
+        var gate = Regex.IsMatch(
+            body,
+            $@"!\s*{nameof(SearchFilter)}\.{nameof(SearchFilter.HasValue)}\s*\(\s*storedDepartment\s*\)");
+        // 落ちたときに何を求めているかが分かるよう、他の Assert と同じ形で理由を書く
+        Assert.True(gate,
+            $"{methodName} が採用する値(storedDepartment)を "
+            + $"{nameof(SearchFilter)}.{nameof(SearchFilter.HasValue)} の門番へ通していない。"
+            + "姉妹メソッドと同じ形を保つこと(理由は実装側のコメントが正本)。"
+            + "門番の書き方を変えたなら、この照合も同じ変更セットで直すこと。");
     }
 
     // C# のコメント(行コメントとブロックコメント)。
