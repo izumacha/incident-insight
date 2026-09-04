@@ -71,6 +71,17 @@ public class IncidentsController : Controller
         IncidentTypeKind? incidentType, IncidentSeverity? severity, DateTime? dateFrom, DateTime? dateTo,
         int? causeCategoryId, string? sortBy, int page = 1)
     {
+        // 型として読めなかった絞り込み値を先に拾っておく(issue #198)。
+        // 文字列以外の引数はモデルバインドに失敗すると null になり、失敗した事実は
+        // ModelState にしか残らない ——見ないと ?severity=abc が「未指定」と同じ扱いになり、
+        // 注意書きもバッジも出ないまま全件が返る。判定と理由の正本は
+        // MalformedFilterValueResolver の解説。キーはモデルバインドが使う引数名そのものなので
+        // nameof で渡す(直書きすると引数を改名したときに黙って外れる)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState,
+            nameof(incidentType), nameof(severity), nameof(dateFrom), nameof(dateTo),
+            nameof(causeCategoryId));
+
         // 関連(対策)込みで、ユーザー部署スコープに絞ったクエリを用意。
         // CauseAnalyses は Include しない: 一覧ビュー(Views/Incidents/Index.cshtml)は
         // PreventiveMeasures しか参照せず、下の causeCategoryId 絞り込みも
@@ -207,7 +218,11 @@ public class IncidentsController : Controller
             // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
             CauseCategoryOptions = causeCategoryFilter.Options,
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える(判定は解決側が返す)
-            CauseCategoryFilterIgnored = causeCategoryFilter.Ignored
+            CauseCategoryFilterIgnored = causeCategoryFilter.Ignored,
+            // 型として読めなかった絞り込み値があったなら、その事実も画面へ伝える。
+            // 上の 2 つと違い入力ごとに分けないのは、採用しなかった理由が 5 つの入力で
+            // 同一だから(理由の正本は MalformedFilterValueResolver の解説)
+            MalformedFilterIgnored = malformedFilters.Ignored
         };
 
         // 一覧ビューへ ViewModel を渡して描画

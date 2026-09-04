@@ -1,0 +1,35 @@
+@* 「絞り込み値を受け取ったのに採用しなかった」注意書きの共有パーシャル。
+
+   なぜ切り出したか: 一覧ビューはこの注意書きを旗ごとに出しており(発生部署・原因分類・
+   型として読めない値)、枠のマークアップ ——警告の見た目・アイコン・role="alert"・
+   アイコンを支援技術から隠す指定—— はどれも完全に同じで文面だけが違う。呼び出し側へ
+   書き写すと、a11y の指定を直すときに 1 つが取り残される(§6 DRY / §7)。
+   件数をここに書かないのは、旗を足すたびにこの数字だけが古くなるため。
+
+   なぜ「出すかどうか」の @if は呼び出し側に残すか: 旗ごとに
+   `@if (Model.<旗>)` が Index.cshtml にあることを
+   UnlistedFilterValuePolicyTests.IncidentsIndexView_RendersTheIgnoredFilterNotice が
+   固定している。条件までこちらへ寄せると、新しい旗が誰にも読まれない
+   書き込み専用のプロパティになっても気付けない(実測でその状態が起きている)。
+   このパーシャルは「どう見せるか」だけを持つ。
+
+   なぜ受け取った値そのものを出さないか: 外部由来の文字列をアプリ自身の文章へ
+   埋め込むと、整形するほど「表示した文字列」と「実際に照会した文字列」が食い違い、
+   事実と逆の案内になる(理由の正本は IncidentListViewModel の解説)。
+   送った値はブラウザのアドレス欄に出ており、この注意書きが出るときは
+   絞り込みパネルも開くので、選び直す導線はそちらで足りる。 *@
+
+@model IncidentInsight.Web.Models.ViewModels.FilterIgnoredNotice
+
+@* 色だけに意味を持たせず、アイコンと文言を併記する(§7)。
+   role="alert" で支援技術にも状態の変化として伝える *@
+<div class="alert alert-warning d-flex align-items-start gap-2" role="alert">
+    @* 装飾目的のアイコンなので支援技術からは隠す(隣の文言が同じことを言っている) *@
+    <i class="bi bi-exclamation-triangle-fill" aria-hidden="true"></i>
+    <div>
+        @* 何が適用されなかったのかを最初に言い切る *@
+        <strong>@Model.Heading</strong>
+        @* 続けて、採用しなかった理由と選び直す導線を案内する *@
+        @Model.Detail
+    </div>
+</div>

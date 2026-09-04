@@ -615,6 +615,184 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Empty(vm.Incidents);
     }
 
+    // --- /Incidents: 型として読めない絞り込み値(issue #198) --------------------------
+
+    // 「型として読めなかった」状態を作って一覧を引く。
+    //
+    // 実運用では MVC のモデルバインドが ?severity=abc のような値を引数へ変換できず、
+    // 引数を null にしたうえで ModelState へエラーを積む。テストはコントローラの
+    // メソッドを直接呼ぶのでモデルバインドを通らないため、その結果を手で再現する:
+    // 引数は null、ModelState にはその引数名でエラー。キーが引数名になるのは
+    // 単純型の引数に対するモデルバインドの規則で、本体側も nameof で同じ名前を渡している
+    private async Task<IncidentListViewModel> IndexWithUnreadableValueAsync(string parameterName)
+    {
+        // ModelState は ControllerContext と一緒に作られるので、先にコントローラを組み立てる
+        var controller = NewIncidentsController();
+        // 「値は届いたが、その型として読めなかった」ことを表すエラーを積む
+        // (第 2 引数は MVC が入れる既定メッセージ相当。文面は判定に使われない)
+        controller.ModelState.AddModelError(parameterName, "値の形式が正しくありません。");
+        // 絞り込みの引数はすべて null(モデルバインドが失敗した後の状態)
+        var result = await controller.Index(null, null, null, null, null, null, null, null, 1) as ViewResult;
+        // 一覧ビューのモデルとして取り出す
+        return Assert.IsType<IncidentListViewModel>(result!.Model);
+    }
+
+    // 「読めない値を受け取ったら注意書きを出す」対象の引数を、本体とは<b>独立な手がかり</b>から導く。
+    //
+    // 手がかりはアクションの署名: <c>string?</c> はどんな入力でも束縛できるので
+    // 「読めなかった」という状態が存在せず、<b>読めずに null へ化けうるのは Nullable&lt;T&gt; だけ</b>。
+    // つまり Index が受ける Nullable の引数が、この手当てが要る入力の実際の一覧になる。
+    //
+    // なぜ書き並べないのか。 本体側は見張る引数名を nameof で並べて渡しており、
+    // 6 つ目の型付き絞り込みを足した人がそこへ渡し忘れると、その引数だけが黙って
+    // 元の壊れ方(注意書きも出ないまま全件が返る)に戻る。ここを [InlineData] の手書きに
+    // すると同じ人が同じように行を足し忘れるので、検出網ごと素通りする ——
+    // この repo が AuditedEntities / LengthGovernedEntityTypes / IgnoredFilterFlags で
+    // 繰り返し避けている「写しを持つ」形そのもの。署名から導けば、引数を足した時点で
+    // 自動でケースに入る。
+    //
+    // <b>拾うのは「URL 上の名前」で、C# の引数名ではない。</b> モデルバインドが ModelState の
+    // キーに使うのは URL 上の名前で、本体側が渡している nameof は<b>その 2 つが一致している
+    // 今だけ</b>正しい。引数名で照合すると本体とまったく同じ手がかりを共有することになり、
+    // <c>[FromQuery(Name = "cause")] int? causeCategoryId</c> のような別名を付けた瞬間に
+    // 本体は "causeCategoryId" を見張り MVC は "cause" にエラーを積む、という食い違いが
+    // <b>両側そろって同じ名前を使うせいで検出できない</b>(＝注意書きが黙って消えるのに全件緑)。
+    // URL 上の名前で拾えば、別名を付けた時点でこの Theory が "cause" を渡して落ちる。
+    // 判定は ?department= の照合と同じ QueryStringName に集約してある(§6 DRY)
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。引数の型をすべて string? へ変えるような
+    // 改修で「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
+    public static TheoryData<string> NullableFilterParameters()
+    {
+        // Index の引数のうち Nullable<T>(値として読めなければ null に化けるもの)だけを、
+        // モデルバインドが ModelState のキーに使う「URL 上の名前」で拾う
+        var names = typeof(IncidentsController)
+            .GetMethod(nameof(IncidentsController.Index))!
+            .GetParameters()
+            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
+            .Select(p => QueryStringName(p)!)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 0 件は「対象が無くなった」より「引数の型か導出が変わった」可能性が高い
+        Assert.True(names.Count > 0,
+            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に Nullable の引数が 1 つも無い。"
+            + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var name in names) data.Add(name);
+        return data;
+    }
+
+    // 型として読めない絞り込み値でも、黙って落とさず注意書きを出すこと(issue #198)。
+    //
+    // 直っていなかった頃の再現手順: /Incidents?causeCategoryId=abc を開くと
+    // モデルバインドが失敗して causeCategoryId は null になり、解決処理は「未指定」と
+    // 判断して Ignored: false を返す ——注意書きも「フィルター適用中」バッジも出ないまま
+    // 全件が返る。?causeCategoryId=0(実在しない id)なら注意書きが出るのに、綴りが
+    // 数値でないと消える、という一貫性の欠如そのもの。
+    //
+    // 引数ごとに掛けるのは、本体側が nameof を並べて渡す形だから ——
+    // まとめて 1 件だけ見る検査にすると、5 つのうち 1 つを渡し忘れても緑のまま通る
+    [Theory]
+    [MemberData(nameof(NullableFilterParameters))]
+    public async Task IncidentsIndex_ReportsAFilterValueThatCannotBeRead(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する(注意書きが「0 件だから出た」のではないことを示すため)
+        await SeedIncidentAsync("ICU");
+
+        // その引数だけが「読めなかった」状態で一覧を引く
+        var vm = await IndexWithUnreadableValueAsync(parameterName);
+
+        // 受け取ったのに採用しなかったことを画面へ伝えている
+        Assert.True(vm.MalformedFilterIgnored,
+            $"?{parameterName}=<読めない値> を受け取ったのに注意書きが出ない。"
+            + $"MalformedFilterValueResolver へ {parameterName} を渡し忘れていないか、"
+            + "あるいは [FromQuery(Name = ...)] で URL 上の名前を変えたのに本体が nameof の"
+            + "引数名を渡したままになっていないか確認すること"
+            + "(ModelState のキーになるのは URL 上の名前で、C# の引数名ではない)。");
+
+        // 絞り込みは掛かっていない(全件が返る)。これは「読めない値では絞り込めない」以上
+        // 避けられないので、注意書きはまさにこの状態を伝えるためにある
+        Assert.Single(vm.Incidents);
+    }
+
+    // 逆に、正しく読めた値では注意書きを出さないこと。
+    //
+    // <b>ModelState にエントリがあること自体を条件にしてはいけない。</b>
+    // モデルバインドは<b>成功した引数にもエントリを作る</b>(束縛した値を記録するため)ので、
+    // キーの存在で判定すると<b>正しい値を送るたびに注意書きが出る</b>(誤検知)。
+    // 出っぱなしの警告は読み飛ばされるようになり、本物の注意書きまで効かなくなる。
+    //
+    // <b>この誤検知はコントローラを直接呼ぶだけでは再現しない</b>(モデルバインドを通らないので
+    // ModelState が空のまま)。実測でも、判定を「エントリの有無」へ差し替える変異は
+    // 他の検査をすべて素通りして<b>全件緑のまま通った</b>。そこで
+    // <c>SetModelValue</c> で「束縛に成功した引数」の状態(エラーの無いエントリ)を作る ——
+    // これは MVC が成功時に行うのと同じ記録の仕方
+    [Theory]
+    [MemberData(nameof(NullableFilterParameters))]
+    public async Task IncidentsIndex_DoesNotReportAnything_WhenTheFilterValueWasReadable(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedIncidentAsync("ICU");
+
+        // ModelState は ControllerContext と一緒に作られるので、先にコントローラを組み立てる
+        var controller = NewIncidentsController();
+        // 「値が届いて、束縛にも成功した」状態を作る(エラーの無いエントリ)
+        controller.ModelState.SetModelValue(parameterName, "1", "1");
+        // 絞り込みの値そのものはこのテストの関心ではない(見るのは注意書きを出さないことだけ)
+        var result = await controller.Index(null, null, null, null, null, null, null, null, 1) as ViewResult;
+        var vm = Assert.IsType<IncidentListViewModel>(result!.Model);
+
+        // 読めなかった値は無いので注意書きは出ない
+        Assert.False(vm.MalformedFilterIgnored,
+            $"?{parameterName}=<読める値> で注意書きが出ている。"
+            + "MalformedFilterValueResolver が「エントリの有無」ではなく"
+            + "「エラーの有無」を見ているか確認すること。");
+    }
+
+    // 実際に読める値を渡したときも注意書きが出ず、絞り込み自体は効くこと。
+    // 上の Theory が ModelState の作り方を模した検査なのに対し、こちらは
+    // 引数として本物の値が入ってきた通常の経路を通す(模した状態が実態とずれていないかの裏取り)
+    [Fact]
+    public async Task IncidentsIndex_DoesNotReportAnything_WhenEveryFilterValueIsReadable()
+    {
+        // 一覧に出る行を 1 件用意する
+        var incident = await SeedIncidentAsync("ICU");
+
+        // すべての型付き絞り込みへ、実際に読める値を渡して一覧を引く
+        var result = await NewIncidentsController().Index(
+            null, null, incident.IncidentType, incident.Severity,
+            TestFixtures.Today.AddDays(-1), TestFixtures.Today.AddDays(1), null, null, 1) as ViewResult;
+        var vm = Assert.IsType<IncidentListViewModel>(result!.Model);
+
+        // 読めない値は 1 つも無かったので注意書きは出ない
+        Assert.False(vm.MalformedFilterIgnored);
+        // 絞り込みは実際に効いている(値が素通りしていないことの裏取り)
+        Assert.Single(vm.Incidents);
+    }
+
+    // 未指定(そもそも値が届いていない)でも注意書きを出さないこと。
+    //
+    // ?severity= のような空の入力は null 許容型へ null として問題なく束縛され
+    // ModelState にエラーを積まないので、ここは「エラーの有無」を見る判定が
+    // 空入力を誤って拾わないことの確認になる
+    [Fact]
+    public async Task IncidentsIndex_DoesNotReportAnything_WhenNoFilterValueWasSent()
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedIncidentAsync("ICU");
+
+        // 絞り込みを一切指定せずに一覧を引く
+        var vm = await IndexIncidentsAsync(null);
+
+        // 受け取っていないものは「採用しなかった」ではない
+        Assert.False(vm.MalformedFilterIgnored);
+    }
+
     // --- /Analytics: /Incidents と同じ「実データにあれば補完、無ければ採用しない」 ------
 
     // 方式表(SearchFilter の解説)に載っている「?department= を受ける」アクションの一覧。
@@ -1484,8 +1662,51 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var blockBody = ExtractBraceBlock(source, header.Index);
         Assert.True(blockBody != null,
             $"Views/Incidents/Index.cshtml の @if (Model.{flag}) に本体が無い。");
-        Assert.Contains("alert", blockBody!, StringComparison.Ordinal);
+        // 何が適用されなかったのかを言い切る見出しは呼び出し側にある(旗ごとに文面が違う)
         Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
+
+        // 枠(警告の見た目・アイコン・role="alert")は共有パーシャルが持つので、
+        // ブロックがそのパーシャルを実際に呼んでいることを見て、続きはパーシャル側で確かめる。
+        //
+        // なぜ追いかけるのか。 以前この検査はブロック本体に "alert" があることだけを見ていた。
+        // 3 件目の注意書きを足すにあたって枠を _FilterIgnoredNotice へ切り出した(§6 DRY /
+        // 枠には §7 の配慮が入っており、3 か所へ書き写すと直すときに 1 つ取り残される)が、
+        // 「本体に alert という語があるか」のままだと、パーシャルの呼び出しごと消して
+        // 見出しの文字列だけを残す変異が素通りする ——注意書きの枠が消えて文字が地の文に
+        // 落ちるので、警告として見えなくなる。マークアップの置き場所を変えても
+        // 「注意書きが実際に描画されるか」を見続けられるよう、呼び出し先まで追う
+        var partialCall = Regex.Match(blockBody!, @"<partial\s+name\s*=\s*""(?<name>[^""]+)""");
+        Assert.True(partialCall.Success,
+            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) が注意書きのパーシャルを呼んでいない。"
+            + "枠のマークアップを直接書くか、この照合を同じ変更セットで直すこと。");
+
+        // 呼んでいるパーシャルの中身を読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var partialPath = Path.Combine(
+            RepositoryPaths.Views, "Incidents", $"{partialCall.Groups["name"].Value}.cshtml");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(partialPath), $"注意書きのパーシャルが見つからない: {partialPath}");
+        var partialSource = RazorComment.Replace(File.ReadAllText(partialPath), string.Empty);
+
+        // 警告として見えること(§7 は色だけに意味を持たせないので、role と文言の両方を見る)
+        Assert.Contains("alert", partialSource, StringComparison.Ordinal);
+        // 呼び出し側が渡す文面が両方とも実際に描画されること。
+        // 片方しか出さないと、見出しだけ・説明だけの注意書きになる
+        // (説明が落ちると「なぜ適用されなかったか」も「どう選び直すか」も画面から消える)
+        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Heading)}", partialSource, StringComparison.Ordinal);
+        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Detail)}", partialSource, StringComparison.Ordinal);
+
+        // 呼び出し側が空文字を渡していないこと。パーシャルが両方を描画していても、
+        // 渡す文面が空なら画面には枠しか出ない
+        var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+        Assert.True(notice.Success,
+            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+        // 引数として渡している文字列リテラルのうち、空でないものを数える
+        var literals = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+            .Select(m => m.Groups["text"].Value)
+            .Where(text => text.Trim().Length > 0)
+            .ToList();
+        Assert.True(literals.Count >= 2,
+            $"@if (Model.{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
     }
 
     // 名前を「識別子として」照合する(部分文字列だと Model.Department が
