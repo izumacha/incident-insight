@@ -973,8 +973,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
         var source = File.ReadAllText(controllerPath);
 
-        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う
-        var assigned = Regex.Matches(source, @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
+        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
+        // 走査の前にコメントを落とすのは、下の門番の照合と同じ理由 ——ただしこちらで効くのは
+        // 「満たせる」ではなく「咎める」方向で、`// 例: SeverityFilterIgnored = severityFilter.Ignored`
+        // のような普通の説明コメントを 1 行足すだけで、正しいコードのまま
+        // 下の Assert.Equal が幽霊の旗を拾って落ちた(実測)。
+        // 正しいコードを咎める検出網はいずれ緩められるので、同じ CSharpComment を通す
+        var assigned = Regex.Matches(CSharpComment.Replace(source, string.Empty), @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
             .Select(m => m.Groups["flag"].Value)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(name => name, StringComparer.Ordinal)
