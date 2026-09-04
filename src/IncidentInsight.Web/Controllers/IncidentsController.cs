@@ -253,8 +253,11 @@ public class IncidentsController : Controller
                 }
             },
             CauseCategoryOptions = await BuildCauseCategoryOptions(),
-            // 新規登録なので保存されている値は無い＝許可リストそのまま(過去の部署名は選べない)
-            DepartmentOptions = ResolveDepartmentSaveSelection(null).Options
+            // 新規登録なので保存されている値は無い＝許可リストそのまま(過去の部署名は選べない)。
+            // ただし Staff の所属部署クレームだけは選択肢へ足す ——足さないと、クレームが
+            // 許可リストから外れている Staff の画面に一致する <option> が無く、
+            // 実際に保存される部署が一度も表示されないまま登録される(issue #204 課題 1)
+            DepartmentOptions = ResolveDepartmentSaveSelectionForCurrentUser(null).Options
         };
         // 登録フォームを描画
         return View(vm);
@@ -362,7 +365,7 @@ public class IncidentsController : Controller
 
         // 発生部署の選択肢と「保存を通す例外」を決める。新規登録なので保存されている値は無く、
         // 例外も生じない(許可リストから外れた部署名を新しい行へ付けられないようにするため)
-        var departmentSelection = ResolveDepartmentSaveSelection(null);
+        var departmentSelection = ResolveDepartmentSaveSelectionForCurrentUser(null);
 
         // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)
         EnforceKnownDepartment(vm, departmentSelection.Grandfathered);
@@ -528,11 +531,11 @@ public class IncidentsController : Controller
     private void EnforceOwnDepartmentForStaff(IncidentCreateEditViewModel vm)
     {
         // Admin / RiskManager は全部署を扱えるので、フォームの値をそのまま使う
-        if (User.IsInRole(AppRoles.Admin) || User.IsInRole(AppRoles.RiskManager))
+        if (!IsDepartmentRestrictedUser())
             return;
 
         // ログインユーザー(Staff)の所属部署クレームを取り出す
-        var ownDepartment = User.FindFirst(AppClaimTypes.Department)?.Value;
+        var ownDepartment = OwnDepartmentForStaff();
 
         // 所属部署が未設定の Staff は自部署を特定できないので操作を拒否する(fail-closed)
         if (string.IsNullOrWhiteSpace(ownDepartment))
@@ -552,6 +555,80 @@ public class IncidentsController : Controller
         // これを除去しないと ModelState.IsValid が false のままになり、
         // Staff がフォームを送信しても常にバリデーションエラーになってしまう(issue #63)。
         ModelState.Remove(nameof(vm.Department));
+    }
+
+    /// <summary>
+    /// 「発生部署を自分の所属に固定される役割」かどうかを返す(＝ Admin / RiskManager 以外)。
+    /// </summary>
+    /// <remarks>
+    /// <para>この判定は <see cref="EnforceOwnDepartmentForStaff"/>(フォームの値を
+    /// クレームで上書きする側)と <see cref="EnforceKnownDepartment"/>(許可リストを
+    /// 検証する側)が<b>正反対の向きで</b>使っており、さらに
+    /// <see cref="OwnDepartmentForStaff"/> が 3 つ目の利用側として加わった(issue #204 課題 1)。
+    /// 書き写したままにすると、役割の増減で片方だけが取り残されたときに
+    /// 「上書きされないのに検証もされない」＝ 任意の部署名を保存できる穴になる
+    /// (fail-open)ので、判定はここ 1 か所に持つ(§6)。</para>
+    /// </remarks>
+    private bool IsDepartmentRestrictedUser()
+        // Admin / RiskManager は全部署を扱えるので対象外。それ以外(Staff)が対象
+        => !User.IsInRole(AppRoles.Admin) && !User.IsInRole(AppRoles.RiskManager);
+
+    /// <summary>
+    /// Staff の所属部署クレームを返す。Admin / RiskManager なら <c>null</c>。
+    /// </summary>
+    /// <remarks>
+    /// クレームを読む唯一の場所。値が空・空白のみのことがある(管理者管理下の自由記述で、
+    /// 未設定の Staff が存在しうる)ため<b>そのまま返し</b>、空値の扱いは呼び出し側の
+    /// 既存の門番に任せる ——<see cref="EnforceOwnDepartmentForStaff"/> は
+    /// 「所属部署が未設定」のエラーへ、選択肢の補完は共有ヘルパの空値の門番へ落ちる。
+    /// </remarks>
+    private string? OwnDepartmentForStaff()
+        // 部署を固定される役割のときだけクレームを読む(それ以外は所属で縛られないので意味を持たない)
+        => IsDepartmentRestrictedUser() ? User.FindFirst(AppClaimTypes.Department)?.Value : null;
+
+    /// <summary>
+    /// 登録・編集フォームの発生部署について、<see cref="ResolveDepartmentSaveSelection"/> の
+    /// 結果に<b>ログイン中の Staff の所属部署</b>を選択肢として足したものを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか(issue #204 課題 1)。</b> 保存側の規則
+    /// (<see cref="ResolveDepartmentSaveSelection"/> の解説が正本)は「新規登録では例外を作らない」ので、
+    /// <c>Create</c> の選択肢は許可リストそのままになる。ところが同じ解説が
+    /// 「意図的に残してある」と書いているとおり、<b>Staff のクレーム由来の値はその例外の外</b>にある
+    /// ——<see cref="EnforceOwnDepartmentForStaff"/> がフォームの値をクレームで上書きし、
+    /// <see cref="EnforceKnownDepartment"/> は Staff を対象にしない。したがって
+    /// クレームが許可リストから外れている Staff の登録画面では、
+    /// <c>&lt;select asp-for=&quot;Department&quot;&gt;</c> に一致する <c>&lt;option&gt;</c> が無く
+    /// 「-- 選択してください --」が選ばれ、<b>画面に一度も表示されていない部署で保存される</b>。
+    /// 他の項目で検証に落ちて再描画されても、選択肢は許可リストのままなので食い違いが続く。</para>
+    ///
+    /// <para><b>足すのは選択肢だけで、保存の例外(<c>Grandfathered</c>)は作らない。</b>
+    /// 保存側の規則を破らないための切り分けで、これで足りるのは Staff の保存経路が
+    /// <b>そもそも許可リストの検証を通らない</b>から ——上書き済みのクレーム値が
+    /// そのまま保存される。逆に例外を作ると、Admin / RiskManager が同じ値を
+    /// フォーム改ざんで書き込めるようになってしまう(この画面の選択肢は役割で変わるが、
+    /// 保存の許可は変えてはいけない)。</para>
+    ///
+    /// <para><b>4 つの呼び出し側(Create/Edit の GET と POST)すべてがこれを通す。</b>
+    /// 編集画面では保存されている値がすでに補完されており、しかも
+    /// <c>SameDepartmentHandler</c> が「発生部署 == 本人のクレーム」の行しか
+    /// 編集させないため、Staff にとってその 2 つは同じ値になって<b>実質何も起きない</b>
+    /// (共有ヘルパが重複を足さない)。それでも Create だけに掛けないのは、
+    /// 「保存フォームの選択肢はここで決まる」を 1 本にしておくため ——
+    /// 画面ごとに分けると、次に保存フォームを足す人がどちらを手本にするかで結果が変わる。</para>
+    /// </remarks>
+    /// <param name="storedDepartment">現在 DB に保存されている発生部署(新規登録なら <c>null</c>)。</param>
+    /// <returns>Staff の所属部署まで含めた選択肢と、許可リスト外でも保存を通す 1 件。</returns>
+    private DepartmentSaveSelection ResolveDepartmentSaveSelectionForCurrentUser(string? storedDepartment)
+    {
+        // まず保存側の規則そのままの結果を作る(例外を作ってよいかはこちらが決める)
+        var selection = ResolveDepartmentSaveSelection(storedDepartment);
+        // Staff の所属部署を選択肢へ補完する。未指定・空白のみ・既にある値のときに
+        // 足さない判定は共有ヘルパが自前で持つので、ここでは引き回さず無条件に呼ぶ
+        // (同じ判定を外側にも書くと、空値の規則を変えるときに直す場所が 2 か所になる)
+        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(selection.Options, OwnDepartmentForStaff());
+        // 選択肢を足しただけの結果を返す(Grandfathered は元のまま＝保存の許可は広げない)
+        return selection;
     }
 
     /// <summary>
@@ -981,7 +1058,7 @@ public class IncidentsController : Controller
     private void EnforceKnownDepartment(IncidentCreateEditViewModel vm, string? grandfathered)
     {
         // Admin/RiskManager 以外(=Staff)はフォーム改ざんの経路が無いため検証をスキップする
-        if (!User.IsInRole(AppRoles.Admin) && !User.IsInRole(AppRoles.RiskManager))
+        if (IsDepartmentRestrictedUser())
             return;
 
         // 許可リストに含まれる値なら、そのまま通してよい
@@ -1062,7 +1139,7 @@ public class IncidentsController : Controller
             CauseCategoryOptions = await BuildCauseCategoryOptions(),
             // 保存されている発生部署が許可リストから外れていれば、その 1 件だけ選択肢へ足す。
             // 足さないと一致する <option> が無く、別項目だけ直した保存で部署が書き換わる(issue #196)
-            DepartmentOptions = ResolveDepartmentSaveSelection(incident.Department).Options
+            DepartmentOptions = ResolveDepartmentSaveSelectionForCurrentUser(incident.Department).Options
         };
         // 編集ビューを描画
         return View(vm);
@@ -1100,7 +1177,7 @@ public class IncidentsController : Controller
         // フォームから届いた vm.Department ではない ——フォームの値を渡すと「自分で送った値が
         // 自分を許可する」ことになり、許可リストの検証そのものが無意味になる。
         // incident.Department はまだ書き換えていない(下の反映は検証を通ってから)ので現在値そのもの
-        var departmentSelection = ResolveDepartmentSaveSelection(incident.Department);
+        var departmentSelection = ResolveDepartmentSaveSelectionForCurrentUser(incident.Department);
 
         // 発生部署が許可リスト外の値でないか検証する(Admin/RiskManager のフォーム改ざん対策)。
         // 保存されている値と同じであれば許可リスト外でも通す(issue #196)
