@@ -665,8 +665,24 @@ public class IncidentsController : Controller
             .FirstOrDefaultAsync();
 
         // 実データに無いなら採用しない。絞り込みも掛けず、画面へも値を返さない。
-        // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)
-        if (storedDepartment == null)
+        // こうすると「絞り込み無し・バッジ非表示・select は全て」の三者が揃う(/AuditLogs と同じ扱い)。
+        //
+        // 判定を null だけでなく SearchFilter.HasValue にしてあるのは、下の補完が
+        // 空値を足さない(EnsureAppliedValueIsSelectable の門番)ためで、空白のみの綴りを
+        // ここで採用すると「絞り込みは効いているのに一致する <option> が無い」状態になる
+        // ——この関数が守る不変条件(絞り込みに使った値は必ず選択肢にある)がそこだけ破れ、
+        // 再送信で絞り込みが黙って解除される(issue #192 の症状)。あわせて
+        // SearchFilter.HasValue(Model.Department) が false になるので、0 件のときに
+        // 「絞り込み条件に一致しません」ではなく新規導入時向けの空状態が出る。
+        // 姉妹メソッドの ResolveDepartmentSaveSelection も同じ形の門番を持っており、
+        // 2 つの解決メソッドが同じ形であること自体が規則(issue #202)。
+        //
+        // 到達するのは照合順序しだい。department は手前で HasValue を通っているので
+        // 非空白が 1 文字はあり、序数比較なら空白のみの行には一致しない
+        // (テストの InMemory も序数比較なのでこの枝には入らない)。一方 string.IsNullOrWhiteSpace は
+        // 幅ゼロ空白(U+200B)等を「空白」と見なさないため、それを無視可能な文字として扱う
+        // 照合順序では成立しうる。原理的に閉じていないので fail-closed 側へ倒す
+        if (!SearchFilter.HasValue(storedDepartment))
             return new DepartmentFilterSelection(null, options, Ignored: true);
 
         // 実データにある＝許可リストから外れた過去の部署名。選択肢へ補完して絞り込みを維持する。

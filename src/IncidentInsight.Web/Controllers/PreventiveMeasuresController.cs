@@ -168,12 +168,11 @@ public class PreventiveMeasuresController : Controller
         // 無ければ先頭へ)と「なぜ先頭なのか」は共有ヘルパに集約してある ——
         // /Incidents も同じ手順を使うので、位置の規則を画面ごとに書き写さない。
         // ここで決めているのは「補完するかどうか」だけで、担当部署は自由記述のため
-        // 実際に絞り込みへ使った値なら無条件に補完する
-        // (空白のみの入力は上で絞り込みに使っていないため対象外。足すと存在しない部署が選択肢に現れる)
-        if (SearchFilter.HasValue(responsibleDepartment))
-        {
-            IncidentControllerHelpers.EnsureAppliedValueIsSelectable(responsibleDepartmentOptions, responsibleDepartment);
-        }
+        // 実際に絞り込みへ使った値なら無条件に補完する。
+        // 未指定・空白のみ(＝上で絞り込みに使っていない値)を足さない判定は共有ヘルパが自前で持つので、
+        // ここでは引き回さず無条件に呼ぶ ——同じ判定を外側にも書くと、空値の規則を変えるときに
+        // 直す場所が 2 か所になり、読み手も「外側は画面固有の追加条件なのか」を判別できない(issue #202)
+        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(responsibleDepartmentOptions, responsibleDepartment);
         // ドロップダウン選択肢としてビューへ渡す
         ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;
 

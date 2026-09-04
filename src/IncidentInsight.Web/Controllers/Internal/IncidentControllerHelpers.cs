@@ -155,23 +155,37 @@ internal static class IncidentControllerHelpers
     /// 保存側の規則は <c>ResolveDepartmentSaveSelection</c> に、それぞれ集約してある
     /// (<b>利用側をここに書き並べない</b> ——一覧の方が先に古くなる)。</para>
     ///
-    /// <para><b>この関数の 2 つの門番はテストから直接は動かせない。</b> 呼び出し側は
-    /// 空値をここへ渡す前に自前で弾いており（<c>SearchFilter.HasValue</c> / <c>null</c> 判定）、
-    /// この型は <c>internal</c> でテストからは呼べない。つまり空値の門番を消しても全件緑になる。
-    /// それでも置くのは、この関数を切り出した目的が「<b>次の呼び出し側</b>が位置の規則を
-    /// 思い出さなくて済むようにする」ことで、同じ理由が空値の規則にも当てはまるため
-    /// ——守り忘れると先頭の固定項目の直後に画面上は見分けの付かない空の項目が並ぶ。
-    /// <b>この関数を触る差分は、2 つの門番が残っているかをレビューで確かめること。</b></para>
+    /// <para><b>2 つの門番はどちらもテストから直接は動かせない</b>(この型は <c>internal</c>)が、
+    /// <b>どちらも <c>/PreventiveMeasures</c> 経由で機械的に見張られている</b>。
+    /// あの画面は選択肢を実データから作り、担当部署は自由記述で許可リストを持てないため、
+    /// 未指定・空白のみも既に選択肢にある値もそのままここへ届くからで、
+    /// いずれも <c>UnlistedFilterValuePolicyTests</c> が消すと落ちる形で固定している
+    /// （空値は <c>PreventiveMeasures_BlankResponsibleDepartment_AddsNoOption</c>、
+    /// 重複は <c>PreventiveMeasures_ResponsibleDepartmentAlreadyInOptions_IsNotDuplicated</c>）。</para>
+    ///
+    /// <para>ただし<b>空値の門番がそうなったのは issue #202 から</b>。それまでは全呼び出し側が
+    /// 手前で自前に弾いていたため「消しても全件緑」で、レビューだけが頼りだった。
+    /// 写しを外して判定をここ 1 か所にしたことで見張られるようになった
+    /// （<c>string?</c> を受けるのはそのため）。<b>呼び出し側で先に弾く形へ戻すと、
+    /// この門番はまた誰にも見られなくなる。</b></para>
+    ///
+    /// <para><b>この関数を触る差分は、2 つの門番が残っているかをレビューでも確かめること。</b>
+    /// 上の 2 件が見ているのは <c>List&lt;string&gt;</c> 版だけで、
+    /// 隣の <see cref="SelectListItem"/> 版には対応するテストが無い。</para>
     /// </remarks>
     /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
-    /// <param name="appliedValue">実際に絞り込みへ使っている値。</param>
-    public static void EnsureAppliedValueIsSelectable(List<string> options, string appliedValue)
+    /// <param name="appliedValue">
+    /// 実際に絞り込みへ使っている値。<b>未指定・空白のみでもそのまま渡してよい</b>
+    /// ——足すかどうかはこの関数が決めるので、呼び出し側で先に弾かない。
+    /// </param>
+    public static void EnsureAppliedValueIsSelectable(List<string> options, string? appliedValue)
     {
-        // 空・空白のみは足さない。足すと先頭の固定項目の直後に画面上は見分けの付かない
+        // 空・空白のみ(null 含む)は足さない。足すと先頭の固定項目の直後に画面上は見分けの付かない
         // 空の項目が並び、押しても何も起きない選択肢として残る。
         // この判定を呼び出し側の記憶に任せないのは、位置の規則をここへ集めたのと同じ理由
-        // ——既存の呼び出し側は別々の形(SearchFilter.HasValue / null 判定)で自前に守っており、
-        // 次に足す人が同じことを思い出せるとは限らない
+        // ——次に足す人が同じことを思い出せるとは限らない。
+        // 呼び出し側が同じ判定を写すと空値の規則を直す場所が 2 か所になるので、
+        // 判定はここ 1 か所に持つ(issue #202 で /PreventiveMeasures 側の写しを外した)
         if (!SearchFilter.HasValue(appliedValue)) return;
         // 既に選択肢にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
         if (options.Contains(appliedValue)) return;
@@ -181,10 +195,18 @@ internal static class IncidentControllerHelpers
 
     /// <summary>
     /// <see cref="SelectListItem"/> で選択肢を作る画面向けの
-    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string)"/>。
+    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string?)"/>。
     /// 表示文字列と送信値が別々になるだけで、守る不変条件も置く位置も同じ。
     /// </summary>
     /// <remarks>
+    /// <para><b>null の受け入れ方も隣と揃える。</b> 文字列版が <c>string?</c> を受けて
+    /// 「未指定でもそのまま渡してよい」なら、こちらも項目そのものが <c>null</c> でよい。
+    /// 片方だけ非 null にすると、隣のドキュメントを手本にした呼び出し
+    /// (絞り込みが解決できたときだけ項目を作り、それ以外は <c>null</c> を渡す形)が
+    /// <b>その画面だけ NullReferenceException で HTTP 500</b> になる ——
+    /// 「呼び出し側に規則を思い出させない」というこの関数の目的に反するので、
+    /// 判定を増やして揃える側を採る。</para>
+    ///
     /// <para><b>重複を承知で 2 つ置いている理由。</b> 選択肢の要素型が違うだけで
     /// 判定は「空でないか」「既にあるか」「先頭へ入れる」の 3 つとも同じなので、
     /// <b>位置の規則が 2 か所に分かれないように隣同士へ置く</b>
@@ -201,11 +223,15 @@ internal static class IncidentControllerHelpers
     ///  同じ id でも <c>Text</c> は既存の選択肢と一致しないことがある)。</para>
     /// </remarks>
     /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
-    /// <param name="appliedItem">実際に絞り込みへ使っている値の選択肢。</param>
-    public static void EnsureAppliedValueIsSelectable(List<SelectListItem> options, SelectListItem appliedItem)
+    /// <param name="appliedItem">
+    /// 実際に絞り込みへ使っている値の選択肢。<b>未指定なら <c>null</c> を渡してよい</b>
+    /// ——足すかどうかはこの関数が決めるので、呼び出し側で先に弾かない(文字列版と同じ)。
+    /// </param>
+    public static void EnsureAppliedValueIsSelectable(List<SelectListItem> options, SelectListItem? appliedItem)
     {
-        // 送信値が空・空白のみなら足さない(理由は上のオーバーロードと同じ)
-        if (!SearchFilter.HasValue(appliedItem.Value)) return;
+        // 項目そのものが無い、または送信値が空・空白のみなら足さない(理由は上のオーバーロードと同じ)。
+        // 2 つを 1 つの条件にまとめてあるのは、どちらも「足すものが無い」という同じ判断だから
+        if (!SearchFilter.HasValue(appliedItem?.Value)) return;
         // 同じ送信値の選択肢が既にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
         if (options.Any(o => o.Value == appliedItem.Value)) return;
         // 先頭の固定項目(「(全て)」/「-- 選択してください --」)の直後に来るよう先頭へ差し込む

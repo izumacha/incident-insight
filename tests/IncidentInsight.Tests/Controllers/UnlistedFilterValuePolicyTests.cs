@@ -7,6 +7,8 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+// SearchFilter は「空値の門番」をソースで照合するときに名前を借りるために使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -56,8 +58,12 @@ namespace IncidentInsight.Tests.Controllers;
 ///
 /// <para>一方、<b>DB 側の分担はここでは動かせない</b>。InMemory も序数比較なので、
 /// 照合順序が大文字小文字を区別しない配備先だけで通る枝には入らない。該当するのは
-/// 「取り出した綴りを 1 件に決める並べ替え」と「その綴りが既に選択肢にあるときに
-/// 補完を省く判定」の 2 つで、どちらも実測で「消しても全件緑」だった。
+/// 「取り出した綴りを 1 件に決める並べ替え」「その綴りが既に選択肢にあるときに
+/// 補完を省く判定」、そして<b>「取り出した綴りが空白のみなら採用しない門番」</b>
+/// (照合順序が幅ゼロ空白等を無視可能な文字として扱う配備先でのみ到達。issue #202)で、
+/// いずれも実測で「消しても全件緑」だった。最後の 1 つだけは形をソースで見張っている
+/// (<c>DepartmentResolvers_GateTheAdoptedValueOnHasValue</c>) ——姉妹メソッドと
+/// 対になった非対称が戻るのを防ぐため。
 /// プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
 /// <b>この付近を触る差分はレビューで「どちらの比較規則で判定しているか」
 /// 「同値行の並びを固定しているか」を確かめること。</b></para>
@@ -140,6 +146,46 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Index(null, department, null, null, null, null, null, null, 1) as ViewResult;
         // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
         return Assert.IsType<IncidentListViewModel>(result!.Model);
+    }
+
+    // 指定した担当部署の予防策を 1 件保存する(対策はインシデントに紐づくので親も用意する)
+    private async Task SeedMeasureAsync(string responsibleDepartment)
+    {
+        // 親インシデントを先に作る(発生部署は担当部署の選択肢とは無関係なので現行の値でよい)
+        var incident = await SeedIncidentAsync("ICU");
+        // 担当部署のドロップダウンは実データから作られるので、その生成元になる 1 件を保存する
+        _db.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            IncidentId = incident.Id,
+            Description = "対策",
+            ResponsiblePerson = "担当者",
+            ResponsibleDepartment = responsibleDepartment,
+            MeasureType = MeasureTypeKind.ShortTerm,
+            Status = MeasureStatus.Planned,
+            DueDate = TestFixtures.Today
+        });
+        // ここまでの変更を確定させる
+        await _db.SaveChangesAsync();
+    }
+
+    // /PreventiveMeasures の一覧を引いて、担当部署ドロップダウンの選択肢を取り出す
+    private async Task<List<string>> IndexMeasureDepartmentOptionsAsync(string? responsibleDepartment)
+    {
+        // 実際の依存をそのまま渡す(Mock より InMemory を優先する方針)
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new SystemClock(),
+            NullLogger<PreventiveMeasuresController>.Instance);
+        // 部署スコープの影響を切り離すため、全部署を見られる Admin で実行する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 担当部署以外の絞り込みは指定せずに一覧を引く
+        await controller.Index(null, null, responsibleDepartment, null, null);
+        // ViewBag は dynamic なので、いったん静的な型の変数へ受けてから返す
+        // (dynamic のままだと呼び出し側でラムダを渡す LINQ がコンパイルできない)
+        object rawOptions = controller.ViewBag.ResponsibleDepartmentOptions;
+        // 選択肢の一覧として取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<List<string>>(rawOptions);
     }
 
     // --- /Incidents: 実データにあれば補完 ------------------------------------
@@ -628,33 +674,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public async Task PreventiveMeasures_ResponsibleDepartmentNotInOptions_IsBackfilled()
     {
-        // 対策 1 件と、その親インシデントを用意する
-        var incident = await SeedIncidentAsync("ICU");
-        // 選択肢の生成元となる担当部署を持つ対策を保存する
-        _db.PreventiveMeasures.Add(new PreventiveMeasure
-        {
-            IncidentId = incident.Id,
-            Description = "対策",
-            ResponsiblePerson = "担当者",
-            ResponsibleDepartment = "医療安全室",
-            MeasureType = MeasureTypeKind.ShortTerm,
-            Status = MeasureStatus.Planned,
-            DueDate = TestFixtures.Today
-        });
-        await _db.SaveChangesAsync();
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
 
         // 実データのどの対策にも無い担当部署で絞り込む
-        var controller = new PreventiveMeasuresController(
-            _db,
-            UserContextHelper.BuildAuthService(),
-            new SystemClock(),
-            NullLogger<PreventiveMeasuresController>.Instance);
-        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
-        await controller.Index(null, null, UnknownDepartment, null, null);
+        var options = await IndexMeasureDepartmentOptionsAsync(UnknownDepartment);
 
         // 自由記述なので「実在しない」と判定する手段が無く、適用値はそのまま補完される。
         // /Incidents と方式が違うのは値の集合の性質が違うため(SearchFilter の表を参照)
-        var options = Assert.IsType<List<string>>(controller.ViewBag.ResponsibleDepartmentOptions);
         Assert.Equal(UnknownDepartment, options[0]);
     }
 
@@ -666,36 +693,48 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public async Task PreventiveMeasures_ResponsibleDepartmentAlreadyInOptions_IsNotDuplicated()
     {
-        // 対策 1 件と、その親インシデントを用意する
-        var incident = await SeedIncidentAsync("ICU");
-        // 選択肢の生成元となる担当部署を持つ対策を保存する
-        _db.PreventiveMeasures.Add(new PreventiveMeasure
-        {
-            IncidentId = incident.Id,
-            Description = "対策",
-            ResponsiblePerson = "担当者",
-            ResponsibleDepartment = "医療安全室",
-            MeasureType = MeasureTypeKind.ShortTerm,
-            Status = MeasureStatus.Planned,
-            DueDate = TestFixtures.Today
-        });
-        await _db.SaveChangesAsync();
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
 
         // 実データから選択肢に載る値で絞り込む
-        var controller = new PreventiveMeasuresController(
-            _db,
-            UserContextHelper.BuildAuthService(),
-            new SystemClock(),
-            NullLogger<PreventiveMeasuresController>.Instance);
-        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
-        await controller.Index(null, null, "医療安全室", null, null);
+        var options = await IndexMeasureDepartmentOptionsAsync("医療安全室");
 
-        // 選択肢にちょうど 1 回だけ現れる。
-        // ViewBag は dynamic なので、いったん静的な型の変数へ受けてから LINQ を使う
-        // (dynamic のままだとラムダを渡す呼び出しがコンパイルできない)
-        object rawOptions = controller.ViewBag.ResponsibleDepartmentOptions;
-        var options = Assert.IsType<List<string>>(rawOptions);
+        // 選択肢にちょうど 1 回だけ現れる
         Assert.Equal(1, options.Count(d => d == "医療安全室"));
+    }
+
+    // 未指定・空白のみの担当部署は選択肢へ足さない。
+    //
+    // この画面は「補完するかどうか」を絞り込みの有無で分けない(担当部署は自由記述で、
+    // 実在しないと判定する手段が無いため)。したがって絞り込みに使っていない値も
+    // そのまま共有ヘルパ EnsureAppliedValueIsSelectable へ届く ——
+    // 空値の門番を消すと「担当部署（全て）」の直下に画面上は見分けの付かない空の項目が並び、
+    // 押しても何も起きない選択肢として残る。
+    //
+    // issue #202 で呼び出し側にあった同じ判定の写しを外したので、この門番はヘルパの中の
+    // 1 か所だけになった。以前は呼び出し側が手前で弾いていたため「門番を消しても全件緑」
+    // だったが、これで機械的に見張られる不変条件になる
+    [Theory]
+    // 未指定(絞り込みを使わずに一覧を開いた場合)
+    [InlineData(null)]
+    // 空文字
+    [InlineData("")]
+    // 空白のみ(末尾スペースごとの貼り付け・IME の誤入力を想定)
+    [InlineData("   ")]
+    public async Task PreventiveMeasures_BlankResponsibleDepartment_AddsNoOption(string? responsibleDepartment)
+    {
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
+
+        // 絞り込みに使えない値で一覧を引く
+        var options = await IndexMeasureDepartmentOptionsAsync(responsibleDepartment);
+
+        // 選択肢は実データから作られたものだけ(空の項目が増えていない)
+        Assert.Equal(new[] { "医療安全室" }, options);
+        // 空の項目が無いことも明示的に固定する。上の Equal だけだと、将来 実データ側の
+        // 選択肢が増えて期待値を並べ直すときに、この不変条件ごと緩みやすい
+        Assert.All(options, option => Assert.False(string.IsNullOrWhiteSpace(option),
+            "担当部署の選択肢に空の項目を入れない(画面では「担当部署（全て）」と見分けが付かない)。"));
     }
 
     // --- 表示側(Razor)がコントローラの結論を実際に使っているか -----------------
@@ -934,8 +973,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
         var source = File.ReadAllText(controllerPath);
 
-        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う
-        var assigned = Regex.Matches(source, @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
+        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
+        // 走査の前にコメントを落とすのは、下の門番の照合と同じ理由 ——ただしこちらで効くのは
+        // 「満たせる」ではなく「咎める」方向で、`// 例: SeverityFilterIgnored = severityFilter.Ignored`
+        // のような普通の説明コメントを 1 行足すだけで、正しいコードのまま
+        // 下の Assert.Equal が幽霊の旗を拾って落ちた(実測)。
+        // 正しいコードを咎める検出網はいずれ緩められるので、同じ CSharpComment を通す
+        var assigned = Regex.Matches(CSharpComment.Replace(source, string.Empty), @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
             .Select(m => m.Groups["flag"].Value)
             .Distinct(StringComparer.Ordinal)
             .OrderBy(name => name, StringComparer.Ordinal)
@@ -950,6 +994,102 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
         // 逆に画面へ渡らなくなった旗が ViewModel に残っている
         Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
+    }
+
+    // 発生部署の 2 つの解決メソッドが、DB から読んだ綴りを採用する前に
+    // SearchFilter.HasValue の門番へ通していることをソースで見張る(issue #202)。
+    //
+    // なぜランタイムのテストで固定できないのか。ResolveDepartmentFilterAsync が
+    // 空白のみの綴りを受け取るのは、照合順序が幅ゼロ空白(U+200B)等を無視可能な文字として
+    // 扱う配備先だけ ——絞り込み値は手前で HasValue を通っており非空白を 1 文字は含むので、
+    // 序数比較では空白のみの行に一致しない。テストの InMemory も序数比較なのでこの枝には入らない。
+    // 上の「固定できない境界」に挙げた 2 つと同じ性質で、実測でも門番を消して全件緑だった。
+    //
+    // 門番が要る理由(空白のみを採用すると、補完が空値を足さないぶん「絞り込みは効いているのに
+    // 一致する <option> が無い」状態が残り、再送信で絞り込みが黙って解除される)は
+    // 実装側のコメントが正本 ——ここへ書き写すと、方針を変えたときにこちらが古くなる。
+    // ここで固定するのは<b>2 つの解決メソッドの形が揃っていること</b>だけ。
+    // どちらも同じ壊れ方(採用した値が選択肢に無い)をするので、片方だけ門番を外すと
+    // 非対称が戻り、次に読む人がどちらを手本にしてよいか分からなくなる
+    [Theory]
+    // 一覧の絞り込み側(採用しないと絞り込みが解除される)
+    [InlineData("ResolveDepartmentFilterAsync")]
+    // 登録・編集の保存側(採用しないと保存された発生部署が書き換わる)
+    [InlineData("ResolveDepartmentSaveSelection")]
+    public void DepartmentResolvers_GateTheAdoptedValueOnHasValue(string methodName)
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        var source = File.ReadAllText(controllerPath);
+
+        // 対象メソッドの本文だけを切り出す(ファイル全体を見ると、他のメソッドにある
+        // 同じ形の判定を数えてしまい、片方を外しても気付けない)
+        var body = ExtractMethodBody(source, methodName);
+
+        // DB から読んだ綴り(どちらのメソッドでも storedDepartment)を採用する前に
+        // 空値の門番を通していること。null 判定へ戻す・門番ごと消す、のどちらでも落ちる。
+        // 空白の有無に依存しない形で探すのは、注意書きの走査(下)と同じ理由 ——
+        // 完全一致で書くと `HasValue( storedDepartment )` のような同じ働きの書き方を落とし、
+        // 次の人が動いているコードを「直し」に行く検出網になる(dotnet format でも赤くなる)
+        var gate = Regex.IsMatch(
+            body,
+            $@"!\s*{nameof(SearchFilter)}\.{nameof(SearchFilter.HasValue)}\s*\(\s*storedDepartment\s*\)");
+        // 落ちたときに何を求めているかが分かるよう、他の Assert と同じ形で理由を書く
+        Assert.True(gate,
+            $"{methodName} が採用する値(storedDepartment)を "
+            + $"{nameof(SearchFilter)}.{nameof(SearchFilter.HasValue)} の門番へ通していない。"
+            + "姉妹メソッドと同じ形を保つこと(理由は実装側のコメントが正本)。"
+            + "門番の書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+    }
+
+    // C# のコメント(行コメントとブロックコメント)。
+    // 検査の前に落とすのは、コメントで検査を満たせないようにするため ——
+    // 実測では、門番を storedDepartment == null へ戻したうえで直前に
+    // 「// 門番は !SearchFilter.HasValue(storedDepartment) で行う」と 1 行足すだけで
+    // 下の Assert.Contains が成立し、全件緑のまま門番を差し戻せた。
+    // Razor 側は RazorSource.Comment が同じ穴を塞いでいる(あちらの解説に同種の実測がある)。
+    // 共有ヘルパへ移さないのは、C# 用の利用側がこの 1 か所しか無いため
+    // (RazorSource の解説が言う「3 つ目の利用側が出たときに移す」に従う)
+    private static readonly Regex CSharpComment =
+        new(@"//[^\r\n]*|/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
+
+    // 指定した名前のメソッドの本文を、コメントを落としたうえで切り出す。
+    // 正規表現で「次のメソッドまで」を狙うと、宣言の書き方(戻り値の型・async の有無)に
+    // 引きずられて静かに空文字を返しうるので、見つからない場合は fail-closed で落とす
+    private static string ExtractMethodBody(string source, string methodName)
+    {
+        // 先にコメントを落とす。これで波かっこの数え方もコメント内の中かっこに乱されない
+        var code = CSharpComment.Replace(source, string.Empty);
+
+        // メソッド宣言の位置を探す(呼び出しではなく宣言を狙うため、名前の直後が引数リストで
+        // かつ行頭からインデントだけが先行する形に限る)
+        var declaration = Regex.Match(code, $@"^[ \t]+(?:private|public|internal).*\b{Regex.Escape(methodName)}\s*\(", RegexOptions.Multiline);
+        // 宣言が読めないなら、書き方が変わって手がかりが死んでいる。
+        // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
+        Assert.True(declaration.Success,
+            $"{nameof(IncidentsController)} に {methodName} の宣言が見つからない。"
+            + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 対応する波かっこまでを切り出す。数え方は同じファイルの ExtractBraceBlock が
+        // 既に持っているので写さない(写すと、数え方の穴を塞ぐときに片方が取り残される)
+        var body = ExtractBraceBlock(code, declaration.Index + declaration.Length);
+        // 本文が読めないなら(式本体へ変わった・波かっこが閉じていない)、同じく落として人に判断させる
+        Assert.True(body is not null,
+            $"{methodName} の本文が切り出せない。書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 引用符が残っていたら、この単純な数え方では正しく切り出せていない可能性がある。
+        // 文字列・文字リテラルの中の波かっこ('{' や $"...{x}..." の対応しない片方)は
+        // 深さの計算を狂わせ、本文が姉妹メソッドまで伸びて「隣の門番」で検査が成立しうる
+        // ——静かに広がるより、落として人に判断させる(リテラルを足すならこの検査も一緒に直す)
+        Assert.True(body!.IndexOfAny(['"', '\'']) < 0,
+            $"{methodName} の本文に文字列・文字リテラルがある。波かっこを数えるこの切り出しは"
+            + "リテラル内の中かっこを区別しないので、リテラルを足すならこの照合も同じ変更セットで直すこと。");
+
+        // コメントを落とした本文を返す
+        return body;
     }
 
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
