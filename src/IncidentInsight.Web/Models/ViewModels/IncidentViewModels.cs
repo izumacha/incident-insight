@@ -94,7 +94,39 @@ public class IncidentListViewModel
     // (「ICU は 1 件も無い」等)。送った値はブラウザのアドレス欄に出ており、
     // この注意書きが出るときは絞り込みパネルも開くので、選び直す導線はそちらで足りる。
     public bool DepartmentFilterIgnored { get; set; }
+
+    // 型として読み取れない絞り込み値を受け取ったので採用しなかったかどうか
+    // (true なら画面で知らせる。issue #198)。
+    //
+    // 上の 2 つと違い入力ごとに分かれていないのは、採用しなかった理由が
+    // 対象の 5 つ(incidentType / severity / dateFrom / dateTo / causeCategoryId)で
+    // 同一だから ——「その型の値として読めない」。分ければ同じ文章が 5 つ並び、
+    // どれか 1 つを直したときに他の 4 つが取り残される。
+    // 判定と理由の正本は Controllers/Internal/MalformedFilterValueResolver の解説。
+    //
+    // 値そのものではなく真偽値なのも、黙って落とさない理由も、上の 2 つと同じ
+    public bool MalformedFilterIgnored { get; set; }
 }
+
+/// <summary>
+/// 「絞り込み値を受け取ったのに採用しなかった」注意書き 1 件分の文面。
+/// 一覧ビューの共有パーシャル <c>Views/Incidents/_FilterIgnoredNotice.cshtml</c> のモデル。
+/// </summary>
+/// <remarks>
+/// <para><b>なぜ型を作るのか。</b> 注意書きは現在 3 件あり(発生部署・原因分類・読めない値)、
+/// 見た目(警告の枠・アイコン・<c>role="alert"</c>・アイコンを支援技術から隠す指定)は
+/// 完全に同じで<b>文面だけが違う</b>。マークアップを 3 か所へ書き写すと、
+/// a11y の指定を直すときに 1 つが取り残される(§6 DRY / §7)。
+/// 文面だけをこの型で渡し、枠はパーシャル 1 か所が持つ。</para>
+///
+/// <para><b>受け取った値そのものは入れない。</b> 外部由来の文字列をアプリ自身の文章へ
+/// 埋め込まない方針は既存の注意書きと同じ(理由の正本は
+/// <see cref="IncidentListViewModel.DepartmentFilterIgnored"/> の解説)。
+/// この型に載るのは<b>コード側で決めた定型文</b>だけ。</para>
+/// </remarks>
+/// <param name="Heading">太字で出す見出し(「〜の絞り込みは適用していません。」)。</param>
+/// <param name="Detail">見出しに続けて出す説明文(採用しなかった理由と、選び直す導線の案内)。</param>
+public record FilterIgnoredNotice(string Heading, string Detail);
 
 // インシデント詳細画面のモデル
 public class IncidentDetailViewModel
