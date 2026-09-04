@@ -1,4 +1,5 @@
 using System.Text.Json;
+using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
@@ -24,21 +25,20 @@ public class AnalyticsControllerTests : IDisposable
             .Options;
         _db = new ApplicationDbContext(options);
         _controller = new AnalyticsController(_db, new SystemClock());
+        // ログイン中の利用者を必ず付ける。この画面は [Authorize(Policy = CanViewAnalytics)] なので
+        // 本番で User が空のまま動くことはなく、付けないと実在確認の部署スコープ
+        // (ScopedByUser)が NullReferenceException になる。ロールは Admin
+        // ——この画面を開けるのは Admin / RiskManager だけで、どちらも全部署を見られる
+        UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
 
     public void Dispose() => _db.Dispose();
 
-    private static readonly JsonSerializerOptions MvcJsonOptions = new()
-    {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase
-    };
-
-    private static JsonDocument ToJsonDocument(IActionResult result)
-    {
-        var json = Assert.IsType<JsonResult>(result);
-        var serialized = JsonSerializer.Serialize(json.Value, MvcJsonOptions);
-        return JsonDocument.Parse(serialized);
-    }
+    // JSON の読み取りは共有ヘルパーへ寄せてある(絞り込み方式を固定する
+    // UnlistedFilterValuePolicyTests も同じ読み方をするため。写しを持つと、
+    // 片方だけ直列化の規約を直したときにもう片方が本番と違うキー名を読む)
+    private static JsonDocument ToJsonDocument(IActionResult result) =>
+        JsonResultReader.ToJsonDocument(result);
 
     private static Incident MakeIncident(string dept = "内科病棟",
         IncidentTypeKind type = IncidentTypeKind.Medication,

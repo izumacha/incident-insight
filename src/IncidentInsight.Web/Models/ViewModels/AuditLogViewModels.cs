@@ -32,10 +32,16 @@ public class AuditLogListViewModel
     // 変更日時 終了
     public DateTime? DateTo { get; set; }
 
-    // エンティティ名ドロップダウンの選択肢
-    public List<SelectListItem> EntityNameOptions { get; set; } = new();
-    // 操作種別ドロップダウンの選択肢
-    public List<SelectListItem> OperationOptions { get; set; } = new();
+    // エンティティ名ドロップダウンの選択肢。
+    // required にして既定値を持たせない理由は IncidentListViewModel.DepartmentOptions と同じ
+    // (そちらの説明が正本)。空リストを既定にすると、この ViewModel を組み立てる経路が
+    // 増えたときに設定漏れがコンパイルもテストも緑のまま素通りし、ドロップダウンが
+    // 「(全て)」だけになって監査ログの絞り込みが画面から消える。
+    // この型はモデルバインドされない(一覧アクションは引数を個別に受ける)ので、
+    // 入力用 ViewModel が必要とする [BindNever] / [ValidateNever] は要らない
+    public required List<SelectListItem> EntityNameOptions { get; set; }
+    // 操作種別ドロップダウンの選択肢(required の理由は上と同じ)
+    public required List<SelectListItem> OperationOptions { get; set; }
 }
 
 // 監査ログ詳細画面のモデル

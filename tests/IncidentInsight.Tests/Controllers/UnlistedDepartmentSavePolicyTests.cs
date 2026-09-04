@@ -252,6 +252,187 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
         Assert.Equal(Incident.Departments, vm.DepartmentOptions);
     }
 
+    // 登録画面(GET)を開いて ViewModel を取り出す。実行ロールは呼び出し側が渡す
+    // ——この一連の検査は「誰が開いたか」で選択肢が変わることを見るため
+    private async Task<IncidentCreateEditViewModel> CreateFormAsync(ClaimsPrincipal? user = null)
+    {
+        // 登録画面を開く
+        var result = await NewIncidentsController(user).Create() as ViewResult;
+        // ビューが返っていることを確かめる
+        Assert.NotNull(result);
+        // 型を確かめたうえで ViewModel を返す
+        return Assert.IsType<IncidentCreateEditViewModel>(result!.Model);
+    }
+
+    // 登録フォームの送信内容を組み立てる。
+    // 選択肢は POST ボディに含まれないので、編集側と同じく空から始める
+    // ——コントローラが再描画時に詰め直すかどうかを、ここで空にしておくことで観測できる
+    private static IncidentCreateEditViewModel CreateSubmission(
+        string department, bool withMeasure = true) => new()
+        {
+            DepartmentOptions = new List<string>(),
+            OccurredAt = TestFixtures.Today,
+            Department = department,
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "説明",
+            ReporterName = "報告者",
+            // 業務ルール(HasAtLeastOneValidMeasure)を満たす対策 1 件。
+            // withMeasure: false にすると必ず検証に落ちるので、再描画の検査に使う
+            Measures = withMeasure
+                ? new List<MeasureFormViewModel>
+                {
+                    // 保存まで到達するので、保存に必要な項目をすべて埋める
+                    // (テストではモデルバインドが走らず [Required] が効かないため、
+                    //  埋めないと Create の保存処理が null 参照で落ちる)
+                    new()
+                    {
+                        Description = "対策",
+                        MeasureType = MeasureTypeKind.ShortTerm,
+                        ResponsiblePerson = "担当者",
+                        ResponsibleDepartment = Incident.Departments[0],
+                        DueDate = TestFixtures.Today.AddDays(30),
+                        Priority = 2
+                    }
+                }
+                : new List<MeasureFormViewModel>()
+        };
+
+    // 所属部署クレームが許可リストから外れている Staff の登録画面には、その値が選択肢に出る。
+    //
+    // issue #204 課題 1 の再現手順そのもの。出ないと asp-for="Department" に一致する
+    // <option> が無く「-- 選択してください --」が選ばれるのに、保存されるのは
+    // EnforceOwnDepartmentForStaff が上書きするクレームの値になる ——
+    // 画面に一度も表示されていない部署でインシデントが保存される
+    [Fact]
+    public async Task CreateGet_StaffWithUnlistedClaim_OffersItsOwnDepartment()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        // 所属部署クレームが許可リスト外の値になっている Staff(部署名変更直後の実在の状態)
+        var vm = await CreateFormAsync(UserContextHelper.Staff(RetiredDepartment));
+
+        // クレームの値が選択肢にある(＝実際に保存される値が画面に出ている)
+        Assert.Contains(RetiredDepartment, vm.DepartmentOptions);
+        // 位置は先頭。規則は共有ヘルパ EnsureAppliedValueIsSelectable が持つ(編集側と同じ)
+        Assert.Equal(RetiredDepartment, vm.DepartmentOptions[0]);
+        // 許可リストは丸ごと残っている(補完のために取り落としていない)
+        Assert.Equal(Incident.Departments, vm.DepartmentOptions.Skip(1));
+    }
+
+    // クレームが許可リストに載っている Staff では、選択肢は許可リストちょうど。
+    // 二重に並ぶと、同じ部署がドロップダウンに 2 回出る
+    [Fact]
+    public async Task CreateGet_StaffWithListedClaim_OffersExactlyTheAllowList()
+    {
+        // 許可リストに載っている部署を所属とする Staff(通常の状態)
+        var vm = await CreateFormAsync(UserContextHelper.Staff(Incident.Departments[0]));
+
+        // 共有ヘルパの「既にあれば足さない」判定が効いている
+        Assert.Equal(Incident.Departments, vm.DepartmentOptions);
+    }
+
+    // 登録画面が並べた選択肢に、実際に保存される発生部署が含まれている。
+    //
+    // これが課題 1 の完了条件そのもの。上の 2 つは「クレームが選択肢に出るか」を見るが、
+    // <b>保存される値と突き合わせていない</b>ため、上書きの規則
+    // (EnforceOwnDepartmentForStaff)が変わると黙って食い違いが戻る。
+    // 選択肢を固定値で書き並べず<b>画面が実際に返したもの</b>と<b>DB に入った値</b>を
+    // 突き合わせるのが要点 ——どちらの規則が変わってもここで落ちる
+    [Fact]
+    public async Task CreateForm_OffersTheDepartmentThatIsActuallySaved()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        var staff = UserContextHelper.Staff(RetiredDepartment);
+
+        // 登録画面が実際に並べる選択肢を取り出す
+        var offered = (await CreateFormAsync(staff)).DepartmentOptions;
+        // 空だと「見るべき対象ゼロ＝緑」になるので fail-closed で落とす
+        Assert.NotEmpty(offered);
+
+        // 画面の先頭に出ている値をそのまま選んで登録する(利用者が普通に行う操作)
+        var result = await NewIncidentsController(staff).Create(CreateSubmission(offered[0]));
+        Assert.IsType<RedirectToActionResult>(result);
+
+        // 実際に保存された発生部署が、画面に出ていた選択肢の中にある
+        var saved = await _db.Incidents.AsNoTracking().SingleAsync();
+        Assert.Contains(saved.Department, offered);
+    }
+
+    // 選択肢へ足すだけでなく、Staff の所属部署を<b>初期選択</b>にする。
+    //
+    // 足すだけだと「-- 選択してください --」が選ばれたままになり、利用者が別の部署を
+    // 選んで送信しても EnforceOwnDepartmentForStaff がクレームで上書きするので、
+    // 「画面が実際に保存される値を表していない」という課題 1 の症状が選択状態の側に残る
+    [Fact]
+    public async Task CreateGet_StaffWithUnlistedClaim_PreselectsItsOwnDepartment()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+
+        var vm = await CreateFormAsync(UserContextHelper.Staff(RetiredDepartment));
+
+        // asp-for="Department" が一致する <option> を選択状態にする値
+        Assert.Equal(RetiredDepartment, vm.Department);
+    }
+
+    // 画面が選択状態として示す値と、実際に保存される値が一致する。
+    //
+    // 上の 2 つ(選択肢に出る / 初期選択になる)は画面の中だけを見るので、
+    // 上書きの規則(EnforceOwnDepartmentForStaff)が変わると黙って食い違いが戻る。
+    // 初期選択の値をそのまま送り返して DB を読み直すことで、両側を突き合わせる
+    [Fact]
+    public async Task CreateForm_PreselectedDepartmentIsTheOneThatGetsSaved()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        var staff = UserContextHelper.Staff(RetiredDepartment);
+
+        // 画面が初期選択として示す部署を取り出す
+        var preselected = (await CreateFormAsync(staff)).Department;
+        // 空だと「見るべき対象ゼロ＝緑」になるので fail-closed で落とす
+        Assert.False(string.IsNullOrWhiteSpace(preselected),
+            "登録画面が発生部署を初期選択していない(何も選ばれていない状態から始まっている)。");
+
+        // 利用者が何も触らずに送信した場合に相当する
+        var result = await NewIncidentsController(staff).Create(CreateSubmission(preselected));
+        Assert.IsType<RedirectToActionResult>(result);
+
+        // 保存された値が、画面が示していた値と同じ
+        var saved = await _db.Incidents.AsNoTracking().SingleAsync();
+        Assert.Equal(preselected, saved.Department);
+    }
+
+    // Admin / RiskManager は所属で縛られないので、従来どおり未選択で始まる。
+    // ここを固定しないと、初期選択を入れる変更が全ロールへ広がったときに
+    // 「管理者が意図せず特定の部署で登録してしまう」壊れ方に気付けない
+    [Fact]
+    public async Task CreateGet_FullAccessRole_LeavesDepartmentUnselected()
+    {
+        var vm = await CreateFormAsync(UserContextHelper.Admin());
+
+        // 初期値は空のまま(ビューは「-- 選択してください --」を選択状態にする)
+        Assert.True(string.IsNullOrEmpty(vm.Department),
+            $"Admin の登録画面で発生部署が初期選択されている: 「{vm.Department}」");
+    }
+
+    // 検証エラーで登録画面を再描画するときも、Staff の所属部署を選択肢へ戻す。
+    // 戻さないと再描画された画面から現在値が消え、初回表示と同じ食い違いが続く
+    // (選択肢は POST ボディに含まれないので「バインドされた値が返る」ことに頼れない)
+    [Fact]
+    public async Task CreatePost_Invalid_RedisplaysStaffOwnDepartment()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        var controller = NewIncidentsController(UserContextHelper.Staff(RetiredDepartment));
+
+        // 対策が 1 件も無いので業務ルール(HasAtLeastOneValidMeasure)で必ず再描画になる
+        var result = await controller.Create(
+            CreateSubmission(Incident.Departments[0], withMeasure: false));
+
+        var view = Assert.IsType<ViewResult>(result);
+        var vm = Assert.IsType<IncidentCreateEditViewModel>(view.Model);
+        // 送信時は空だった選択肢が詰め直され、クレームの値も入っている
+        Assert.Contains(RetiredDepartment, vm.DepartmentOptions);
+        Assert.Equal(RetiredDepartment, vm.DepartmentOptions[0]);
+    }
+
     // --- 適用側: どの値の保存を通すか -----------------------------------------
 
     // issue #196 の再現手順そのもの: 許可リスト外の部署名を持つインシデントの

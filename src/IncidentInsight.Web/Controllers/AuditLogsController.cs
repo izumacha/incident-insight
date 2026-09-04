@@ -156,8 +156,12 @@ public class AuditLogsController : Controller
             // 実際に適用された絞り込みと必ず一致する
             EntityName = effectiveEntityName,
             Operation = effectiveOperation,
-            ChangedBy = changedBy,
-            EntityKey = entityKey,
+            // 自由記述の 2 つも同じ扱いにする。許可リストを持たないので上の 2 つのような
+            // 「載っているか」の判定は要らないが、空白のみの入力を画面へ戻すと絞り込みは
+            // 効いていないのに <input> に見えない値が残り、ページャのリンクが全部その値を
+            // 運ぶ ——判定は SearchFilter.Adopted に集約してある(issue #204 課題 2)
+            ChangedBy = SearchFilter.Adopted(changedBy),
+            EntityKey = SearchFilter.Adopted(entityKey),
             DateFrom = dateFrom,
             DateTo = dateTo,
             EntityNameOptions = entityOptions,

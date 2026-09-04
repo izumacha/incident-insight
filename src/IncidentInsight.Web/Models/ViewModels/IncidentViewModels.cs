@@ -51,8 +51,16 @@ public class IncidentListViewModel
     // 上の CauseCategoryId と必ず対で設定する(片方だけ差し替えると食い違いが戻る)。
     // 選択肢は親カテゴリのみだが、子カテゴリの id で絞り込んでいるときはその 1 件が
     // 「親名 > 子名」の見出しで先頭に補完されている
-    // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #195)
-    public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+    // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #195)。
+    //
+    // required にして既定値を持たせない理由は下の DepartmentOptions とまったく同じ
+    // (そちらの説明が正本)。2 つは対の解決処理(Controllers/Internal の
+    // DepartmentFilterResolver / IncidentsController.ResolveCauseCategoryFilterAsync)が
+    // 作るので壊れ方も同じで、片方だけコンパイラに
+    // 強制させると、新しい構築箇所が DepartmentOptions だけ書いてこちらを忘れたときに
+    // 「コンパイルも通りテストも緑のまま、原因分類のドロップダウンが
+    // 『原因分類（全て）』だけになって絞り込みが画面から消える」(issue #204 課題 3)
+    public required List<SelectListItem> CauseCategoryOptions { get; set; }
 
     // 原因分類の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
     // 黙って落とさない理由も、値そのものではなく真偽値にしている理由も、
@@ -63,7 +71,7 @@ public class IncidentListViewModel
     // ビューが Incident.Departments を直接回さずこちらを使うのは、許可リストから外れた
     // 過去の部署名で絞り込んでいるときに、その値を選択肢へ補完して渡す必要があるため
     // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #192)。
-    // 中身を決めるのは IncidentsController.ResolveDepartmentFilterAsync で、
+    // 中身を決めるのは Controllers/Internal/DepartmentFilterResolver で、
     // 上の Department と必ず対で設定する(片方だけ差し替えると食い違いが戻る)。
     //
     // required にして既定値を持たせないのは、設定し忘れを実行時ではなくコンパイル時に
@@ -101,8 +109,14 @@ public class IncidentDetailViewModel
     // For inline cause analysis form
     // 詳細画面から直接追加する「なぜなぜ分析」のフォーム用モデル
     public CauseAnalysisFormViewModel NewCauseAnalysis { get; set; } = new();
-    // なぜなぜ分析フォーム用の原因分類ドロップダウン選択肢
-    public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+    // なぜなぜ分析フォーム用の原因分類ドロップダウン選択肢。
+    // required にして既定値を持たせない理由は IncidentListViewModel.DepartmentOptions と同じ
+    // (そちらの説明が正本)。空リストを既定にすると、この ViewModel を組み立てる経路が
+    // 増えたときに設定漏れがコンパイルもテストも緑のまま素通りし、詳細画面の
+    // 「なぜなぜ分析を追加」フォームから原因分類が選べなくなる(＝分析を登録できない)。
+    // この型はモデルバインドされない(詳細アクションは id を受けるだけ)ので、
+    // 入力用 ViewModel が必要とする [BindNever] / [ValidateNever] は要らない
+    public required List<SelectListItem> CauseCategoryOptions { get; set; }
 
     // For inline measure form
     // 詳細画面から直接追加する「再発防止策」のフォーム用モデル

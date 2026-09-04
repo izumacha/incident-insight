@@ -55,4 +55,36 @@ public class SearchFilterTests
         // 空白以外の文字を含むなら絞り込みを適用するので true を返すこと
         Assert.True(SearchFilter.HasValue(input));
     }
+
+    // 「絞り込みに使わなかった入力は画面へ返さない」側の規則(issue #204 課題 2)。
+    // 上の HasValue と同じ空判定を使うので、入力の並びもそのまま同じものを使う
+    // ——別の一覧にすると、空白の種類を足したときに片方だけが古くなる
+    [Theory]
+    [InlineData(null)]          // 未指定(クエリ文字列にキーが無い)
+    [InlineData("")]            // 空文字(入力欄を空のまま送信)
+    [InlineData(" ")]           // 半角スペース 1 つ
+    [InlineData("   ")]         // 半角スペース複数(貼り付け時に混入しやすい)
+    [InlineData("\t")]          // タブ
+    [InlineData("\n")]          // 改行
+    [InlineData("　")]          // 全角スペース(IME の確定ミスで入りやすい)
+    [InlineData(" 　\t ")]      // 半角・全角・タブの混在
+    public void Adopted_BlankInput_ReturnsNull(string? blankInput)
+    {
+        // 絞り込みに使っていない値は画面へ戻さない(null に潰す)
+        Assert.Null(SearchFilter.Adopted(blankInput));
+    }
+
+    // 採用した値は<b>加工せずそのまま</b>返す。前後の空白を落とすのは検索の一致範囲を
+    // 変える別の判断なので、この関数はしない(HasValue の解説と同じ扱い)
+    [Theory]
+    [InlineData("看護部")]      // 通常の日本語入力
+    [InlineData("a")]           // 1 文字
+    [InlineData(" 看護部")]     // 前に空白が付いた入力
+    [InlineData("看護部 ")]     // 後ろに空白が付いた入力(貼り付けで混入しやすい)
+    [InlineData("看護 部")]     // 語中に空白を含む入力
+    public void Adopted_MeaningfulInput_ReturnsItUnchanged(string input)
+    {
+        // 受け取った文字列と同一のものが返ること(トリミング等の加工をしない)
+        Assert.Equal(input, SearchFilter.Adopted(input));
+    }
 }
