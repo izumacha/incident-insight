@@ -72,9 +72,17 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     明記する<b>可変の真実の源</b>で、部署名を入れ替えても<b>過去の行は古い部署名を保持し続ける</b>。
 ///     一律に捨てると実在の部署で業務データを絞り込めなくなり、一律に補完すると
 ///     打ち間違い・改ざんで<b>存在しない部署が選択肢に現れる</b>。そこで
-///     <c>IncidentsController.ResolveDepartmentFilterAsync</c>(private)が
+///     <c>Controllers.Internal.DepartmentFilterResolver</c>(<c>/Analytics</c> と共有)が
 ///     <b>部署スコープ内の実データに存在するか</b>で 2 つの方式を振り分ける
 ///     (スコープを掛けるのは、Staff が他部署の部署名の有無を推測できないようにするため)。</description></item>
+///   <item><description><c>/Analytics</c> の発生部署 … <b>実データにあれば採用、無ければ採用しない</b>。
+///     判定は <c>/Incidents</c> の発生部署と<b>同じ共有処理</b>
+///     (<c>Controllers.Internal.DepartmentFilterResolver</c>)を通す ——
+///     同じ <c>?department=</c> で画面ごとに答えが違うと、実在しない部署名を指す URL が
+///     一覧では「適用していません」と言い、集計では<b>全 0 のグラフ</b>を返す。
+///     0 件と「そんな部署は無い」を区別できないのは医療インシデントの集計では誤読が重い
+///     (issue #204 課題 4)。この画面は部署のドロップダウンを持たないので補完した選択肢の
+///     使い道は無いが、それでも同じ処理を通すのは 2 つの判定が分かれないようにするため。</description></item>
 ///   <item><description><c>/Incidents</c> の原因分類 … <b>マスタにあれば補完、無ければ採用しない</b>。
 ///     選択肢は<b>実データ(原因分類マスタ)から</b>作るうえ、絞り込みが受け付ける値は
 ///     その表示用の部分集合より広い —— ドロップダウンは<b>親カテゴリだけ</b>で作るのに、
@@ -90,7 +98,7 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     自部署にまだ 1 件も無い分類で絞り込めなくなる実害だけが残る。</description></item>
 /// </list>
 ///
-/// <para><b>「採用しない」ときは黙って落とさない(<c>/Incidents</c> のみ)。</b>
+/// <para><b>「採用しない」ときは黙って落とさない(<c>/Incidents</c> と <c>/Analytics</c>)。</b>
 /// 入力を受け取ったのに絞り込まなかった場合、<c>/Incidents</c> は画面に注意書きを出す
 /// (<see cref="ViewModels.IncidentListViewModel.DepartmentFilterIgnored"/> /
 /// <see cref="ViewModels.IncidentListViewModel.CauseCategoryFilterIgnored"/>)。黙って落とすと、絞り込んだ
@@ -101,7 +109,10 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>/Incidents</c> の 2 つの条件はどちらも<b>実データの有無</b>なので、正しく
 /// ブックマークした URL でも<b>勝手に切り替わる</b>——部署は該当インシデントが
 /// 削除・修正された時点で、原因分類はその分類がマスタから消えた時点で。
-/// 利用者が何もしていないのに結果が変わる側だけ、変わったことを伝える。</para>
+/// 利用者が何もしていないのに結果が変わる側だけ、変わったことを伝える。
+/// <c>/Analytics</c> も同じ理由で伝えるが、伝え方は画面ではなく<b>JSON の
+/// <c>departmentFilterIgnored</c></b>(この画面にはまだ部署の絞り込み UI が無く、
+/// 読み手は JSON の利用側になるため。詳細は <c>AnalyticsController</c> の解説)。</para>
 ///
 /// <para><b>自由記述のテキスト絞り込みには「補完 / 採用しない」の 2 択が要らない。</b>
 /// 上の表が答えるのは「<b>ドロップダウンが表せない</b>値をどうするか」なので、
@@ -112,10 +123,18 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>&lt;input&gt;</c> に見えない値が残り、ページャのリンクがすべてその値を運ぶ。
 /// 判定は <see cref="Adopted"/> の 1 か所に集約してある(issue #204 課題 2)。</para>
 ///
-/// <para>この表は文章なので放っておけば実装から離れる。3 画面の実際の挙動は
+/// <para>この表は文章なので放っておけば実装から離れる。各画面の実際の挙動は
 /// <c>Controllers.UnlistedFilterValuePolicyTests</c> が 1 ファイルにまとめて固定しており、
 /// どれかの画面が表と違う振る舞いに変われば落ちる。<b>方式を変えるときは表とそのテストを
-/// 同じ変更セットで直す。</b></para>
+/// 同じ変更セットで直す。</b>(画面数をここに書かないのは、足すたびにこの数字だけが
+/// 古くなるため —— 実際 <c>/Analytics</c> は「3 画面」と書いてあった頃に表から漏れていた。)</para>
+///
+/// <para><b>表に載せ忘れること自体も機械で落とす。</b> 表が「絞り込み入力の唯一の真実の源」を
+/// 名乗る以上、<b>表に載っていない画面が同じ入力を受けている</b>ことが穴になる
+/// ——その画面は表からも、表を守る検出網からも同時に外れる(issue #204 課題 4 がその状態だった)。
+/// <c>?department=</c> については <c>UnlistedFilterValuePolicyTests</c> の
+/// <c>PolicyTable_CoversEveryActionThatAcceptsADepartmentFilter</c> が、
+/// 表に載せた一覧と<b>実際にその引数を受けるアクション全体</b>を突き合わせる。</para>
 ///
 /// <para><b>文字列以外の絞り込み入力もこの表に載せる(issue #195)。</b>
 /// <c>causeCategoryId</c> は <c>int?</c> なので <see cref="HasValue"/>(<c>string</c> 用)を

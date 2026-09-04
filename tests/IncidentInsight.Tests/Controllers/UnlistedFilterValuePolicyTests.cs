@@ -1,3 +1,5 @@
+// アクションの引数を走査するために使う(BindingFlags)
+using System.Reflection;
 // required 修飾子が残す [RequiredMember] を読むために使う
 using System.Runtime.CompilerServices;
 // ClaimsPrincipal(実行ロール)をテストから指定するために使う
@@ -13,6 +15,8 @@ using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
+// 集計 JSON の中身を読む共有ヘルパー
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 // InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
@@ -53,7 +57,7 @@ namespace IncidentInsight.Tests.Controllers;
 /// <para><b>ここで固定できない境界: 照合順序(collation)によるずれ。</b>
 /// <c>/Incidents</c> の実装は、許可リストの判定を C# の<b>序数比較</b>で、
 /// どの行が一致するかの判定を<b>DB の照合順序</b>で行う。分担をこう切った理由は
-/// <c>IncidentsController.ResolveDepartmentFilterAsync</c> の解説に書いてある
+/// <c>Controllers.Internal.DepartmentFilterResolver</c> の解説に書いてある
 /// (ここに書き写すと、実装が動いたときにこちらが古くなる)。
 /// アプリ側の分担は序数比較なので <b>InMemory でもそのまま動かせる</b> ——
 /// <c>Incidents_DepartmentStoredWithVariantSpelling_StaysReachable</c> が固定する。</para>
@@ -609,6 +613,238 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Empty(vm.Incidents);
     }
 
+    // --- /Analytics: /Incidents と同じ「実データにあれば補完、無ければ採用しない」 ------
+
+    // 方式表(SearchFilter の解説)に載っている「?department= を受ける」アクションの一覧。
+    //
+    // これが「表に何が載っているか」の唯一の写しで、下の網羅ガードが
+    // <b>判定とは独立な手がかり</b>(URL の契約＝アクションの引数)と突き合わせる。
+    // 手で書くのは、表そのものが文章で機械には読めないため —— 代わりに
+    // 「表に載っていない画面が ?department= を受けている」ことは機械で落とせる
+    private static readonly (Type Controller, string Action)[] DepartmentFilterScreens =
+    {
+        // 一覧画面。選択肢(ドロップダウン)を持つので補完まで含めて上の各テストが見る
+        (typeof(IncidentsController), nameof(IncidentsController.Index)),
+        // 集計 JSON。選択肢は持たないが、採用の判定は一覧とまったく同じ(issue #204 課題 4)
+        (typeof(AnalyticsController), nameof(AnalyticsController.MonthlyTrend)),
+        (typeof(AnalyticsController), nameof(AnalyticsController.ByCause)),
+        (typeof(AnalyticsController), nameof(AnalyticsController.BySeverity)),
+    };
+
+    // 方式表の一覧から /Analytics の分だけを取り出して [Theory] のケースにする。
+    //
+    // 手書きの [InlineData] にしないのは、表へ 4 つ目の集計エンドポイントを足した人が
+    // 行を足し忘れた瞬間に、そのエンドポイントだけが挙動の検査から黙って外れるため。
+    // 表へ足せば自動でケースに入り、呼び出し方を書いていなければ
+    // InvokeAnalyticsAsync が例外で落ちて「配線が要る」ことを知らせる(fail-closed)
+    public static TheoryData<string> AnalyticsDepartmentActions()
+    {
+        // 表のうち /Analytics のものだけを拾う
+        var actions = DepartmentFilterScreens
+            .Where(s => s.Controller == typeof(AnalyticsController))
+            .Select(s => s.Action)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 0 件は「エンドポイントが無くなった」より「表から落ちた」可能性が高い(fail-closed)
+        Assert.True(actions.Count > 0,
+            $"{nameof(DepartmentFilterScreens)} に {nameof(AnalyticsController)} の項目が 1 つも無い。"
+            + "表から外したなら、この導出も同じ変更セットで直すこと。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var action in actions) data.Add(action);
+        return data;
+    }
+
+    // 方式表の一覧に載っている /Analytics のアクションを名前で呼び分ける。
+    // 知らない名前が来たら落とす —— 表へ足しただけで検査が素通りするのを防ぐ(fail-closed)
+    private static Task<IActionResult> InvokeAnalyticsAsync(
+        AnalyticsController controller, string action, string? department) => action switch
+        {
+            // 期間の絞り込みは既定(未指定)にして、部署だけを動かす
+            nameof(AnalyticsController.MonthlyTrend) => controller.MonthlyTrend(null, null, department),
+            nameof(AnalyticsController.ByCause) => controller.ByCause(null, null, department),
+            nameof(AnalyticsController.BySeverity) => controller.BySeverity(null, null, department),
+            _ => throw new InvalidOperationException(
+                $"{action} の呼び出し方がこのテストに無い。"
+                + $"{nameof(DepartmentFilterScreens)} へ足したなら、ここへも呼び出しを足すこと。")
+        };
+
+    // /Analytics を扱うコントローラを用意する。
+    // 時計を固定するのは、MonthlyTrend が「直近 12 ヶ月」で窓を切るため ——
+    // 実時刻だと、シードに使う固定日(TestFixtures.Today)がいつか窓の外へ出て
+    // 「ある日を境に落ちるようになる」テストになる(issue #199 と同じ壊れ方)
+    private AnalyticsController NewAnalyticsController()
+    {
+        // シードと同じ日を「今日」として扱う時計を渡す
+        var controller = new AnalyticsController(_db, new FixedClock(TestFixtures.Today));
+        // この画面は Admin / RiskManager 限定。実在確認の部署スコープにも User が要る
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        return controller;
+    }
+
+    // 集計 3 エンドポイントすべてが数える 1 件を用意する
+    // (インシデント本体＋そのなぜなぜ分析。ByCause は分析テーブルを起点に数えるため)
+    private async Task SeedAnalyticsRowAsync(string department)
+    {
+        // 集計対象になるインシデントを 1 件作る
+        var incident = await SeedIncidentAsync(department);
+        // ByCause が数えられるよう、原因分類付きの分析をぶら下げる
+        _db.CauseAnalyses.Add(new CauseAnalysis
+        {
+            IncidentId = incident.Id,
+            // 部署ごとに別の分類にして、集計がまとまらないようにする
+            CauseCategory = new CauseCategory { Name = $"原因（{department}）", DisplayOrder = 1 },
+            Why1 = "なぜ1"
+        });
+        await _db.SaveChangesAsync();
+    }
+
+    // 集計 JSON の data 配列の合計(件数)を取り出す
+    private static int TotalCount(JsonDocument doc) =>
+        doc.RootElement.GetProperty("data").EnumerateArray().Sum(d => d.GetInt32());
+
+    // 集計 JSON の「採用しなかった」旗を取り出す
+    private static bool DepartmentFilterIgnored(JsonDocument doc) =>
+        doc.RootElement.GetProperty("departmentFilterIgnored").GetBoolean();
+
+    // 許可リストから外れた過去の部署名でも、実データにあれば絞り込みは効く。
+    // 一覧画面と同じ扱い —— 部署名を入れ替えたあとも過去の集計へ到達できる必要がある
+    [Theory]
+    [MemberData(nameof(AnalyticsDepartmentActions))]
+    public async Task Analytics_RetiredDepartmentThatStillExists_IsApplied(string action)
+    {
+        // 過去の部署名を持つ行と、現行の部署名を持つ行を 1 件ずつ用意する
+        await SeedAnalyticsRowAsync(RetiredDepartment);
+        await SeedAnalyticsRowAsync("ICU");
+
+        // 古いブックマーク相当のリクエスト
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsAsync(NewAnalyticsController(), action, RetiredDepartment));
+
+        // 絞り込みが効いて 1 件だけになる(全件の 2 件ではない)
+        Assert.Equal(1, TotalCount(doc));
+        // 採用しているので旗は立てない
+        Assert.False(DepartmentFilterIgnored(doc));
+    }
+
+    // 実データのどこにも無い部署名は採用しない。
+    //
+    // issue #204 課題 4 の再現手順そのもの。以前は値をそのまま Where へ渡していたため
+    // 「全 0 のグラフ」を注意書き無しで返しており、「この部署にはインシデントが 0 件だった」と
+    // 読めてしまった(実際は「そんな部署は無い」)。方式を揃えると全件が返るので、
+    // 今度は「絞り込んだつもりの全件」と読まれないよう旗で知らせる
+    [Theory]
+    [MemberData(nameof(AnalyticsDepartmentActions))]
+    public async Task Analytics_UnknownDepartment_IsNotAppliedAndIsFlagged(string action)
+    {
+        // 現行の部署名を持つ行だけを用意する
+        await SeedAnalyticsRowAsync("ICU");
+
+        // 実在しない部署名で絞り込もうとする
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsAsync(NewAnalyticsController(), action, UnknownDepartment));
+
+        // 絞り込みは掛からない(0 件ではなく全件が返る)
+        Assert.Equal(1, TotalCount(doc));
+        // 黙って落とさず、採用しなかったことを JSON で伝える
+        Assert.True(DepartmentFilterIgnored(doc));
+    }
+
+    // 許可リストに載っている部署は、そのまま採用する(旗も立てない)
+    [Theory]
+    [MemberData(nameof(AnalyticsDepartmentActions))]
+    public async Task Analytics_ListedDepartment_IsApplied(string action)
+    {
+        // 許可リストの先頭にある部署を使う(値そのものを書き写さない)
+        var listed = Incident.Departments[0];
+        // その部署の行と、別部署の行を 1 件ずつ用意する
+        await SeedAnalyticsRowAsync(listed);
+        await SeedAnalyticsRowAsync(RetiredDepartment);
+
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsAsync(NewAnalyticsController(), action, listed));
+
+        // 絞り込みが効いて 1 件だけになる
+        Assert.Equal(1, TotalCount(doc));
+        Assert.False(DepartmentFilterIgnored(doc));
+    }
+
+    // 入力そのものが無い(または空白のみの)ときは「採用しなかった」ではない。
+    // ここを区別しないと、部署を指定していない普通の集計でも旗が立ち続け、
+    // 旗を読む側(将来この画面に絞り込み UI を足す人)が読まなくなる
+    [Theory]
+    [MemberData(nameof(AnalyticsDepartmentActions))]
+    public async Task Analytics_WhenNoDepartmentWasRequested_NoFlagIsRaised(string action)
+    {
+        // 集計対象を 1 件用意する
+        await SeedAnalyticsRowAsync("ICU");
+
+        // 空白のみ(＝絞り込み無し)で呼ぶ
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsAsync(NewAnalyticsController(), action, "   "));
+
+        // 全件が返り、旗も立たない
+        Assert.Equal(1, TotalCount(doc));
+        Assert.False(DepartmentFilterIgnored(doc));
+    }
+
+    // 方式表が「絞り込み入力の唯一の真実の源」を名乗る以上、
+    // <b>表に載っていない画面が ?department= を受けている</b>こと自体が穴になる。
+    //
+    // 実際 issue #204 課題 4 の時点で /Analytics がその状態だった: 表は
+    // /Incidents /PreventiveMeasures /AuditLogs の 3 画面しか列挙しておらず、
+    // このファイルの検査も表に載っている画面にしか掛からないので、
+    // 集計画面は<b>表からも検出網からも同時に外れていた</b>。
+    //
+    // 手がかりは URL の契約(アクションが受け取る引数名)で、表そのものとは別の宣言箇所。
+    // 同じ手がかりでガードを書くと、表が狭まったときにガードも一緒に狭まって
+    // 「取りこぼしゼロ＝緑」で無力化される(この repo が
+    //  LengthGovernedTypes_CoverEveryOwnedDbSet で避けているのと同じ形)
+    [Fact]
+    public void PolicyTable_CoversEveryActionThatAcceptsADepartmentFilter()
+    {
+        // アプリ本体のアセンブリから、MVC のコントローラをすべて拾う
+        var controllers = typeof(IncidentsController).Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && typeof(Controller).IsAssignableFrom(t))
+            .ToList();
+        // 1 つも拾えないなら手がかりが死んでいる(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.True(controllers.Count > 0, "コントローラが 1 つも見つからない。");
+
+        // 「?department= を受ける」アクションを、引数名と型で拾う。
+        // DeclaredOnly にするのは、基底(Controller)が持つ公開メソッドを数えないため
+        var accepting = controllers
+            .SelectMany(t => t.GetMethods(
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Where(m => !m.IsSpecialName)
+                .Where(m => m.GetCustomAttributes(typeof(NonActionAttribute), inherit: true).Length == 0)
+                .Where(m => m.GetParameters().Any(param =>
+                    param.Name == "department" && param.ParameterType == typeof(string)))
+                .Select(m => (Controller: t, Action: m.Name)))
+            .Distinct()
+            .OrderBy(x => x.Controller.Name, StringComparer.Ordinal)
+            .ThenBy(x => x.Action, StringComparer.Ordinal)
+            .ToList();
+
+        // 手がかりが 1 件も読めないなら、引数名を変えたか拾い方が壊れている
+        Assert.True(accepting.Count > 0,
+            "?department= を受けるアクションが 1 つも見つからない。"
+            + "引数名を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 表の側も同じ並びに揃えてから突き合わせる
+        var listed = DepartmentFilterScreens
+            .OrderBy(x => x.Controller.Name, StringComparer.Ordinal)
+            .ThenBy(x => x.Action, StringComparer.Ordinal)
+            .ToList();
+
+        // 2 つの宣言箇所が一致していること。ずれていれば、表に載せずに ?department= を
+        // 受け始めた画面があるか、逆に受けなくなった画面が表に残っている
+        Assert.Equal(listed, accepting);
+    }
+
     // --- /AuditLogs: 採用しない ----------------------------------------------
 
     // 監査ログのエンティティ名はコード側で閉じた集合(AuditedEntities)で、過去行も必ずその中に収まる。
@@ -1065,7 +1301,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 発生部署の 2 つの解決メソッドが、DB から読んだ綴りを採用する前に
     // SearchFilter.HasValue の門番へ通していることをソースで見張る(issue #202)。
     //
-    // なぜランタイムのテストで固定できないのか。ResolveDepartmentFilterAsync が
+    // なぜランタイムのテストで固定できないのか。DepartmentFilterResolver.ResolveAsync が
     // 空白のみの綴りを受け取るのは、照合順序が幅ゼロ空白(U+200B)等を無視可能な文字として
     // 扱う配備先だけ ——絞り込み値は手前で HasValue を通っており非空白を 1 文字は含むので、
     // 序数比較では空白のみの行に一致しない。テストの InMemory も序数比較なのでこの枝には入らない。
@@ -1077,23 +1313,27 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // ここで固定するのは<b>2 つの解決メソッドの形が揃っていること</b>だけ。
     // どちらも同じ壊れ方(採用した値が選択肢に無い)をするので、片方だけ門番を外すと
     // 非対称が戻り、次に読む人がどちらを手本にしてよいか分からなくなる
+    //
+    // 置き場所も引数に取る。絞り込み側は /Incidents と /Analytics が共有するようになって
+    // Controllers/Internal へ移ったが(issue #204 課題 4)、保存側はフォーム固有なので
+    // コントローラに残っている ——ファイル名を決め打ちにすると、片方を動かしたときに
+    // 「宣言が見つからない」で落ちて、直す人が門番そのものを消す方へ倒れかねない
     [Theory]
-    // 一覧の絞り込み側(採用しないと絞り込みが解除される)
-    [InlineData("ResolveDepartmentFilterAsync")]
+    // 一覧・集計の絞り込み側(採用しないと絞り込みが解除される)
+    [InlineData("Controllers/Internal/DepartmentFilterResolver.cs", "ResolveAsync")]
     // 登録・編集の保存側(採用しないと保存された発生部署が書き換わる)
-    [InlineData("ResolveDepartmentSaveSelection")]
-    public void DepartmentResolvers_GateTheAdoptedValueOnHasValue(string methodName)
+    [InlineData("Controllers/IncidentsController.cs", "ResolveDepartmentSaveSelection")]
+    public void DepartmentResolvers_GateTheAdoptedValueOnHasValue(string relativePath, string methodName)
     {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var controllerPath = Path.Combine(
-            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
+        // 対象のソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var sourcePath = Path.Combine(RepositoryPaths.WebProject, relativePath.Replace('/', Path.DirectorySeparatorChar));
         // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
-        var source = File.ReadAllText(controllerPath);
+        Assert.True(File.Exists(sourcePath), $"解決メソッドのソースが見つからない: {sourcePath}");
+        var source = File.ReadAllText(sourcePath);
 
         // 対象メソッドの本文だけを切り出す(ファイル全体を見ると、他のメソッドにある
         // 同じ形の判定を数えてしまい、片方を外しても気付けない)
-        var body = ExtractMethodBody(source, methodName);
+        var body = ExtractMethodBody(source, methodName, relativePath);
 
         // DB から読んだ綴り(どちらのメソッドでも storedDepartment)を採用する前に
         // 空値の門番を通していること。null 判定へ戻す・門番ごと消す、のどちらでも落ちる。
@@ -1125,7 +1365,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 指定した名前のメソッドの本文を、コメントを落としたうえで切り出す。
     // 正規表現で「次のメソッドまで」を狙うと、宣言の書き方(戻り値の型・async の有無)に
     // 引きずられて静かに空文字を返しうるので、見つからない場合は fail-closed で落とす
-    private static string ExtractMethodBody(string source, string methodName)
+    private static string ExtractMethodBody(string source, string methodName, string relativePath)
     {
         // 先にコメントを落とす。これで波かっこの数え方もコメント内の中かっこに乱されない
         var code = CSharpComment.Replace(source, string.Empty);
@@ -1136,7 +1376,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 宣言が読めないなら、書き方が変わって手がかりが死んでいる。
         // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
         Assert.True(declaration.Success,
-            $"{nameof(IncidentsController)} に {methodName} の宣言が見つからない。"
+            $"{relativePath} に {methodName} の宣言が見つからない。"
             + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
 
         // 対応する波かっこまでを切り出す。数え方は同じファイルの ExtractBraceBlock が

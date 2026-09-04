@@ -22,7 +22,36 @@ using Microsoft.EntityFrameworkCore;
 // このコントローラの名前空間
 namespace IncidentInsight.Web.Controllers;
 
-// 分析画面とグラフ用 JSON API を提供するコントローラ(管理者/リスクマネージャー限定)
+/// <summary>
+/// 分析画面とグラフ用 JSON API を提供するコントローラ(管理者/リスクマネージャー限定)。
+/// </summary>
+/// <remarks>
+/// <para><b>発生部署の絞り込みは一覧画面と同じ方式に揃える(issue #204 課題 4)。</b>
+/// <c>?department=</c> を受ける 3 つのエンドポイントは、値を
+/// <see cref="Internal.DepartmentFilterResolver"/> に通してから使う ——
+/// 「実データにあれば補完、無ければ採用しない」。方式の割り当てと理由は
+/// <see cref="SearchFilter"/> の表が正本。</para>
+///
+/// <para><b>採用しなかったことは JSON で知らせる(<c>departmentFilterIgnored</c>)。</b>
+/// 以前は <c>SearchFilter.HasValue</c> を通しただけの値をそのまま <c>Where</c> へ渡していたため、
+/// 実在しない部署名を指す URL が<b>全 0 のグラフ</b>を注意書き無しで返していた
+/// ——「この部署にはインシデントが 0 件だった」と読めるが、実際は「そんな部署は無い」。
+/// 方式を揃えるとその URL は<b>絞り込みを外した全件</b>を返すので、黙って返すと今度は
+/// 「絞り込んだつもりの全件」になる。どちらの誤読も避けられないので、
+/// 採用しなかった事実を必ず添える(<c>/Incidents</c> が画面へ注意書きを出すのと同じ扱い)。</para>
+///
+/// <para><b>画面に注意書きが無いのは、この画面に部署の絞り込み UI がまだ無いから。</b>
+/// <c>Views/Analytics/Index.cshtml</c> は部署のドロップダウンを持たず、
+/// <c>Scripts/analytics.ts</c> も <c>?department=</c> を送らない ——現在この入力に
+/// 到達できるのは URL を直接叩く経路(ブックマーク・外部の集計)だけなので、
+/// 読み手はその JSON の利用側になる。<b>この画面に部署の絞り込みを足す人は、
+/// この旗を読んで画面に注意書きを出すこと</b>(足さないと、絞り込みが効いていないグラフを
+/// 「絞り込み中」の見た目で見せることになる)。</para>
+///
+/// <para><b>JSON の <c>{ labels, data }</c> 形状は変えない</b>(CLAUDE.md §3)。
+/// 旗は既存の <c>colors</c> / <c>recurrenceStats</c> と同じく<b>足す</b>だけで、
+/// 既存の 2 つのキーの意味も並びも動かさない。</para>
+/// </remarks>
 [Authorize(Policy = Policies.CanViewAnalytics)]
 public class AnalyticsController : Controller
 {
@@ -41,6 +70,24 @@ public class AnalyticsController : Controller
     // 分析トップページのビューを返す
     public IActionResult Index() => View();
 
+    /// <summary>
+    /// <c>?department=</c> を共有リゾルバへ通す薄いラッパ。
+    /// </summary>
+    /// <remarks>
+    /// 3 つのエンドポイントが同じ 2 行(スコープを掛けたクエリを組み立てて渡す)を書き写すと、
+    /// スコープの掛け忘れが 1 か所だけ起きうる ——そこだけ Staff が
+    /// <c>?department=</c> の総当たりで他部署の有無を推測できる穴になる(§9 最小公開)。
+    /// <c>ScopedByUser</c> を通すのは、現在のポリシー(Admin / RiskManager 限定)では
+    /// 実質全件になるが、ポリシーが広がったときに自動で安全側へ倒れるようにするため
+    /// (§9 fail-safe)。<b>集計本体のクエリはスコープを掛けていない</b>ので、
+    /// ポリシーを広げるときはそちらも同じ変更セットで手当てすること。
+    /// </remarks>
+    private Task<Internal.DepartmentFilterResolver.DepartmentFilterSelection> ResolveDepartmentFilterAsync(
+        string? department)
+        // 実在確認は「この画面が見せてよい範囲」の中だけで行う(契約は共有リゾルバの解説が正本)
+        => Internal.DepartmentFilterResolver.ResolveAsync(
+            _db.Incidents.AsNoTracking().ScopedByUser(User), department);
+
     // GET /Analytics/MonthlyTrend
     // 過去 12 ヶ月の月別インシデント件数を返す
     public async Task<IActionResult> MonthlyTrend(DateTime? dateFrom, DateTime? dateTo, string? department)
@@ -53,8 +100,12 @@ public class AnalyticsController : Controller
         // ベースクエリ(読み取り専用 + 期間フィルタ)
         var query = _db.Incidents.AsNoTracking()
             .Where(i => i.OccurredAt >= firstMonthStart);
-        // 部署指定があればさらに絞り込む(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
-        if (SearchFilter.HasValue(department)) query = query.Where(i => i.Department == department);
+        // 部署指定があればさらに絞り込む。判定は一覧画面と同じ共有リゾルバへ寄せる
+        // (実データにあれば採用、無ければ採用せず旗を立てる。規則は SearchFilter の表が正本)
+        var departmentFilter = await ResolveDepartmentFilterAsync(department);
+        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
+        if (departmentFilter.Effective != null)
+            query = query.Where(i => i.Department == departmentFilter.Effective);
         // 開始日指定があればさらに絞り込む(他エンドポイントと同様、既定の直近12ヶ月窓をさらに狭める)
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があればさらに絞り込む(その日を含める)
@@ -88,8 +139,8 @@ public class AnalyticsController : Controller
             counts.Add(count);
         }
 
-        // Chart.js が期待する {labels, data} 形状で JSON 返却
-        return Json(new { labels, data = counts });
+        // Chart.js が期待する {labels, data} 形状で JSON 返却(旗は足すだけで形状は変えない)
+        return Json(new { labels, data = counts, departmentFilterIgnored = departmentFilter.Ignored });
     }
 
     // GET /Analytics/ByCause
@@ -99,9 +150,12 @@ public class AnalyticsController : Controller
         // なぜなぜ分析テーブルをベースにする
         var query = _db.CauseAnalyses.AsNoTracking().AsQueryable();
 
-        // 部署指定があれば絞る(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
-        if (SearchFilter.HasValue(department))
-            query = query.Where(ca => ca.Incident.Department == department);
+        // 部署指定があれば絞る(判定は MonthlyTrend と同じ共有リゾルバ)
+        var departmentFilter = await ResolveDepartmentFilterAsync(department);
+        // 採用した値を式ツリーの外のローカルへ取り出してから使う
+        // (「null でないことの確認」と「式ツリーが捕まえる値」を 1 か所で結び付ける)
+        if (departmentFilter.Effective is string effectiveDepartment)
+            query = query.Where(ca => ca.Incident.Department == effectiveDepartment);
         // 開始日指定があれば絞る
         if (dateFrom.HasValue)
             query = query.Where(ca => ca.Incident.OccurredAt >= dateFrom.Value);
@@ -124,11 +178,12 @@ public class AnalyticsController : Controller
             .OrderByDescending(x => x.count)
             .ToListAsync();
 
-        // Chart.js 用にラベル配列とデータ配列を返す
+        // Chart.js 用にラベル配列とデータ配列を返す(旗は足すだけで形状は変えない)
         return Json(new
         {
             labels = grouped.Select(x => x.label),
-            data = grouped.Select(x => x.count)
+            data = grouped.Select(x => x.count),
+            departmentFilterIgnored = departmentFilter.Ignored
         });
     }
 
@@ -171,8 +226,11 @@ public class AnalyticsController : Controller
     {
         // 読み取り専用クエリを用意
         var query = _db.Incidents.AsNoTracking().AsQueryable();
-        // 部署指定があれば絞る(空白のみは絞り込み無し。判定は一覧画面と同じ SearchFilter へ寄せる)
-        if (SearchFilter.HasValue(department)) query = query.Where(i => i.Department == department);
+        // 部署指定があれば絞る(判定は MonthlyTrend と同じ共有リゾルバ)
+        var departmentFilter = await ResolveDepartmentFilterAsync(department);
+        // 採用した値だけを絞り込みに使う
+        if (departmentFilter.Effective != null)
+            query = query.Where(i => i.Department == departmentFilter.Effective);
         // 開始日指定があれば絞る
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があれば絞る(その日を含める)
@@ -200,11 +258,12 @@ public class AnalyticsController : Controller
             })
             .ToList();
 
-        // Chart.js 用 JSON を返却
+        // Chart.js 用 JSON を返却(旗は足すだけで形状は変えない)
         return Json(new
         {
             labels = ordered.Select(x => x.label),
-            data = ordered.Select(x => x.count)
+            data = ordered.Select(x => x.count),
+            departmentFilterIgnored = departmentFilter.Ignored
         });
     }
 

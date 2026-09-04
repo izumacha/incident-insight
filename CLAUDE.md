@@ -92,9 +92,9 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
   - `IncidentsController` — Index/Details/Create/Edit/Delete。Create は `HasAtLeastOneValidMeasure`（業務必須）を強制。`Edit` で親フォーム検証前にサブフォームキーを `ModelState.Remove` で除去。
   - `CauseAnalysesController` — `AddCauseAnalysis` / `EditCauseAnalysis` / `DeleteCauseAnalysis`。`[Route("Incidents/[action]/{id?}")]` で URL を維持し、`View("~/Views/Incidents/EditCauseAnalysis.cshtml", vm)` を再利用。
   - `IncidentMeasuresController` — `AddMeasure` / `CompleteMeasure` / `RateMeasure`（詳細ページからのインライン操作）。kanban 側の `Create`/`Edit`/`Complete`/`Review`/`UpdateStatus`/`Delete` は `PreventiveMeasuresController`。
-- 共有ヘルパー（カテゴリドロップダウン生成・リソースポリシー評価）は `Controllers/Internal/IncidentControllerHelpers.cs`。**業務ルールはここに置かない**（`HasAtLeastOneValidMeasure` 等は所有コントローラに残す）。
+- 共有ヘルパー（カテゴリドロップダウン生成・リソースポリシー評価）は `Controllers/Internal/IncidentControllerHelpers.cs`。**業務ルールはここに置かない**（`HasAtLeastOneValidMeasure` 等は所有コントローラに残す）。発生部署の絞り込み値の解決（許可リスト外の値を補完するか採用しないか）は `Controllers/Internal/DepartmentFilterResolver.cs` に集約し、`/Incidents` と `/Analytics` が共有する。
 - 移動したアクションの Tag Helper は `asp-controller="CauseAnalyses"` / `asp-controller="IncidentMeasures"` を指定する（URL は `/Incidents/...` のままだがルート解決に必要）。
-- `AnalyticsController` は Chart.js 用 JSON（`{ labels, data }` 形状を変えない）。
+- `AnalyticsController` は Chart.js 用 JSON（`{ labels, data }` 形状を変えない。キーの**追加**は可で、`colors` / `recurrenceStats` / `departmentFilterIgnored` がその例）。`?department=` は `DepartmentFilterResolver` を通し、採用しなかったときは `departmentFilterIgnored: true` を添える（`/Incidents` が画面へ注意書きを出すのと同じ理由。この画面はまだ部署の絞り込み UI を持たないため伝え先が JSON になっている）。
 - `HomeController.Index` はダッシュボード。`period`（`week`|`month`|`quarter`|`year`、既定 `year`）で KPI・トレンド・**再発アラート**（同部署＋同種別＋原因カテゴリ重複、直近 90 日。90 日窓は `period` から独立）を計算。
 - 成功/警告トーストは `TempData["Success"]` / `TempData["Warning"]`。
 
