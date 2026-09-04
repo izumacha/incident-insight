@@ -8,8 +8,6 @@ using System.Security.Claims;
 using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
-// 読めない絞り込み値を拾う共有処理(失敗メッセージで名前を借りる)
-using IncidentInsight.Web.Controllers.Internal;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
@@ -712,7 +710,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.MalformedFilterIgnored,
             $"?{parameterName}=<読めない値> を受け取ったのに注意書きが出ない。"
-            + $"{nameof(MalformedFilterValueResolver)} へ {parameterName} を渡し忘れていないか、"
+            + $"MalformedFilterValueResolver へ {parameterName} を渡し忘れていないか、"
             + "あるいは [FromQuery(Name = ...)] で URL 上の名前を変えたのに本体が nameof の"
             + "引数名を渡したままになっていないか確認すること"
             + "(ModelState のキーになるのは URL 上の名前で、C# の引数名ではない)。");
@@ -752,7 +750,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 読めなかった値は無いので注意書きは出ない
         Assert.False(vm.MalformedFilterIgnored,
             $"?{parameterName}=<読める値> で注意書きが出ている。"
-            + $"{nameof(MalformedFilterValueResolver)} が「エントリの有無」ではなく"
+            + "MalformedFilterValueResolver が「エントリの有無」ではなく"
             + "「エラーの有無」を見ているか確認すること。");
     }
 

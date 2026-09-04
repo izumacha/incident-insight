@@ -47,7 +47,7 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// 「読めなかった」という状態が存在しない(空・空白のみの扱いは
 /// <see cref="Models.Validation.SearchFilter"/> が答える別の問い)。</para>
 /// </remarks>
-public static class MalformedFilterValueResolver
+internal static class MalformedFilterValueResolver
 {
     /// <summary>
     /// 指定した絞り込み引数のうち、<b>値は届いたのに型として読めなかった</b>ものがあるかを判定する。
