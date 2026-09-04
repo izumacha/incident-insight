@@ -7,6 +7,8 @@ using IncidentInsight.Web.Controllers;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
+// SearchFilter は「空値の門番」をソースで照合するときに名前を借りるために使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models.ViewModels;
 using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
@@ -56,8 +58,12 @@ namespace IncidentInsight.Tests.Controllers;
 ///
 /// <para>一方、<b>DB 側の分担はここでは動かせない</b>。InMemory も序数比較なので、
 /// 照合順序が大文字小文字を区別しない配備先だけで通る枝には入らない。該当するのは
-/// 「取り出した綴りを 1 件に決める並べ替え」と「その綴りが既に選択肢にあるときに
-/// 補完を省く判定」の 2 つで、どちらも実測で「消しても全件緑」だった。
+/// 「取り出した綴りを 1 件に決める並べ替え」「その綴りが既に選択肢にあるときに
+/// 補完を省く判定」、そして<b>「取り出した綴りが空白のみなら採用しない門番」</b>
+/// (照合順序が幅ゼロ空白等を無視可能な文字として扱う配備先でのみ到達。issue #202)で、
+/// いずれも実測で「消しても全件緑」だった。最後の 1 つだけは形をソースで見張っている
+/// (<c>DepartmentResolvers_GateTheAdoptedValueOnHasValue</c>) ——姉妹メソッドと
+/// 対になった非対称が戻るのを防ぐため。
 /// プロバイダ依存の挙動はこの repo が繰り返し当たっている死角なので、
 /// <b>この付近を触る差分はレビューで「どちらの比較規則で判定しているか」
 /// 「同値行の並びを固定しているか」を確かめること。</b></para>
@@ -950,6 +956,81 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
         // 逆に画面へ渡らなくなった旗が ViewModel に残っている
         Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
+    }
+
+    // 発生部署の 2 つの解決メソッドが、DB から読んだ綴りを採用する前に
+    // SearchFilter.HasValue の門番へ通していることをソースで見張る(issue #202)。
+    //
+    // なぜランタイムのテストで固定できないのか。ResolveDepartmentFilterAsync が
+    // 空白のみの綴りを受け取るのは、照合順序が幅ゼロ空白(U+200B)等を無視可能な文字として
+    // 扱う配備先だけ ——絞り込み値は手前で HasValue を通っており非空白を 1 文字は含むので、
+    // 序数比較では空白のみの行に一致しない。テストの InMemory も序数比較なのでこの枝には入らない。
+    // 上の「固定できない境界」に挙げた 2 つと同じ性質で、実測でも門番を消して全件緑だった。
+    //
+    // 門番が要る理由(空白のみを採用すると、補完が空値を足さないぶん「絞り込みは効いているのに
+    // 一致する <option> が無い」状態が残り、再送信で絞り込みが黙って解除される)は
+    // 実装側のコメントが正本 ——ここへ書き写すと、方針を変えたときにこちらが古くなる。
+    // ここで固定するのは「2 つの解決メソッドの形が揃っていること」だけ。
+    // どちらも同じ壊れ方(採用した値が選択肢に無い)をするので、片方だけ門番を外すと
+    // 非対称が戻り、次に読む人がどちらを手本にしてよいか分からなくなる
+    [Theory]
+    // 一覧の絞り込み側(採用しないと絞り込みが解除される)
+    [InlineData("ResolveDepartmentFilterAsync")]
+    // 登録・編集の保存側(採用しないと保存された発生部署が書き換わる)
+    [InlineData("ResolveDepartmentSaveSelection")]
+    public void DepartmentResolvers_GateTheAdoptedValueOnHasValue(string methodName)
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        var source = File.ReadAllText(controllerPath);
+
+        // 対象メソッドの本文だけを切り出す(ファイル全体を見ると、他のメソッドにある
+        // 同じ形の判定を数えてしまい、片方を外しても気付けない)
+        var body = ExtractMethodBody(source, methodName);
+
+        // DB から読んだ綴り(どちらのメソッドでも storedDepartment)を採用する前に
+        // 空値の門番を通していること。null 判定へ戻す・門番ごと消す、のどちらでも落ちる
+        Assert.Contains($"!{nameof(SearchFilter)}.{nameof(SearchFilter.HasValue)}(storedDepartment)", body);
+    }
+
+    // 指定した名前のメソッドの本文を、対応する波かっこを数えて切り出す。
+    // 正規表現で「次のメソッドまで」を狙うと、宣言の書き方(戻り値の型・async の有無)に
+    // 引きずられて静かに空文字を返しうるので、見つからない場合は fail-closed で落とす
+    private static string ExtractMethodBody(string source, string methodName)
+    {
+        // メソッド宣言の位置を探す(呼び出しではなく宣言を狙うため、名前の直後が引数リストで
+        // かつ行頭からインデントだけが先行する形に限る)
+        var declaration = Regex.Match(source, $@"^[ \t]+(?:private|public|internal).*\b{Regex.Escape(methodName)}\s*\(", RegexOptions.Multiline);
+        // 宣言が読めないなら、書き方が変わって手がかりが死んでいる。
+        // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
+        Assert.True(declaration.Success,
+            $"{nameof(IncidentsController)} に {methodName} の宣言が見つからない。"
+            + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 本文の開始位置(宣言に続く最初の波かっこ)を探す
+        var open = source.IndexOf('{', declaration.Index + declaration.Length);
+        // 波かっこが無いなら式本体(=>)へ変わった等なので、同じく落として人に判断させる
+        Assert.True(open >= 0, $"{methodName} の本文({{)が見つからない。");
+
+        // 入れ子を数えながら対応する閉じ波かっこまで進む
+        var depth = 0;
+        for (var i = open; i < source.Length; i++)
+        {
+            // 開き波かっこで 1 段深くなる
+            if (source[i] == '{') depth++;
+            // 閉じ波かっこで 1 段浅くなる
+            else if (source[i] == '}') depth--;
+            // 深さが 0 に戻った位置が本文の終わり
+            if (depth == 0) return source[open..(i + 1)];
+        }
+
+        // ここへ来るのは波かっこが閉じていない場合だけ(ビルドが通らないはずの状態)
+        Assert.Fail($"{methodName} の本文の終わりが見つからない。");
+        // Assert.Fail が必ず投げるので到達しないが、コンパイラのために戻り値を書く
+        return string.Empty;
     }
 
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。
