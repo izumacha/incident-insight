@@ -653,16 +653,26 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 繰り返し避けている「写しを持つ」形そのもの。署名から導けば、引数を足した時点で
     // 自動でケースに入る。
     //
+    // <b>拾うのは「URL 上の名前」で、C# の引数名ではない。</b> モデルバインドが ModelState の
+    // キーに使うのは URL 上の名前で、本体側が渡している nameof は<b>その 2 つが一致している
+    // 今だけ</b>正しい。引数名で照合すると本体とまったく同じ手がかりを共有することになり、
+    // <c>[FromQuery(Name = "cause")] int? causeCategoryId</c> のような別名を付けた瞬間に
+    // 本体は "causeCategoryId" を見張り MVC は "cause" にエラーを積む、という食い違いが
+    // <b>両側そろって同じ名前を使うせいで検出できない</b>(＝注意書きが黙って消えるのに全件緑)。
+    // URL 上の名前で拾えば、別名を付けた時点でこの Theory が "cause" を渡して落ちる。
+    // 判定は ?department= の照合と同じ QueryStringName に集約してある(§6 DRY)
+    //
     // 1 つも拾えなければ落とす(fail-closed)。引数の型をすべて string? へ変えるような
     // 改修で「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
     public static TheoryData<string> NullableFilterParameters()
     {
-        // Index の引数のうち Nullable<T>(値として読めなければ null に化けるもの)だけを拾う
+        // Index の引数のうち Nullable<T>(値として読めなければ null に化けるもの)だけを、
+        // モデルバインドが ModelState のキーに使う「URL 上の名前」で拾う
         var names = typeof(IncidentsController)
             .GetMethod(nameof(IncidentsController.Index))!
             .GetParameters()
             .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
-            .Select(p => p.Name!)
+            .Select(p => QueryStringName(p)!)
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
@@ -702,7 +712,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.MalformedFilterIgnored,
             $"?{parameterName}=<読めない値> を受け取ったのに注意書きが出ない。"
-            + $"{nameof(MalformedFilterValueResolver)} へ nameof({parameterName}) を渡し忘れていないか確認すること。");
+            + $"{nameof(MalformedFilterValueResolver)} へ {parameterName} を渡し忘れていないか、"
+            + "あるいは [FromQuery(Name = ...)] で URL 上の名前を変えたのに本体が nameof の"
+            + "引数名を渡したままになっていないか確認すること"
+            + "(ModelState のキーになるのは URL 上の名前で、C# の引数名ではない)。");
 
         // 絞り込みは掛かっていない(全件が返る)。これは「読めない値では絞り込めない」以上
         // 避けられないので、注意書きはまさにこの状態を伝えるためにある
