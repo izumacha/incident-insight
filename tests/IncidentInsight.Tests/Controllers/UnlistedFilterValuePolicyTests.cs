@@ -1029,41 +1029,51 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Contains($"!{nameof(SearchFilter)}.{nameof(SearchFilter.HasValue)}(storedDepartment)", body);
     }
 
-    // 指定した名前のメソッドの本文を、対応する波かっこを数えて切り出す。
+    // C# のコメント(行コメントとブロックコメント)。
+    // 検査の前に落とすのは、コメントで検査を満たせないようにするため ——
+    // 実測では、門番を storedDepartment == null へ戻したうえで直前に
+    // 「// 門番は !SearchFilter.HasValue(storedDepartment) で行う」と 1 行足すだけで
+    // 下の Assert.Contains が成立し、全件緑のまま門番を差し戻せた。
+    // Razor 側は RazorSource.Comment が同じ穴を塞いでいる(あちらの解説に同種の実測がある)。
+    // 共有ヘルパへ移さないのは、C# 用の利用側がこの 1 か所しか無いため
+    // (RazorSource の解説が言う「3 つ目の利用側が出たときに移す」に従う)
+    private static readonly Regex CSharpComment =
+        new(@"//[^\r\n]*|/\*.*?\*/", RegexOptions.Singleline | RegexOptions.Compiled);
+
+    // 指定した名前のメソッドの本文を、コメントを落としたうえで切り出す。
     // 正規表現で「次のメソッドまで」を狙うと、宣言の書き方(戻り値の型・async の有無)に
     // 引きずられて静かに空文字を返しうるので、見つからない場合は fail-closed で落とす
     private static string ExtractMethodBody(string source, string methodName)
     {
+        // 先にコメントを落とす。これで波かっこの数え方もコメント内の中かっこに乱されない
+        var code = CSharpComment.Replace(source, string.Empty);
+
         // メソッド宣言の位置を探す(呼び出しではなく宣言を狙うため、名前の直後が引数リストで
         // かつ行頭からインデントだけが先行する形に限る)
-        var declaration = Regex.Match(source, $@"^[ \t]+(?:private|public|internal).*\b{Regex.Escape(methodName)}\s*\(", RegexOptions.Multiline);
+        var declaration = Regex.Match(code, $@"^[ \t]+(?:private|public|internal).*\b{Regex.Escape(methodName)}\s*\(", RegexOptions.Multiline);
         // 宣言が読めないなら、書き方が変わって手がかりが死んでいる。
         // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
         Assert.True(declaration.Success,
             $"{nameof(IncidentsController)} に {methodName} の宣言が見つからない。"
             + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
 
-        // 本文の開始位置(宣言に続く最初の波かっこ)を探す
-        var open = source.IndexOf('{', declaration.Index + declaration.Length);
-        // 波かっこが無いなら式本体(=>)へ変わった等なので、同じく落として人に判断させる
-        Assert.True(open >= 0, $"{methodName} の本文({{)が見つからない。");
+        // 対応する波かっこまでを切り出す。数え方は同じファイルの ExtractBraceBlock が
+        // 既に持っているので写さない(写すと、数え方の穴を塞ぐときに片方が取り残される)
+        var body = ExtractBraceBlock(code, declaration.Index + declaration.Length);
+        // 本文が読めないなら(式本体へ変わった・波かっこが閉じていない)、同じく落として人に判断させる
+        Assert.True(body is not null,
+            $"{methodName} の本文が切り出せない。書き方を変えたなら、この照合も同じ変更セットで直すこと。");
 
-        // 入れ子を数えながら対応する閉じ波かっこまで進む
-        var depth = 0;
-        for (var i = open; i < source.Length; i++)
-        {
-            // 開き波かっこで 1 段深くなる
-            if (source[i] == '{') depth++;
-            // 閉じ波かっこで 1 段浅くなる
-            else if (source[i] == '}') depth--;
-            // 深さが 0 に戻った位置が本文の終わり
-            if (depth == 0) return source[open..(i + 1)];
-        }
+        // 引用符が残っていたら、この単純な数え方では正しく切り出せていない可能性がある。
+        // 文字列・文字リテラルの中の波かっこ('{' や $"...{x}..." の対応しない片方)は
+        // 深さの計算を狂わせ、本文が姉妹メソッドまで伸びて「隣の門番」で検査が成立しうる
+        // ——静かに広がるより、落として人に判断させる(リテラルを足すならこの検査も一緒に直す)
+        Assert.True(body!.IndexOfAny(['"', '\'']) < 0,
+            $"{methodName} の本文に文字列・文字リテラルがある。波かっこを数えるこの切り出しは"
+            + "リテラル内の中かっこを区別しないので、リテラルを足すならこの照合も同じ変更セットで直すこと。");
 
-        // ここへ来るのは波かっこが閉じていない場合だけ(ビルドが通らないはずの状態)
-        Assert.Fail($"{methodName} の本文の終わりが見つからない。");
-        // Assert.Fail が必ず投げるので到達しないが、コンパイラのために戻り値を書く
-        return string.Empty;
+        // コメントを落とした本文を返す
+        return body;
     }
 
     // 「採用しなかったことを画面へ伝える」旗を、ビューが実際に読んでいることを確かめる。

@@ -191,10 +191,17 @@ internal static class IncidentControllerHelpers
 
     /// <summary>
     /// <see cref="SelectListItem"/> で選択肢を作る画面向けの
-    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string)"/>。
+    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string?)"/>。
     /// 表示文字列と送信値が別々になるだけで、守る不変条件も置く位置も同じ。
     /// </summary>
     /// <remarks>
+    /// <para><b>null の扱いだけは隣と違う。</b> 文字列版は <c>string?</c> を受けて
+    /// 「未指定・空白のみでもそのまま渡してよい」が、こちらが受け取るのは選択肢そのもの
+    /// (<see cref="SelectListItem"/>)なので、<b>項目自体は必ず渡すこと</b>
+    /// ——空値の門番が見るのは中身の <see cref="SelectListItem.Value"/> の方で、
+    /// 項目が <c>null</c> だとそこへ辿り着く前に落ちる。
+    /// 隣同士に置いてあるぶん取り違えやすいので明記しておく。</para>
+    ///
     /// <para><b>重複を承知で 2 つ置いている理由。</b> 選択肢の要素型が違うだけで
     /// 判定は「空でないか」「既にあるか」「先頭へ入れる」の 3 つとも同じなので、
     /// <b>位置の規則が 2 か所に分かれないように隣同士へ置く</b>
