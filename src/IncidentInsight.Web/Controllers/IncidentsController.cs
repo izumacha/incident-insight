@@ -93,10 +93,8 @@ public class IncidentsController : Controller
         // 判定とドロップダウンの選択肢づくりを共有の DepartmentFilterResolver にまとめてある
         // (許可リストから外れた過去の部署名は選択肢へ補完し、実データに無い値は採用しない。
         //  どちらを選ぶかの規則と理由は SearchFilter の解説に集約。issue #192)。
-        // 実在確認に使うクエリは呼び出し側が渡す契約なので、一覧本体と同じ部署スコープを掛ける
-        // ——外すと Staff が ?department= の総当たりで他部署の有無を推測できる(§9 最小公開)
-        var departmentFilter = await DepartmentFilterResolver.ResolveAsync(
-            _db.Incidents.AsNoTracking().ScopedByUser(User), department);
+        // 実在確認に掛ける部署スコープは共有処理の中で決まる(掛け忘れようがない形にしてある)
+        var departmentFilter = await DepartmentFilterResolver.ResolveAsync(_db, User, department);
         // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
         if (departmentFilter.Effective != null)
             query = query.Where(i => i.Department == departmentFilter.Effective);
@@ -260,7 +258,13 @@ public class IncidentsController : Controller
             // ただし Staff の所属部署クレームだけは選択肢へ足す ——足さないと、クレームが
             // 許可リストから外れている Staff の画面に一致する <option> が無く、
             // 実際に保存される部署が一度も表示されないまま登録される(issue #204 課題 1)
-            DepartmentOptions = ResolveDepartmentSaveSelectionForCurrentUser(null).Options
+            DepartmentOptions = ResolveDepartmentSaveSelectionForCurrentUser(null).Options,
+            // Staff は EnforceOwnDepartmentForStaff がフォームの値をクレームで<b>必ず</b>上書きするので、
+            // 初期選択もその値にしておく。選択肢へ足すだけだと「-- 選択してください --」が
+            // 選ばれたままになり、利用者が別の部署を選んで送信しても保存されるのはクレームの値
+            // ——課題 1 が問題にしている「画面が実際に保存される値を表していない」状態が、
+            // 選択状態の側に残る。Admin / RiskManager は null が返るので従来どおり未選択で始まる
+            Department = OwnDepartmentForStaff() ?? string.Empty
         };
         // 登録フォームを描画
         return View(vm);
@@ -571,10 +575,19 @@ public class IncidentsController : Controller
     /// 書き写したままにすると、役割の増減で片方だけが取り残されたときに
     /// 「上書きされないのに検証もされない」＝ 任意の部署名を保存できる穴になる
     /// (fail-open)ので、判定はここ 1 か所に持つ(§6)。</para>
+    ///
+    /// <para><b>役割の一覧そのものは自前で持たない。</b> 「全件アクセスできるのは誰か」は
+    /// <see cref="Authorization.DepartmentScope.HasFullAccess"/> が既に持っており、
+    /// クエリの部署スコープ(<c>ScopedByUser</c>)もビューのリンク表示もそれを見ている。
+    /// ここで <c>IsInRole</c> を書き写すと<b>2 つ目の真実の源</b>になり、
+    /// 全件アクセスの役割を 1 つ足したときに片方だけが追随する ——
+    /// その役割は一覧では全部署が見えるのに、この画面ではフォームの値を
+    /// (存在しない)自分のクレームで上書きされ、しかも許可リストの検証も飛ばされる
+    /// (上の fail-open がまさにそれ)。<b>否定を取るだけにして、一覧は 1 か所に保つ。</b></para>
     /// </remarks>
     private bool IsDepartmentRestrictedUser()
-        // Admin / RiskManager は全部署を扱えるので対象外。それ以外(Staff)が対象
-        => !User.IsInRole(AppRoles.Admin) && !User.IsInRole(AppRoles.RiskManager);
+        // 全件アクセスできる役割(Admin / RiskManager)以外＝部署を固定される役割
+        => !User.HasFullAccess();
 
     /// <summary>
     /// Staff の所属部署クレームを返す。Admin / RiskManager なら <c>null</c>。

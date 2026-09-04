@@ -358,6 +358,61 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
         Assert.Contains(saved.Department, offered);
     }
 
+    // 選択肢へ足すだけでなく、Staff の所属部署を<b>初期選択</b>にする。
+    //
+    // 足すだけだと「-- 選択してください --」が選ばれたままになり、利用者が別の部署を
+    // 選んで送信しても EnforceOwnDepartmentForStaff がクレームで上書きするので、
+    // 「画面が実際に保存される値を表していない」という課題 1 の症状が選択状態の側に残る
+    [Fact]
+    public async Task CreateGet_StaffWithUnlistedClaim_PreselectsItsOwnDepartment()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+
+        var vm = await CreateFormAsync(UserContextHelper.Staff(RetiredDepartment));
+
+        // asp-for="Department" が一致する <option> を選択状態にする値
+        Assert.Equal(RetiredDepartment, vm.Department);
+    }
+
+    // 画面が選択状態として示す値と、実際に保存される値が一致する。
+    //
+    // 上の 2 つ(選択肢に出る / 初期選択になる)は画面の中だけを見るので、
+    // 上書きの規則(EnforceOwnDepartmentForStaff)が変わると黙って食い違いが戻る。
+    // 初期選択の値をそのまま送り返して DB を読み直すことで、両側を突き合わせる
+    [Fact]
+    public async Task CreateForm_PreselectedDepartmentIsTheOneThatGetsSaved()
+    {
+        RequireOutsideAllowList(RetiredDepartment);
+        var staff = UserContextHelper.Staff(RetiredDepartment);
+
+        // 画面が初期選択として示す部署を取り出す
+        var preselected = (await CreateFormAsync(staff)).Department;
+        // 空だと「見るべき対象ゼロ＝緑」になるので fail-closed で落とす
+        Assert.False(string.IsNullOrWhiteSpace(preselected),
+            "登録画面が発生部署を初期選択していない(何も選ばれていない状態から始まっている)。");
+
+        // 利用者が何も触らずに送信した場合に相当する
+        var result = await NewIncidentsController(staff).Create(CreateSubmission(preselected));
+        Assert.IsType<RedirectToActionResult>(result);
+
+        // 保存された値が、画面が示していた値と同じ
+        var saved = await _db.Incidents.AsNoTracking().SingleAsync();
+        Assert.Equal(preselected, saved.Department);
+    }
+
+    // Admin / RiskManager は所属で縛られないので、従来どおり未選択で始まる。
+    // ここを固定しないと、初期選択を入れる変更が全ロールへ広がったときに
+    // 「管理者が意図せず特定の部署で登録してしまう」壊れ方に気付けない
+    [Fact]
+    public async Task CreateGet_FullAccessRole_LeavesDepartmentUnselected()
+    {
+        var vm = await CreateFormAsync(UserContextHelper.Admin());
+
+        // 初期値は空のまま(ビューは「-- 選択してください --」を選択状態にする)
+        Assert.True(string.IsNullOrEmpty(vm.Department),
+            $"Admin の登録画面で発生部署が初期選択されている: 「{vm.Department}」");
+    }
+
     // 検証エラーで登録画面を再描画するときも、Staff の所属部署を選択肢へ戻す。
     // 戻さないと再描画された画面から現在値が消え、初回表示と同じ食い違いが続く
     // (選択肢は POST ボディに含まれないので「バインドされた値が返る」ことに頼れない)

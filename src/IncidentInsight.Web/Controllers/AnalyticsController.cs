@@ -1,4 +1,4 @@
-// 部署スコープ拡張メソッド
+// 認可ポリシー名の定数(Policies)を使う
 using IncidentInsight.Web.Authorization;
 // 共通ヘルパ(日付上限フィルタの安全な排他的上限計算)を使う
 using IncidentInsight.Web.Controllers.Internal;
@@ -72,19 +72,14 @@ public class AnalyticsController : Controller
     /// <c>?department=</c> を共有リゾルバへ通す薄いラッパ。
     /// </summary>
     /// <remarks>
-    /// 3 つのエンドポイントが同じ 2 行(スコープを掛けたクエリを組み立てて渡す)を書き写すと、
-    /// スコープの掛け忘れが 1 か所だけ起きうる ——そこだけ Staff が
-    /// <c>?department=</c> の総当たりで他部署の有無を推測できる穴になる(§9 最小公開)。
-    /// <c>ScopedByUser</c> を通すのは、現在のポリシー(Admin / RiskManager 限定)では
-    /// 実質全件になるが、ポリシーが広がったときに自動で安全側へ倒れるようにするため
-    /// (§9 fail-safe)。<b>集計本体のクエリはスコープを掛けていない</b>ので、
-    /// ポリシーを広げるときはそちらも同じ変更セットで手当てすること。
+    /// 3 つのエンドポイントが引数の並びを書き写さずに済むようにするためだけのもの。
+    /// 実在確認に掛ける部署スコープは共有リゾルバの中で決まるので、ここでは何も足さない
+    /// (規則と、なぜ呼び出し側に委ねないのかは共有リゾルバの解説が正本)。
     /// </remarks>
     private Task<Internal.DepartmentFilterResolver.DepartmentFilterSelection> ResolveDepartmentFilterAsync(
         string? department)
-        // 実在確認は「この画面が見せてよい範囲」の中だけで行う(契約は共有リゾルバの解説が正本)
-        => Internal.DepartmentFilterResolver.ResolveAsync(
-            _db.Incidents.AsNoTracking().ScopedByUser(User), department);
+        // 判定はすべて共有リゾルバに任せる
+        => Internal.DepartmentFilterResolver.ResolveAsync(_db, User, department);
 
     // GET /Analytics/MonthlyTrend
     // 過去 12 ヶ月の月別インシデント件数を返す
@@ -101,9 +96,12 @@ public class AnalyticsController : Controller
         // 部署指定があればさらに絞り込む。判定は一覧画面と同じ共有リゾルバへ寄せる
         // (実データにあれば採用、無ければ採用せず旗を立てる。規則は SearchFilter の表が正本)
         var departmentFilter = await ResolveDepartmentFilterAsync(department);
-        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
-        if (departmentFilter.Effective != null)
-            query = query.Where(i => i.Department == departmentFilter.Effective);
+        // 採用した値を式ツリーの外のローカルへ取り出してから使う(採用しなかった場合は
+        // null なのでこの節を飛ばす)。3 つのエンドポイントで書き方をそろえてあるのは、
+        // 「null でないことの確認」と「式ツリーが捕まえる値」を 1 か所で結び付けるため
+        // ——分けて書くと、条件を直したときに片方だけ取り残される
+        if (departmentFilter.Effective is string effectiveDepartment)
+            query = query.Where(i => i.Department == effectiveDepartment);
         // 開始日指定があればさらに絞り込む(他エンドポイントと同様、既定の直近12ヶ月窓をさらに狭める)
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があればさらに絞り込む(その日を含める)
@@ -150,8 +148,7 @@ public class AnalyticsController : Controller
 
         // 部署指定があれば絞る(判定は MonthlyTrend と同じ共有リゾルバ)
         var departmentFilter = await ResolveDepartmentFilterAsync(department);
-        // 採用した値を式ツリーの外のローカルへ取り出してから使う
-        // (「null でないことの確認」と「式ツリーが捕まえる値」を 1 か所で結び付ける)
+        // 採用した値をローカルへ取り出してから使う(理由は MonthlyTrend と同じ)
         if (departmentFilter.Effective is string effectiveDepartment)
             query = query.Where(ca => ca.Incident.Department == effectiveDepartment);
         // 開始日指定があれば絞る
@@ -226,9 +223,9 @@ public class AnalyticsController : Controller
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         // 部署指定があれば絞る(判定は MonthlyTrend と同じ共有リゾルバ)
         var departmentFilter = await ResolveDepartmentFilterAsync(department);
-        // 採用した値だけを絞り込みに使う
-        if (departmentFilter.Effective != null)
-            query = query.Where(i => i.Department == departmentFilter.Effective);
+        // 採用した値をローカルへ取り出してから使う(理由は MonthlyTrend と同じ)
+        if (departmentFilter.Effective is string effectiveDepartment)
+            query = query.Where(i => i.Department == effectiveDepartment);
         // 開始日指定があれば絞る
         if (dateFrom.HasValue) query = query.Where(i => i.OccurredAt >= dateFrom.Value);
         // 終了日指定があれば絞る(その日を含める)

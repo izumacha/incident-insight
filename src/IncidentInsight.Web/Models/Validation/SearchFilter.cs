@@ -207,7 +207,8 @@ public static class SearchFilter
     ///
     /// <para><b>規則そのものは新しくない。</b> 「採用しなかった値を画面へ返さない」は
     /// 発生部署・原因分類・監査ログのエンティティ名／操作が既に守っている
-    /// (<c>IncidentsController.DepartmentFilterSelection.Effective</c> の解説が正本)。
+    /// (<c>Controllers.Internal.DepartmentFilterResolver.DepartmentFilterSelection.Effective</c>
+    /// の解説が正本)。
     /// 自由記述のテキスト絞り込みだけがその外にあり、<b>例外にしてよい理由が無かった</b>。
     /// あちらは「許可リスト・実データに載っているか」という画面ごとの判断が要るので
     /// 解決メソッドを持つが、テキスト側の判断は<b>この型が答える「入力があるか」だけ</b>なので、

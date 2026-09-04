@@ -18,6 +18,8 @@ using IncidentInsight.Web.Services;
 // 集計 JSON の中身を読む共有ヘルパー
 using System.Text.Json;
 using Microsoft.AspNetCore.Mvc;
+// SelectListItem(選択肢リストの要素型)を判定に使う
+using Microsoft.AspNetCore.Mvc.Rendering;
 using Microsoft.EntityFrameworkCore;
 // InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
 using Microsoft.EntityFrameworkCore.Diagnostics;
@@ -803,26 +805,28 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 同じ手がかりでガードを書くと、表が狭まったときにガードも一緒に狭まって
     // 「取りこぼしゼロ＝緑」で無力化される(この repo が
     //  LengthGovernedTypes_CoverEveryOwnedDbSet で避けているのと同じ形)
+    //
+    // <b>残っている境界。</b> 手がかりにするのは「URL 上の名前」なので、
+    // <c>[FromQuery(Name = &quot;department&quot;)]</c> による別名までは追えるが、
+    // <b>絞り込み条件をまとめた ViewModel を丸ごとバインドする</b>書き方
+    // (<c>Index(IncidentFilter filter)</c> のような形)は追えない ——その型の
+    // <c>Department</c> プロパティが同じ <c>?department=</c> を受けるのに、
+    // アクションの引数としては現れないため。現在そういう書き方をしている画面は無いが、
+    // <b>最初に足す人がこの照合を広げること</b>(広げないと、その画面だけが
+    // 表からも検出網からも同時に外れる ——この検査が塞いだのと同じ状態に戻る)
     [Fact]
     public void PolicyTable_CoversEveryActionThatAcceptsADepartmentFilter()
     {
         // アプリ本体のアセンブリから、MVC のコントローラをすべて拾う
-        var controllers = typeof(IncidentsController).Assembly
-            .GetTypes()
-            .Where(t => t.IsClass && !t.IsAbstract && typeof(Controller).IsAssignableFrom(t))
-            .ToList();
+        var controllers = WebControllers();
         // 1 つも拾えないなら手がかりが死んでいる(「見るべき対象ゼロ＝緑」を避ける)
         Assert.True(controllers.Count > 0, "コントローラが 1 つも見つからない。");
 
-        // 「?department= を受ける」アクションを、引数名と型で拾う。
-        // DeclaredOnly にするのは、基底(Controller)が持つ公開メソッドを数えないため
+        // 「?department= を受ける」アクションを、URL 上の名前と型で拾う
         var accepting = controllers
-            .SelectMany(t => t.GetMethods(
-                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                .Where(m => !m.IsSpecialName)
-                .Where(m => m.GetCustomAttributes(typeof(NonActionAttribute), inherit: true).Length == 0)
+            .SelectMany(t => ActionMethods(t)
                 .Where(m => m.GetParameters().Any(param =>
-                    param.Name == "department" && param.ParameterType == typeof(string)))
+                    QueryStringName(param) == "department" && param.ParameterType == typeof(string)))
                 .Select(m => (Controller: t, Action: m.Name)))
             .Distinct()
             .OrderBy(x => x.Controller.Name, StringComparer.Ordinal)
@@ -1234,68 +1238,111 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
     }
 
-    // 絞り込みドロップダウンの選択肢プロパティの命名規約。下の導出はこの接尾辞で拾う
+    // ドロップダウンの選択肢プロパティの命名規約。下の導出はこの接尾辞で拾う
     private const string OptionsPropertySuffix = "Options";
 
-    // 一覧の選択肢プロパティを ViewModel から機械的に導く。
+    // 「選択肢プロパティを required にする」検査の対象を機械的に導く。
     //
-    // なぜ書き並べないのか。 旗(IgnoredFilterFlags)とまったく同じ理由 ——
-    // [InlineData] の手書きにすると、3 つ目の選択肢を足した人が行を足し忘れた瞬間に
-    // そのプロパティだけが検査から黙って外れる(fail-open)。
+    // 条件は 2 つ: (a) 自分たちのアセンブリで *Options を宣言している型、
+    // (b) MVC のアクション引数として<b>使われない</b>型。
     //
-    // 1 つも拾えなければ落とす(fail-closed)。命名規約ごと変えると「対象ゼロ＝全件緑」で
-    // 検出網が黙って死ぬため
-    public static TheoryData<string> FilterOptionProperties()
+    // (b) が要る理由。 モデルバインドされる型に required を付けると、
+    // <Nullable>enable</Nullable> の下で MVC が非 null 許容の参照型へ [Required] を自動で足し、
+    // フォームが送らない選択肢が必ず検証エラーになって<b>その画面の POST が全部落ちる</b>
+    // (実測は IncidentCreateEditViewModel.DepartmentOptions のコメントにある)。
+    // 通すには [BindNever] / [ValidateNever] が要り、それは別の規約 ——
+    // そちらは FormViewModelBindingMetadataTests が受け持つ。ここで一律に required を
+    // 要求すると<b>実行不能な指示</b>になり、いずれ検査ごと緩められる。
+    //
+    // 型を書き並べないのは旗(IgnoredFilterFlags)と同じ理由。手書きにすると、
+    // 2 つ目の一覧画面を足した人が行を足し忘れた瞬間にその画面だけが黙って外れる
+    // ——実際この導出を IncidentListViewModel の決め打ちにしていた版では、
+    // AuditLogListViewModel の 2 つ(と詳細画面の 1 つ)が同じ = new() の穴を持ったまま
+    // 検査の外にあった。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。命名規約や導出ごと変えると
+    // 「対象ゼロ＝全件緑」で検出網が黙って死ぬため
+    public static TheoryData<string, string> FilterOptionProperties()
     {
-        // 命名規約に当てはまるプロパティだけを拾う
-        var properties = DeclaredFilterOptionProperties();
+        // 対象の (型, プロパティ名) をすべて拾う
+        var properties = GovernedOptionProperties();
 
-        // 0 件は「選択肢が無くなった」より「命名規約が変わった」可能性が高い
+        // 0 件は「選択肢が無くなった」より「命名規約か導出が変わった」可能性が高い
         Assert.True(properties.Count > 0,
-            $"{nameof(IncidentListViewModel)} に *{OptionsPropertySuffix} という名前のプロパティが 1 つも無い。"
-            + "命名規約を変えたなら、この導出も同じ変更セットで直すこと。");
+            $"*{OptionsPropertySuffix} という名前のプロパティを持つ ViewModel が 1 つも見つからない。"
+            + "命名規約か導出を変えたなら、この検査も同じ変更セットで直すこと。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var property in properties) data.Add(property);
+        var data = new TheoryData<string, string>();
+        foreach (var (type, property) in properties) data.Add(type.FullName!, property);
         return data;
     }
 
-    // ViewModel に宣言されている選択肢プロパティの名前(命名規約で拾い、並びを固定して返す)
-    private static List<string> DeclaredFilterOptionProperties() =>
-        typeof(IncidentListViewModel)
-            .GetProperties()
-            .Where(p => p.Name.EndsWith(OptionsPropertySuffix, StringComparison.Ordinal))
-            .Select(p => p.Name)
+    // 検査対象の (型, プロパティ名) を上の 2 条件で導く
+    private static List<(Type Type, string Property)> GovernedOptionProperties()
+    {
+        // モデルバインドされる型(＝アクションの引数に現れる型)は対象外にする
+        var modelBound = WebControllers()
+            .SelectMany(ActionMethods)
+            .SelectMany(m => m.GetParameters())
+            .Select(param => param.ParameterType)
+            .ToHashSet();
+
+        // 自分たちのアセンブリで *Options を宣言している型を拾い、モデルバインドされる型を除く。
+        // DeclaredOnly にするのは、基底(フレームワーク側)が持つ同名のプロパティを数えないため
+        // ——実際 ApplicationUserClaimsPrincipalFactory は Identity の基底から
+        // IdentityOptions 型の Options を継いでおり、名前だけで拾うと
+        // 「required にしろ」という実行不能な指示が出る(正しいコードを咎める検出網になる)
+        return typeof(IncidentListViewModel).Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && !modelBound.Contains(t))
+            .SelectMany(t => t
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Where(p => p.Name.EndsWith(OptionsPropertySuffix, StringComparison.Ordinal))
+                .Where(p => IsDropdownOptionList(p.PropertyType))
+                .Select(p => (Type: t, Property: p.Name)))
             // 実行ごとに順番が揺れないよう並びを固定する
-            .OrderBy(name => name, StringComparer.Ordinal)
+            .OrderBy(x => x.Type.FullName, StringComparer.Ordinal)
+            .ThenBy(x => x.Property, StringComparer.Ordinal)
             .ToList();
+    }
+
+    // 「ドロップダウンへ並べる選択肢のリスト」かどうかを型で判定する。
+    //
+    // 名前(*Options)だけで拾うと、画面の選択肢とは無関係な設定オブジェクト
+    // (Identity の IdentityOptions など)まで対象に入る。<select> へ渡すのは
+    // 表示用の文字列リストか SelectListItem のリストのどちらかなので、そこで切る
+    // ——3 つ目の要素型が出てきたらここへ足す(足さないとその選択肢が黙って検査から外れる)
+    private static bool IsDropdownOptionList(Type propertyType) =>
+        propertyType == typeof(List<string>) || propertyType == typeof(List<SelectListItem>);
 
     // 選択肢プロパティはすべて required にする(＝既定値を持たせない)。
     //
-    // 空リストの既定値を持たせると、この ViewModel を組み立てる経路が増えたときに
+    // 空リストの既定値を持たせると、その ViewModel を組み立てる経路が増えたときに
     // 設定漏れが<b>コンパイルも通りテストも緑のまま</b>素通りし、そのドロップダウンが
-    // 「(全て)」だけになって絞り込みが画面から消える ——例外もテストの失敗も出ないので
+    // 「(全て)」だけになって選択肢が画面から消える ——例外もテストの失敗も出ないので
     // 気付く手掛かりが無い。理由の正本は IncidentListViewModel.DepartmentOptions のコメント。
     //
     // 片方だけ required だと、対で作られるもう片方が同じ穴を持ったまま残る
     // (実際 issue #204 課題 3 がその状態だった: DepartmentOptions は required、
-    //  CauseCategoryOptions は = new() の既定値付き)。プロパティを 1 つずつ見るのは、
-    // 3 つ目の選択肢が増えたときも自動で検査に入るようにするため
+    //  CauseCategoryOptions は = new() の既定値付き)
     [Theory]
     [MemberData(nameof(FilterOptionProperties))]
-    public void FilterOptionProperties_AreRequiredSoTheyCannotBeForgotten(string propertyName)
+    public void FilterOptionProperties_AreRequiredSoTheyCannotBeForgotten(string typeName, string propertyName)
     {
-        // 対象のプロパティを取り出す(導出元と同じ型を見るので必ず見つかる)
-        var property = typeof(IncidentListViewModel).GetProperty(propertyName);
-        Assert.True(property != null, $"{nameof(IncidentListViewModel)}.{propertyName} が見つからない。");
+        // 導出元と同じアセンブリから型を引き直す
+        var type = typeof(IncidentListViewModel).Assembly.GetType(typeName);
+        Assert.True(type != null, $"{typeName} が見つからない。");
+        // 対象のプロパティを取り出す
+        var property = type!.GetProperty(propertyName);
+        Assert.True(property != null, $"{typeName}.{propertyName} が見つからない。");
 
         // C# の required 修飾子は [RequiredMember] としてメタデータに残るので、それで判定する
         var isRequired = property!.GetCustomAttributes(typeof(RequiredMemberAttribute), inherit: true).Length > 0;
         Assert.True(isRequired,
-            $"{nameof(IncidentListViewModel)}.{propertyName} を required にすること。"
+            $"{typeName}.{propertyName} を required にすること。"
             + "既定値を持たせると、組み立て経路が増えたときに設定漏れが"
-            + "コンパイルも通りテストも緑のまま素通りし、そのドロップダウンから絞り込みが消える。");
+            + "コンパイルも通りテストも緑のまま素通りし、そのドロップダウンから選択肢が消える。");
     }
 
     // 発生部署の 2 つの解決メソッドが、DB から読んだ綴りを採用する前に
@@ -1503,6 +1550,44 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(emptyState.Success, "0 件時の文言の出し分けが見つからない。");
         Assert.Equal("anyFilter", emptyState.Groups["flag"].Value);
     }
+
+    /// <summary>
+    /// アプリ本体のアセンブリにある MVC のコントローラをすべて返す。
+    /// </summary>
+    /// <remarks>
+    /// 「?department= を受けるアクション」の照合と、「モデルバインドされる型」の判定
+    /// (選択肢プロパティの required 検査)が同じ走査を必要とする。写しを持つと、
+    /// 片方だけ拾い方を直したときにもう片方が古い基準のまま緑になる(§6 DRY)。
+    /// </remarks>
+    private static List<Type> WebControllers() =>
+        typeof(IncidentsController).Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && !t.IsAbstract && typeof(Controller).IsAssignableFrom(t))
+            .ToList();
+
+    /// <summary>
+    /// 指定したコントローラが<b>自分で宣言している</b>アクションメソッドを返す。
+    /// </summary>
+    /// <remarks>
+    /// <c>DeclaredOnly</c> にするのは基底(<see cref="Controller"/>)の公開メソッドを数えないため。
+    /// プロパティのアクセサ(<c>IsSpecialName</c>)と <c>[NonAction]</c> も除く。
+    /// </remarks>
+    private static IEnumerable<MethodInfo> ActionMethods(Type controller) =>
+        controller
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+            .Where(m => !m.IsSpecialName)
+            .Where(m => m.GetCustomAttributes(typeof(NonActionAttribute), inherit: true).Length == 0);
+
+    /// <summary>
+    /// アクションの引数が<b>クエリ文字列上で</b>名乗る名前を返す。
+    /// </summary>
+    /// <remarks>
+    /// <c>[FromQuery(Name = "…")]</c> が付いていればその名前、無ければ C# の引数名。
+    /// C# の識別子だけを見ると、別名を付けた引数が同じ <c>?department=</c> を受けているのに
+    /// 照合から外れる(<c>Index([FromQuery(Name = "department")] string? departmentName)</c>)。
+    /// </remarks>
+    private static string? QueryStringName(ParameterInfo parameter) =>
+        parameter.GetCustomAttribute<FromQueryAttribute>()?.Name ?? parameter.Name;
 
     /// <summary>
     /// <paramref name="from"/> 以降にある最初の <c>{ ... }</c> の中身を取り出す。

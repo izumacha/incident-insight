@@ -1,9 +1,15 @@
+// 部署スコープ拡張メソッド(ScopedByUser)を使う
+using IncidentInsight.Web.Authorization;
+// DbContext を使う
+using IncidentInsight.Web.Data;
 // Incident エンティティ(部署一覧の唯一の真実の源)を使う
 using IncidentInsight.Web.Models;
 // 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
 using IncidentInsight.Web.Models.Validation;
 // EF Core 拡張(OrderBy / FirstOrDefaultAsync)
 using Microsoft.EntityFrameworkCore;
+// ログイン中の利用者(部署スコープの判定に使う)
+using System.Security.Claims;
 
 // 共通ヘルパ用の名前空間(Controllers/Internal に隔離して内部利用扱いにする)
 namespace IncidentInsight.Web.Controllers.Internal;
@@ -32,12 +38,19 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// すると、その画面が後からドロップダウンを持ったときに 2 つが別々に決まる余地が戻る
 /// (issue #192 が塞いだ形そのもの)。許可リストの複製 1 回はその保険の対価として払う。</para>
 ///
-/// <para><b>実在確認に使うクエリは呼び出し側が渡す。</b> 「どこまでを実データとみなすか」は
-/// 画面の見せてよい範囲の話で、この関数からは決められない。呼び出し側は
-/// <b>その画面が一覧で見せるのと同じスコープ</b>を掛けた <see cref="Incident"/> のクエリを渡すこと
-/// ——現在はどちらの画面も <c>ScopedByUser</c> を通している(<c>/Analytics</c> は
-/// Admin / RiskManager 限定なので実質は全件だが、ポリシーが広がったときに
-/// 自動で安全側へ倒れるよう同じ形にしてある。§9 fail-safe)。</para>
+/// <para><b>実在確認の部署スコープはこの中で必ず掛ける。</b> 「その部署にインシデントがあるか」の
+/// 答えは、選択肢に出るか・注意書きが出るかという形で<b>画面に現れる</b>。スコープを外すと
+/// Staff が <c>?department=...</c> を総当たりして他部署にインシデントがあるかを推測できる
+/// (§9 最小公開)。<b>クエリを引数で受け取る形にしない</b>のは、それだと
+/// 「<c>ScopedByUser</c> を掛けて渡す」が文章だけの契約になり、3 つ目の呼び出し側が
+/// 掛け忘れてもコンパイルも既存のテストも緑のまま通るため(方針テストは Admin で走るので
+/// スコープは no-op になり、差が出ない)。<c>DbContext</c> と
+/// <see cref="ClaimsPrincipal"/> を受け取って中で掛ければ、掛け忘れようがない。</para>
+///
+/// <para><c>/Analytics</c> は Admin / RiskManager 限定なので現状スコープは実質 no-op だが、
+/// ポリシーが広がったときに自動で安全側へ倒れる(§9 fail-safe)。
+/// <b>ただし集計本体のクエリにはスコープが掛かっていない</b>ので、
+/// ポリシーを広げるときはそちらも同じ変更セットで手当てすること。</para>
 /// </remarks>
 internal static class DepartmentFilterResolver
 {
@@ -57,13 +70,9 @@ internal static class DepartmentFilterResolver
     /// 「実データにあれば補完、無ければ採用しない」を実装する
     /// (<c>/Incidents</c> の発生部署と <c>/Analytics</c> の <c>?department=</c> がこれを採る)。</para>
     ///
-    /// <para><b>実在確認に部署スコープを掛ける理由。</b> 存在するかどうかの答えは
-    /// 「その部署名の選択肢が出るか」「注意書きが出るか」という形で画面に現れる。
-    /// スコープを外すと、Staff が <c>?department=...</c> を総当たりして
-    /// <b>他部署にインシデントがあるかどうかを推測できる</b>(§9 最小公開)。
-    /// 呼び出し側がその画面の一覧本体と同じ <c>ScopedByUser</c> を通したクエリを
-    /// <paramref name="candidates"/> へ渡しておけば、見える範囲の外は
-    /// 「存在しない」と等しく扱われる。</para>
+    /// <para><b>実在確認に部署スコープを掛ける理由</b>と、なぜクエリではなく
+    /// <see cref="ClaimsPrincipal"/> を受け取るのかは、この型の解説が正本。
+    /// 見える範囲の外は「存在しない」と等しく扱われる。</para>
     ///
     /// <para><b>綴り違いをアプリ側で畳まない(実測に基づく判断)。</b> 許可リストの判定を
     /// 大文字小文字や前後空白を無視する比較にすると、<b>既定プロバイダで絞り込みが壊れる</b>。
@@ -106,14 +115,12 @@ internal static class DepartmentFilterResolver
     /// 下の照合順序の項がその理由。<c>Any()</c> へ「戻す」と、コメントは残ったまま
     /// 照合順序のずれが黙って復活する。</para>
     /// </remarks>
-    /// <param name="candidates">
-    /// 実在確認に使うインシデントのクエリ。<b>その画面が一覧で見せるのと同じスコープ</b>を
-    /// 掛けたものを渡すこと(理由は上の「実在確認に部署スコープを掛ける理由」)。
-    /// </param>
+    /// <param name="db">実在確認の問い合わせに使う DB コンテキスト。</param>
+    /// <param name="user">ログイン中の利用者。実在確認に掛ける部署スコープを決める。</param>
     /// <param name="department">クエリ文字列から届いた発生部署の絞り込み値(未指定なら <c>null</c>)。</param>
     /// <returns>採用した絞り込み値(採用しないなら <c>null</c>)と、ドロップダウンの選択肢。</returns>
     public static async Task<DepartmentFilterSelection> ResolveAsync(
-        IQueryable<Incident> candidates, string? department)
+        ApplicationDbContext db, ClaimsPrincipal user, string? department)
     {
         // 選択肢の土台は常に Incident.Departments(部署一覧の唯一の真実の源)。
         // 補完する場合に先頭へ差し込むので、書き換えられるリストとして複製しておく
@@ -141,7 +148,11 @@ internal static class DepartmentFilterResolver
         // SQLite / PostgreSQL は区別するので同じ URL でも挙動が変わる —— テストの InMemory は
         // 序数比較なので、全件緑のまま SQL Server 配備でだけ壊れる形になる(§10)。
         // DB 側の綴りを持ち帰れば、どちらの経路を通っても選択肢に並ぶのは実在する値だけになる
-        var storedDepartment = await candidates
+        var storedDepartment = await db.Incidents
+            // 更新しないので追跡しない
+            .AsNoTracking()
+            // 見える範囲の外は「存在しない」と等しく扱う(掛け忘れようがないよう中で掛ける)
+            .ScopedByUser(user)
             // その部署のインシデントに絞る(照合順序による一致は DB の判断に委ねる)
             .Where(i => i.Department == department)
             // 並びを固定してから先頭を取る。照合順序が大文字小文字を区別しない配備先では
