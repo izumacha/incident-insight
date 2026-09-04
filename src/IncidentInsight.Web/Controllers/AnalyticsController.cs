@@ -8,8 +8,6 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 // enum(重症度・種別など)を使う
 using IncidentInsight.Web.Models.Enums;
-// 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
-using IncidentInsight.Web.Models.Validation;
 // 時刻源サービス
 using IncidentInsight.Web.Services;
 // 認可属性
@@ -30,7 +28,7 @@ namespace IncidentInsight.Web.Controllers;
 /// <c>?department=</c> を受ける 3 つのエンドポイントは、値を
 /// <see cref="Internal.DepartmentFilterResolver"/> に通してから使う ——
 /// 「実データにあれば補完、無ければ採用しない」。方式の割り当てと理由は
-/// <see cref="SearchFilter"/> の表が正本。</para>
+/// <see cref="Models.Validation.SearchFilter"/> の表が正本。</para>
 ///
 /// <para><b>採用しなかったことは JSON で知らせる(<c>departmentFilterIgnored</c>)。</b>
 /// 以前は <c>SearchFilter.HasValue</c> を通しただけの値をそのまま <c>Where</c> へ渡していたため、

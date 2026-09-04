@@ -1,5 +1,3 @@
-// 部署スコープ拡張メソッド(ScopedByUser)の解説を参照するために使う
-using IncidentInsight.Web.Authorization;
 // Incident エンティティ(部署一覧の唯一の真実の源)を使う
 using IncidentInsight.Web.Models;
 // 絞り込み入力の「空かどうか」の唯一の真実の源(SearchFilter)を使う
