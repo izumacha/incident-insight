@@ -51,8 +51,15 @@ public class IncidentListViewModel
     // 上の CauseCategoryId と必ず対で設定する(片方だけ差し替えると食い違いが戻る)。
     // 選択肢は親カテゴリのみだが、子カテゴリの id で絞り込んでいるときはその 1 件が
     // 「親名 > 子名」の見出しで先頭に補完されている
-    // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #195)
-    public List<SelectListItem> CauseCategoryOptions { get; set; } = new();
+    // (なぜ補完が要るのかは Models/Validation/SearchFilter の解説が正本。issue #195)。
+    //
+    // required にして既定値を持たせない理由は下の DepartmentOptions とまったく同じ
+    // (そちらの説明が正本)。2 つは対の解決メソッド(ResolveDepartmentFilterAsync /
+    // ResolveCauseCategoryFilterAsync)が作るので壊れ方も同じで、片方だけコンパイラに
+    // 強制させると、新しい構築箇所が DepartmentOptions だけ書いてこちらを忘れたときに
+    // 「コンパイルも通りテストも緑のまま、原因分類のドロップダウンが
+    // 『原因分類（全て）』だけになって絞り込みが画面から消える」(issue #204 課題 3)
+    public required List<SelectListItem> CauseCategoryOptions { get; set; }
 
     // 原因分類の絞り込み値を受け取ったのに採用しなかったかどうか(true なら画面で知らせる)。
     // 黙って落とさない理由も、値そのものではなく真偽値にしている理由も、

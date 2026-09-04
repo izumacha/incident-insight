@@ -1,3 +1,5 @@
+// required 修飾子が残す [RequiredMember] を読むために使う
+using System.Runtime.CompilerServices;
 // ClaimsPrincipal(実行ロール)をテストから指定するために使う
 using System.Security.Claims;
 // Razor ソースからコメントと foreach の対象を取り出すために使う
@@ -994,6 +996,70 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
         // 逆に画面へ渡らなくなった旗が ViewModel に残っている
         Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
+    }
+
+    // 絞り込みドロップダウンの選択肢プロパティの命名規約。下の導出はこの接尾辞で拾う
+    private const string OptionsPropertySuffix = "Options";
+
+    // 一覧の選択肢プロパティを ViewModel から機械的に導く。
+    //
+    // なぜ書き並べないのか。 旗(IgnoredFilterFlags)とまったく同じ理由 ——
+    // [InlineData] の手書きにすると、3 つ目の選択肢を足した人が行を足し忘れた瞬間に
+    // そのプロパティだけが検査から黙って外れる(fail-open)。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。命名規約ごと変えると「対象ゼロ＝全件緑」で
+    // 検出網が黙って死ぬため
+    public static TheoryData<string> FilterOptionProperties()
+    {
+        // 命名規約に当てはまるプロパティだけを拾う
+        var properties = DeclaredFilterOptionProperties();
+
+        // 0 件は「選択肢が無くなった」より「命名規約が変わった」可能性が高い
+        Assert.True(properties.Count > 0,
+            $"{nameof(IncidentListViewModel)} に *{OptionsPropertySuffix} という名前のプロパティが 1 つも無い。"
+            + "命名規約を変えたなら、この導出も同じ変更セットで直すこと。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var property in properties) data.Add(property);
+        return data;
+    }
+
+    // ViewModel に宣言されている選択肢プロパティの名前(命名規約で拾い、並びを固定して返す)
+    private static List<string> DeclaredFilterOptionProperties() =>
+        typeof(IncidentListViewModel)
+            .GetProperties()
+            .Where(p => p.Name.EndsWith(OptionsPropertySuffix, StringComparison.Ordinal))
+            .Select(p => p.Name)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+    // 選択肢プロパティはすべて required にする(＝既定値を持たせない)。
+    //
+    // 空リストの既定値を持たせると、この ViewModel を組み立てる経路が増えたときに
+    // 設定漏れが<b>コンパイルも通りテストも緑のまま</b>素通りし、そのドロップダウンが
+    // 「(全て)」だけになって絞り込みが画面から消える ——例外もテストの失敗も出ないので
+    // 気付く手掛かりが無い。理由の正本は IncidentListViewModel.DepartmentOptions のコメント。
+    //
+    // 片方だけ required だと、対で作られるもう片方が同じ穴を持ったまま残る
+    // (実際 issue #204 課題 3 がその状態だった: DepartmentOptions は required、
+    //  CauseCategoryOptions は = new() の既定値付き)。プロパティを 1 つずつ見るのは、
+    // 3 つ目の選択肢が増えたときも自動で検査に入るようにするため
+    [Theory]
+    [MemberData(nameof(FilterOptionProperties))]
+    public void FilterOptionProperties_AreRequiredSoTheyCannotBeForgotten(string propertyName)
+    {
+        // 対象のプロパティを取り出す(導出元と同じ型を見るので必ず見つかる)
+        var property = typeof(IncidentListViewModel).GetProperty(propertyName);
+        Assert.True(property != null, $"{nameof(IncidentListViewModel)}.{propertyName} が見つからない。");
+
+        // C# の required 修飾子は [RequiredMember] としてメタデータに残るので、それで判定する
+        var isRequired = property!.GetCustomAttributes(typeof(RequiredMemberAttribute), inherit: true).Length > 0;
+        Assert.True(isRequired,
+            $"{nameof(IncidentListViewModel)}.{propertyName} を required にすること。"
+            + "既定値を持たせると、組み立て経路が増えたときに設定漏れが"
+            + "コンパイルも通りテストも緑のまま素通りし、そのドロップダウンから絞り込みが消える。");
     }
 
     // 発生部署の 2 つの解決メソッドが、DB から読んだ綴りを採用する前に
