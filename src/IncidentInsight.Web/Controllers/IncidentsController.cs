@@ -95,9 +95,12 @@ public class IncidentsController : Controller
         //  どちらを選ぶかの規則と理由は SearchFilter の解説に集約。issue #192)。
         // 実在確認に掛ける部署スコープは共有処理の中で決まる(掛け忘れようがない形にしてある)
         var departmentFilter = await DepartmentFilterResolver.ResolveAsync(_db, User, department);
-        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
-        if (departmentFilter.Effective != null)
-            query = query.Where(i => i.Department == departmentFilter.Effective);
+        // 採用した値を式ツリーの外のローカルへ取り出してから使う(採用しなかった場合は
+        // null なのでこの節を飛ばす)。下の原因分類・/Analytics の 3 経路と書き方をそろえて
+        // あるのは、「null でないことの確認」と「式ツリーが捕まえる値」を 1 か所で
+        // 結び付けるため ——分けて書くと、条件を直したときに片方だけ取り残される
+        if (departmentFilter.Effective is string effectiveDepartment)
+            query = query.Where(i => i.Department == effectiveDepartment);
         // インシデント種別で絞り込み
         if (incidentType.HasValue)
             query = query.Where(i => i.IncidentType == incidentType.Value);
