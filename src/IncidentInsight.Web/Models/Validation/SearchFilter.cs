@@ -103,6 +103,15 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 削除・修正された時点で、原因分類はその分類がマスタから消えた時点で。
 /// 利用者が何もしていないのに結果が変わる側だけ、変わったことを伝える。</para>
 ///
+/// <para><b>自由記述のテキスト絞り込みには「補完 / 採用しない」の 2 択が要らない。</b>
+/// 上の表が答えるのは「<b>ドロップダウンが表せない</b>値をどうするか」なので、
+/// 選択肢を持たない入力欄(<c>/Incidents</c> のフリーワード、<c>/AuditLogs</c> の
+/// 変更者・対象キー、<c>/PreventiveMeasures</c> の担当者)は対象外。
+/// ただし<b>「採用しなかった値を画面へ返さない」だけは同じく守る</b> ——
+/// 空白のみの入力を画面へ echo すると、絞り込みは効いていないのに
+/// <c>&lt;input&gt;</c> に見えない値が残り、ページャのリンクがすべてその値を運ぶ。
+/// 判定は <see cref="Adopted"/> の 1 か所に集約してある(issue #204 課題 2)。</para>
+///
 /// <para>この表は文章なので放っておけば実装から離れる。3 画面の実際の挙動は
 /// <c>Controllers.UnlistedFilterValuePolicyTests</c> が 1 ファイルにまとめて固定しており、
 /// どれかの画面が表と違う振る舞いに変われば落ちる。<b>方式を変えるときは表とそのテストを
@@ -164,4 +173,35 @@ public static class SearchFilter
     public static bool HasValue([NotNullWhen(true)] string? input)
         // null・空文字・空白のみ(半角/全角スペース、タブ、改行など)はすべて「未入力」とみなす
         => !string.IsNullOrWhiteSpace(input);
+
+    /// <summary>
+    /// 絞り込みに<b>実際に使った値だけ</b>を返す。使わなかった(空・空白のみの)入力は
+    /// <c>null</c> に潰す ——画面へ戻す値を組み立てるときに使う。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか(issue #204 課題 2)。</b> <c>?search=%20</c> のような空白のみの入力は
+    /// <see cref="HasValue"/> が <c>false</c> なので<b>絞り込みには使われない</b>が、
+    /// 受け取った値をそのまま ViewModel / ViewBag へ載せると画面だけが値を運び続ける:
+    /// <c>&lt;input value=&quot;…&quot;&gt;</c> に見えない値が残り、ページャのリンクが
+    /// すべて <c>?search=%20&amp;page=N</c> になる。バッジ・パネルは「絞り込み無し」と
+    /// 言っているのに URL だけが違うことを言う、という食い違いになる。</para>
+    ///
+    /// <para><b>規則そのものは新しくない。</b> 「採用しなかった値を画面へ返さない」は
+    /// 発生部署・原因分類・監査ログのエンティティ名／操作が既に守っている
+    /// (<c>IncidentsController.DepartmentFilterSelection.Effective</c> の解説が正本)。
+    /// 自由記述のテキスト絞り込みだけがその外にあり、<b>例外にしてよい理由が無かった</b>。
+    /// あちらは「許可リスト・実データに載っているか」という画面ごとの判断が要るので
+    /// 解決メソッドを持つが、テキスト側の判断は<b>この型が答える「入力があるか」だけ</b>なので、
+    /// 画面ごとに <c>HasValue(x) ? x : null</c> を書き写さずここへ置く(§6 DRY)。</para>
+    ///
+    /// <para><b>値は加工しない。</b> 採用する場合は受け取った文字列をそのまま返す
+    /// (前後の空白も落とさない)。トリミングは検索の一致範囲を変える別の判断で、
+    /// <see cref="HasValue"/> の解説が「必要になったときに独立した変更として決める」と
+    /// 書いているのと同じ扱い。</para>
+    /// </remarks>
+    /// <param name="input">クエリ文字列やフォームから受け取った絞り込み条件。</param>
+    /// <returns>絞り込みに使った値。使わなかったなら <c>null</c>。</returns>
+    public static string? Adopted(string? input)
+        // 絞り込みに使った値だけを返し、使わなかった入力は null に潰す
+        => HasValue(input) ? input : null;
 }

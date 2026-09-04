@@ -178,7 +178,11 @@ public class IncidentsController : Controller
             TotalCount = total,
             Page = page,
             PageSize = PageSize,
-            Search = search,
+            // 採用しなかった検索語は画面へ返さない(発生部署・原因分類と同じ扱い)。
+            // 空白のみの入力をそのまま戻すと、絞り込みは効いていないのに <input> に
+            // 見えない値が残り、ページャのリンクが全部 ?search=%20&page=N になる。
+            // 判定は SearchFilter.Adopted に集約してある(issue #204 課題 2)
+            Search = SearchFilter.Adopted(search),
             // 採用しなかった部署値は画面へ返さない。返すと、絞り込みは効いていないのに
             // 「絞り込み中」バッジが出てページャの URL にも載る食い違いになる(/AuditLogs と同じ扱い)
             Department = departmentFilter.Effective,

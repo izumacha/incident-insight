@@ -178,8 +178,16 @@ public class PreventiveMeasuresController : Controller
 
         // 画面に戻すフィルタ値も ViewBag に載せる
         ViewBag.FilterStatus = status;
-        ViewBag.FilterResponsible = responsible;
-        ViewBag.FilterResponsibleDepartment = responsibleDepartment;
+        // 採用しなかった値は画面へ返さない。空白のみの入力をそのまま戻すと、絞り込みは
+        // 効いていないのに <input> に見えない値が残り、フォームを再送信するたびに
+        // その値が運ばれ続ける。判定は SearchFilter.Adopted に集約してある(issue #204 課題 2)。
+        //
+        // 【注意】上の EnsureAppliedValueIsSelectable へは<b>生の値のまま</b>渡している。
+        // 空値を選択肢へ足さない門番はあの共有ヘルパが自前で持っており、呼び出し側が
+        // 手前で潰すとその門番が誰にも見られなくなる(issue #202 で写しを外した経緯)。
+        // 「画面へ戻す値」と「ヘルパへ渡す値」がここだけ食い違うのは意図的
+        ViewBag.FilterResponsible = SearchFilter.Adopted(responsible);
+        ViewBag.FilterResponsibleDepartment = SearchFilter.Adopted(responsibleDepartment);
         ViewBag.DateFrom = dateFrom;
         ViewBag.DateTo = dateTo;
         // 期限超過フィルタの適用状態もビューへ戻す(チェックボックスの状態復元用)
