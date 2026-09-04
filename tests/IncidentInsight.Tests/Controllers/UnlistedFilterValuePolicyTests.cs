@@ -148,6 +148,46 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return Assert.IsType<IncidentListViewModel>(result!.Model);
     }
 
+    // 指定した担当部署の予防策を 1 件保存する(対策はインシデントに紐づくので親も用意する)
+    private async Task SeedMeasureAsync(string responsibleDepartment)
+    {
+        // 親インシデントを先に作る(発生部署は担当部署の選択肢とは無関係なので現行の値でよい)
+        var incident = await SeedIncidentAsync("ICU");
+        // 担当部署のドロップダウンは実データから作られるので、その生成元になる 1 件を保存する
+        _db.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            IncidentId = incident.Id,
+            Description = "対策",
+            ResponsiblePerson = "担当者",
+            ResponsibleDepartment = responsibleDepartment,
+            MeasureType = MeasureTypeKind.ShortTerm,
+            Status = MeasureStatus.Planned,
+            DueDate = TestFixtures.Today
+        });
+        // ここまでの変更を確定させる
+        await _db.SaveChangesAsync();
+    }
+
+    // /PreventiveMeasures の一覧を引いて、担当部署ドロップダウンの選択肢を取り出す
+    private async Task<List<string>> IndexMeasureDepartmentOptionsAsync(string? responsibleDepartment)
+    {
+        // 実際の依存をそのまま渡す(Mock より InMemory を優先する方針)
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new SystemClock(),
+            NullLogger<PreventiveMeasuresController>.Instance);
+        // 部署スコープの影響を切り離すため、全部署を見られる Admin で実行する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 担当部署以外の絞り込みは指定せずに一覧を引く
+        await controller.Index(null, null, responsibleDepartment, null, null);
+        // ViewBag は dynamic なので、いったん静的な型の変数へ受けてから返す
+        // (dynamic のままだと呼び出し側でラムダを渡す LINQ がコンパイルできない)
+        object rawOptions = controller.ViewBag.ResponsibleDepartmentOptions;
+        // 選択肢の一覧として取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<List<string>>(rawOptions);
+    }
+
     // --- /Incidents: 実データにあれば補完 ------------------------------------
 
     // issue #192 の再現手順そのもの。許可リストから外れた過去の部署名で絞り込んだとき、
@@ -634,33 +674,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public async Task PreventiveMeasures_ResponsibleDepartmentNotInOptions_IsBackfilled()
     {
-        // 対策 1 件と、その親インシデントを用意する
-        var incident = await SeedIncidentAsync("ICU");
-        // 選択肢の生成元となる担当部署を持つ対策を保存する
-        _db.PreventiveMeasures.Add(new PreventiveMeasure
-        {
-            IncidentId = incident.Id,
-            Description = "対策",
-            ResponsiblePerson = "担当者",
-            ResponsibleDepartment = "医療安全室",
-            MeasureType = MeasureTypeKind.ShortTerm,
-            Status = MeasureStatus.Planned,
-            DueDate = TestFixtures.Today
-        });
-        await _db.SaveChangesAsync();
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
 
         // 実データのどの対策にも無い担当部署で絞り込む
-        var controller = new PreventiveMeasuresController(
-            _db,
-            UserContextHelper.BuildAuthService(),
-            new SystemClock(),
-            NullLogger<PreventiveMeasuresController>.Instance);
-        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
-        await controller.Index(null, null, UnknownDepartment, null, null);
+        var options = await IndexMeasureDepartmentOptionsAsync(UnknownDepartment);
 
         // 自由記述なので「実在しない」と判定する手段が無く、適用値はそのまま補完される。
         // /Incidents と方式が違うのは値の集合の性質が違うため(SearchFilter の表を参照)
-        var options = Assert.IsType<List<string>>(controller.ViewBag.ResponsibleDepartmentOptions);
         Assert.Equal(UnknownDepartment, options[0]);
     }
 
@@ -672,36 +693,48 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public async Task PreventiveMeasures_ResponsibleDepartmentAlreadyInOptions_IsNotDuplicated()
     {
-        // 対策 1 件と、その親インシデントを用意する
-        var incident = await SeedIncidentAsync("ICU");
-        // 選択肢の生成元となる担当部署を持つ対策を保存する
-        _db.PreventiveMeasures.Add(new PreventiveMeasure
-        {
-            IncidentId = incident.Id,
-            Description = "対策",
-            ResponsiblePerson = "担当者",
-            ResponsibleDepartment = "医療安全室",
-            MeasureType = MeasureTypeKind.ShortTerm,
-            Status = MeasureStatus.Planned,
-            DueDate = TestFixtures.Today
-        });
-        await _db.SaveChangesAsync();
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
 
         // 実データから選択肢に載る値で絞り込む
-        var controller = new PreventiveMeasuresController(
-            _db,
-            UserContextHelper.BuildAuthService(),
-            new SystemClock(),
-            NullLogger<PreventiveMeasuresController>.Instance);
-        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
-        await controller.Index(null, null, "医療安全室", null, null);
+        var options = await IndexMeasureDepartmentOptionsAsync("医療安全室");
 
-        // 選択肢にちょうど 1 回だけ現れる。
-        // ViewBag は dynamic なので、いったん静的な型の変数へ受けてから LINQ を使う
-        // (dynamic のままだとラムダを渡す呼び出しがコンパイルできない)
-        object rawOptions = controller.ViewBag.ResponsibleDepartmentOptions;
-        var options = Assert.IsType<List<string>>(rawOptions);
+        // 選択肢にちょうど 1 回だけ現れる
         Assert.Equal(1, options.Count(d => d == "医療安全室"));
+    }
+
+    // 未指定・空白のみの担当部署は選択肢へ足さない。
+    //
+    // この画面は「補完するかどうか」を絞り込みの有無で分けない(担当部署は自由記述で、
+    // 実在しないと判定する手段が無いため)。したがって絞り込みに使っていない値も
+    // そのまま共有ヘルパ EnsureAppliedValueIsSelectable へ届く ——
+    // 空値の門番を消すと「担当部署（全て）」の直下に画面上は見分けの付かない空の項目が並び、
+    // 押しても何も起きない選択肢として残る。
+    //
+    // issue #202 で呼び出し側にあった同じ判定の写しを外したので、この門番はヘルパの中の
+    // 1 か所だけになった。以前は呼び出し側が手前で弾いていたため「門番を消しても全件緑」
+    // だったが、これで機械的に見張られる不変条件になる
+    [Theory]
+    // 未指定(絞り込みを使わずに一覧を開いた場合)
+    [InlineData(null)]
+    // 空文字
+    [InlineData("")]
+    // 空白のみ(末尾スペースごとの貼り付け・IME の誤入力を想定)
+    [InlineData("   ")]
+    public async Task PreventiveMeasures_BlankResponsibleDepartment_AddsNoOption(string? responsibleDepartment)
+    {
+        // 選択肢の生成元になる対策を 1 件用意する
+        await SeedMeasureAsync("医療安全室");
+
+        // 絞り込みに使えない値で一覧を引く
+        var options = await IndexMeasureDepartmentOptionsAsync(responsibleDepartment);
+
+        // 選択肢は実データから作られたものだけ(空の項目が増えていない)
+        Assert.Equal(new[] { "医療安全室" }, options);
+        // 空の項目が無いことも明示的に固定する。上の Equal だけだと、将来 実データ側の
+        // 選択肢が増えて期待値を並べ直すときに、この不変条件ごと緩みやすい
+        Assert.All(options, option => Assert.False(string.IsNullOrWhiteSpace(option),
+            "担当部署の選択肢に空の項目を入れない(画面では「担当部署（全て）」と見分けが付かない)。"));
     }
 
     // --- 表示側(Razor)がコントローラの結論を実際に使っているか -----------------
@@ -970,7 +1003,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 門番が要る理由(空白のみを採用すると、補完が空値を足さないぶん「絞り込みは効いているのに
     // 一致する <option> が無い」状態が残り、再送信で絞り込みが黙って解除される)は
     // 実装側のコメントが正本 ——ここへ書き写すと、方針を変えたときにこちらが古くなる。
-    // ここで固定するのは「2 つの解決メソッドの形が揃っていること」だけ。
+    // ここで固定するのは<b>2 つの解決メソッドの形が揃っていること</b>だけ。
     // どちらも同じ壊れ方(採用した値が選択肢に無い)をするので、片方だけ門番を外すと
     // 非対称が戻り、次に読む人がどちらを手本にしてよいか分からなくなる
     [Theory]

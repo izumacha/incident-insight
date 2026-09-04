@@ -155,23 +155,33 @@ internal static class IncidentControllerHelpers
     /// 保存側の規則は <c>ResolveDepartmentSaveSelection</c> に、それぞれ集約してある
     /// (<b>利用側をここに書き並べない</b> ——一覧の方が先に古くなる)。</para>
     ///
-    /// <para><b>この関数の 2 つの門番はテストから直接は動かせない。</b> 呼び出し側は
-    /// 空値をここへ渡す前に自前で弾いており（<c>SearchFilter.HasValue</c> / <c>null</c> 判定）、
-    /// この型は <c>internal</c> でテストからは呼べない。つまり空値の門番を消しても全件緑になる。
-    /// それでも置くのは、この関数を切り出した目的が「<b>次の呼び出し側</b>が位置の規則を
-    /// 思い出さなくて済むようにする」ことで、同じ理由が空値の規則にも当てはまるため
-    /// ——守り忘れると先頭の固定項目の直後に画面上は見分けの付かない空の項目が並ぶ。
+    /// <para><b>空値の門番は <c>/PreventiveMeasures</c> の呼び出しが実際に効かせている。</b>
+    /// あの画面は「補完するかどうか」を絞り込みの有無で分けないので、未指定・空白のみの
+    /// 担当部署がそのままここへ届く（<c>string?</c> を受けるのはそのため）。
+    /// つまり空値の門番を消すと、先頭の固定項目の直後に画面上は見分けの付かない
+    /// 空の項目が並ぶ ——<c>UnlistedFilterValuePolicyTests</c> がその形で落とす。
+    /// 以前は全呼び出し側が手前で自前に弾いていたため「消しても全件緑」だったが、
+    /// 写しを外した（issue #202）ことで機械的に見張られる不変条件になった。</para>
+    ///
+    /// <para><b>もう 1 つの門番（既にあれば足さない）はテストから直接は動かせない。</b>
+    /// この型は <c>internal</c> でテストからは呼べず、重複が起きるのは
+    /// 照合順序が大文字小文字を区別しない配備先で DB が許可リストどおりの綴りを返した
+    /// ときだけなので、InMemory（序数比較）では入らない枝になる。
     /// <b>この関数を触る差分は、2 つの門番が残っているかをレビューで確かめること。</b></para>
     /// </remarks>
     /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
-    /// <param name="appliedValue">実際に絞り込みへ使っている値。</param>
-    public static void EnsureAppliedValueIsSelectable(List<string> options, string appliedValue)
+    /// <param name="appliedValue">
+    /// 実際に絞り込みへ使っている値。<b>未指定・空白のみでもそのまま渡してよい</b>
+    /// ——足すかどうかはこの関数が決めるので、呼び出し側で先に弾かない。
+    /// </param>
+    public static void EnsureAppliedValueIsSelectable(List<string> options, string? appliedValue)
     {
-        // 空・空白のみは足さない。足すと先頭の固定項目の直後に画面上は見分けの付かない
+        // 空・空白のみ(null 含む)は足さない。足すと先頭の固定項目の直後に画面上は見分けの付かない
         // 空の項目が並び、押しても何も起きない選択肢として残る。
         // この判定を呼び出し側の記憶に任せないのは、位置の規則をここへ集めたのと同じ理由
-        // ——既存の呼び出し側は別々の形(SearchFilter.HasValue / null 判定)で自前に守っており、
-        // 次に足す人が同じことを思い出せるとは限らない
+        // ——次に足す人が同じことを思い出せるとは限らない。
+        // 呼び出し側が同じ判定を写すと空値の規則を直す場所が 2 か所になるので、
+        // 判定はここ 1 か所に持つ(issue #202 で /PreventiveMeasures 側の写しを外した)
         if (!SearchFilter.HasValue(appliedValue)) return;
         // 既に選択肢にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
         if (options.Contains(appliedValue)) return;
