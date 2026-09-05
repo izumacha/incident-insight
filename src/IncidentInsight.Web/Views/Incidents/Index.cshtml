@@ -184,12 +184,19 @@
                                value="@Model.DateTo?.ToString("yyyy-MM-dd")" />
                     </div>
                     <div class="col-md-2">
-                        @* 並び替え指定 *@
+                        @* 並び替え指定。選択肢は静的な <option> を並べず
+                           IncidentSortOrder.Options（受け付ける値の唯一の真実の源）から作る。
+                           以前は綴りがこことコントローラの switch の 2 か所に書き写されており、
+                           片方だけ直すと「そのメニュー項目を選んでも最新順のまま」という
+                           例外もエラー表示も出ない無言の劣化になっていた（issue #209）。
+                           selected は適用側とまったく同じ IncidentSortOrder.Effective を通す
+                           ——別の判定を書くと「メニューは A を指しているのに並びは B」になる *@
                         <label class="form-label small mb-0">並び順</label>
-                        <select name="sortBy" class="form-select form-select-sm">
-                            <option value="latest" selected="@(Model.SortBy != "severity" && Model.SortBy != "overdue")">最新順</option>
-                            <option value="severity" selected="@(Model.SortBy == "severity")">重症度高順</option>
-                            <option value="overdue" selected="@(Model.SortBy == "overdue")">未完了対策あり優先</option>
+                        <select name="sortBy" class="form-select form-select-sm" aria-label="並び順">
+                            @foreach (var sortOption in IncidentSortOrder.Options)
+                            {
+                                <option value="@sortOption.Value" selected="@(IncidentSortOrder.Effective(Model.SortBy) == sortOption.Value)">@sortOption.Label</option>
+                            }
                         </select>
                     </div>
                     <div class="col-md-auto">
