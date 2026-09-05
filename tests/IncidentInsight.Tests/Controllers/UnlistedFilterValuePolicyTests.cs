@@ -777,9 +777,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 未指定(そもそも値が届いていない)でも注意書きを出さないこと。
     //
-    // ?severity= のような空の入力は null 許容型へ null として問題なく束縛され
+    // ?severity= のような<b>空の</b>入力は null 許容型へ null として問題なく束縛され
     // ModelState にエラーを積まないので、ここは「エラーの有無」を見る判定が
     // 空入力を誤って拾わないことの確認になる
+    // (空でない未定義値 ?severity=99 の側は既定では逆にエラーが積まれる。issue #215)
     [Fact]
     public async Task IncidentsIndex_DoesNotReportAnything_WhenNoFilterValueWasSent()
     {
@@ -808,9 +809,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // ここを [InlineData] の手書きにすると同じ人が同じように行を足し忘れるので、
     // 検出網ごと素通りする —— NullableFilterParameters と同じ理由・同じやり方で導出にする。
     //
-    // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため。
-    // ?severity=99 は ModelState にエラーを積まないので、あちらの作り方(エラーを手で積む)
-    // では再現しない ——こちらは実際に未定義の enum 値を引数へ渡す必要がある。
+    // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため ——
+    // こちらは実際に未定義の enum 値を引数へ渡す必要があり、あちらの作り方
+    // (ModelState へエラーを手で積む)では代用できない。
+    // <b>「?severity=99 は ModelState にエラーを積まないから」ではない</b> ——
+    // 既定ではむしろ積む(SearchFilter の訂正の段落を参照。issue #215)。
+    // なおこの Theory はアクションを直接呼ぶので、モデルバインドを一度も通らない。
+    // <b>この検査から「モデルバインドがどう振る舞うか」を結論づけないこと。</b>
     //
     // 1 つも拾えなければ落とす(fail-closed)。enum の引数を int? へ変えるような改修で
     // 「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
@@ -1590,17 +1595,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // そこは判定の手がかりを変えた <see cref="IgnoredFilterFlags_CoverEveryFlagTheControllerSets"/>
     // が受け持つ。
     //
-    // 覆っているのは /Incidents の 1 画面だけ(この導出も、照合も、下の 2 つの
-    // Razor 走査も、IncidentListViewModel / IncidentsController.cs /
-    // Views/Incidents/Index.cshtml を名指ししている)。「旗を足せば必ず検査に入る」のは
-    // この画面の中の話で、別の一覧画面が旗を持ち始めても自動では入らない。
-    // 一般化していないのは、現在この方式(「採用しない」ときに知らせる)を採っているのが
-    // この画面だけだから —— /PreventiveMeasures は無条件補完で、そもそも「採用しない」枝が
-    // 無いので旗を持たない(SearchFilter の表を参照)。選択肢の出所を見る
-    // BackfillingScreens_BuildOptionsFromTheControllersResult は 2 画面に掛かるが、
-    // あちらは ViewModel と ViewBag という別々の受け渡し方を [InlineData] で吸収している。
-    // 2 画面目が旗を持ったときは、この 3 つの入り口を画面ごとに引数化すること
-    // (そうしないと、その画面の旗だけが誰にも読まれない書き込み専用のプロパティになる)
+    // 覆っているのは /Incidents の分だけ(この導出も、照合も、下の 2 つの Razor 走査も、
+    // IncidentListViewModel / IncidentsController.cs / Views/Incidents/Index.cshtml を
+    // 名指ししている)。「旗を足せば必ず検査に入る」のはこの画面の中の話。
+    //
+    // 2 画面目(/PreventiveMeasures)は旗を持つようになったが、この導出には載らない ——
+    // あちらは ViewModel を持たず ViewBag で渡すので、「ViewModel の *Ignored という
+    // bool プロパティ」という命名規約では原理的に拾えない。そのため同じ 3 つの入り口を
+    // 画面ごとに用意してある(MeasuresIgnoredFilterFlags / MeasuresIndexView_* )。
+    // <b>「無条件補完だから旗を持たない」ではない</b> —— あの画面は担当部署(自由記述＝補完)と
+    // 対策ステータス(閉じた enum ＝採用しない)の 2 方式を併用しており、以前ここに
+    // 「/PreventiveMeasures は無条件補完で採用しない枝が無い」と書いていたのは<b>誤り</b>で、
+    // その思い込みのぶん ?status=99 が長くどの検査にも掛からずに残っていた。
+    //
+    // 3 画面目が旗を持ったときも同じく入り口を用意すること。enum の絞り込みについては
+    // EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter が
+    // 「用意し忘れ」自体をアプリ全体の署名から拾って落とす
     public static TheoryData<string> IgnoredFilterFlags()
     {
         // 命名規約に当てはまる bool のプロパティだけを拾う
@@ -1645,24 +1655,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void IgnoredFilterFlags_CoverEveryFlagTheControllerSets()
     {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var controllerPath = Path.Combine(
-            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
-        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
-        var source = File.ReadAllText(controllerPath);
-
         // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
-        // 走査の前にコメントを落とすのは、下の門番の照合と同じ理由 ——ただしこちらで効くのは
-        // 「満たせる」ではなく「咎める」方向で、`// 例: SeverityFilterIgnored = severityFilter.Ignored`
-        // のような普通の説明コメントを 1 行足すだけで、正しいコードのまま
-        // 下の Assert.Equal が幽霊の旗を拾って落ちた(実測)。
-        // 正しいコードを咎める検出網はいずれ緩められるので、同じ CSharpComment を通す
-        var assigned = Regex.Matches(CSharpComment.Replace(source, string.Empty), @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
-            .Select(m => m.Groups["flag"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToList();
+        // ソースを開く手順も走査の規則も、カンバン側とまったく同じなので共有する
+        // (IgnoredFilterFlagNamesIn が正本。写しを持つと、規則を直したときに片方が取り残される)
+        var assigned = IgnoredFilterFlagNamesIn(nameof(IncidentsController));
 
         // 代入が 1 つも読めないなら、書き方が変わって手がかりが死んでいる。
         // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
@@ -1939,12 +1935,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"Views/Incidents/Index.cshtml の @if (Model.{flag}) が注意書きのパーシャルを呼んでいない。"
             + "枠のマークアップを直接書くか、この照合を同じ変更セットで直すこと。");
 
-        // 呼んでいるパーシャルの中身を読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var partialPath = Path.Combine(
-            RepositoryPaths.Views, "Incidents", $"{partialCall.Groups["name"].Value}.cshtml");
-        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(partialPath), $"注意書きのパーシャルが見つからない: {partialPath}");
-        var partialSource = RazorComment.Replace(File.ReadAllText(partialPath), string.Empty);
+        // 呼んでいるパーシャルの中身を読む(ビルド出力にはコピーされないので絶対パスで開く)。
+        // 置き場所を Views/Incidents/ 決め打ちにしない —— Razor 自身は
+        // /Views/{コントローラ名}/ と /Views/Shared/ の順に探すので、決め打ちにすると
+        // 実行時には正しく解決されるパーシャルをテストだけが「見つからない」と言う
+        // (実際 2 画面目が注意書きを持ったとき Views/Shared/ へ移してここが落ちた)
+        var partialSource = ReadPartial("Incidents", partialCall.Groups["name"].Value);
 
         // 警告として見えること(§7 は色だけに意味を持たせないので、role と文言の両方を見る)
         Assert.Contains("alert", partialSource, StringComparison.Ordinal);
@@ -2247,4 +2243,482 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 登録・編集フォーム側の走査と共有している
     private static List<string> ExtractForeachSources(string block) =>
         RazorSource.ExtractForeachSources(block);
+
+    // --- 共有: パーシャルの置き場所は Razor と同じ順で探す --------------------------
+
+    // 呼ばれているパーシャルのソースを読む。
+    //
+    // <b>Razor の解決順をそのまま真似る</b>のが要点 —— Razor は
+    // /Views/{コントローラ名}/ を見てから /Views/Shared/ を見るので、テスト側だけが
+    // 片方を決め打ちにすると 2 つの嘘が生まれる: (a) Shared に置いた共有パーシャルを
+    // 「見つからない」と言って<b>正しいコードを咎める</b>、(b) 逆に Shared だけを見ると
+    // 画面固有のパーシャルを見落とす。どちらの向きの嘘もいずれ検査ごと緩められる。
+    //
+    // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+    private static string ReadPartial(string viewFolder, string partialName)
+    {
+        // Razor と同じ順(画面固有 → 共有)で候補を並べる
+        var candidates = new[]
+        {
+            Path.Combine(RepositoryPaths.Views, viewFolder, $"{partialName}.cshtml"),
+            Path.Combine(RepositoryPaths.Views, SharedViewFolder, $"{partialName}.cshtml"),
+        };
+        // 先に見つかったほうを採る(Razor の解決結果と一致する)
+        var found = candidates.FirstOrDefault(File.Exists);
+        // どちらにも無ければ、実行時にも解決できないので落とす
+        Assert.True(found != null,
+            $"パーシャル {partialName} が {viewFolder} にも {SharedViewFolder} にも見つからない"
+            + "(Razor が探すのはこの 2 か所だけ)。");
+        // Razor のコメントは落としてから返す(コメントで検査を満たせないようにする)
+        return RazorComment.Replace(File.ReadAllText(found!), string.Empty);
+    }
+
+    // Razor が共有パーシャルを探すフォルダ名
+    private const string SharedViewFolder = "Shared";
+
+    // --- /PreventiveMeasures: 受け取ったのに採用しなかった絞り込み(issue #207 / #208) ---
+
+    // カンバン画面のコントローラを、部署スコープを持つ利用者で組み立てる。
+    // 既定は Admin(全部署が見える)で、部署スコープ側の挙動を見たいときだけ差し替える
+    private PreventiveMeasuresController NewMeasuresController(ClaimsPrincipal? user = null)
+    {
+        // 依存は本物の InMemory DbContext を使う(Mock より InMemory を優先する repo の方針)
+        var controller = new PreventiveMeasuresController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new SystemClock(),
+            NullLogger<PreventiveMeasuresController>.Instance);
+        // 実行ロールを載せる(指定が無ければ全部署が見える Admin)
+        UserContextHelper.AttachUser(controller, user ?? UserContextHelper.Admin());
+        // 組み立てたコントローラを返す
+        return controller;
+    }
+
+    // カンバンに 1 件だけ対策を積む。どの検査も「絞り込みが効いたら消える 1 件」があれば足りる
+    private async Task SeedSingleMeasureAsync()
+    {
+        // 対策はインシデントにぶら下がるので、親のインシデントごと作る
+        var incident = new Incident
+        {
+            Department = "ICU",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level2,
+            Description = "テスト",
+            ReporterName = "報告者",
+            OccurredAt = DateTime.Now
+        };
+        // 計画中の対策を 1 件ぶら下げる(?status=Planned で拾える状態にしておく)
+        incident.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            Incident = incident,
+            Description = "対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "担当A",
+            ResponsibleDepartment = "ICU",
+            DueDate = DateTime.Today.AddDays(30),
+            Status = MeasureStatus.Planned,
+            Priority = 2
+        });
+        // 親ごと保存する
+        _db.Incidents.Add(incident);
+        await _db.SaveChangesAsync();
+    }
+
+    // カンバンを引いて ViewResult を返す(引数の既定値をここに 1 か所だけ置く)
+    private async Task<ViewResult> MeasuresIndexAsync(
+        PreventiveMeasuresController controller, MeasureStatus? status = null)
+        => Assert.IsType<ViewResult>(await controller.Index(status, null, null, null, null));
+
+    // 定義に無い enum 値(?status=99)は採用しない ——絞り込みを掛けず、画面へも返さない。
+    //
+    // 素通しにすると何が起きるか(実測): 絞り込みは<b>実際に掛かって盤面が空</b>になり、
+    // <select> には一致する <option> が無いので「ステータス（全て）」の位置に戻る。
+    // その状態でフォームを再送信すると status= が送られて<b>絞り込みが黙って解除される</b>
+    // ——SearchFilter の表が守ろうとしている不変条件(「絞り込みに使った値は必ず選択肢にある」)
+    // がそのまま破れている状態(issue #192 の症状)。
+    //
+    // 値は決め打ちの 99 ではなく MeasureStatus の定義から導く ——将来 99 が定義へ足されると、
+    // 決め打ちの検査は「定義にある値」を渡す無害なテストへ黙って化ける
+    [Fact]
+    public async Task MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition()
+    {
+        // 絞り込みが掛かれば消える 1 件を積む
+        await SeedSingleMeasureAsync();
+        // 定義に無い MeasureStatus の値を作って渡す
+        var undefined = (MeasureStatus)UndefinedValueFor(typeof(MeasureStatus));
+        var result = await MeasuresIndexAsync(NewMeasuresController(), undefined);
+
+        // 絞り込みを掛けていないので、積んだ 1 件はそのまま残る
+        var rows = Assert.IsAssignableFrom<IEnumerable<PreventiveMeasure>>(result.Model);
+        Assert.Single(rows);
+        // 採用しなかった値は画面へ返さない(返すと <select> だけが「（全て）」を指す食い違いになる)
+        Assert.Null(result.ViewData["FilterStatus"]);
+        // 受け取ったのに採用しなかったことは伝える(黙って全件を見せない)
+        Assert.Equal(true, result.ViewData["UnlistedEnumFilterIgnored"]);
+        // 「絞り込みが効いている」とは言わない ——効いていないフィルターの
+        // 「クリア」を促す 0 件時の文言が出てしまうため
+        Assert.Equal(false, result.ViewData["HasActiveFilter"]);
+    }
+
+    // 定義にある値はこれまでどおり絞り込みに使い、注意書きも出さない。
+    // 上の検査だけだと「enum の絞り込みを丸ごと無効にする」変異が素通りする
+    [Fact]
+    public async Task MeasuresIndex_KeepsAnEnumFilterValueInsideItsDefinition()
+    {
+        // 計画中の 1 件を積む
+        await SeedSingleMeasureAsync();
+        // 定義にある値(完了)で絞る ——積んだ 1 件は計画中なので消えるはず
+        var result = await MeasuresIndexAsync(NewMeasuresController(), MeasureStatus.Completed);
+
+        // 絞り込みが実際に効いていること
+        var rows = Assert.IsAssignableFrom<IEnumerable<PreventiveMeasure>>(result.Model);
+        Assert.Empty(rows);
+        // 採用した値は画面へ返す(<select> が実際に絞り込んだ値を指す)
+        Assert.Equal(MeasureStatus.Completed, result.ViewData["FilterStatus"]);
+        // 採用したので注意書きは出さない
+        Assert.Equal(false, result.ViewData["UnlistedEnumFilterIgnored"]);
+        // 絞り込みは効いている(0 件時に「条件に一致しません」と案内してよい)
+        Assert.Equal(true, result.ViewData["HasActiveFilter"]);
+    }
+
+    // 型として読めなかった値(?dateFrom=abc など)も「受け取った」と数えて伝える。
+    //
+    // 見なければ「そもそも指定が無かった」と同じ扱いになり、絞り込んだつもりの利用者に
+    // カンバン全件が返る(issue #207)。対象は Index が受ける Nullable の引数から導く
+    // ——手書きにすると、6 つ目の型付き絞り込みを足した人が行を足し忘れた瞬間に
+    // その引数だけが黙って元の壊れ方に戻る
+    [Theory]
+    [MemberData(nameof(MeasuresNullableFilterParameters))]
+    public async Task MeasuresIndex_ReportsAFilterValueThatCannotBeRead(string parameterName)
+    {
+        // 絞り込みが掛かれば消える 1 件を積む
+        await SeedSingleMeasureAsync();
+        var controller = NewMeasuresController();
+        // モデルバインドが「値は届いたが読めなかった」ときに積むエラーを再現する
+        controller.ModelState.AddModelError(parameterName, "変換できません");
+        var result = await MeasuresIndexAsync(controller);
+
+        // 読めなかっただけなので絞り込みは掛からない(1 件はそのまま残る)
+        var rows = Assert.IsAssignableFrom<IEnumerable<PreventiveMeasure>>(result.Model);
+        Assert.Single(rows);
+        // 受け取ったのに採用しなかったことを伝える
+        Assert.Equal(true, result.ViewData["MalformedFilterIgnored"]);
+    }
+
+    // 何も送っていないときは、どちらの注意書きも出さない。
+    // 未指定で出すと、絞り込みを一度も使っていない利用者の画面に出っぱなしの警告が並び、
+    // 本物の注意書きまで読み飛ばされる
+    [Fact]
+    public async Task MeasuresIndex_ReportsNothing_WhenNoFilterValueWasSent()
+    {
+        // 1 件だけ積んで、素の一覧を引く
+        await SeedSingleMeasureAsync();
+        var result = await MeasuresIndexAsync(NewMeasuresController());
+
+        // どちらの旗も立たない
+        Assert.Equal(false, result.ViewData["MalformedFilterIgnored"]);
+        Assert.Equal(false, result.ViewData["UnlistedEnumFilterIgnored"]);
+        // 絞り込みも掛かっていない
+        Assert.Equal(false, result.ViewData["HasActiveFilter"]);
+        Assert.Null(result.ViewData["FilterStatus"]);
+    }
+
+    // カンバンの Index が受ける Nullable の引数(＝読めずに null へ化けうる入力)を導く。
+    // 導出の理由と fail-closed にする理由は /Incidents 側の NullableFilterParameters が正本
+    public static TheoryData<string> MeasuresNullableFilterParameters()
+    {
+        // Nullable<T> の引数だけを C# の引数名で拾う(モデルバインドのキーは引数名そのもの)
+        var names = typeof(PreventiveMeasuresController)
+            .GetMethod(nameof(PreventiveMeasuresController.Index))!
+            .GetParameters()
+            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
+            .Select(p => p.Name!)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 1 つも拾えないのは「引数が無くなった」より「型か導出が変わった」可能性が高い
+        Assert.True(names.Count > 0,
+            $"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)} に "
+            + "Nullable の引数が 1 つも無い。引数の型を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var name in names) data.Add(name);
+        return data;
+    }
+
+    // --- /PreventiveMeasures: 旗をビューが実際に読んでいるか ------------------------
+
+    // カンバンが立てる旗を、コントローラのソースから導く。
+    //
+    // この画面は ViewModel を持たず ViewBag で渡すので、/Incidents のように
+    // 「ViewModel の *Ignored という bool プロパティ」という命名規約では拾えない。
+    // 代わりに「… = ….Ignored」という代入の形を手がかりにする ——旗は必ず解決関数が返す
+    // Ignored から写されるので、この代入が旗の実際の一覧になる。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
+    // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
+    public static TheoryData<string> MeasuresIgnoredFilterFlags()
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var flags = MeasuresIgnoredFilterFlagNames();
+
+        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
+        Assert.True(flags.Count > 0,
+            $"{nameof(PreventiveMeasuresController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
+            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var flag in flags) data.Add(flag);
+        return data;
+    }
+
+    // 上の導出の本体。Theory のケース作りと下の見出し照合が同じここを読む(§6 DRY)。
+    // 走査そのものは /Incidents 側と共有する(下の IgnoredFilterFlagNamesIn が正本)
+    private static List<string> MeasuresIgnoredFilterFlagNames() =>
+        IgnoredFilterFlagNamesIn(nameof(PreventiveMeasuresController));
+
+    // コントローラのソースから「<旗> = <解決結果>.Ignored」という代入を拾い、旗の名前を返す。
+    //
+    // <b>2 画面で共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
+    // 「ソースを開く → コメントを落とす → 並びを固定する」の手順が /Incidents 用と
+    // カンバン用に写してあった。3 つ目の解決処理が旗を別の名前(<c>.WasIgnored</c> など)で
+    // 返すようになったとき片方だけ直すと、<b>直さなかった側は既存の旗を拾い続けるので
+    // 「0 件なら落とす」門番が働かず</b>、新しい旗が誰にも読まれない書き込み専用の値になる。
+    //
+    // コメントを先に落とすのは、`// 例: SeverityFilterIgnored = severityFilter.Ignored` のような
+    // 普通の説明コメント 1 行で<b>正しいコードのまま検査が落ちる</b>ため(実測)。
+    // 正しいコードを咎める検出網はいずれ緩められるので、走査対象から外す
+    private static List<string> IgnoredFilterFlagNamesIn(string controllerTypeName)
+    {
+        // コントローラのソースを開く(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{controllerTypeName}.cs");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        // コメントを落としてから走査する(説明コメントが幽霊の旗として拾われるのを防ぐ)
+        var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
+
+        // 「<旗> = <解決結果>.Ignored」の代入をすべて拾う(ViewBag. の前置きは \w+ に入らない)
+        return Regex.Matches(source, @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
+            .Select(m => m.Groups["flag"].Value)
+            .Distinct(StringComparer.Ordinal)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+    }
+
+    // 旗をカンバンのビューが実際に読んでいることを確かめる。
+    //
+    // コントローラ級の検査は ViewBag までしか見ないので、@if のブロックごと消しても
+    // 全件緑のまま通る。そうなると旗は誰も読まない書き込み専用の値になり、
+    // 利用者は黙って全件(または空の盤面)を見せられる ——/Incidents 側とまったく同じ理由で、
+    // 同じやり方(Razor のソースを見る)で塞ぐ
+    [Theory]
+    [MemberData(nameof(MeasuresIgnoredFilterFlags))]
+    public void MeasuresIndexView_RendersTheIgnoredFilterNotice(string flag)
+    {
+        // カンバンビューの本文を読む(Razor のコメントは落としてから見る)
+        var source = ReadMeasuresIndexSource();
+
+        // 旗で表示を出し分けていること。空白や比較の書き方に依存しない形で探す
+        // (@if(ViewBag.X == true) のような同じ働きの正しい書き方を落とさないため)
+        var header = Regex.Match(source, $@"@if\s*\(\s*ViewBag\.{flag}\b");
+        Assert.True(header.Success,
+            $"Views/PreventiveMeasures/Index.cshtml が ViewBag.{flag} で注意書きを出し分けていない。");
+
+        // 出し分けているだけでなく、そのブロックに中身があることまで見る
+        var blockBody = ExtractBraceBlock(source, header.Index);
+        Assert.True(blockBody != null,
+            $"Views/PreventiveMeasures/Index.cshtml の @if (ViewBag.{flag}) に本体が無い。");
+        // 何が適用されなかったのかを言い切る見出しがあること
+        Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
+
+        // 枠は共有パーシャルが持つので、実際に呼んでいることを見て続きはパーシャル側で確かめる
+        var partialCall = Regex.Match(blockBody!, @"<partial\s+name\s*=\s*""(?<name>[^""]+)""");
+        Assert.True(partialCall.Success,
+            $"Views/PreventiveMeasures/Index.cshtml の @if (ViewBag.{flag}) が"
+            + "注意書きのパーシャルを呼んでいない。");
+
+        // パーシャルは Razor と同じ順で探す(この画面のものは Views/Shared/ にある)
+        var partialSource = ReadPartial("PreventiveMeasures", partialCall.Groups["name"].Value);
+        // 警告として見えること(§7 は色だけに意味を持たせないので role と文言の両方を見る)
+        Assert.Contains("alert", partialSource, StringComparison.Ordinal);
+        // 呼び出し側が渡す文面が両方とも描画されること
+        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Heading)}", partialSource, StringComparison.Ordinal);
+        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Detail)}", partialSource, StringComparison.Ordinal);
+
+        // 呼び出し側が空文字を渡していないこと(パーシャルが描画しても文面が空なら枠しか出ない)
+        var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+        Assert.True(notice.Success,
+            $"@if (ViewBag.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+        // 見出しと説明の 2 つの文面が入っていること
+        var literals = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+            .Select(m => m.Groups["text"].Value)
+            .Where(text => text.Trim().Length > 0)
+            .ToList();
+        Assert.True(literals.Count >= 2,
+            $"@if (ViewBag.{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
+    }
+
+    // 旗ごとの見出しが互いに違うこと。
+    // 2 つの旗は同時に立ちうる(?status=99&dateFrom=abc)ので、見出しが同じだと
+    // ほぼ同一の警告が 2 つ並び、利用者からは二重描画の不具合に見える
+    // (/Incidents 側で実際にこの取り違えが起き、人のレビューでしか気付けなかった)
+    [Fact]
+    public void MeasuresIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading()
+    {
+        // カンバンビューの本文を読む
+        var source = ReadMeasuresIndexSource();
+        // 見出し → その見出しを使っている旗、の対応を作りながら重複を見る
+        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var flag in MeasuresIgnoredFilterFlagNames())
+        {
+            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
+            var header = Regex.Match(source, $@"@if\s*\(\s*ViewBag\.{flag}\b");
+            Assert.True(header.Success, $"ViewBag.{flag} で出し分けている注意書きが無い。");
+            var blockBody = ExtractBraceBlock(source, header.Index);
+            Assert.True(blockBody != null, $"@if (ViewBag.{flag}) に本体が無い。");
+
+            // 見出しは FilterIgnoredNotice の第 1 引数(＝最初の空でない文字列リテラル)
+            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+            Assert.True(notice.Success, $"@if (ViewBag.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+                .Select(m => m.Groups["text"].Value)
+                .FirstOrDefault(text => text.Trim().Length > 0);
+            Assert.True(heading != null, $"@if (ViewBag.{flag}) の注意書きに見出しの文面が無い。");
+
+            // 同じ見出しを別の旗が既に使っていないこと
+            Assert.False(headings.TryGetValue(heading!, out var owner),
+                $"ViewBag.{flag} の注意書きの見出しが ViewBag.{owner} と同じ(「{heading}」)。"
+                + "2 つの旗は同時に立ちうるので、旗ごとに違う見出しを付けること。");
+            headings[heading!] = flag;
+        }
+
+        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
+        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
+    }
+
+    // カンバンビューの Razor ソース(コメントを落としたもの)。3 つの走査が同じここを読む
+    private static string ReadMeasuresIndexSource()
+    {
+        // ビルド出力にはコピーされないので絶対パスで開く
+        var viewPath = Path.Combine(RepositoryPaths.Views, "PreventiveMeasures", "Index.cshtml");
+        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
+        Assert.True(File.Exists(viewPath), $"カンバンビューが見つからない: {viewPath}");
+        // Razor のコメントは落としてから返す(コメントで検査を満たせないようにする)
+        return RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+    }
+
+    // --- 画面をまたぐ網羅ガード: enum の絞り込みを持つ画面を取りこぼさない ------------
+
+    // 「定義に無い enum 値を採用しない」手当てが要る画面を<b>アプリ全体から</b>導き、
+    // 上の behavioural な検査が実際にその全部を覆っていることを照合する。
+    //
+    // <b>なぜ要るのか(この検査が生まれた経緯)。</b> 手当てはもともと /Incidents にしか無く、
+    // それを見張る Theory も typeof(IncidentsController) を名指ししていた。そのため
+    // /PreventiveMeasures の ?status=99 は<b>同じ壊れ方をしたまま、どの検査にも掛からず</b>
+    // 残っていた(SearchFilter の解説が「残っている境界」として書いていたとおり)。
+    // 画面を名指しする検査だけを積んでも、名指ししなかった画面は増えるほど増える。
+    //
+    // <b>手がかりはアクションの署名</b>: Enum.IsDefined から外れうるのは Nullable&lt;TEnum&gt; の
+    // 引数だけ(string? はどんな値でも束縛でき、int? / DateTime? に「定義」という概念が無い)。
+    // これはコントローラの実装とは独立した宣言箇所なので、手当てを入れ忘れた画面が
+    // <b>ここに現れる</b>。3 画面目が enum の絞り込みを持った時点でこの検査が落ち、
+    // 「解決処理へ通す」と「behavioural な検査を足す」の両方を促す。
+    //
+    // 覆っている引数は下の表に書く。表を手で書くのはここだけで、<b>比べる相手は導出</b>
+    // なので、表だけを増やしても導出に無ければ落ちる(逆も同じ)
+    [Fact]
+    public void EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter()
+    {
+        // アプリ全体から「enum の引数を受けるアクション」を拾う
+        var actual = EnumActionParametersInTheApp();
+
+        // 1 つも拾えないのは「enum の引数が無くなった」より「導出が壊れた」可能性が高い。
+        // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
+        Assert.True(actual.Count > 0,
+            "enum の引数を受けるアクションが 1 つも見つからない。"
+            + "導出を変えたなら、この照合も同じ変更セットで直すこと"
+            + "(直さないと、定義に無い enum 値の検査が対象ゼロで全件緑になる)。");
+
+        // 「どの引数を、どうやって守っているか」の表。
+        //
+        // <b>守り方は 2 種類あり、どちらでもよいが「どちらでもない」は許さない。</b>
+        //   - Filter …… 絞り込みの入力。UnlistedEnumFilterResolver を通し、
+        //     採用しなかったことを画面へ伝える(このクラスの behavioural な検査が確かめる)。
+        //   - OwnGate … 保存を伴う POST。絞り込みと違って「採用しない」では済まず、
+        //     未定義値を保存させないためアクション自身が Enum.IsDefined で弾く
+        //     (通すとカンバンの振り分けもラベル表示も壊れる)。
+        //
+        // 2 種類を 1 つの表にまとめてあるのは、<b>取りこぼしを数え落とさない</b>ため。
+        // 表を Filter だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、
+        // その瞬間に「守り方を何も決めていない enum 引数」が誰にも見えなくなる
+        var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.status"] = "Filter",
+            // 絞り込み: IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.incidentType"] = "Filter",
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.severity"] = "Filter",
+            // 保存: UpdateStatus 自身が Enum.IsDefined で弾く(未定義値を DB へ入れない)
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.UpdateStatus)}.status"] = "OwnGate",
+        };
+
+        // 2 つの宣言箇所が一致していること。ずれていれば、守り方を決めていない enum 引数が
+        // 増えたか、逆に無くなった引数が表に残っている
+        Assert.Equal(
+            guarded.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+            actual);
+    }
+
+    // アプリ全体のコントローラから「enum のアクション引数」を
+    // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
+    //
+    // <b>null 許容かどうかで絞らない(レビュー指摘で修正)。</b> 以前ここは
+    // Nullable&lt;TEnum&gt; だけを見て「Enum.IsDefined から外れうるのはそれだけ」と
+    // 書いていたが、このリポジトリではその前提が既に成り立っていない ——
+    // PreventiveMeasuresController.UpdateStatus は非 null 許容の MeasureStatus を受け、
+    // まさに未定義値が届きうるので自前の Enum.IsDefined ゲートを持っている。
+    // 絞ると、既定値付きの非 null 許容 enum 引数
+    // (Index(MeasureStatus status = Planned, …) のような形。束縛に失敗すると
+    //  黙って既定値へ落ちる)が検出網から丸ごと外れる。
+    //
+    // <b>コントローラの選び方は ControllerBase 基準</b>。Controller(ビューを返す基底)に
+    // 絞ると [ApiController] : ControllerBase の JSON エンドポイントが見えない ——
+    // SearchFilter の解説が「次に広げる画面」として名指ししている /Analytics が
+    // まさに JSON 専用なので、その形は現実的に増えうる。
+    //
+    // <b>DeclaredOnly でも絞らない</b>。共通の基底コントローラへアクションを引き上げると、
+    // 基底(abstract で除外)にも派生(そこでは宣言していない)にも現れず、
+    // その画面がテスト件数すら変えずに消える —— CLAUDE.md が
+    // LengthGovernedEntityTypes() について書いている「黙って狭まる」形そのもの。
+    // 代わりに<b>宣言元が自分たちのアセンブリか</b>で切る(フレームワーク側の
+    // public メソッドを拾わず、自前の基底から継いだアクションは拾う)
+    private static List<string> EnumActionParametersInTheApp()
+    {
+        // 自分たちのアセンブリ(名前空間の切り直しで外れない)
+        var ownAssembly = typeof(IncidentsController).Assembly;
+        // そのアセンブリのコントローラをすべて見る
+        return ownAssembly.GetTypes()
+            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                // プロパティのゲッターなど、アクションでないものを除く
+                .Where(m => !m.IsSpecialName)
+                // 宣言元が自分たちのアセンブリのものだけ(Controller/object の public メソッドを拾わない)
+                .Where(m => m.DeclaringType?.Assembly == ownAssembly)
+                .SelectMany(m => m.GetParameters()
+                    // null 許容かどうかを問わず、enum の引数をすべて拾う
+                    .Where(p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum)
+                    .Select(p => $"{t.Name}.{m.Name}.{p.Name}")))
+            // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
+            .Distinct(StringComparer.Ordinal)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+    }
 }

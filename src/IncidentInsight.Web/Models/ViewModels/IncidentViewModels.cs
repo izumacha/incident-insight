@@ -138,10 +138,12 @@ public class IncidentListViewModel
 
 /// <summary>
 /// 「絞り込み値を受け取ったのに採用しなかった」注意書き 1 件分の文面。
-/// 一覧ビューの共有パーシャル <c>Views/Incidents/_FilterIgnoredNotice.cshtml</c> のモデル。
+/// 一覧ビューの共有パーシャル <c>Views/Shared/_FilterIgnoredNotice.cshtml</c> のモデル
+/// (<c>/Incidents</c> と <c>/PreventiveMeasures</c> の 2 画面が使うため <c>Shared</c> にある)。
 /// </summary>
 /// <remarks>
-/// <para><b>なぜ型を作るのか。</b> 注意書きは旗ごとに出る(発生部署・原因分類・読めない値)が、
+/// <para><b>なぜ型を作るのか。</b> 注意書きは旗ごとに出る(発生部署・原因分類・
+/// 読めない値・選べる値ではない値)が、
 /// 見た目(警告の枠・アイコン・<c>role="alert"</c>・アイコンを支援技術から隠す指定)は
 /// どれも完全に同じで<b>文面だけが違う</b>。マークアップを呼び出し側へ書き写すと、
 /// a11y の指定を直すときに 1 つが取り残される(§6 DRY / §7)。
