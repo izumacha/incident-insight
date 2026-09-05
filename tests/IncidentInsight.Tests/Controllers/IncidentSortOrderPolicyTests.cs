@@ -1,3 +1,5 @@
+// Razor のソースを走査するのに正規表現を使う
+using System.Text.RegularExpressions;
 // テスト用ヘルパー(ユーザーコンテキスト・固定時刻・Razor 走査・リポジトリのパス)を使う
 using IncidentInsight.Tests.Helpers;
 // テスト対象のコントローラ
@@ -36,11 +38,14 @@ namespace IncidentInsight.Tests.Controllers;
 /// 画面の <c>&lt;select&gt;</c> は「最新順」を指しているのに URL だけが別のことを言う、
 /// という <c>?search=%20</c> とまったく同じ食い違い(issue #204 課題 2)。</para>
 ///
-/// <para><b>なぜ 3 種類の検査を 1 ファイルに置くのか。</b> この規則は
-/// 「受け付ける値の一覧」「並び替えの適用」「画面への echo」「選択肢の描画」の
-/// 4 か所が<b>揃って初めて</b>成立する。どれか 1 つでも別の判定を書くと
-/// 「メニューは A を指しているのに並びは B」「選んでも効かない項目」といった
-/// 無言の劣化になるので、揃っていることを 1 か所で見渡せるようにしておく。</para>
+/// <para><b>「採用しなかった値を画面へ返さない」だけは別のファイルが持つ。</b>
+/// あの不変条件は <c>/Incidents</c> の並び順に固有ではなく、自由記述の検索語や
+/// 他の一覧画面と<b>まったく同じ規則</b>なので、
+/// <c>BlankTextFilterEchoTests</c> に集めてある ——あちらの解説が書いているとおり、
+/// 画面ごと・入力ごとにファイルを分けると「今どの入力が守れているか」を
+/// 一覧できなくなり、次に同じ性質の入力を足す人がまた別の扱いを選んでしまう。
+/// ここが見るのは並び順に固有の配線 ——<b>並び替えが実際に効くこと</b>と、
+/// <b>ビューが受け付ける値の一覧そのものから選択肢を作ること</b>。</para>
 /// </summary>
 public class IncidentSortOrderPolicyTests : IDisposable
 {
@@ -64,54 +69,6 @@ public class IncidentSortOrderPolicyTests : IDisposable
 
     // テスト終了時に DbContext を解放する
     public void Dispose() => _db.Dispose();
-
-    // --- 画面への echo: 採用しなかった値を返さない ----------------------------
-
-    // 受け付けない並び順は画面へ返さない。返すとページャのリンクが全部その値を運ぶ
-    [Theory]
-    // 綴り違い・URL の改ざん
-    [InlineData("bogus")]
-    // 空文字(?sortBy= だけを付けた場合)
-    [InlineData("")]
-    // 空白のみ
-    [InlineData("   ")]
-    // 大文字小文字違い(受け付けないので既定の最新順で表示される)
-    [InlineData("Severity")]
-    public async Task Index_UnsupportedSortBy_IsNotEchoedBack(string sortBy)
-    {
-        // 受け付けない並び順で一覧を引く
-        var vm = await IndexAsync(sortBy);
-
-        // 並び替えに使っていない値なので画面へ返さない
-        Assert.Null(vm.SortBy);
-    }
-
-    // 実際に適用した並び順はそのまま画面へ戻す(ドロップダウンの現在値と、
-    // ページャで引き継ぐため)。「受け付けないなら null」だけを見ると、
-    // 常に null を返す変異が素通りする
-    [Theory]
-    [InlineData("latest")]
-    [InlineData("severity")]
-    [InlineData("overdue")]
-    public async Task Index_SupportedSortBy_IsEchoedBack(string sortBy)
-    {
-        // 利用者が実際に選んだ並び順で一覧を引く
-        var vm = await IndexAsync(sortBy);
-
-        // 受け取った値がそのまま戻る
-        Assert.Equal(sortBy, vm.SortBy);
-    }
-
-    // 未指定のときも画面へは何も載せない(ページャの URL に ?sortBy=latest を足さない)
-    [Fact]
-    public async Task Index_NoSortBy_LeavesTheValueEmpty()
-    {
-        // 並び順を指定せずに一覧を引く
-        var vm = await IndexAsync(null);
-
-        // 利用者は何も選んでいないので URL にも残さない
-        Assert.Null(vm.SortBy);
-    }
 
     // --- 並び替えの適用: 選択肢の値が実際に効く -------------------------------
 
@@ -169,6 +126,58 @@ public class IncidentSortOrderPolicyTests : IDisposable
         Assert.Equal(new[] { newer.Id, older.Id }, vm.Incidents.Select(i => i.Id));
     }
 
+    // 選択肢に載っているどの並び順も、実際に「他とは違う並び」を生む。
+    //
+    // <para><b>なぜ要るのか。</b> 綴りを 1 か所に集めても、<b>その値を実際に並び替える
+    // switch の枝</b>が対応しているかは誰も見ていなかった。実測では
+    // <c>Options</c> へ 1 件足すだけ(<c>switch</c> は触らない)の変異が全件緑のまま通り、
+    // 画面には新しい項目が出て URL にも載るのに、並びは既定のまま ——
+    // この PR が無くそうとした「選んでも効かない項目」がそのまま再現した。</para>
+    //
+    // <para><b>判定は「他の並び順と結果が違うこと」</b>にする。期待する並びを
+    // 選択肢ごとに書き並べると、値を足した人がそこも書き足さない限り検査に入らない
+    // (＝同じ穴が残る)。データを「3 つの並びがすべて違う」ように作っておけば、
+    // <c>switch</c> の枝が無い値は既定と同じ並びになって<b>必ず衝突する</b>。</para>
+    [Fact]
+    public async Task Index_EveryOfferedSortOrder_ProducesADistinctOrdering()
+    {
+        // 3 つの並び順の結果がすべて違うようにデータを作る。
+        // 発生日: A > B > C / 重症度: B > C > A / 期限超過: C だけが該当
+        var a = await SeedIncidentAsync(IncidentSeverity.Level0, occurredAt: Today);
+        var b = await SeedIncidentAsync(IncidentSeverity.Level5, occurredAt: Today.AddDays(-1));
+        var c = await SeedIncidentAsync(IncidentSeverity.Level3a, occurredAt: Today.AddDays(-2));
+        // 期限を過ぎた未完了の対策を C にだけぶら下げる
+        await SeedMeasureAsync(c, dueDate: Today.AddDays(-1), MeasureStatus.Planned);
+        // 他の 2 件は期限内の対策を持たせる(対策の有無そのものが並びを決めないことを明示する)
+        await SeedMeasureAsync(a, dueDate: Today.AddDays(7), MeasureStatus.Planned);
+        await SeedMeasureAsync(b, dueDate: Today.AddDays(7), MeasureStatus.Planned);
+
+        // 選択肢ごとに、実際に返ってくる Id の並びを集める
+        var orderingsByOption = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var option in IncidentSortOrder.Options)
+        {
+            // その並び順で一覧を引く
+            var vm = await IndexAsync(option.Value);
+            // 並びを 1 本の文字列にして比較しやすくする
+            orderingsByOption[option.Value] = string.Join(",", vm.Incidents.Select(i => i.Id));
+        }
+
+        // 同じ並びになった選択肢の組が無いこと。
+        // あるということは、その値に対応する switch の枝が無く既定へ落ちている
+        var duplicated = orderingsByOption
+            .GroupBy(entry => entry.Value, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => string.Join(" と ", group.Select(entry => entry.Key)))
+            .ToList();
+        Assert.True(duplicated.Count == 0,
+            $"並び順 {string.Join(" / ", duplicated)} が同じ並びを返している。"
+            + $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Options)} に値を足したなら、"
+            + $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} の並び替えの switch にも"
+            + "対応する枝を足すこと(枝が無いと既定へ落ち、メニューにあるのに選んでも効かない項目になる)。");
+        // 参考: 実際に 3 通りの並びが観測できていること(データの作り方が壊れていたら落とす)
+        Assert.Equal(IncidentSortOrder.Options.Count, orderingsByOption.Values.Distinct(StringComparer.Ordinal).Count());
+    }
+
     // --- 表示側(Razor)の配線 ---------------------------------------------------
 
     // ビューの並び順ドロップダウンが、受け付ける値の一覧そのものから選択肢を作っている。
@@ -188,21 +197,55 @@ public class IncidentSortOrderPolicyTests : IDisposable
         // 並び順ドロップダウンのブロックを切り出す
         var selectBlock = ExtractSortBySelectBlock();
 
-        // 受け付ける値の一覧を回して選択肢を作っていること。
-        // 照合は識別子の境界まで見る(部分文字列だと別名への差し替えを見逃す)
-        Assert.True(
-            RazorSource.ContainsIdentifier(selectBlock, $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Options)}"),
-            "Views/Incidents/Index.cshtml の並び順の選択肢は "
-            + $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Options)} から作ること。"
-            + $"実際のブロック: {selectBlock}");
+        // ブロックの中の foreach が「何を」回しているかをすべて取り出す。
+        // 「ブロックのどこかに名前が出てくるか」では足りない ——実測でも、
+        // foreach の対象を IncidentSortOrder.Options.Take(1) にする変異や、
+        // 別の一覧を回しつつ data-count="@IncidentSortOrder.Options.Count" のような
+        // 囮の属性を足す変異が、その書き方では全件緑のまま通った
+        var loopSources = RazorSource.ExtractForeachSources(selectBlock);
 
-        // 現在値の判定も適用側とまったく同じ関数を通していること。
-        // 別の判定を書くと「メニューは A を指しているのに並びは B」になる
-        Assert.True(
-            RazorSource.ContainsIdentifier(selectBlock, $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Effective)}"),
-            "Views/Incidents/Index.cshtml の selected は "
-            + $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Effective)} で判定すること。"
-            + $"実際のブロック: {selectBlock}");
+        // 解析できた数がブロック内の foreach の数と一致していることを先に確かめる。
+        // ExtractForeachSources は解析できないループを読み飛ばすので、ずれたまま使うと
+        // 「出所の検査だけが素通りする」fail-open になる
+        var loopCount = RazorSource.CountForeach(selectBlock);
+        Assert.True(loopSources.Count == loopCount,
+            $"Views/Incidents/Index.cshtml の並び順の <select> にある foreach {loopCount} 件のうち "
+            + $"{loopSources.Count} 件しか解析できていない。解析できないループは検査から外れるので、"
+            + "書き方を揃えるか ExtractForeachSources を直すこと。");
+        // foreach が無ければ選択肢を組み立てていない(静的な option だけになっている)
+        Assert.True(loopSources.Count > 0,
+            "Views/Incidents/Index.cshtml の並び順の <select> に選択肢を組み立てる foreach が無い。");
+
+        // 回している対象が受け付ける値の一覧「そのもの」であること。
+        // 含むかどうかでは足りない —— 実測では IncidentSortOrder.Options.Take(1) のように
+        // 一部だけ回す変異が全件緑のまま通り、画面からは「重症度高順」「未完了対策あり優先」が
+        // 消えて到達できなくなった(絞り込みや並べ替えを挟むのも同じ)。
+        // 並び自体も定義の一部(先頭が既定)なので、ビューで加工させない
+        Assert.All(loopSources, loop => Assert.Equal(
+            $"{nameof(IncidentSortOrder)}.{nameof(IncidentSortOrder.Options)}", loop.Trim()));
+
+        // ブロックが作る <option> はループの中の 1 つだけであること。
+        // 静的な <option> を足す変異(綴りを定数で書けば下の検査もすり抜ける)は
+        // ここで件数が増えて落ちる
+        var optionTags = OptionTag.Matches(selectBlock);
+        Assert.True(optionTags.Count == 1,
+            $"Views/Incidents/Index.cshtml の並び順の <select> に <option> が {optionTags.Count} 件ある。"
+            + "選択肢はループが作る 1 つだけにすること(静的な <option> を足すと、"
+            + "受け付ける値の一覧に無い項目や重複した項目が画面に出る)。");
+
+        // 現在値は「コントローラが実際に適用した並び順」と比べていること。
+        // ビュー側で判定をやり直すと「メニューは A を指しているのに並びは B」になりうる。
+        // 属性値は単一引用符でも書けるのでどちらの引用符でも拾う
+        var selectedExpressions = SelectedAttribute.Matches(selectBlock)
+            .Select(match => match.Groups["value"].Value).ToList();
+        Assert.True(selectedExpressions.Count == optionTags.Count,
+            $"Views/Incidents/Index.cshtml の並び順の <option> {optionTags.Count} 件のうち "
+            + $"{selectedExpressions.Count} 件にしか selected 属性が無い。"
+            + "現在値を示さないと select は先頭の項目を指し、実際の並びと食い違う。");
+        Assert.All(selectedExpressions, expression => Assert.True(
+            RazorSource.ContainsIdentifier(expression, $"Model.{nameof(IncidentListViewModel.EffectiveSortOrder)}"),
+            $"Views/Incidents/Index.cshtml の selected は Model.{nameof(IncidentListViewModel.EffectiveSortOrder)} "
+            + $"と比べること。実際の式: {expression}"));
     }
 
     // 並び順の綴りがビューに直接書かれていない。
@@ -216,40 +259,47 @@ public class IncidentSortOrderPolicyTests : IDisposable
     {
         // 並び順ドロップダウンのブロックを切り出す
         var selectBlock = ExtractSortBySelectBlock();
+        // 属性値として書かれている文字列をすべて取り出す。
+        // 二重引用符しか見ないと、単一引用符で書いた <option value='severity'> が
+        // 検査から外れる(実測で全件緑のまま通った。Models.MeasurePrioritySelectTests が
+        // 同じ理由で両方の引用符を拾っている)
+        var attributeValues = QuotedAttributeValue.Matches(selectBlock)
+            .Select(match => match.Groups["value"].Value)
+            .ToList();
 
-        // 受け付けるどの値も、文字列リテラルとしてブロックに現れないこと
+        // 受け付けるどの値も、属性値として直接書かれていないこと
         Assert.All(IncidentSortOrder.Options, option =>
-            Assert.False(selectBlock.Contains($"\"{option.Value}\"", StringComparison.Ordinal),
-                $"Views/Incidents/Index.cshtml に並び順の綴り \"{option.Value}\" が直接書かれている。"
+            Assert.False(attributeValues.Contains(option.Value, StringComparer.Ordinal),
+                $"Views/Incidents/Index.cshtml に並び順の綴り {option.Value} が直接書かれている。"
                 + $"綴りの唯一の真実の源は {nameof(IncidentSortOrder)} で、写しを持つと"
                 + "片方だけ直したときに「選んでも効かない項目」になる(issue #209)。"));
     }
 
     // --- ここから下はテストを組み立てるための道具 -----------------------------
 
-    // 一覧ビューの並び順ドロップダウン(<select name="sortBy">)のブロックを取り出す
+    // <option> の開始タグ(件数を数えるのに使う)
+    private static readonly Regex OptionTag = new("<option", RegexOptions.Compiled);
+
+    // selected 属性の値。属性値は二重引用符でも単一引用符でも書けるので両方を拾う
+    private static readonly Regex SelectedAttribute =
+        new("""selected\s*=\s*(?:"(?<value>[^"]*)"|'(?<value>[^']*)')""", RegexOptions.Compiled);
+
+    // 引用符でくくられた属性値(どの属性かは問わない)。綴りの直書きを探すのに使う
+    private static readonly Regex QuotedAttributeValue =
+        new("""=\s*(?:"(?<value>[^"]*)"|'(?<value>[^']*)')""", RegexOptions.Compiled);
+
+    // 一覧ビューの並び順ドロップダウン(<select name="sortBy">)のブロックを取り出す。
+    // 切り出しの手順そのものは 3 つの検査で共通なので RazorSource が持つ(§6 DRY)
     private static string ExtractSortBySelectBlock()
     {
         // 対象ビューの Razor ソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
         var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
         // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
         Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
-        var source = File.ReadAllText(viewPath);
 
-        // 対象ドロップダウンの開始タグを探す(name 属性が目印)
-        var selectStart = source.IndexOf("<select name=\"sortBy\"", StringComparison.Ordinal);
-        // 見つからなければビューの構造が変わっている。検出網が黙って死なないよう fail-closed で落とす
-        Assert.True(selectStart >= 0,
-            "Views/Incidents/Index.cshtml に <select name=\"sortBy\"> が見つからない。"
-            + "この検査はこのブロックの中身だけを見るので、目印を変えるならこのテストも"
-            + "同じ変更セットで直すこと。");
-        // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
-        var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
-        Assert.True(selectEnd > selectStart,
-            "Views/Incidents/Index.cshtml の <select name=\"sortBy\"> に対応する </select> が見つからない。");
-
-        // Razor のコメント(@* ... *@)を落として返す
-        return RazorSource.StripComments(source[selectStart..selectEnd]);
+        // 並び順の <select> ブロックだけを(コメントを落として)取り出す
+        return RazorSource.ExtractSelectBlock(
+            File.ReadAllText(viewPath), "<select name=\"sortBy\"", "Views/Incidents/Index.cshtml");
     }
 
     // 一覧に出るだけの最小限のインシデントを 1 件保存する

@@ -70,8 +70,16 @@ public static class IncidentSortOrder
     /// <b>この画面の操作方法</b>。値とラベルを別の場所に置くと、値を足した人が
     /// ラベルを足し忘れて画面に生の <c>"overdue"</c> が出る(<c>EnumLabels</c> の
     /// フォールバックと同じ壊れ方)ので、対で 1 か所に持たせる。</para>
+    ///
+    /// <para><b>書き換えを防ぐため読み取り専用のラッパーで公開する。</b>
+    /// 型を <c>IReadOnlyList</c> にするだけでは不十分で、中身が配列のままだと
+    /// <c>((SortOrderOption[])Options)[0] = …</c> という<b>キャスト 1 つ</b>で
+    /// プロセス全体の並び順の定義を書き換えられる ——先頭を差し替えれば
+    /// <c>Adopted("latest")</c> が <c>null</c> を返すようになり、
+    /// 上の「先頭は既定」という不変条件も実行時には破れる
+    /// (<c>Data.AuditSaveChangesInterceptor.AuditedEntities</c> が同じ理由で同じ形にしてある)。</para>
     /// </remarks>
-    public static readonly IReadOnlyList<SortOrderOption> Options = new[]
+    public static readonly IReadOnlyList<SortOrderOption> Options = Array.AsReadOnly(new[]
     {
         // 既定の並び順。上の remarks のとおり先頭に置く
         new SortOrderOption(Latest, "最新順"),
@@ -79,7 +87,7 @@ public static class IncidentSortOrder
         new SortOrderOption(Severity, "重症度高順"),
         // 未完了の期限超過対策を持つものを先に
         new SortOrderOption(Overdue, "未完了対策あり優先")
-    };
+    });
 
     /// <summary>
     /// <b>実際に適用する</b>並び順を返す。受け付けない値・未指定は既定(<see cref="Latest"/>)。

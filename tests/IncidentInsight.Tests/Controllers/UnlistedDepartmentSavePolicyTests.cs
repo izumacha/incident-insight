@@ -770,23 +770,12 @@ public class UnlistedDepartmentSavePolicyTests : IDisposable
         var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", viewFileName);
         // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
         Assert.True(File.Exists(viewPath), $"フォームのビューが見つからない: {viewPath}");
-        var source = File.ReadAllText(viewPath);
-
-        // 発生部署のドロップダウンの開始タグを探す(asp-for が目印)
-        var selectStart = source.IndexOf(
-            $"<select asp-for=\"{nameof(IncidentCreateEditViewModel.Department)}\"", StringComparison.Ordinal);
-        // 見つからなければ、ビューの構造が変わったか目印が消えている。
-        // 「見るべきブロックが無い＝緑」にすると検出網が黙って死ぬので fail-closed で落とす
-        Assert.True(selectStart >= 0,
-            $"Incidents/{viewFileName} に発生部署の <select asp-for=\"Department\"> が見つからない。"
-            + "この検査はこのブロックの中身だけを見るので、目印を変えるならこのテストも"
-            + "同じ変更セットで直すこと。");
-        // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
-        var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
-        Assert.True(selectEnd > selectStart,
-            $"Incidents/{viewFileName} の <select> に対応する </select> が見つからない。");
-        // Razor のコメントを取り除く。コメントで検査を満たしたり破ったりできないようにする
-        var selectBlock = RazorSource.StripComments(source[selectStart..selectEnd]);
+        // 発生部署のドロップダウンのブロックだけを(Razor のコメントを落として)切り出す。
+        // 切り出しの手順は 3 つの検査で共通なので RazorSource が持つ(§6 DRY)
+        var selectBlock = RazorSource.ExtractSelectBlock(
+            File.ReadAllText(viewPath),
+            $"<select asp-for=\"{nameof(IncidentCreateEditViewModel.Department)}\"",
+            $"Incidents/{viewFileName}");
 
         // ブロックの中の foreach が「何を」回しているかをすべて取り出す
         var loopSources = RazorSource.ExtractForeachSources(selectBlock);

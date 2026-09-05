@@ -223,6 +223,9 @@ public class IncidentsController : Controller
             // 返すと、並びは最新順で <select> も「最新順」を指しているのに、ページャの
             // リンクだけが ?sortBy=<受け付けない値> を運び続ける食い違いになる(issue #209)
             SortBy = IncidentSortOrder.Adopted(sortBy),
+            // ドロップダウンの現在値。並び替えに実際に使った値を渡す(上で求めたものを
+            // そのまま渡し、表示側で判定をやり直させない)
+            EffectiveSortOrder = effectiveSortBy,
             // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
             CauseCategoryOptions = causeCategoryFilter.Options,
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える(判定は解決側が返す)

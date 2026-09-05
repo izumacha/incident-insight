@@ -189,13 +189,14 @@
                            以前は綴りがこことコントローラの switch の 2 か所に書き写されており、
                            片方だけ直すと「そのメニュー項目を選んでも最新順のまま」という
                            例外もエラー表示も出ない無言の劣化になっていた（issue #209）。
-                           selected は適用側とまったく同じ IncidentSortOrder.Effective を通す
-                           ——別の判定を書くと「メニューは A を指しているのに並びは B」になる *@
+                           selected はコントローラが実際に適用した並び順（Model.EffectiveSortOrder）
+                           と比べる ——ここで判定をやり直すと「メニューは A を指しているのに
+                           並びは B」になりうるし、選択肢の数だけ同じ計算を繰り返すことにもなる *@
                         <label class="form-label small mb-0">並び順</label>
                         <select name="sortBy" class="form-select form-select-sm" aria-label="並び順">
                             @foreach (var sortOption in IncidentSortOrder.Options)
                             {
-                                <option value="@sortOption.Value" selected="@(IncidentSortOrder.Effective(Model.SortBy) == sortOption.Value)">@sortOption.Label</option>
+                                <option value="@sortOption.Value" selected="@(Model.EffectiveSortOrder == sortOption.Value)">@sortOption.Label</option>
                             }
                         </select>
                     </div>
