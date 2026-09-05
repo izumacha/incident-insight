@@ -793,6 +793,276 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.False(vm.MalformedFilterIgnored);
     }
 
+    // --- /Incidents: enum の定義に無い絞り込み値(issue #208) ------------------------
+
+    // 「読めるが定義に無い」enum の絞り込み対象を、本体とは<b>独立な手がかり</b>から導く。
+    //
+    // 手がかりはアクションの署名: <c>Enum.IsDefined</c> から外れうるのは
+    // <b>Nullable&lt;TEnum&gt; の引数だけ</b>(string? はどんな値でも束縛でき、int? / DateTime? に
+    // 「定義」という概念が無い)。つまり Index が受ける Nullable の enum 引数が、
+    // この手当てが要る入力の実際の一覧になる。
+    //
+    // なぜ書き並べないのか。 本体側は enum の引数 1 つずつに解決処理を呼ぶ形なので、
+    // 3 つ目の enum 絞り込みを足した人が通し忘れると、その引数だけが黙って元の壊れ方
+    // (絞り込みが掛かって 0 件・select は「（全て）」・再送信で無言解除)に戻る。
+    // ここを [InlineData] の手書きにすると同じ人が同じように行を足し忘れるので、
+    // 検出網ごと素通りする —— NullableFilterParameters と同じ理由・同じやり方で導出にする。
+    //
+    // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため。
+    // ?severity=99 は ModelState にエラーを積まないので、あちらの作り方(エラーを手で積む)
+    // では再現しない ——こちらは実際に未定義の enum 値を引数へ渡す必要がある。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。enum の引数を int? へ変えるような改修で
+    // 「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
+    public static TheoryData<string> EnumFilterParameters()
+    {
+        // Index の引数のうち Nullable<TEnum> だけを、C# の引数名で拾う
+        // (この Theory は引数の位置へ値を差し込むので、URL 上の名前ではなく引数名で照合する)
+        var names = EnumFilterParameterInfos()
+            .Select(p => p.Name!)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 0 件は「対象が無くなった」より「引数の型か導出が変わった」可能性が高い
+        Assert.True(names.Count > 0,
+            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に Nullable の enum 引数が 1 つも無い。"
+            + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、定義に無い enum 値の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var name in names) data.Add(name);
+        return data;
+    }
+
+    // Index が受ける Nullable<TEnum> の引数。
+    // 上の導出(Theory のケース)と、下の呼び出しヘルパ(引数の位置決め)が同じここを読む ——
+    // 写しを持つと、条件を直したときに片方だけ取り残される(§6 DRY)
+    private static List<ParameterInfo> EnumFilterParameterInfos() =>
+        typeof(IncidentsController)
+            .GetMethod(nameof(IncidentsController.Index))!
+            .GetParameters()
+            .Where(p => Nullable.GetUnderlyingType(p.ParameterType)?.IsEnum == true)
+            .ToList();
+
+    // 指定した enum 型の「定義に無い値」を 1 つ作る。
+    //
+    // 定数を書かない(99 など)のは、将来その値が enum へ足されたときに検査が
+    // <b>「定義にある値」を渡す無害なテストへ黙って化ける</b>から ——
+    // 実際に定義されている値をすべて見て、そこから外れる値を導く。
+    // (実際 IncidentTypeKind.Other は 99 として定義済みで、?incidentType=99 は
+    //  「その他」で正しく絞り込まれる。定数を書いていたらこの検査は空振りしていた)
+    //
+    // <b>探す範囲は基になる整数型の範囲に限る。</b> 「列挙は有限なので必ず見つかる」は
+    // 成り立たない —— 例えば byte を基とする enum で 256 個すべてが定義済みなら、
+    // 候補 256 は Enum.ToObject が切り詰めて 0(定義済みの値)を返す。
+    // 黙って定義済みの値を渡すと、この後の Assert が「解決処理へ通し忘れていないか」という
+    // <b>見当違いの案内</b>で落ちるので、飽和している場合はその事実を名指しして落とす
+    private static object UndefinedValueFor(Type enumType)
+    {
+        // 基になる整数型(byte / int / long など)を調べる
+        var underlying = Enum.GetUnderlyingType(enumType);
+        // 定義済みの値を long で集める。ulong を基とする enum は long へ収まらない値を
+        // 持ちうるので、その場合はここで落として人に判断させる(黙って例外にしない)
+        Assert.True(underlying != typeof(ulong),
+            $"{enumType.Name} は ulong を基とする enum で、この探索は long で候補を数える。"
+            + "基の型を変えたなら、この導出も同じ変更セットで直すこと。");
+        var defined = Enum.GetValues(enumType).Cast<object>()
+            .Select(v => Convert.ToInt64(v))
+            .ToHashSet();
+
+        // 探索の範囲は基の型が表せる範囲(切り詰めで定義済みの値へ化けない範囲)。
+        // 負の側も見るのは、符号付きの基の型では非負だけを探して尽きても
+        // まだ未定義の値が残っており、「作れない」と言うのが事実に反するため
+        var max = Convert.ToInt64(underlying.GetField("MaxValue")!.GetValue(null));
+        var min = Convert.ToInt64(underlying.GetField("MinValue")!.GetValue(null));
+        // 0 から順に、定義に無い最初の整数を探す(先に非負を見るのは、
+        // ?severity=99 のような「URL に書かれやすい値」に近い候補を選ぶため)
+        for (long candidate = 0; candidate <= max; candidate++)
+        {
+            // 定義済みならこの候補は使えない
+            if (defined.Contains(candidate)) continue;
+            // 定義に無い値が見つかったので、その enum 型の値へ変換して返す
+            return Enum.ToObject(enumType, candidate);
+        }
+        // 非負が尽きたら負の側を見る(符号無しの基の型なら min は 0 なのでこのループは回らない)
+        for (long candidate = -1; candidate >= min; candidate--)
+        {
+            // 定義済みならこの候補は使えない
+            if (defined.Contains(candidate)) continue;
+            // 定義に無い値が見つかったので、その enum 型の値へ変換して返す
+            return Enum.ToObject(enumType, candidate);
+        }
+
+        // 表せる値がすべて定義済み。この検査は成立しないので、理由を名指しして落とす
+        Assert.Fail($"{enumType.Name} は基の型({underlying.Name})が表せる値をすべて定義しており、"
+            + "「定義に無い値」を作れない。この検査は成立しないので、"
+            + "enum の定義かこの導出のどちらを直すか人が決めること。");
+        // Assert.Fail は必ず例外を投げるのでここへは到達しない(コンパイラのための return)
+        return null!;
+    }
+
+    // 指定した enum 引数にだけ値を入れて一覧を引く。
+    //
+    // 「定義に無い値」を渡す検査と「定義にある値」を渡す検査が同じ呼び出し方をするので、
+    // 値の作り方だけを引数(valueFor)で受け取って本体は共有する ——
+    // 写すと、Index の署名の扱い(引数の埋め方)を直したときに片方だけ取り残され、
+    // <b>コンパイルも通り緑のまま別の引数へ値を差し込む</b>テストになる(§6 DRY)。
+    //
+    // 引数の位置を反射で決めるのも同じ理由 —— 位置を手で書くと、Index の引数の並びを
+    // 変えた人がここを直し忘れた瞬間に、何も検査していないテストへ黙って化ける
+    private async Task<IncidentListViewModel> IndexWithEnumArgAsync(
+        string parameterName, Func<Type, object> valueFor)
+    {
+        // 対象の引数が導出の一覧に載っていること(名前を取り違えたまま
+        // 「どの引数にも値が入らない」テストになるのを防ぐ)
+        var enumParameters = EnumFilterParameterInfos();
+        Assert.True(enumParameters.Any(p => p.Name == parameterName),
+            $"{parameterName} は Index の Nullable<TEnum> 引数ではない。"
+            + "引数名か導出を変えたなら、この呼び出しも同じ変更セットで直すこと。");
+
+        // Index の引数をすべて既定値(null / page は 1)で埋めた配列を作る
+        var method = typeof(IncidentsController).GetMethod(nameof(IncidentsController.Index))!;
+        var parameters = method.GetParameters();
+        var args = new object?[parameters.Length];
+        for (var i = 0; i < parameters.Length; i++)
+        {
+            // 対象の引数にだけ、呼び出し側が決めた作り方で値を入れる
+            if (parameters[i].Name == parameterName)
+                args[i] = valueFor(Nullable.GetUnderlyingType(parameters[i].ParameterType)!);
+            // 値型(page: int)は既定値を、参照型・Nullable は null を入れる。
+            // 既定値を持たない値型はその型の既定値を作る —— 1 のような整数リテラルを
+            // 置くと、int 以外の値型引数(Guid / DateTime / bool など)を足した瞬間に
+            // Invoke が「Int32 は変換できない」で落ち、enum の方式とは無関係な
+            // 見当違いのエラーで両 Theory の全ケースが赤くなる
+            else if (parameters[i].ParameterType.IsValueType
+                     && Nullable.GetUnderlyingType(parameters[i].ParameterType) == null)
+                args[i] = parameters[i].HasDefaultValue
+                    ? parameters[i].DefaultValue
+                    : Activator.CreateInstance(parameters[i].ParameterType);
+            else
+                args[i] = null;
+        }
+
+        // 反射でアクションを呼ぶ(戻り値は Task<IActionResult>)
+        var controller = NewIncidentsController();
+        var result = await (Task<IActionResult>)method.Invoke(controller, args)!;
+        // 一覧ビューのモデルとして取り出す
+        var view = Assert.IsType<ViewResult>(result);
+        return Assert.IsType<IncidentListViewModel>(view.Model);
+    }
+
+    // enum として束縛できても定義に無い値なら、絞り込みを掛けず画面へも返さないこと(issue #208)。
+    //
+    // 直っていなかった頃の再現手順: /Incidents?severity=99 を開くと
+    // severity.HasValue == true なので Where(i => i.Severity == (IncidentSeverity)99) が
+    // <b>実際に掛かって 0 件</b>になる。MalformedFilterIgnored は false(束縛は成功している)
+    // なので画面は「フィルター適用中」バッジ＋「条件に一致するインシデントはありません」を出す。
+    // ところが重症度の <select> には一致する <option> が無いので「重症度（全て）」の位置に戻り、
+    // その絞り込みパネルで「検索」を押すと severity="" が送られて<b>絞り込みが黙って解除される</b>。
+    //
+    // 引数ごとに掛けるのは、本体側が enum の引数 1 つずつに解決処理を呼ぶ形だから ——
+    // まとめて 1 件だけ見る検査にすると、片方を通し忘れても緑のまま通る
+    [Theory]
+    [MemberData(nameof(EnumFilterParameters))]
+    public async Task IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する(「絞り込みが掛かって 0 件」との違いを見るため)
+        await SeedIncidentAsync("ICU");
+
+        // その引数だけに「定義に無い enum 値」を入れて一覧を引く
+        var vm = await IndexWithEnumArgAsync(parameterName, UndefinedValueFor);
+
+        // 絞り込みは掛かっていない(0 件にならない)。ここが直っていないと 0 件になる
+        Assert.Single(vm.Incidents);
+        // 受け取ったのに採用しなかったことを画面へ伝えている
+        Assert.True(vm.UnlistedEnumFilterIgnored,
+            $"?{parameterName}=<定義に無い値> を受け取ったのに注意書きが出ない。"
+            + $"UnlistedEnumFilterResolver へ {parameterName} を通し忘れていないか確認すること。");
+        // 画面へも値を返していない(返すとページャのリンクがその値を運び、
+        // <select> には一致する <option> が無いまま「絞り込み中」バッジだけが出る)
+        Assert.Null(ReadFilterValue(vm, parameterName));
+    }
+
+    // 逆に、定義にある値では絞り込みが効き、注意書きも出ないこと。
+    // 片方(採用しない側)しか試していないと、「enum の絞り込みを丸ごと無効化する」変異
+    // ——常に Effective = null を返す——が全件緑のまま通る
+    [Theory]
+    [MemberData(nameof(EnumFilterParameters))]
+    public async Task IncidentsIndex_KeepsAnEnumFilterValueInsideItsDefinition(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する(SeedIncidentAsync が使う値で絞り込む)
+        var incident = await SeedIncidentAsync("ICU");
+
+        // 保存した行が実際に持っている値(＝定義にある値)で絞り込む
+        var vm = await IndexWithEnumArgAsync(
+            parameterName, enumType => ReadIncidentValue(incident, enumType));
+
+        // 絞り込みは成立し、その 1 件が返る
+        Assert.Single(vm.Incidents);
+        // 定義にある値なので注意書きは出ない
+        Assert.False(vm.UnlistedEnumFilterIgnored,
+            $"?{parameterName}=<定義にある値> で注意書きが出ている。"
+            + "UnlistedEnumFilterResolver が Enum.IsDefined ではなく別の判定になっていないか確認すること。");
+        // 画面へも値が返り、<select> が現在値を指せる(これが無いと再送信で絞り込みが解除される)
+        Assert.NotNull(ReadFilterValue(vm, parameterName));
+    }
+
+    // enum の絞り込みを一切指定しなければ、注意書きは出ないこと。
+    // 「受け取っていない」を「採用しなかった」と数えると、絞り込みを一度も使っていない
+    // 利用者の画面に出っぱなしの警告が並び、本物の注意書きまで読み飛ばされる
+    [Fact]
+    public async Task IncidentsIndex_DoesNotReportAnUnlistedEnum_WhenNoEnumFilterWasSent()
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedIncidentAsync("ICU");
+
+        // 絞り込みを一切指定せずに一覧を引く
+        var vm = await IndexIncidentsAsync(null);
+
+        // 受け取っていないものは「採用しなかった」ではない
+        Assert.False(vm.UnlistedEnumFilterIgnored);
+    }
+
+    // 保存済みインシデントから、指定した enum 型のプロパティの値を取り出す。
+    //
+    // プロパティ名を書かず<b>型で</b>引くのは、引数名(incidentType)とエンティティの
+    // プロパティ名(IncidentType)の対応を写しで持たないため —— 3 つ目の enum 絞り込みを
+    // 足した人が対応表を直し忘れると、このテストだけが黙って別の値を渡すようになる。
+    // 同じ enum 型のプロパティが 2 つ以上あるなら対応が一意に決まらないので落とす(fail-closed)
+    private static object ReadIncidentValue(Incident incident, Type enumType)
+    {
+        // その enum 型を持つプロパティを探す
+        var matches = typeof(Incident)
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.PropertyType == enumType)
+            .ToList();
+        // ちょうど 1 つでなければ、型だけでは対応が決まらない
+        Assert.True(matches.Count == 1,
+            $"{nameof(Incident)} に {enumType.Name} 型のプロパティが {matches.Count} 個ある。"
+            + "型で引く前提が崩れているので、この照合も同じ変更セットで直すこと。");
+        // その値を返す
+        return matches[0].GetValue(incident)!;
+    }
+
+    // ViewModel が画面へ返している絞り込み値を、引数名から取り出す。
+    //
+    // 対応は「引数名の先頭を大文字にしたプロパティ」で引く(incidentType -> IncidentType)。
+    // 見つからなければ落とす —— 命名が揃わなくなったときに黙って null を返すと、
+    // 「画面へ返していない」という Assert が常に成立して検査が無力化される(fail-closed)
+    private static object? ReadFilterValue(IncidentListViewModel vm, string parameterName)
+    {
+        // 引数名の先頭を大文字にした名前で ViewModel のプロパティを引く
+        var propertyName = char.ToUpperInvariant(parameterName[0]) + parameterName[1..];
+        var property = typeof(IncidentListViewModel).GetProperty(propertyName);
+        Assert.True(property != null,
+            $"{nameof(IncidentListViewModel)} に {propertyName} が無い。"
+            + "引数名とプロパティ名の対応が崩れたなら、この照合も同じ変更セットで直すこと。");
+        // 画面へ返している値を返す
+        return property!.GetValue(vm);
+    }
+
     // --- /Analytics: /Incidents と同じ「実データにあれば補完、無ければ採用しない」 ------
 
     // 方式表(SearchFilter の解説)に載っている「?department= を受ける」アクションの一覧。
@@ -1703,6 +1973,57 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 登録・編集フォーム側の走査と共有している
     private static bool ContainsIdentifier(string text, string identifier) =>
         RazorSource.ContainsIdentifier(text, identifier);
+
+    // 旗ごとの注意書きの<b>見出しが互いに違う</b>こと。
+    //
+    // なぜ要るのか(実測)。 旗は同時に立ちうる(?severity=99&dateFrom=abc で
+    // MalformedFilterIgnored と UnlistedEnumFilterIgnored が両方立つ)。見出しが同じだと
+    // ほぼ同一の警告が 2 つ並び、利用者からは<b>二重描画の不具合に見える</b>。
+    // 実際 issue #208 の対応で新しい注意書きを足したとき、malformed 側と同じ
+    // 「一部の絞り込みは適用していません。」を書いてしまい、
+    // <b>全件緑のまま通った</b>（人のレビューでしか気付けなかった）。
+    //
+    // 上の per-flag の検査は「見出しと説明が空でないこと」までしか見ないので、
+    // 衝突は原理的に見えない —— 旗をまたいで比べる必要があるため独立した [Fact] にする。
+    // 5 つ目の旗を足した人が既存の文面を写して使うと、ここで落ちる
+    [Fact]
+    public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading()
+    {
+        // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
+        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
+        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
+        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+
+        // 旗ごとに、その @if ブロックが組み立てる FilterIgnoredNotice の「見出し」を集める。
+        // 見出しは第 1 引数なので、ブロック内の最初の空でない文字列リテラルを取る
+        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var flag in DeclaredIgnoredFilterFlags())
+        {
+            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
+            var header = Regex.Match(source, $@"@if\s*\(\s*Model\.{flag}\b");
+            Assert.True(header.Success, $"Model.{flag} で出し分けている注意書きが無い。");
+            var blockBody = ExtractBraceBlock(source, header.Index);
+            Assert.True(blockBody != null, $"@if (Model.{flag}) に本体が無い。");
+
+            // FilterIgnoredNotice の組み立て位置から先の、最初の空でない文字列リテラルが見出し
+            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+            Assert.True(notice.Success, $"@if (Model.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+                .Select(m => m.Groups["text"].Value)
+                .FirstOrDefault(text => text.Trim().Length > 0);
+            Assert.True(heading != null, $"@if (Model.{flag}) の注意書きに見出しの文面が無い。");
+
+            // 同じ見出しを既に別の旗が使っていないこと
+            Assert.False(headings.TryGetValue(heading!, out var owner),
+                $"Model.{flag} の注意書きの見出しが Model.{owner} と同じ(「{heading}」)。"
+                + "2 つの旗は同時に立ちうるので、同じ見出しだとほぼ同一の警告が 2 つ並び、"
+                + "二重描画の不具合に見える。旗ごとに違う見出しを付けること。");
+            headings[heading!] = flag;
+        }
+
+        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
+        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
+    }
 
     // 注意書きが案内する先（絞り込みパネル）が実際に開くこと、そして
     // 「フィルター適用中」の判定には混ざらないことを、両方まとめて固定する。
