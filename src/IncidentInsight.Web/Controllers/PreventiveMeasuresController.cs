@@ -73,15 +73,36 @@ public class PreventiveMeasuresController : Controller
     public async Task<IActionResult> Index(MeasureStatus? status, string? responsible,
         string? responsibleDepartment, DateTime? dateFrom, DateTime? dateTo, bool? overdue = null)
     {
+        // 型として読めなかった絞り込み値を先に拾っておく(issue #207 のうちこの画面の分)。
+        // 文字列以外の引数はモデルバインドに失敗すると null になり、失敗した事実は
+        // ModelState にしか残らない ——見ないと ?dateFrom=abc が「未指定」と同じ扱いになり、
+        // 注意書きも「絞り込み中」の表示も出ないままカンバン全件が返る。判定と理由の正本は
+        // MalformedFilterValueResolver の解説で、/Incidents とまったく同じものを通す。
+        // キーはモデルバインドが使う引数名そのものなので nameof で渡す
+        // (直書きすると引数を改名したときに黙って外れる)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState,
+            nameof(status), nameof(dateFrom), nameof(dateTo), nameof(overdue));
+
         // Incident を同時取得し、ユーザー部署スコープで絞り込むベースクエリ
         var query = _db.PreventiveMeasures
             .Include(m => m.Incident)
             .AsNoTracking()
             .ScopedByUser(User);
 
-        // ステータス指定があれば絞る
-        if (status.HasValue)
-            query = query.Where(m => m.Status == status.Value);
+        // ステータスは「束縛はできたが enum の定義に無い」値(?status=99 など)を通してしまわないよう、
+        // 共有の UnlistedEnumFilterResolver で採用の可否まで決める(issue #208 の残っていた画面)。
+        // 素通しにすると絞り込みが実際に掛かって<b>盤面が空</b>になる一方、<select> には一致する
+        // <option> が無いので「ステータス（全て）」の位置に戻り、そのフォームを再送信した瞬間に
+        // 絞り込みが黙って解除される(判定と理由の正本は解決側の解説)。
+        // MeasureStatus は EnumLabels.AllStatuses という閉じた語彙で選択肢を作るため、
+        // 担当部署(自由記述)のような「選択肢へ補完する」逃げ道は採れない
+        var statusFilter = UnlistedEnumFilterResolver.Resolve(status);
+        // 採用した値だけを式ツリーの外のローカルへ取り出してから使う(/Incidents の 3 経路と
+        // 書き方をそろえてあるのは、「null でないことの確認」と「式ツリーが捕まえる値」を
+        // 1 か所で結び付けるため ——分けて書くと、条件を直したときに片方だけ取り残される)
+        if (statusFilter.Effective is MeasureStatus effectiveStatus)
+            query = query.Where(m => m.Status == effectiveStatus);
         // 期限超過のみに絞る指定があれば適用する。
         // 判定は唯一の定義 PreventiveMeasure.OverdueOn に委譲する(未完了 かつ 期限が today より前)。
         // これは「計画中」と「進行中」の両方を含む点が重要で、status=Planned で代用してはならない。
@@ -176,8 +197,10 @@ public class PreventiveMeasuresController : Controller
         // ドロップダウン選択肢としてビューへ渡す
         ViewBag.ResponsibleDepartmentOptions = responsibleDepartmentOptions;
 
-        // 画面に戻すフィルタ値も ViewBag に載せる
-        ViewBag.FilterStatus = status;
+        // 画面に戻すフィルタ値も ViewBag に載せる。
+        // 採用しなかった enum の値は返さない(担当者名・担当部署と同じ扱い)。返すと、絞り込みは
+        // 効いていないのに「絞り込み中」の表示になり、<select> だけが「（全て）」を指す食い違いになる
+        ViewBag.FilterStatus = statusFilter.Effective;
         // 採用しなかった値は画面へ返さない。空白のみの入力をそのまま戻すと、絞り込みは
         // 効いていないのに <input> に見えない値が残り、フォームを再送信するたびに
         // その値が運ばれ続ける。判定は SearchFilter.Adopted に集約してある(issue #204 課題 2)。
@@ -199,12 +222,29 @@ public class PreventiveMeasuresController : Controller
         // 文字列条件は絞り込みの適用側とまったく同じ SearchFilter.HasValue を通す。
         // ここだけ判定がずれると、空白のみの入力で「絞り込み中」と表示しながら
         // 全件を返す(またはその逆の)食い違いが生まれる
-        ViewBag.HasActiveFilter = status.HasValue
+        // ステータスは採用した値で数える(受け取った生の値で数えると、絞り込みを掛けていない
+        // ?status=99 で「絞り込み中」と表示され、0 件時に「条件に一致しません／クリア」と
+        // 促してしまう ——効いていないフィルターをクリアさせる案内になる)
+        ViewBag.HasActiveFilter = statusFilter.Effective.HasValue
             || overdue == true
             || SearchFilter.HasValue(responsible)
             || SearchFilter.HasValue(responsibleDepartment)
             || dateFrom.HasValue
             || dateTo.HasValue;
+        // 「絞り込み値を受け取ったのに採用しなかった」ことを画面へ伝える 2 つの旗。
+        // 判定は解決側が返す(呼び出し側で status.HasValue などを引き直すと、解決側の
+        // 「未指定」の規則を変えたときに片方だけ古くなる)。
+        //
+        // 上の HasActiveFilter へは混ぜない —— あれは「絞り込みが実際に効いているか」で、
+        // 0 件時の文言(「条件に一致しません」対「まだ登録されていません」)の出し分けにも使う。
+        // 採用しなかった値を混ぜると、注意書きが「適用していません」と言う横で
+        // 「絞り込み条件に一致しません」と表示され、効いていないフィルターのクリアを促してしまう。
+        //
+        // 旗を 2 つに分けるのは<b>採用しなかった理由が違う</b>から(「値として読み取れない」対
+        // 「選べる値ではない」)。逆に読めなかった 4 つの入力で旗を分けないのは理由が同一だから
+        // ——この基準は /Incidents の 4 つの旗と共通(理由の正本は SearchFilter の解説)
+        ViewBag.MalformedFilterIgnored = malformedFilters.Ignored;
+        ViewBag.UnlistedEnumFilterIgnored = statusFilter.Ignored;
         // 上限に達し切り詰められたかどうか。true ならビューで注意書きを表示する
         ViewBag.Truncated = truncated;
 

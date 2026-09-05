@@ -3,23 +3,34 @@ namespace IncidentInsight.Web.Controllers.Internal;
 
 /// <summary>
 /// <b>enum として束縛できたのに、その enum の定義に無い値</b>を「受け取ったが採用しなかった」として
-/// 拾う共有処理。<c>/Incidents</c>(一覧)の種別・重症度が使う。
+/// 拾う共有処理。<c>/Incidents</c>(一覧)の種別・重症度と、
+/// <c>/PreventiveMeasures</c>(カンバン)の対策ステータスが使う。
 /// </summary>
 /// <remarks>
-/// <para><b>なぜ要るのか(issue #208)。</b> <c>?severity=99</c> は MVC の
-/// <c>SimpleTypeModelBinder</c> が <c>EnumConverter</c> 経由で <c>(IncidentSeverity)99</c> へ
-/// 変換し、<b><c>ModelState</c> にエラーを積まない</b>(実測: 変換は通り
-/// <c>Enum.IsDefined</c> だけが <c>false</c>)。つまり
-/// <see cref="MalformedFilterValueResolver"/>(束縛に<b>失敗した</b>値を拾う)では捕まらない。
-/// その結果、絞り込みは<b>実際に掛かって 0 件</b>になる一方、重症度の
-/// <c>&lt;select&gt;</c> には一致する <c>&lt;option&gt;</c> が無いので
-/// 「重症度（全て）」の位置に戻り、そのフォームを再送信した瞬間に
-/// <b>絞り込みが黙って解除される</b> ——
+/// <para><b>なぜ要るのか(issue #208)。</b> <b>定義に無い enum 値</b>
+/// (<c>(IncidentSeverity)99</c> のような値)が絞り込みへ届くと、絞り込みは
+/// <b>実際に掛かって 0 件</b>になる一方、重症度の <c>&lt;select&gt;</c> には一致する
+/// <c>&lt;option&gt;</c> が無いので「重症度（全て）」の位置に戻り、
+/// そのフォームを再送信した瞬間に<b>絞り込みが黙って解除される</b> ——
 /// <see cref="Models.Validation.SearchFilter"/> の表が守ろうとしている不変条件
 /// 「絞り込みに使った値は必ず選択肢にある」がそのまま破れている状態(issue #192 の症状)。
 /// インシデント種別も同じで、そちらの未定義の例は <c>?incidentType=0</c>
 /// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が 99 として
 /// 定義済みなので、その URL は「その他」で正しく絞り込まれる)。</para>
+///
+/// <para><b>既定の設定では、この門番へ届く前に MVC が弾く(実測で訂正。issue #214)。</b>
+/// 以前ここには「<c>?severity=99</c> は <c>SimpleTypeModelBinder</c> が
+/// <c>EnumConverter</c> 経由で変換し <c>ModelState</c> にエラーを積まない(実測)」と
+/// 書いてあったが<b>誤り</b>で、ASP.NET Core は enum 専用の <c>EnumTypeModelBinder</c> を
+/// 使い、定義に無い値には<b>束縛エラーを積む</b>。したがって既定では
+/// <see cref="MalformedFilterValueResolver"/> の側が先に拾う
+/// (アプリを起動して <c>/Incidents?severity=99</c> を引くと、出るのは
+/// 「一部の絞り込みは適用していません。」の文面)。
+/// <b>以前の「実測」が食い違ったのは測った場所が違うから</b> ——
+/// コントローラ級のテストはアクションを直接呼ぶのでモデルバインドを通らない。
+/// <b>それでもこの門番は残す</b>: 未定義値の拒否は <c>MvcOptions</c> で無効にでき、
+/// 無効にすると 1 段目が消えて上の壊れ方が戻る。判定を <c>Enum.IsDefined</c> という
+/// こちら側の定義に固定しておけば、上流の既定が変わっても答えが変わらない(§9 fail-safe)。</para>
 ///
 /// <para><b>前提: 選択肢の出所と enum の定義が一致していること。</b> 採用を
 /// <c>Enum.IsDefined</c> で決める一方、<c>&lt;select&gt;</c> の選択肢は
@@ -59,10 +70,17 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <c>[Flags]</c> の絞り込みを通した瞬間に静かに壊れるため。</para>
 ///
 /// <para><b>渡し忘れは構造的には塞げない</b>ので(呼び出し側が enum の引数ごとに呼ぶ形)、
-/// <c>Controllers.UnlistedFilterValuePolicyTests.IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c>
-/// が「<c>Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数」という<b>独立な手がかり</b>から
-/// 一覧を導いて、1 つずつ実際に採用されないことを確かめる ——3 つ目の enum 絞り込みを
-/// 足した人がここを通し忘れると、その引数だけが黙って元の壊れ方に戻るため。</para>
+/// <c>Controllers.UnlistedFilterValuePolicyTests</c> が 2 段構えで見張る。
+/// <b>画面ごと</b>には <c>IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c> /
+/// <c>MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition</c> が
+/// 「その <c>Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数」という
+/// <b>独立な手がかり</b>から一覧を導いて、1 つずつ実際に採用されないことを確かめる。
+/// <b>画面をまたいで</b>は <c>EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter</c> が
+/// アプリ全体のアクション署名から同じ手がかりを導き、上の検査が覆っている一覧と突き合わせる。
+/// <b>後者が要る</b>のは、画面を名指しする検査だけだと<b>名指ししなかった画面がそのまま漏れる</b>
+/// から —— 実際この処理を <c>/Incidents</c> にしか通していなかった間、
+/// <c>/PreventiveMeasures</c> の <c>?status=99</c> は同じ壊れ方をしたまま
+/// どの検査にも掛からずに残っていた。</para>
 /// </remarks>
 internal static class UnlistedEnumFilterResolver
 {

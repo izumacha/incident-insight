@@ -34,6 +34,47 @@
     </div>
 }
 
+@* 「絞り込み値を受け取ったのに採用しなかった」注意書き（旗ごとに 1 件）。
+   なぜ黙って落とさないのかは Models/Validation/SearchFilter の解説が正本。
+
+   枠(警告の見た目・アイコン・role="alert"・§7 の配慮)はどの旗でも同じなので
+   共有パーシャル _FilterIgnoredNotice が持ち、ここは「どの旗のときに、どの文面を出すか」
+   だけを決める。出し分けの @if をこちらに残しているのは、旗が実際に読まれていることを
+   UnlistedFilterValuePolicyTests が Index.cshtml 上で固定しているため。
+
+   文面は /Incidents の同じ 2 つと一字一句そろえてある。同じ理由で採用しなかったのに
+   画面ごとに言い回しが違うと、利用者は別の出来事だと受け取る（この repo が
+   ?department= について「同じ入力で画面ごとに答えが違うと誤読が重い」と書いているのと
+   同じ理由）。文面を変えるときは両方の画面を同じ変更セットで直すこと。
+
+   KPI カードより前に出すのは、これらの数字が「絞り込んだ結果」だと読まれるため ——
+   条件を外して集計したことを、数字より先に伝える *@
+
+@* 型として読めない値（?dateFrom=abc など）: 対象の入力を名指ししない。採用しなかった
+   理由が 4 つとも同一なので文面を分ける根拠が無く、分ければ同じ文章が 4 つ並ぶ
+   （理由の正本は Controllers/Internal/MalformedFilterValueResolver の解説。issue #207）。
+   どの条件を送ったかはアドレス欄に出ており、下の絞り込みパネルで選び直せる *@
+@if (ViewBag.MalformedFilterIgnored == true)
+{
+    <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
+        "一部の絞り込みは適用していません。",
+        "指定された条件のうち、値として読み取れないものがあったため、その条件を外して一覧を表示しています。"
+        + "絞り込みたい条件は下の「絞り込み」から指定し直してください。"))" />
+}
+
+@* enum の定義に無い値（?status=99）: 上の「読めない値」と文面を分けているのは理由が違うから
+   ——あちらは「値として読み取れない」、こちらは「選べる値ではない」
+   （理由の正本は Controllers/Internal/UnlistedEnumFilterResolver の解説。issue #208）。
+   見出しも重ねない —— 2 つの旗は同時に立ちうる（?status=99&dateFrom=abc）ので、
+   同じ見出しにするとほぼ同一の警告が 2 つ並び、二重描画の不具合に見える *@
+@if (ViewBag.UnlistedEnumFilterIgnored == true)
+{
+    <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
+        "選べる値ではない絞り込みは適用していません。",
+        "指定された条件のうち、選択肢に無い値のものがあったため、その条件を外して一覧を表示しています。"
+        + "絞り込みたい条件は下の「絞り込み」から選び直してください。"))" />
+}
+
 @* 統計バー：全件・完了率・期限超過・再発確認の4枚(KPI カードと統一感のあるデザイン) *@
 <div class="row g-3 mb-4">
     <div class="col-md-3">

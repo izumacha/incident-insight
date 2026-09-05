@@ -6,7 +6,7 @@ namespace IncidentInsight.Web.Controllers.Internal;
 
 /// <summary>
 /// <b>型として解釈できなかった絞り込み値</b>を「受け取ったが採用しなかった」として拾う共有処理。
-/// <c>/Incidents</c>(一覧)が使う。
+/// <c>/Incidents</c>(一覧)と <c>/PreventiveMeasures</c>(カンバン)が使う。
 /// </summary>
 /// <remarks>
 /// <para><b>なぜ要るのか(issue #198)。</b> クエリ文字列から届く絞り込みのうち
@@ -38,9 +38,11 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// アクションの引数名そのものなので、文字列を直書きせず <c>nameof</c> で渡せば
 /// 引数を改名しても追随する(<c>ModelState.Remove</c> を <c>nameof</c> で書く既存の規約と同じ)。
 /// <b>渡し忘れは構造的には塞げない</b>ので、
-/// <c>Controllers.UnlistedFilterValuePolicyTests.IncidentsIndex_ReportsAFilterValueThatCannotBeRead</c>
-/// が「<c>Index</c> が受ける <c>Nullable&lt;T&gt;</c> の引数」という<b>独立な手がかり</b>から
-/// 一覧を導いて、1 つずつ実際に注意書きが出ることを確かめる ——6 つ目の型付き絞り込みを
+/// <c>Controllers.UnlistedFilterValuePolicyTests</c> の
+/// <c>IncidentsIndex_ReportsAFilterValueThatCannotBeRead</c> と
+/// <c>MeasuresIndex_ReportsAFilterValueThatCannotBeRead</c> が、
+/// それぞれの <c>Index</c> が受ける <c>Nullable&lt;T&gt;</c> の引数という<b>独立な手がかり</b>から
+/// 一覧を導いて、1 つずつ実際に注意書きが出ることを確かめる ——型付き絞り込みを
 /// 足した人がここへ渡し忘れると、その引数だけが黙って元の壊れ方に戻るため。</para>
 ///
 /// <para><b>文字列の絞り込みは対象外。</b> <c>string?</c> はどんな入力でも束縛できるので

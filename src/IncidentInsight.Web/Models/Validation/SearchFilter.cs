@@ -88,6 +88,14 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     過去行が持つ値も(保存側が <c>[EnumDataType]</c> で未定義値を弾いているため)必ずその中にある。
 ///     <c>/AuditLogs</c> の 2 つと同じ形。判定の正本は
 ///     <c>Controllers.Internal.UnlistedEnumFilterResolver</c>(下の enum の段落を参照。issue #208)。</description></item>
+///   <item><description><c>/PreventiveMeasures</c> の対策ステータス … <b>採用しない</b>。
+///     <c>MeasureStatus</c> も<b>コード側で閉じた集合</b>で、選択肢は
+///     <c>EnumLabels.AllStatuses</c> という同じ閉じた語彙から作るため、同じ画面の担当部署
+///     (自由記述＝無条件補完)のような「選択肢へ補完する」逃げ道がそもそも採れない。
+///     判定は <c>/Incidents</c> の種別・重症度と<b>同じ共有処理</b>
+///     (<c>Controllers.Internal.UnlistedEnumFilterResolver</c>)を通す。
+///     <b>1 つの画面が 2 つの方式を併用する</b>のはここだけだが、方式を決めるのは
+///     画面ではなく<b>値の集合の性質</b>なので、表の 2 択はそのまま当てはまる。</description></item>
 ///   <item><description><c>/Incidents</c> の原因分類 … <b>マスタにあれば補完、無ければ採用しない</b>。
 ///     選択肢は<b>実データ(原因分類マスタ)から</b>作るうえ、絞り込みが受け付ける値は
 ///     その表示用の部分集合より広い —— ドロップダウンは<b>親カテゴリだけ</b>で作るのに、
@@ -179,45 +187,64 @@ namespace IncidentInsight.Web.Models.Validation;
 /// (文字列の引数は対象外 —— <c>string?</c> はどんな入力でも束縛でき、
 /// 「読めなかった」という状態が存在しない)。</para>
 ///
-/// <para><b>残っている境界: この手当てが入っているのは <c>/Incidents</c> だけ(issue #207)。</b>
-/// 同じ壊れ方は他の画面にもある —— <c>/AuditLogs?dateFrom=abc</c> は監査ログ全件を、
-/// <c>/PreventiveMeasures?status=abc</c> はカンバン全件を、
+/// <para><b>残っている境界: この手当てが入っているのは <c>/Incidents</c> と
+/// <c>/PreventiveMeasures</c> の 2 画面(issue #207)。</b>
+/// 同じ壊れ方は残りの画面にもある —— <c>/AuditLogs?dateFrom=abc</c> は監査ログ全件を、
 /// <c>/Analytics/MonthlyTrend?dateFrom=abc</c> は<b>期間を絞ったかのような全期間のグラフ</b>を、
-/// いずれも注意書きもバッジも無しで返す。上の理屈
+/// どちらも注意書きもバッジも無しで返す。上の理屈
 /// (「利用者から見た結果は同じなので伝えないままにしてよい理由が無い」)はそのまま当てはまり、
 /// <b>いま <c>?dateFrom=</c> は画面ごとに答えが違う</b> ——この表が <c>?department=</c> について
 /// 「同じパラメータで画面ごとに答えが違うと誤読が重い」と書いているのと同じ状態。
-/// <b>それでも同じ変更で広げていない</b>のは、画面ごとに伝え先が違う(一覧は画面、
-/// <c>/Analytics</c> は JSON のキー、カンバンは <c>ViewBag</c>)ため、
-/// 旗の持たせ方と検出網の掛け方をまとめて決め直す必要があり、
+/// <b>それでも一度に全画面へ広げていない</b>のは、画面ごとに伝え先が違う
+/// (一覧とカンバンは画面、<c>/Analytics</c> は JSON のキー)ため、
+/// 旗の持たせ方と検出網の掛け方を画面ごとに決め直す必要があり、
 /// 「1 コミット = 1 論理変更」(CLAUDE.md §12)に収まらないから。
 /// <b>解決処理側</b>(<c>MalformedFilterValueResolver.Resolve</c>)は画面に依存しない形
-/// (<c>ModelState</c> と名前だけを受ける)にしてあるので、そちらは配線だけで済む
-/// ——ただし<b>注意書きの見せ方は別で、そのままでは持ち出せない</b>:
-/// パーシャル <c>_FilterIgnoredNotice</c> は <c>Views/Incidents/</c> に置いてあり、
-/// Razor のパーシャル解決は <c>/Views/{コントローラ名}/</c> と <c>/Views/Shared/</c> しか
-/// 見ないので、他の画面から名前で呼ぶと実行時に見つからない。広げるときは
-/// このパーシャル(と <c>FilterIgnoredNotice</c>)を <c>Views/Shared/</c> へ移すこと
-/// (<c>_Pager</c> / <c>_ConcurrencyTokenFields</c> がその置き方)。
-/// <b>先回りで移していない</b>のは、今の利用者が 1 画面しか無いため
-/// ——複数画面で使う前に共有の場所へ置くのは§6 が避けろと書いている
-/// 「将来を見越した過度な抽象化」で、しかも <c>/Analytics</c> の伝え先は JSON、
-/// カンバンは <c>ViewBag</c> なので、実際に何を共有できるかは広げる時点で決まる。
-/// <b>この段落を消すときは、実際に全画面へ広げたときにすること</b>
+/// (<c>ModelState</c> と名前だけを受ける)にしてあるので、そちらは配線だけで済む。
+/// <b>注意書きの見せ方も持ち出せるようになった</b>: パーシャル <c>_FilterIgnoredNotice</c> は
+/// カンバンへ広げた時点で <c>Views/Shared/</c> へ移してあるので、残りの画面からも
+/// 名前で呼べる(Razor のパーシャル解決は <c>/Views/{コントローラ名}/</c> と
+/// <c>/Views/Shared/</c> しか見ないため、<c>Views/Incidents/</c> のままでは呼べなかった)。
+/// <c>/Analytics</c> だけは伝え先が JSON なのでパーシャルを使わない。
+/// <b>この段落を消すときは、実際に残りの画面へ広げたときにすること</b>
 /// ——消しただけでは、残った画面が表からも検出網からも同時に外れる。</para>
 ///
 /// <para><b>enum の絞り込みは「読めるが定義に無い」値も採用しない(issue #208)。</b>
-/// 上の手当てが拾うのは<b>束縛に失敗した</b>値だけだが、enum には
-/// <b>束縛に成功するのに定義に無い</b>値がある —— <c>?severity=99</c> は
-/// MVC の <c>SimpleTypeModelBinder</c> が <c>EnumConverter</c> 経由で
-/// <c>(IncidentSeverity)99</c> へ変換し、<b>エラーを積まない</b>(実測。
-/// 変換は通り <c>Enum.IsDefined</c> だけが <c>false</c>)。素通しにすると絞り込みは
-/// <b>実際に掛かって 0 件</b>になり、<c>&lt;select&gt;</c> には一致する
-/// <c>&lt;option&gt;</c> が無いので「重症度（全て）」の位置に戻る ——
-/// <b>この表が守ろうとしている不変条件(「絞り込みに使った値は必ず選択肢にある」)が
-/// そのまま破れている</b>状態で、利用者がそのフォームを再送信した時点で
-/// 絞り込みが黙って解除される(issue #192 の症状そのもの)。
-/// インシデント種別も同じで、そちらの未定義の例は <c>?incidentType=0</c>
+/// 上の手当てが拾うのは<b>束縛に失敗した</b>値だけなので、
+/// <b>束縛に成功するのに定義に無い</b>値(<c>(IncidentSeverity)99</c> のような値)が
+/// 素通りすると、絞り込みは<b>実際に掛かって 0 件</b>になる一方、
+/// <c>&lt;select&gt;</c> には一致する <c>&lt;option&gt;</c> が無いので
+/// 「重症度（全て）」の位置に戻る ——<b>この表が守ろうとしている不変条件
+/// (「絞り込みに使った値は必ず選択肢にある」)がそのまま破れている</b>状態で、
+/// 利用者がそのフォームを再送信した時点で絞り込みが黙って解除される
+/// (issue #192 の症状そのもの)。だから <c>Enum.IsDefined</c> の門番を置く。</para>
+///
+/// <para><b>ただし「素通りする」という前提は、既定の設定では成り立たない(実測で訂正。issue #214)。</b>
+/// 以前ここには「<c>?severity=99</c> は <c>SimpleTypeModelBinder</c> が
+/// <c>EnumConverter</c> 経由で変換し<b>エラーを積まない</b>(実測)」と書いてあったが、
+/// <b>これは誤り</b>。ASP.NET Core は enum 専用の <c>EnumTypeModelBinder</c> を使い、
+/// 定義に無い値には<b>束縛エラーを積む</b>(既定の挙動)。実際にアプリを起動して
+/// <c>/Incidents?severity=99</c> ・ <c>?incidentType=0</c> ・
+/// <c>/PreventiveMeasures?status=99</c> を引くと、出るのは
+/// <b>「一部の絞り込みは適用していません。」(＝読めなかった側の文面)</b>で、
+/// 「選べる値ではない」の注意書きは出ない。
+/// <b>以前の「実測」が食い違ったのは、測った場所が違うから</b> ——
+/// このリポジトリのコントローラ級テストは
+/// <c>controller.Index((IncidentSeverity)99, …)</c> と<b>アクションを直接呼ぶ</b>ので、
+/// モデルバインドを一度も通らない。<b>アクションを直接呼ぶ検査で
+/// 「モデルバインドがどう振る舞うか」を結論づけないこと。</b></para>
+///
+/// <para><b>それでも門番は残す(fail-safe)。</b> 現状この経路は
+/// <b>2 段目の防御</b>として働く: (a) 未定義値の拒否は <c>MvcOptions</c> の設定で
+/// 無効にでき、そうすると 1 段目が消えて元の壊れ方が戻る、(b) 一覧のアクションを
+/// 他のコードから直接呼ぶ経路ではモデルバインドを通らない、(c) 判定が
+/// <c>Enum.IsDefined</c> というこちら側の定義に固定されるので、
+/// 上流の既定が変わっても答えが変わらない。<b>「今は届かないから消す」としないのは
+/// §9 fail-closed の原則どおり</b>で、費用は総称メソッド 1 回の呼び出しだけ。
+/// なお<b>利用者から見た結果は今も正しい</b>(絞り込みは掛からず、注意書きは出る)。
+/// 出る文面が「読めない」側になるだけで、2 つの文面を分けたままでよいかは issue #214。</para>
+///
+/// <para>インシデント種別の未定義の例は <c>?incidentType=0</c>
 /// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が
 /// <b>99 として定義済み</b>なので、その URL は「その他」で正しく絞り込まれる。
 /// issue #208 の本文はここを取り違えているので、再現手順として写さないこと)。</para>
@@ -258,23 +285,28 @@ namespace IncidentInsight.Web.Models.Validation;
 /// (<c>/AuditLogs</c> にはまだ注意書きの仕組みが無い。それが残っている境界＝issue #207)。</para>
 ///
 /// <para><b>渡し忘れは検出網で塞ぐ。</b> 呼び出し側が enum の引数ごとに解決処理を呼ぶ形なので、
-/// 3 つ目の enum 絞り込みを足した人が通し忘れると<b>その引数だけが黙って元の壊れ方に戻る</b>。
-/// <c>Controllers.UnlistedFilterValuePolicyTests.IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c>
-/// が「<c>IncidentsController.Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数」という
+/// 通し忘れると<b>その引数だけが黙って元の壊れ方に戻る</b>。
+/// <c>Controllers.UnlistedFilterValuePolicyTests</c> の
+/// <c>IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c> と
+/// <c>MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition</c> が、
+/// それぞれの <c>Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数という
 /// <b>独立な手がかり</b>から一覧を導き、1 つずつ実際に採用されないことを確かめる。
 /// <b>手がかりは「読めない値」の検査とは別</b>にしてある ——
 /// <c>?severity=99</c> は <c>ModelState</c> にエラーを積まないので、
 /// あちらの作り方(エラーを手で積む)では再現しない。</para>
 ///
-/// <para><b>残っている境界: この手当ても <c>/Incidents</c> だけ。</b>
-/// <c>/PreventiveMeasures</c> の <c>?status=99</c>(<c>MeasureStatus?</c>)にも同じ穴があり、
-/// カンバンが<b>絞り込みの効いた空の盤面</b>になる。広げていない理由は上の issue #207 と同じで、
-/// あちらは伝え先が <c>ViewBag</c> なので旗の持たせ方と検出網の掛け方をまとめて決め直す必要がある
-/// (「1 コミット = 1 論理変更」CLAUDE.md §12)。<b>解決処理側</b>
-/// (<c>Controllers.Internal.UnlistedEnumFilterResolver.Resolve</c>)は画面にも enum の種類にも
-/// 依存しない総称なので、そちらは配線だけで済む。
-/// <b>この段落を消すときは、実際にその画面へ広げたときにすること</b>
-/// ——消しただけでは、残った画面が表からも検出網からも同時に外れる。</para>
+/// <para><b>画面を名指しする検査だけでは足りない(実測)。</b> この手当ては当初
+/// <c>/Incidents</c> にしか無く、それを見張る検査も <c>IncidentsController</c> を
+/// 名指ししていた。そのため <c>/PreventiveMeasures</c> の <c>?status=99</c> は
+/// <b>まったく同じ壊れ方</b>(絞り込みが実際に効いて<b>空の盤面</b>になり、
+/// <c>&lt;select&gt;</c> は「ステータス（全て）」を指し、再送信で無言解除)をしたまま、
+/// <b>どの検査にも掛からずに</b>残っていた。名指しの検査をいくら積んでも、
+/// 名指ししなかった画面は増えるほど増える。そこで
+/// <c>EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter</c> が
+/// <b>アプリ全体のアクション署名</b>から <c>Nullable&lt;TEnum&gt;</c> の引数を導き、
+/// behavioural な検査が覆っている一覧と突き合わせる ——3 画面目が enum の絞り込みを
+/// 持った時点でここが落ち、「解決処理へ通す」と「検査を足す」の両方を促す。
+/// <b>手当てを入れ忘れた画面が現れる場所</b>を、実装とは別の宣言箇所に置くのが要点。</para>
 ///
 /// <para><b>この表が扱うのは「絞り込み入力」だけで、保存する入力は別の話(issue #196)。</b>
 /// 登録・編集フォームの発生部署 <c>&lt;select&gt;</c> でも、許可リストから外された部署名を
