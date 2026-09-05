@@ -43,8 +43,23 @@ public class IncidentListViewModel
     public DateTime? DateTo { get; set; }
     // 原因分類フィルタ(原因分類IDで絞り込み)
     public int? CauseCategoryId { get; set; }
-    // 並び順の指定(最新/重症度/期限超過など)
-    public string? SortBy { get; set; }   // "latest" | "severity" | "overdue"
+    // 並び順のうち「利用者が実際に選んだ値」。受け付けない値・未指定は null になる
+    // (判定は Models/Validation/IncidentSortOrder.Adopted)。ページャの URL へ引き継ぐのは
+    // こちら —— 採用しなかった値を載せると、並びは既定なのにリンクだけが
+    // ?sortBy=<受け付けない値> を運び続ける食い違いになる(issue #209)
+    public string? SortBy { get; set; }
+
+    // 並び順のうち「実際に適用した値」。未指定・受け付けない値なら既定(最新順)が入る
+    // (判定は Models/Validation/IncidentSortOrder.Effective)。ドロップダウンの現在値は
+    // こちらで示す。
+    //
+    // 上の SortBy と必ず対で設定する。2 つに分けているのは答える問いが違うため ——
+    // SortBy は「URL に残すか」(選んでいなければ残さない)、こちらは「どう並べたか」
+    // (必ず 1 つに決まる)。表示側でこの判定をやり直さないこと: 並び替えを決めたのは
+    // コントローラなので、ビューが別の判定を書くと「メニューは A を指しているのに
+    // 並びは B」という食い違いが生まれる(選択肢を ViewModel から取る他の
+    // ドロップダウンと同じ考え方)
+    public string EffectiveSortOrder { get; set; } = IncidentSortOrder.Latest;
 
     // 原因分類ドロップダウンの選択肢。
     // 中身を決めるのは IncidentsController.ResolveCauseCategoryFilterAsync で、

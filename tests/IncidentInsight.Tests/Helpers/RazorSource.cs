@@ -225,4 +225,45 @@ public static class RazorSource
     /// <b>唯一の出所</b>。
     /// </summary>
     private const string ForeachKeywordText = "foreach";
+
+    /// <summary>
+    /// ビューのソースから、目印の開始タグで始まる <c>&lt;select&gt;</c> ブロックを
+    /// (Razor のコメントを落として)取り出す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ共有するのか。</b> 「コントローラが決めた選択肢をビューが本当に
+    /// 回しているか」を確かめる検査は、どれも<b>その画面の 1 つの
+    /// <c>&lt;select&gt;</c> ブロックだけ</b>を対象にする ——静的な一覧の参照自体は
+    /// 登録・編集フォームの別の箇所では正しい書き方なので、一律に禁じると
+    /// 正しいコードを咎める検出網になる。切り出し方は 3 つの検査で同一
+    /// (一覧の絞り込み・登録/編集フォームの発生部署・一覧の並び順)で、
+    /// 違うのは<b>開始タグの目印だけ</b>だった。写しのままにすると、
+    /// 切り出しの規則を直したとき(たとえば属性を単一引用符でも書けるようにする)に
+    /// 覚えている写しだけが直り、残りが黙って対象を狭める。</para>
+    ///
+    /// <para><b>見つからなければ fail-closed で落とす。</b>「見るべきブロックが無い＝緑」に
+    /// すると、目印を変えただけで検出網が黙って死ぬ。</para>
+    /// </remarks>
+    /// <param name="source">ビューの Razor ソース全体。</param>
+    /// <param name="startMarker">開始タグの目印(例: <c>&lt;select name="sortBy"</c>)。</param>
+    /// <param name="viewLabel">失敗メッセージに出すビューの呼び名(例: <c>Incidents/Index.cshtml</c>)。</param>
+    /// <returns>コメントを落とした <c>&lt;select&gt;</c> ブロックの中身。</returns>
+    public static string ExtractSelectBlock(string source, string startMarker, string viewLabel)
+    {
+        // 対象ドロップダウンの開始タグを探す
+        var selectStart = source.IndexOf(startMarker, StringComparison.Ordinal);
+        // 見つからなければ、ビューの構造が変わったか目印が消えている
+        Assert.True(selectStart >= 0,
+            $"{viewLabel} に {startMarker}\"> が見つからない。"
+            + "この検査はこのブロックの中身だけを見るので、目印を変えるならこの検査も"
+            + "同じ変更セットで直すこと。");
+        // 対応する閉じタグまでを切り出す(select は入れ子にならないので最初の </select> でよい)
+        var selectEnd = source.IndexOf("</select>", selectStart, StringComparison.Ordinal);
+        Assert.True(selectEnd > selectStart,
+            $"{viewLabel} の {startMarker}\"> に対応する </select> が見つからない。");
+
+        // Razor のコメントを落として返す(コメントで検査を満たしたり破ったりできないようにする)
+        return StripComments(source[selectStart..selectEnd]);
+    }
+
 }

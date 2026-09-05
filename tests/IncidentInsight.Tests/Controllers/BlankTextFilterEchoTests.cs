@@ -63,8 +63,8 @@ public class BlankTextFilterEchoTests : IDisposable
 
     // --- /Incidents: フリーワード検索 -----------------------------------------
 
-    // /Incidents の一覧を検索語だけ指定して引き、ViewModel を取り出す
-    private async Task<IncidentListViewModel> IndexIncidentsAsync(string? search)
+    // /Incidents を扱うコントローラを用意する(検索語・並び順の両方の検査で使う)
+    private IncidentsController BuildIncidentsController()
     {
         // 実際の依存をそのまま渡す(Mock より InMemory を優先する方針)
         var controller = new IncidentsController(
@@ -77,6 +77,15 @@ public class BlankTextFilterEchoTests : IDisposable
             NullLogger<IncidentsController>.Instance);
         // 部署スコープの影響を切り離すため、全部署を見られる Admin で実行する
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 組み立て済みのコントローラを返す
+        return controller;
+    }
+
+    // /Incidents の一覧を検索語だけ指定して引き、ViewModel を取り出す
+    private async Task<IncidentListViewModel> IndexIncidentsAsync(string? search)
+    {
+        // 依存の組み立ては共通のファクトリに任せる
+        var controller = BuildIncidentsController();
         // 検索語以外の絞り込みは指定しない
         var result = await controller.Index(search, null, null, null, null, null, null, null, 1) as ViewResult;
         // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
@@ -109,6 +118,75 @@ public class BlankTextFilterEchoTests : IDisposable
 
         // 受け取った値がそのまま戻る(加工もしない)
         Assert.Equal("転倒", vm.Search);
+    }
+
+    // --- /Incidents: 並び順 ---------------------------------------------------
+
+    // 並び順(?sortBy=)は自由記述ではなく閉じた語彙だが、<b>「採用しなかった値を画面へ
+    // 返さない」という不変条件は同じ</b>なので、同じファイルで固定する(issue #209)。
+    //
+    // <para>受け付けない値でも並び替えは既定(最新順)で動き、&lt;select&gt; も
+    // 「最新順」を指すため画面の表示は食い違わない。それでも echo してはいけないのは、
+    // <b>3 つ目の利用側であるページャ</b>が値を運ぶため ——
+    // Views/Incidents/Index.cshtml の RouteValues["sortBy"] は
+    // PagerViewModel.RouteValuesFor が null しか落とさないので、
+    // ?sortBy=bogus がページャのリンク全部に付いて回る(?search=%20 と同じ壊れ方)。
+    // 判定は Models/Validation/IncidentSortOrder.Adopted に集約してある。</para>
+
+    // /Incidents の一覧を並び順だけ指定して引き、ViewModel を取り出す
+    private async Task<IncidentListViewModel> IndexIncidentsBySortOrderAsync(string? sortBy)
+    {
+        // 検索語のときと同じ依存の組み立て方を使う(実際の依存をそのまま渡す)
+        var controller = BuildIncidentsController();
+        // 並び順以外の絞り込みは指定しない
+        var result = await controller.Index(null, null, null, null, null, null, null, sortBy, 1) as ViewResult;
+        // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<IncidentListViewModel>(result!.Model);
+    }
+
+    // 受け付けない並び順は画面へ返さない
+    [Theory]
+    // 綴り違い・URL の改ざん
+    [InlineData("bogus")]
+    // 空文字(?sortBy= だけを付けた場合)
+    [InlineData("")]
+    // 空白のみ
+    [InlineData(BlankInput)]
+    // 大文字小文字違い(照合は序数比較なので受け付けない)
+    [InlineData("Severity")]
+    public async Task Incidents_UnsupportedSortBy_IsNotEchoedBack(string sortBy)
+    {
+        // 受け付けない並び順で一覧を引く
+        var vm = await IndexIncidentsBySortOrderAsync(sortBy);
+
+        // 並び替えに使っていない値なので画面へ返さない
+        Assert.Null(vm.SortBy);
+    }
+
+    // 実際に適用した並び順はそのまま画面へ戻す(ドロップダウンの現在値と、ページャで
+    // 引き継ぐため)。「受け付けないなら null」だけを見ると、常に null を返す変異が素通りする
+    [Theory]
+    [InlineData("latest")]
+    [InlineData("severity")]
+    [InlineData("overdue")]
+    public async Task Incidents_SupportedSortBy_IsEchoedBack(string sortBy)
+    {
+        // 利用者が実際に選んだ並び順で一覧を引く
+        var vm = await IndexIncidentsBySortOrderAsync(sortBy);
+
+        // 受け取った値がそのまま戻る
+        Assert.Equal(sortBy, vm.SortBy);
+    }
+
+    // 未指定のときも画面へは何も載せない(ページャの URL に ?sortBy=latest を足さない)
+    [Fact]
+    public async Task Incidents_NoSortBy_LeavesTheValueEmpty()
+    {
+        // 並び順を指定せずに一覧を引く
+        var vm = await IndexIncidentsBySortOrderAsync(null);
+
+        // 利用者は何も選んでいないので URL にも残さない
+        Assert.Null(vm.SortBy);
     }
 
     // --- /AuditLogs: 変更者・対象キー -----------------------------------------

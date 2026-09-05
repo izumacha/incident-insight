@@ -148,24 +148,29 @@ public class IncidentsController : Controller
                 ca.CauseCategory.ParentId == effectiveCauseCategoryId));
 
         // Sort
-        // 並び替え: severity=重症度降順、overdue=期限超過あり優先、既定=発生日の新しい順
+        // 並び替え: severity=重症度降順、overdue=期限超過あり優先、既定=発生日の新しい順。
+        // 受け付ける値の綴りは IncidentSortOrder が唯一の真実の源で、表示側の
+        // <select> の選択肢も同じ一覧から作る ——写しを持つと、綴りを変えたときに
+        // 片方だけが取り残され、「そのメニュー項目を選んでも最新順のまま」という
+        // 例外もエラー表示も出ない無言の劣化になる(issue #209)
+        var effectiveSortBy = IncidentSortOrder.Effective(sortBy);
         // どの並び順も末尾に主キー Id 降順のタイブレーカーを付ける。
         // 理由: 重症度(7値)や期限超過フラグ(真偽2値)は同値の行が大量に発生し、DB は
         // 同値行の並び順を保証しない。タイブレーカーが無いと Skip/Take のページングが
         // 非決定的になり、同じ行が複数ページに出たり抜け落ちたりする(AuditLogsController と同じ対策)。
-        query = sortBy switch
+        query = effectiveSortBy switch
         {
             // 【注意】Severity は DB に enum 名の文字列(HasConversion<string>)で保存されるため、
             // この OrderByDescending は SQL では辞書順(アルファベット順)ソートになる。
             // 現状は "Level0".."Level5" の辞書順が重症度順と一致しているから正しく並ぶだけ。
             // 重症度コードを追加するときは辞書順が崩れないか必ず確認すること(IncidentSeverity.cs の注意書き参照)
-            "severity" => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
+            IncidentSortOrder.Severity => query.OrderByDescending(i => i.Severity).ThenByDescending(i => i.Id),
             // 「期限超過」の唯一の定義は PreventiveMeasure.OverdueOn(today)。ただし
             // OrderByDescending の射影(式ツリー)内で外部の Expression を差し込めない
             // (AnalyticsController.MeasureStatus の GroupBy と同じ制約)ため、OverdueOn と
             // 同一条件 (Status != Completed && DueDate < today) をインライン展開する。
             // 条件を変えるときは OverdueOn と両方を必ず一致させること。
-            "overdue"  => query.OrderByDescending(i => i.PreventiveMeasures
+            IncidentSortOrder.Overdue => query.OrderByDescending(i => i.PreventiveMeasures
                               .Any(m => m.Status != MeasureStatus.Completed && m.DueDate < _clock.Today))
                               .ThenByDescending(i => i.Id),
             _          => query.OrderByDescending(i => i.OccurredAt).ThenByDescending(i => i.Id)
@@ -214,7 +219,13 @@ public class IncidentsController : Controller
             // 採用しなかった原因分類の id は画面へ返さない(部署と同じ扱い。
             // 返すと絞り込みは効いていないのに「絞り込み中」バッジが出てページャの URL にも載る)
             CauseCategoryId = causeCategoryFilter.Effective,
-            SortBy = sortBy,
+            // 採用しなかった並び順の値は画面へ返さない(検索語・発生部署・原因分類と同じ扱い)。
+            // 返すと、並びは最新順で <select> も「最新順」を指しているのに、ページャの
+            // リンクだけが ?sortBy=<受け付けない値> を運び続ける食い違いになる(issue #209)
+            SortBy = IncidentSortOrder.Adopted(sortBy),
+            // ドロップダウンの現在値。並び替えに実際に使った値を渡す(上で求めたものを
+            // そのまま渡し、表示側で判定をやり直させない)
+            EffectiveSortOrder = effectiveSortBy,
             // ドロップダウンの選択肢。上の絞り込み値と必ず対で使う(片方だけ差し替えない)
             CauseCategoryOptions = causeCategoryFilter.Options,
             // 値を受け取ったのに採用しなかったなら、その事実を画面へ伝える(判定は解決側が返す)
