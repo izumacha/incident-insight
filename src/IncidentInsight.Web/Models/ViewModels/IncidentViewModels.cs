@@ -121,6 +121,19 @@ public class IncidentListViewModel
     //
     // 値そのものではなく真偽値なのも、黙って落とさない理由も、上の 2 つと同じ
     public bool MalformedFilterIgnored { get; set; }
+
+    // enum の絞り込み値を受け取ったが、その enum の定義に無い値だったので採用しなかったかどうか
+    // (true なら画面で知らせる。issue #208)。
+    //
+    // 上の MalformedFilterIgnored と分かれているのは、採用しなかった理由が違うから ——
+    // あちらは「その型の値として読めない」(?severity=abc)、こちらは「読めたが選べる値ではない」
+    // (?severity=99)。逆に対象の 2 つ(incidentType / severity)で旗を分けていないのは、
+    // その 2 つでは理由が同一だから。旗を分ける / まとめるの基準は
+    // 「採用しなかった理由が同じかどうか」で、既存の 3 つの旗と共通。
+    // 判定と理由の正本は Controllers/Internal/UnlistedEnumFilterResolver の解説。
+    //
+    // 値そのものではなく真偽値なのも、黙って落とさない理由も、上の 3 つと同じ
+    public bool UnlistedEnumFilterIgnored { get; set; }
 }
 
 /// <summary>

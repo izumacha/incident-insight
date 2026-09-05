@@ -67,6 +67,19 @@
         + "絞り込みたい条件は下の「絞り込み」から指定し直してください。"))" />
 }
 
+@* enum の定義に無い値（?severity=99 など）: 上の「読めない値」と同じく、対象の入力
+   （種別・重症度）をここで名指ししない。採用しなかった理由が 2 つとも同一なので
+   文面を分ける根拠が無い（理由の正本は Controllers/Internal/UnlistedEnumFilterResolver
+   の解説。issue #208）。「読めない値」と文面を分けているのは逆に理由が違うため ——
+   あちらは「値として読み取れない」、こちらは「選べる値ではない」 *@
+@if (Model.UnlistedEnumFilterIgnored)
+{
+    <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
+        "一部の絞り込みは適用していません。",
+        "指定された条件のうち、選べる値ではないものがあったため、その条件を外して一覧を表示しています。"
+        + "絞り込みたい条件は下の「絞り込み」から選び直してください。"))" />
+}
+
 @* 絞り込みパネル *@
 @{
     @* 何らかの絞り込み条件が指定されているかの判定（1つでも入っていれば true）。
@@ -84,7 +97,7 @@
        1 件も無い環境では効いていないフィルターを「クリアしてください」と促してしまう。
        一方パネルは開いておきたい: 送った値を選び直せる場所がそこにしか無いため *@
     var showFilterPanel = anyFilter || Model.DepartmentFilterIgnored || Model.CauseCategoryFilterIgnored
-                       || Model.MalformedFilterIgnored;
+                       || Model.MalformedFilterIgnored || Model.UnlistedEnumFilterIgnored;
 }
 <div class="card border-0 shadow-sm mb-3">
     @* クリックで折りたたみを開閉するヘッダ。div+role="button" だとキーボードで

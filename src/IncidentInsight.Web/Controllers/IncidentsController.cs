@@ -112,12 +112,21 @@ public class IncidentsController : Controller
         // 結び付けるため ——分けて書くと、条件を直したときに片方だけ取り残される
         if (departmentFilter.Effective is string effectiveDepartment)
             query = query.Where(i => i.Department == effectiveDepartment);
-        // インシデント種別で絞り込み
-        if (incidentType.HasValue)
-            query = query.Where(i => i.IncidentType == incidentType.Value);
-        // 重症度で絞り込み
-        if (severity.HasValue)
-            query = query.Where(i => i.Severity == severity.Value);
+        // インシデント種別・重症度で絞り込み。どちらも「束縛はできたが enum の定義に無い」値
+        // (?severity=99 など)を通してしまわないよう、共有の UnlistedEnumFilterResolver で
+        // 採用の可否まで決める(issue #208)。素通しにすると絞り込みが実際に掛かって 0 件になる
+        // 一方、<select> には一致する <option> が無いので「（全て）」の位置に戻り、
+        // そのフォームを再送信した瞬間に絞り込みが黙って解除される(判定と理由の正本は解決側の解説)
+        var incidentTypeFilter = UnlistedEnumFilterResolver.Resolve(incidentType);
+        // 採用した値だけを式ツリーの外のローカルへ取り出してから使う(発生部署・原因分類と同じ書き方。
+        // 「null でないことの確認」と「式ツリーが捕まえる値」を 1 か所で結び付けるため)
+        if (incidentTypeFilter.Effective is IncidentTypeKind effectiveIncidentType)
+            query = query.Where(i => i.IncidentType == effectiveIncidentType);
+        // 重症度も同じ解決処理を通す(種別と規則が分かれないよう、判定は 1 か所に集約してある)
+        var severityFilter = UnlistedEnumFilterResolver.Resolve(severity);
+        // 採用した値だけを絞り込みに使う(採用しなかった場合は null なのでこの節を飛ばす)
+        if (severityFilter.Effective is IncidentSeverity effectiveSeverity)
+            query = query.Where(i => i.Severity == effectiveSeverity);
         // 発生日下限で絞り込み
         if (dateFrom.HasValue)
             query = query.Where(i => i.OccurredAt >= dateFrom.Value);
@@ -212,8 +221,11 @@ public class IncidentsController : Controller
             // 判定は解決側が返す(呼び出し側で SearchFilter.HasValue を引き直すと、
             // 解決側の「入力なし」の規則を変えたときに片方だけ古くなる)
             DepartmentFilterIgnored = departmentFilter.Ignored,
-            IncidentType = incidentType,
-            Severity = severity,
+            // 採用しなかった enum の値は画面へ返さない(検索語・発生部署・原因分類と同じ扱い)。
+            // 返すと、絞り込みは効いていないのに「絞り込み中」バッジが出て、
+            // ページャのリンクが全部 ?severity=99&page=N を運び続ける食い違いになる
+            IncidentType = incidentTypeFilter.Effective,
+            Severity = severityFilter.Effective,
             DateFrom = dateFrom,
             DateTo = dateTo,
             // 採用しなかった原因分類の id は画面へ返さない(部署と同じ扱い。
@@ -233,7 +245,13 @@ public class IncidentsController : Controller
             // 型として読めなかった絞り込み値があったなら、その事実も画面へ伝える。
             // 上の 2 つと違い入力ごとに分けないのは、採用しなかった理由が 5 つの入力で
             // 同一だから(理由の正本は MalformedFilterValueResolver の解説)
-            MalformedFilterIgnored = malformedFilters.Ignored
+            MalformedFilterIgnored = malformedFilters.Ignored,
+            // enum の定義に無い値を受け取ったなら、その事実も画面へ伝える(issue #208)。
+            // 種別と重症度で旗を分けないのは、採用しなかった理由が 2 つとも同一だから
+            // (「選べる値ではない」)。上の MalformedFilterIgnored と分けるのは逆に理由が
+            // 違うから(あちらは「その型の値として読めない」)——旗を分ける / まとめるの
+            // 基準は理由が同じかどうかで、既存の 3 つの旗と共通(正本は解決側の解説)
+            UnlistedEnumFilterIgnored = incidentTypeFilter.Ignored || severityFilter.Ignored
         };
 
         // 一覧ビューへ ViewModel を渡して描画

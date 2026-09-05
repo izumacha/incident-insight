@@ -83,6 +83,11 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     0 件と「そんな部署は無い」を区別できないのは医療インシデントの集計では誤読が重い
 ///     (issue #204 課題 4)。この画面は部署のドロップダウンを持たないので補完した選択肢の
 ///     使い道は無いが、それでも同じ処理を通すのは 2 つの判定が分かれないようにするため。</description></item>
+///   <item><description><c>/Incidents</c> のインシデント種別・重症度 … <b>採用しない</b>。
+///     どちらも <c>IncidentTypeKind</c> / <c>IncidentSeverity</c> という<b>コード側で閉じた集合</b>で、
+///     過去行が持つ値も(保存側が <c>[EnumDataType]</c> で未定義値を弾いているため)必ずその中にある。
+///     <c>/AuditLogs</c> の 2 つと同じ形。判定の正本は
+///     <c>Controllers.Internal.UnlistedEnumFilterResolver</c>(下の enum の段落を参照。issue #208)。</description></item>
 ///   <item><description><c>/Incidents</c> の原因分類 … <b>マスタにあれば補完、無ければ採用しない</b>。
 ///     選択肢は<b>実データ(原因分類マスタ)から</b>作るうえ、絞り込みが受け付ける値は
 ///     その表示用の部分集合より広い —— ドロップダウンは<b>親カテゴリだけ</b>で作るのに、
@@ -201,27 +206,63 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <b>この段落を消すときは、実際に全画面へ広げたときにすること</b>
 /// ——消しただけでは、残った画面が表からも検出網からも同時に外れる。</para>
 ///
-/// <para><b>残っている境界: enum の絞り込みは「読めるが定義に無い」値を通してしまう(issue #208)。</b>
+/// <para><b>enum の絞り込みは「読めるが定義に無い」値も採用しない(issue #208)。</b>
 /// 上の手当てが拾うのは<b>束縛に失敗した</b>値だけだが、enum には
 /// <b>束縛に成功するのに定義に無い</b>値がある —— <c>?severity=99</c> は
 /// MVC の <c>SimpleTypeModelBinder</c> が <c>EnumConverter</c> 経由で
 /// <c>(IncidentSeverity)99</c> へ変換し、<b>エラーを積まない</b>(実測。
-/// 変換は通り <c>Enum.IsDefined</c> だけが <c>false</c>)。結果、絞り込みは
+/// 変換は通り <c>Enum.IsDefined</c> だけが <c>false</c>)。素通しにすると絞り込みは
 /// <b>実際に掛かって 0 件</b>になり、<c>&lt;select&gt;</c> には一致する
 /// <c>&lt;option&gt;</c> が無いので「重症度（全て）」の位置に戻る ——
 /// <b>この表が守ろうとしている不変条件(「絞り込みに使った値は必ず選択肢にある」)が
 /// そのまま破れている</b>状態で、利用者がそのフォームを再送信した時点で
 /// 絞り込みが黙って解除される(issue #192 の症状そのもの)。
-/// <c>?incidentType=99</c> も同じ。
-/// <b>この手当てが上の変更に入っていない</b>のは、答えが違うから ——
-/// あちらは「読めなかったので採用しない」、こちらは<b>閉じた語彙から外れているので採用しない</b>で、
-/// 表の 2 択のうち「採用しない」側に当てはまる別の判断
-/// (<c>/AuditLogs</c> のエンティティ名・操作種別と同じ形)。
-/// 旗と文面をどう持たせるかを決める独立した変更として切り出してある。
-/// <b>フォームの保存側には既に手当てがある</b>
-/// (<c>IncidentCreateEditViewModel.Severity</c> / <c>IncidentType</c> の
-/// <c>[EnumDataType]</c>。同じ束縛の挙動を理由に付けてある)ので、
-/// 絞り込み側だけが残っている。</para>
+/// <c>?incidentType=99</c> も同じ。</para>
+///
+/// <para><b>方式は表の 2 択のうち「採用しない」。</b> enum の値の集合は
+/// <b>コード側で閉じていて</b>、DB の過去行も(保存側が <c>[EnumDataType]</c> で
+/// 未定義値を弾いているため)必ずその中に収まる ——
+/// <c>/AuditLogs</c> のエンティティ名・操作種別とまったく同じ形なので、
+/// <b>絞り込みを掛けず、画面へも値を返さない</b>。判定(<c>Enum.IsDefined</c>)と
+/// 理由の正本は <c>Controllers.Internal.UnlistedEnumFilterResolver</c> の解説で、
+/// <c>/Incidents</c> の種別・重症度の 2 つが通る。
+/// これは「読めなかったので採用しない」(上の <c>MalformedFilterValueResolver</c>)とは
+/// <b>答えが違う</b>ので、旗も文面も分けてある
+/// (<see cref="ViewModels.IncidentListViewModel.UnlistedEnumFilterIgnored"/>。
+/// 「値として読み取れない」vs「選べる値ではない」)。逆に<b>種別と重症度で旗を分けない</b>のは
+/// その 2 つでは理由が同一だから —— 旗を分ける / まとめるの基準は
+/// <b>採用しなかった理由が同じかどうか</b>で、既存の 3 つの旗と共通。</para>
+///
+/// <para><b>ここは <c>/AuditLogs</c> と同じ「閉じた集合」なのに注意書きを出す。</b>
+/// 上の「黙って落とさない」の段落は、<c>/AuditLogs</c> に手当てが要らない理由として
+/// 「許可リストがコード側で決まっていて、外れる値は古いブックマークか改ざんだけ」を挙げている。
+/// enum も同じ性質だが、<b>この画面では出す方が一貫する</b> ——
+/// <c>?severity=abc</c>(読めない値)は<b>まったく同じく</b>ブックマークか改ざんでしか起きないのに
+/// 既に注意書きを出しており、しかも<b>利用者から見た 2 つの結果は区別が付かない</b>
+/// (どちらも絞り込んだつもりで全件が返る)。同じ画面の同じ入力欄で、綴りが
+/// <c>abc</c> なら知らせて <c>99</c> なら黙る、という状態こそ
+/// <c>MalformedFilterValueResolver</c> が塞いだ「一貫性の欠如」そのもの。
+/// つまり<b>伝えるかどうかを分けているのは画面であって、値の集合の性質ではない</b>
+/// (<c>/AuditLogs</c> にはまだ注意書きの仕組みが無い。それが残っている境界＝issue #207)。</para>
+///
+/// <para><b>渡し忘れは検出網で塞ぐ。</b> 呼び出し側が enum の引数ごとに解決処理を呼ぶ形なので、
+/// 3 つ目の enum 絞り込みを足した人が通し忘れると<b>その引数だけが黙って元の壊れ方に戻る</b>。
+/// <c>Controllers.UnlistedFilterValuePolicyTests.IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c>
+/// が「<c>IncidentsController.Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数」という
+/// <b>独立な手がかり</b>から一覧を導き、1 つずつ実際に採用されないことを確かめる。
+/// <b>手がかりは「読めない値」の検査とは別</b>にしてある ——
+/// <c>?severity=99</c> は <c>ModelState</c> にエラーを積まないので、
+/// あちらの作り方(エラーを手で積む)では再現しない。</para>
+///
+/// <para><b>残っている境界: この手当ても <c>/Incidents</c> だけ。</b>
+/// <c>/PreventiveMeasures</c> の <c>?status=99</c>(<c>MeasureStatus?</c>)にも同じ穴があり、
+/// カンバンが<b>絞り込みの効いた空の盤面</b>になる。広げていない理由は上の issue #207 と同じで、
+/// あちらは伝え先が <c>ViewBag</c> なので旗の持たせ方と検出網の掛け方をまとめて決め直す必要がある
+/// (「1 コミット = 1 論理変更」CLAUDE.md §12)。<b>解決処理側</b>
+/// (<c>Controllers.Internal.UnlistedEnumFilterResolver.Resolve</c>)は画面にも enum の種類にも
+/// 依存しない総称なので、そちらは配線だけで済む。
+/// <b>この段落を消すときは、実際にその画面へ広げたときにすること</b>
+/// ——消しただけでは、残った画面が表からも検出網からも同時に外れる。</para>
 ///
 /// <para><b>この表が扱うのは「絞り込み入力」だけで、保存する入力は別の話(issue #196)。</b>
 /// 登録・編集フォームの発生部署 <c>&lt;select&gt;</c> でも、許可リストから外された部署名を
