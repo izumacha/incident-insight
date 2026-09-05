@@ -18,7 +18,7 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が 99 として
 /// 定義済みなので、その URL は「その他」で正しく絞り込まれる)。</para>
 ///
-/// <para><b>既定の設定では、この門番へ届く前に MVC が弾く(実測で訂正。issue #214)。</b>
+/// <para><b>既定の設定では、この門番へ届く前に MVC が弾く(実測で訂正。issue #215)。</b>
 /// 以前ここには「<c>?severity=99</c> は <c>SimpleTypeModelBinder</c> が
 /// <c>EnumConverter</c> 経由で変換し <c>ModelState</c> にエラーを積まない(実測)」と
 /// 書いてあったが<b>誤り</b>で、ASP.NET Core は enum 専用の <c>EnumTypeModelBinder</c> を

@@ -219,7 +219,7 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 利用者がそのフォームを再送信した時点で絞り込みが黙って解除される
 /// (issue #192 の症状そのもの)。だから <c>Enum.IsDefined</c> の門番を置く。</para>
 ///
-/// <para><b>ただし「素通りする」という前提は、既定の設定では成り立たない(実測で訂正。issue #214)。</b>
+/// <para><b>ただし「素通りする」という前提は、既定の設定では成り立たない(実測で訂正。issue #215)。</b>
 /// 以前ここには「<c>?severity=99</c> は <c>SimpleTypeModelBinder</c> が
 /// <c>EnumConverter</c> 経由で変換し<b>エラーを積まない</b>(実測)」と書いてあったが、
 /// <b>これは誤り</b>。ASP.NET Core は enum 専用の <c>EnumTypeModelBinder</c> を使い、
@@ -242,7 +242,7 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 上流の既定が変わっても答えが変わらない。<b>「今は届かないから消す」としないのは
 /// §9 fail-closed の原則どおり</b>で、費用は総称メソッド 1 回の呼び出しだけ。
 /// なお<b>利用者から見た結果は今も正しい</b>(絞り込みは掛からず、注意書きは出る)。
-/// 出る文面が「読めない」側になるだけで、2 つの文面を分けたままでよいかは issue #214。</para>
+/// 出る文面が「読めない」側になるだけで、2 つの文面を分けたままでよいかは issue #215。</para>
 ///
 /// <para>インシデント種別の未定義の例は <c>?incidentType=0</c>
 /// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が
