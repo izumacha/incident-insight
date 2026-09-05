@@ -597,8 +597,11 @@ public class PreventiveMeasuresController : Controller
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
         // 受け取った status が enum の定義値(Planned/InProgress/Completed)かを検証する。
-        // ASP.NET のモデルバインドは未定義の整数(例: 99)もそのまま (MeasureStatus)99 として束縛してしまうため、
-        // ここで弾かないと未定義値が DB に保存され、カンバンの振り分けやラベル表示が壊れる。
+        // 未定義値をここで弾かないと DB に保存され、カンバンの振り分けやラベル表示が壊れる。
+        // 既定のモデルバインドは未定義の enum 値に束縛エラーを積むので通常はここへ届かないが、
+        // その拒否は MvcOptions で無効にでき、無効にすると (MeasureStatus)99 がそのまま届く
+        // (「素通しで束縛される」と書いてあったのは誤り。issue #215)。保存を伴う経路なので
+        // 上流の設定に依存せず、ここでも必ず確かめる。
         // 「不明なら拒否」(fail-closed)の原則で拒否する。他の失敗経路と同じく
         // TempData["Warning"] + リダイレクトで通知する(生の BadRequest はカンバン画面の
         // コンテキストを失わせ、無装飾のプレーンテキストのみが表示されてしまうため)。

@@ -777,9 +777,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 未指定(そもそも値が届いていない)でも注意書きを出さないこと。
     //
-    // ?severity= のような空の入力は null 許容型へ null として問題なく束縛され
+    // ?severity= のような<b>空の</b>入力は null 許容型へ null として問題なく束縛され
     // ModelState にエラーを積まないので、ここは「エラーの有無」を見る判定が
     // 空入力を誤って拾わないことの確認になる
+    // (空でない未定義値 ?severity=99 の側は既定では逆にエラーが積まれる。issue #215)
     [Fact]
     public async Task IncidentsIndex_DoesNotReportAnything_WhenNoFilterValueWasSent()
     {
@@ -808,9 +809,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // ここを [InlineData] の手書きにすると同じ人が同じように行を足し忘れるので、
     // 検出網ごと素通りする —— NullableFilterParameters と同じ理由・同じやり方で導出にする。
     //
-    // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため。
-    // ?severity=99 は ModelState にエラーを積まないので、あちらの作り方(エラーを手で積む)
-    // では再現しない ——こちらは実際に未定義の enum 値を引数へ渡す必要がある。
+    // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため ——
+    // こちらは実際に未定義の enum 値を引数へ渡す必要があり、あちらの作り方
+    // (ModelState へエラーを手で積む)では代用できない。
+    // <b>「?severity=99 は ModelState にエラーを積まないから」ではない</b> ——
+    // 既定ではむしろ積む(SearchFilter の訂正の段落を参照。issue #215)。
+    // なおこの Theory はアクションを直接呼ぶので、モデルバインドを一度も通らない。
+    // <b>この検査から「モデルバインドがどう振る舞うか」を結論づけないこと。</b>
     //
     // 1 つも拾えなければ落とす(fail-closed)。enum の引数を int? へ変えるような改修で
     // 「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
@@ -1650,24 +1655,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void IgnoredFilterFlags_CoverEveryFlagTheControllerSets()
     {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var controllerPath = Path.Combine(
-            RepositoryPaths.WebProject, "Controllers", $"{nameof(IncidentsController)}.cs");
-        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
-        var source = File.ReadAllText(controllerPath);
-
         // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
-        // 走査の前にコメントを落とすのは、下の門番の照合と同じ理由 ——ただしこちらで効くのは
-        // 「満たせる」ではなく「咎める」方向で、`// 例: SeverityFilterIgnored = severityFilter.Ignored`
-        // のような普通の説明コメントを 1 行足すだけで、正しいコードのまま
-        // 下の Assert.Equal が幽霊の旗を拾って落ちた(実測)。
-        // 正しいコードを咎める検出網はいずれ緩められるので、同じ CSharpComment を通す
-        var assigned = Regex.Matches(CSharpComment.Replace(source, string.Empty), @"(?<flag>\w+)\s*=\s*\w+\.Ignored\b")
-            .Select(m => m.Groups["flag"].Value)
-            .Distinct(StringComparer.Ordinal)
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToList();
+        // ソースを開く手順も走査の規則も、カンバン側とまったく同じなので共有する
+        // (IgnoredFilterFlagNamesIn が正本。写しを持つと、規則を直したときに片方が取り残される)
+        var assigned = IgnoredFilterFlagNamesIn(nameof(IncidentsController));
 
         // 代入が 1 つも読めないなら、書き方が変わって手がかりが死んでいる。
         // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
@@ -2486,12 +2477,27 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return data;
     }
 
-    // 上の導出の本体。Theory のケース作りと下の見出し照合が同じここを読む(§6 DRY)
-    private static List<string> MeasuresIgnoredFilterFlagNames()
+    // 上の導出の本体。Theory のケース作りと下の見出し照合が同じここを読む(§6 DRY)。
+    // 走査そのものは /Incidents 側と共有する(下の IgnoredFilterFlagNamesIn が正本)
+    private static List<string> MeasuresIgnoredFilterFlagNames() =>
+        IgnoredFilterFlagNamesIn(nameof(PreventiveMeasuresController));
+
+    // コントローラのソースから「<旗> = <解決結果>.Ignored」という代入を拾い、旗の名前を返す。
+    //
+    // <b>2 画面で共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
+    // 「ソースを開く → コメントを落とす → 並びを固定する」の手順が /Incidents 用と
+    // カンバン用に写してあった。3 つ目の解決処理が旗を別の名前(<c>.WasIgnored</c> など)で
+    // 返すようになったとき片方だけ直すと、<b>直さなかった側は既存の旗を拾い続けるので
+    // 「0 件なら落とす」門番が働かず</b>、新しい旗が誰にも読まれない書き込み専用の値になる。
+    //
+    // コメントを先に落とすのは、`// 例: SeverityFilterIgnored = severityFilter.Ignored` のような
+    // 普通の説明コメント 1 行で<b>正しいコードのまま検査が落ちる</b>ため(実測)。
+    // 正しいコードを咎める検出網はいずれ緩められるので、走査対象から外す
+    private static List<string> IgnoredFilterFlagNamesIn(string controllerTypeName)
     {
-        // コントローラのソースを開く
+        // コントローラのソースを開く(ビルド出力にはコピーされないので絶対パスで開く)
         var controllerPath = Path.Combine(
-            RepositoryPaths.WebProject, "Controllers", $"{nameof(PreventiveMeasuresController)}.cs");
+            RepositoryPaths.WebProject, "Controllers", $"{controllerTypeName}.cs");
         // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
         Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
         // コメントを落としてから走査する(説明コメントが幽霊の旗として拾われるのを防ぐ)
@@ -2625,59 +2631,94 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // <b>ここに現れる</b>。3 画面目が enum の絞り込みを持った時点でこの検査が落ち、
     // 「解決処理へ通す」と「behavioural な検査を足す」の両方を促す。
     //
-    // 覆っている画面は下の表に書く。表を手で書くのはここだけで、<b>比べる相手は導出</b>
+    // 覆っている引数は下の表に書く。表を手で書くのはここだけで、<b>比べる相手は導出</b>
     // なので、表だけを増やしても導出に無ければ落ちる(逆も同じ)
     [Fact]
     public void EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter()
     {
-        // アプリ全体から「Nullable<TEnum> の引数を受けるアクション」を拾う
-        var actual = EnumFilterParametersInTheApp();
+        // アプリ全体から「enum の引数を受けるアクション」を拾う
+        var actual = EnumActionParametersInTheApp();
 
-        // 1 つも拾えないのは「enum の絞り込みが無くなった」より「導出が壊れた」可能性が高い。
+        // 1 つも拾えないのは「enum の引数が無くなった」より「導出が壊れた」可能性が高い。
         // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
         Assert.True(actual.Count > 0,
-            "Nullable<TEnum> の引数を受けるアクションが 1 つも見つからない。"
+            "enum の引数を受けるアクションが 1 つも見つからない。"
             + "導出を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、定義に無い enum 値の検査が対象ゼロで全件緑になる)。");
 
-        // 覆っていると宣言している画面の一覧(このテストクラスの behavioural な検査が
-        // 実際に 1 つずつ確かめているもの)。表に足すだけでは意味が無く、
-        // 対応する検査を足すこととセットで初めて意味を持つ
-        var covered = new[]
+        // 「どの引数を、どうやって守っているか」の表。
+        //
+        // <b>守り方は 2 種類あり、どちらでもよいが「どちらでもない」は許さない。</b>
+        //   - Filter …… 絞り込みの入力。UnlistedEnumFilterResolver を通し、
+        //     採用しなかったことを画面へ伝える(このクラスの behavioural な検査が確かめる)。
+        //   - OwnGate … 保存を伴う POST。絞り込みと違って「採用しない」では済まず、
+        //     未定義値を保存させないためアクション自身が Enum.IsDefined で弾く
+        //     (通すとカンバンの振り分けもラベル表示も壊れる)。
+        //
+        // 2 種類を 1 つの表にまとめてあるのは、<b>取りこぼしを数え落とさない</b>ため。
+        // 表を Filter だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、
+        // その瞬間に「守り方を何も決めていない enum 引数」が誰にも見えなくなる
+        var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            // MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            $"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.status",
-            // IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.incidentType",
-            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.severity",
-        }
-            // 並びを固定してから比べる(宣言順のゆれで落ちないようにする)
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToList();
+            // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.status"] = "Filter",
+            // 絞り込み: IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.incidentType"] = "Filter",
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.severity"] = "Filter",
+            // 保存: UpdateStatus 自身が Enum.IsDefined で弾く(未定義値を DB へ入れない)
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.UpdateStatus)}.status"] = "OwnGate",
+        };
 
-        // 2 つの宣言箇所が一致していること。ずれていれば、手当ての無い画面が増えたか、
-        // 逆に無くなった画面が表に残っている
-        Assert.Equal(covered, actual);
+        // 2 つの宣言箇所が一致していること。ずれていれば、守り方を決めていない enum 引数が
+        // 増えたか、逆に無くなった引数が表に残っている
+        Assert.Equal(
+            guarded.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+            actual);
     }
 
-    // アプリ全体のコントローラから「Nullable<TEnum> のアクション引数」を
+    // アプリ全体のコントローラから「enum のアクション引数」を
     // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
     //
-    // アクションの選び方を「Index」などの名前に依存させないのは、別名の一覧画面が
-    // 増えたときに黙って外れないため。public なインスタンスメソッドのうち
-    // コントローラ基底が持つものを除いた＝自分たちが書いたアクション、で切る
-    private static List<string> EnumFilterParametersInTheApp() =>
-        // 自分たちのアセンブリのコントローラをすべて見る(名前空間の切り直しで外れない)
-        typeof(IncidentsController).Assembly.GetTypes()
-            .Where(t => typeof(Controller).IsAssignableFrom(t) && !t.IsAbstract)
-            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+    // <b>null 許容かどうかで絞らない(レビュー指摘で修正)。</b> 以前ここは
+    // Nullable&lt;TEnum&gt; だけを見て「Enum.IsDefined から外れうるのはそれだけ」と
+    // 書いていたが、このリポジトリではその前提が既に成り立っていない ——
+    // PreventiveMeasuresController.UpdateStatus は非 null 許容の MeasureStatus を受け、
+    // まさに未定義値が届きうるので自前の Enum.IsDefined ゲートを持っている。
+    // 絞ると、既定値付きの非 null 許容 enum 引数
+    // (Index(MeasureStatus status = Planned, …) のような形。束縛に失敗すると
+    //  黙って既定値へ落ちる)が検出網から丸ごと外れる。
+    //
+    // <b>コントローラの選び方は ControllerBase 基準</b>。Controller(ビューを返す基底)に
+    // 絞ると [ApiController] : ControllerBase の JSON エンドポイントが見えない ——
+    // SearchFilter の解説が「次に広げる画面」として名指ししている /Analytics が
+    // まさに JSON 専用なので、その形は現実的に増えうる。
+    //
+    // <b>DeclaredOnly でも絞らない</b>。共通の基底コントローラへアクションを引き上げると、
+    // 基底(abstract で除外)にも派生(そこでは宣言していない)にも現れず、
+    // その画面がテスト件数すら変えずに消える —— CLAUDE.md が
+    // LengthGovernedEntityTypes() について書いている「黙って狭まる」形そのもの。
+    // 代わりに<b>宣言元が自分たちのアセンブリか</b>で切る(フレームワーク側の
+    // public メソッドを拾わず、自前の基底から継いだアクションは拾う)
+    private static List<string> EnumActionParametersInTheApp()
+    {
+        // 自分たちのアセンブリ(名前空間の切り直しで外れない)
+        var ownAssembly = typeof(IncidentsController).Assembly;
+        // そのアセンブリのコントローラをすべて見る
+        return ownAssembly.GetTypes()
+            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 // プロパティのゲッターなど、アクションでないものを除く
                 .Where(m => !m.IsSpecialName)
+                // 宣言元が自分たちのアセンブリのものだけ(Controller/object の public メソッドを拾わない)
+                .Where(m => m.DeclaringType?.Assembly == ownAssembly)
                 .SelectMany(m => m.GetParameters()
-                    // 定義から外れうるのは Nullable<TEnum> の引数だけ
-                    .Where(p => Nullable.GetUnderlyingType(p.ParameterType)?.IsEnum == true)
+                    // null 許容かどうかを問わず、enum の引数をすべて拾う
+                    .Where(p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum)
                     .Select(p => $"{t.Name}.{m.Name}.{p.Name}")))
+            // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
+            .Distinct(StringComparer.Ordinal)
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
+    }
 }

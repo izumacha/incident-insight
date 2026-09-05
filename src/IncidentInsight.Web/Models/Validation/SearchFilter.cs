@@ -291,9 +291,13 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition</c> が、
 /// それぞれの <c>Index</c> が受ける <c>Nullable&lt;TEnum&gt;</c> の引数という
 /// <b>独立な手がかり</b>から一覧を導き、1 つずつ実際に採用されないことを確かめる。
-/// <b>手がかりは「読めない値」の検査とは別</b>にしてある ——
-/// <c>?severity=99</c> は <c>ModelState</c> にエラーを積まないので、
-/// あちらの作り方(エラーを手で積む)では再現しない。</para>
+/// <b>手がかりは「読めない値」の検査とは別</b>にしてある ——こちらは
+/// <b>未定義の enum 値をアクションの引数へ直接渡して</b>再現するので、
+/// あちらの作り方(<c>ModelState</c> へエラーを手で積む)では代用できない。
+/// <b>「?severity=99 は ModelState にエラーを積まないから」ではない</b> ——
+/// 既定ではむしろ積む(上の訂正の段落を参照。issue #215)。
+/// 2 つの検査を分けているのは<b>再現のさせ方が違う</b>からで、
+/// 経路そのものの到達可能性とは別の話。</para>
 ///
 /// <para><b>画面を名指しする検査だけでは足りない(実測)。</b> この手当ては当初
 /// <c>/Incidents</c> にしか無く、それを見張る検査も <c>IncidentsController</c> を
