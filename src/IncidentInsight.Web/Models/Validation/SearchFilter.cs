@@ -217,7 +217,20 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <b>この表が守ろうとしている不変条件(「絞り込みに使った値は必ず選択肢にある」)が
 /// そのまま破れている</b>状態で、利用者がそのフォームを再送信した時点で
 /// 絞り込みが黙って解除される(issue #192 の症状そのもの)。
-/// <c>?incidentType=99</c> も同じ。</para>
+/// インシデント種別も同じで、そちらの未定義の例は <c>?incidentType=0</c>
+/// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が
+/// <b>99 として定義済み</b>なので、その URL は「その他」で正しく絞り込まれる。
+/// issue #208 の本文はここを取り違えているので、再現手順として写さないこと)。</para>
+
+///
+/// <para><b>この判定が正しいための前提: 選択肢の出所と定義が一致していること。</b>
+/// <c>Enum.IsDefined</c> で採用を決める一方、<c>&lt;select&gt;</c> の選択肢は
+/// <c>EnumLabels.AllSeverities</c> / <c>IncidentTypeMapping.AllInDisplayOrder</c> という
+/// <b>別の宣言箇所</b>から作る。片方にしかない値が生まれると
+/// 「採用されるのに一致する <c>&lt;option&gt;</c> が無い」——つまり上とまったく同じ壊れ方に戻る。
+/// とくにインシデント種別の一覧は<b>手で保守する辞書</b>のキーなので、
+/// enum へ値を足して辞書を直し忘れるだけで成立する(実測で全件緑のまま通った)。
+/// <c>Models.EnumFilterOptionSourceTests</c> がこの一致を固定する。</para>
 ///
 /// <para><b>方式は表の 2 択のうち「採用しない」。</b> enum の値の集合は
 /// <b>コード側で閉じていて</b>、DB の過去行も(保存側が <c>[EnumDataType]</c> で

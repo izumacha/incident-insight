@@ -836,7 +836,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return data;
     }
 
-    // Index が受ける Nullable<TEnum> の引数(上の導出と、下の呼び出しヘルパが共有する)
+    // Index が受ける Nullable<TEnum> の引数。
+    // 上の導出(Theory のケース)と、下の呼び出しヘルパ(引数の位置決め)が同じここを読む ——
+    // 写しを持つと、条件を直したときに片方だけ取り残される(§6 DRY)
     private static List<ParameterInfo> EnumFilterParameterInfos() =>
         typeof(IncidentsController)
             .GetMethod(nameof(IncidentsController.Index))!
@@ -848,40 +850,75 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 定数を書かない(99 など)のは、将来その値が enum へ足されたときに検査が
     // <b>「定義にある値」を渡す無害なテストへ黙って化ける</b>から ——
-    // 実際に定義されている値をすべて見て、そこから外れる値を導く
+    // 実際に定義されている値をすべて見て、そこから外れる値を導く。
+    // (実際 IncidentTypeKind.Other は 99 として定義済みで、?incidentType=99 は
+    //  「その他」で正しく絞り込まれる。定数を書いていたらこの検査は空振りしていた)
+    //
+    // <b>探す範囲は基になる整数型の範囲に限る。</b> 「列挙は有限なので必ず見つかる」は
+    // 成り立たない —— 例えば byte を基とする enum で 256 個すべてが定義済みなら、
+    // 候補 256 は Enum.ToObject が切り詰めて 0(定義済みの値)を返す。
+    // 黙って定義済みの値を渡すと、この後の Assert が「解決処理へ通し忘れていないか」という
+    // <b>見当違いの案内</b>で落ちるので、飽和している場合はその事実を名指しして落とす
     private static object UndefinedValueFor(Type enumType)
     {
-        // 定義済みの値を、基になる整数型ではなく long で集める(符号付きの列挙を素直に扱うため)
+        // 基になる整数型(byte / int / long など)を調べる
+        var underlying = Enum.GetUnderlyingType(enumType);
+        // 定義済みの値を long で集める。ulong を基とする enum は long へ収まらない値を
+        // 持ちうるので、その場合はここで落として人に判断させる(黙って例外にしない)
+        Assert.True(underlying != typeof(ulong),
+            $"{enumType.Name} は ulong を基とする enum で、この探索は long で候補を数える。"
+            + "基の型を変えたなら、この導出も同じ変更セットで直すこと。");
         var defined = Enum.GetValues(enumType).Cast<object>()
             .Select(v => Convert.ToInt64(v))
             .ToHashSet();
 
-        // 0 から順に、定義に無い最初の整数を探す。列挙は有限なので必ず見つかる
-        for (long candidate = 0; ; candidate++)
+        // 探索の上限は基の型が表せる最大値(切り詰めで定義済みの値へ化けない範囲)
+        var max = Convert.ToInt64(underlying.GetField("MaxValue")!.GetValue(null));
+        // 0 から順に、定義に無い最初の整数を探す
+        for (long candidate = 0; candidate <= max; candidate++)
         {
             // 定義済みならこの候補は使えない
             if (defined.Contains(candidate)) continue;
             // 定義に無い値が見つかったので、その enum 型の値へ変換して返す
             return Enum.ToObject(enumType, candidate);
         }
+
+        // 表せる値がすべて定義済み。この検査は成立しないので、理由を名指しして落とす
+        Assert.Fail($"{enumType.Name} は基の型が表せる値をすべて定義しており、"
+            + "「定義に無い値」を作れない。この検査は成立しないので、"
+            + "enum の定義かこの導出のどちらを直すか人が決めること。");
+        // Assert.Fail は必ず例外を投げるのでここへは到達しない(コンパイラのための return)
+        return null!;
     }
 
-    // 指定した enum 引数にだけ「定義に無い値」を入れて一覧を引く。
+    // 指定した enum 引数にだけ値を入れて一覧を引く。
     //
-    // 引数の位置を反射で決めるのは、上の導出と同じ理由 —— 位置を手で書くと、
-    // Index の引数の並びを変えた人がここを直し忘れた瞬間に、別の引数へ値を差し込む
-    // (そして何も検査していない)テストへ黙って化ける
-    private async Task<IncidentListViewModel> IndexWithUndefinedEnumAsync(string parameterName)
+    // 「定義に無い値」を渡す検査と「定義にある値」を渡す検査が同じ呼び出し方をするので、
+    // 値の作り方だけを引数(valueFor)で受け取って本体は共有する ——
+    // 写すと、Index の署名の扱い(引数の埋め方)を直したときに片方だけ取り残され、
+    // <b>コンパイルも通り緑のまま別の引数へ値を差し込む</b>テストになる(§6 DRY)。
+    //
+    // 引数の位置を反射で決めるのも同じ理由 —— 位置を手で書くと、Index の引数の並びを
+    // 変えた人がここを直し忘れた瞬間に、何も検査していないテストへ黙って化ける
+    private async Task<IncidentListViewModel> IndexWithEnumArgAsync(
+        string parameterName, Func<Type, object> valueFor)
     {
+        // 対象の引数が導出の一覧に載っていること(名前を取り違えたまま
+        // 「どの引数にも値が入らない」テストになるのを防ぐ)
+        var enumParameters = EnumFilterParameterInfos();
+        Assert.True(enumParameters.Any(p => p.Name == parameterName),
+            $"{parameterName} は Index の Nullable<TEnum> 引数ではない。"
+            + "引数名か導出を変えたなら、この呼び出しも同じ変更セットで直すこと。");
+
         // Index の引数をすべて既定値(null / page は 1)で埋めた配列を作る
         var method = typeof(IncidentsController).GetMethod(nameof(IncidentsController.Index))!;
         var parameters = method.GetParameters();
         var args = new object?[parameters.Length];
         for (var i = 0; i < parameters.Length; i++)
         {
-            // 対象の引数にだけ「定義に無い enum 値」を入れる
+            // 対象の引数にだけ、呼び出し側が決めた作り方で値を入れる
             if (parameters[i].Name == parameterName)
-                args[i] = UndefinedValueFor(Nullable.GetUnderlyingType(parameters[i].ParameterType)!);
+                args[i] = valueFor(Nullable.GetUnderlyingType(parameters[i].ParameterType)!);
             // 値型(page: int)は既定値を、参照型・Nullable は null を入れる
             else if (parameters[i].ParameterType.IsValueType
                      && Nullable.GetUnderlyingType(parameters[i].ParameterType) == null)
@@ -917,7 +954,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         await SeedIncidentAsync("ICU");
 
         // その引数だけに「定義に無い enum 値」を入れて一覧を引く
-        var vm = await IndexWithUndefinedEnumAsync(parameterName);
+        var vm = await IndexWithEnumArgAsync(parameterName, UndefinedValueFor);
 
         // 絞り込みは掛かっていない(0 件にならない)。ここが直っていないと 0 件になる
         Assert.Single(vm.Incidents);
@@ -941,7 +978,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var incident = await SeedIncidentAsync("ICU");
 
         // 保存した行が実際に持っている値(＝定義にある値)で絞り込む
-        var vm = await IndexWithDefinedEnumAsync(parameterName, incident);
+        var vm = await IndexWithEnumArgAsync(
+            parameterName, enumType => ReadIncidentValue(incident, enumType));
 
         // 絞り込みは成立し、その 1 件が返る
         Assert.Single(vm.Incidents);
@@ -967,34 +1005,6 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
         // 受け取っていないものは「採用しなかった」ではない
         Assert.False(vm.UnlistedEnumFilterIgnored);
-    }
-
-    // 指定した enum 引数にだけ「その行が実際に持っている値」を入れて一覧を引く。
-    // 引数の位置を反射で決める理由は IndexWithUndefinedEnumAsync と同じ
-    private async Task<IncidentListViewModel> IndexWithDefinedEnumAsync(string parameterName, Incident incident)
-    {
-        // Index の引数をすべて既定値で埋めた配列を作る
-        var method = typeof(IncidentsController).GetMethod(nameof(IncidentsController.Index))!;
-        var parameters = method.GetParameters();
-        var args = new object?[parameters.Length];
-        for (var i = 0; i < parameters.Length; i++)
-        {
-            // 対象の引数には、保存した行が持っている同じ型の値を入れる
-            if (parameters[i].Name == parameterName)
-                args[i] = ReadIncidentValue(incident, Nullable.GetUnderlyingType(parameters[i].ParameterType)!);
-            // 値型(page: int)は既定値を、参照型・Nullable は null を入れる
-            else if (parameters[i].ParameterType.IsValueType
-                     && Nullable.GetUnderlyingType(parameters[i].ParameterType) == null)
-                args[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : 1;
-            else
-                args[i] = null;
-        }
-
-        // 反射でアクションを呼ぶ
-        var controller = NewIncidentsController();
-        var result = await (Task<IActionResult>)method.Invoke(controller, args)!;
-        var view = Assert.IsType<ViewResult>(result);
-        return Assert.IsType<IncidentListViewModel>(view.Model);
     }
 
     // 保存済みインシデントから、指定した enum 型のプロパティの値を取り出す。
