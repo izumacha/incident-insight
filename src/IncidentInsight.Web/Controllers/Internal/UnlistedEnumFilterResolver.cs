@@ -44,8 +44,19 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <see cref="Models.Validation.SearchFilter"/> の解説)。</para>
 ///
 /// <para><b>なぜ総称(generic)にするのか。</b> 判定は <see cref="System.Enum.IsDefined{TEnum}(TEnum)"/>
-/// だけで、enum の種類に依存する条件が 1 つも無い。種別用・重症度用と写しを作ると、
-/// 3 つ目の enum 絞り込みを足した人が片方だけ真似て、もう片方の判定が取り残される(§6 DRY)。</para>
+/// だけで、<b>この判定が使える enum なら</b>種類に依存する条件が 1 つも無い。
+/// 種別用・重症度用と写しを作ると、3 つ目の enum 絞り込みを足した人が片方だけ真似て、
+/// もう片方の判定が取り残される(§6 DRY)。</para>
+///
+/// <para><b>ただし <c>[Flags]</c> の enum には使えない。</b>
+/// <c>A|B</c> のような正当な組み合わせは単独の定義として存在しないため
+/// <c>Enum.IsDefined</c> が <c>false</c> を返し、
+/// <b>画面が提示している組み合わせなのに「選べる値ではない」と言われる</b>。
+/// このリポジトリに <c>[Flags]</c> の enum は 1 つも無いので分岐を先回りで用意しない
+/// (§6「将来を見越した過度な抽象化を避ける」)が、代わりに
+/// <c>Models.EnumFilterOptionSourceTests.EnumsGatedByIsDefined_AreNotFlagsEnums</c> が
+/// 前提が崩れたら落ちるようにしてある —— 下の「配線だけで済む」を読んだ人が
+/// <c>[Flags]</c> の絞り込みを通した瞬間に静かに壊れるため。</para>
 ///
 /// <para><b>渡し忘れは構造的には塞げない</b>ので(呼び出し側が enum の引数ごとに呼ぶ形)、
 /// <c>Controllers.UnlistedFilterValuePolicyTests.IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition</c>

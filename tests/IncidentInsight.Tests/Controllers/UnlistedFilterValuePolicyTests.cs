@@ -872,10 +872,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Select(v => Convert.ToInt64(v))
             .ToHashSet();
 
-        // 探索の上限は基の型が表せる最大値(切り詰めで定義済みの値へ化けない範囲)
+        // 探索の範囲は基の型が表せる範囲(切り詰めで定義済みの値へ化けない範囲)。
+        // 負の側も見るのは、符号付きの基の型では非負だけを探して尽きても
+        // まだ未定義の値が残っており、「作れない」と言うのが事実に反するため
         var max = Convert.ToInt64(underlying.GetField("MaxValue")!.GetValue(null));
-        // 0 から順に、定義に無い最初の整数を探す
+        var min = Convert.ToInt64(underlying.GetField("MinValue")!.GetValue(null));
+        // 0 から順に、定義に無い最初の整数を探す(先に非負を見るのは、
+        // ?severity=99 のような「URL に書かれやすい値」に近い候補を選ぶため)
         for (long candidate = 0; candidate <= max; candidate++)
+        {
+            // 定義済みならこの候補は使えない
+            if (defined.Contains(candidate)) continue;
+            // 定義に無い値が見つかったので、その enum 型の値へ変換して返す
+            return Enum.ToObject(enumType, candidate);
+        }
+        // 非負が尽きたら負の側を見る(符号無しの基の型なら min は 0 なのでこのループは回らない)
+        for (long candidate = -1; candidate >= min; candidate--)
         {
             // 定義済みならこの候補は使えない
             if (defined.Contains(candidate)) continue;
@@ -884,7 +896,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         }
 
         // 表せる値がすべて定義済み。この検査は成立しないので、理由を名指しして落とす
-        Assert.Fail($"{enumType.Name} は基の型が表せる値をすべて定義しており、"
+        Assert.Fail($"{enumType.Name} は基の型({underlying.Name})が表せる値をすべて定義しており、"
             + "「定義に無い値」を作れない。この検査は成立しないので、"
             + "enum の定義かこの導出のどちらを直すか人が決めること。");
         // Assert.Fail は必ず例外を投げるのでここへは到達しない(コンパイラのための return)
@@ -919,10 +931,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             // 対象の引数にだけ、呼び出し側が決めた作り方で値を入れる
             if (parameters[i].Name == parameterName)
                 args[i] = valueFor(Nullable.GetUnderlyingType(parameters[i].ParameterType)!);
-            // 値型(page: int)は既定値を、参照型・Nullable は null を入れる
+            // 値型(page: int)は既定値を、参照型・Nullable は null を入れる。
+            // 既定値を持たない値型はその型の既定値を作る —— 1 のような整数リテラルを
+            // 置くと、int 以外の値型引数(Guid / DateTime / bool など)を足した瞬間に
+            // Invoke が「Int32 は変換できない」で落ち、enum の方式とは無関係な
+            // 見当違いのエラーで両 Theory の全ケースが赤くなる
             else if (parameters[i].ParameterType.IsValueType
                      && Nullable.GetUnderlyingType(parameters[i].ParameterType) == null)
-                args[i] = parameters[i].HasDefaultValue ? parameters[i].DefaultValue : 1;
+                args[i] = parameters[i].HasDefaultValue
+                    ? parameters[i].DefaultValue
+                    : Activator.CreateInstance(parameters[i].ParameterType);
             else
                 args[i] = null;
         }
@@ -1955,6 +1973,57 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 登録・編集フォーム側の走査と共有している
     private static bool ContainsIdentifier(string text, string identifier) =>
         RazorSource.ContainsIdentifier(text, identifier);
+
+    // 旗ごとの注意書きの<b>見出しが互いに違う</b>こと。
+    //
+    // なぜ要るのか(実測)。 旗は同時に立ちうる(?severity=99&dateFrom=abc で
+    // MalformedFilterIgnored と UnlistedEnumFilterIgnored が両方立つ)。見出しが同じだと
+    // ほぼ同一の警告が 2 つ並び、利用者からは<b>二重描画の不具合に見える</b>。
+    // 実際 issue #208 の対応で新しい注意書きを足したとき、malformed 側と同じ
+    // 「一部の絞り込みは適用していません。」を書いてしまい、
+    // <b>全件緑のまま通った</b>（人のレビューでしか気付けなかった）。
+    //
+    // 上の per-flag の検査は「見出しと説明が空でないこと」までしか見ないので、
+    // 衝突は原理的に見えない —— 旗をまたいで比べる必要があるため独立した [Fact] にする。
+    // 5 つ目の旗を足した人が既存の文面を写して使うと、ここで落ちる
+    [Fact]
+    public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading()
+    {
+        // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
+        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
+        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
+        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+
+        // 旗ごとに、その @if ブロックが組み立てる FilterIgnoredNotice の「見出し」を集める。
+        // 見出しは第 1 引数なので、ブロック内の最初の空でない文字列リテラルを取る
+        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var flag in DeclaredIgnoredFilterFlags())
+        {
+            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
+            var header = Regex.Match(source, $@"@if\s*\(\s*Model\.{flag}\b");
+            Assert.True(header.Success, $"Model.{flag} で出し分けている注意書きが無い。");
+            var blockBody = ExtractBraceBlock(source, header.Index);
+            Assert.True(blockBody != null, $"@if (Model.{flag}) に本体が無い。");
+
+            // FilterIgnoredNotice の組み立て位置から先の、最初の空でない文字列リテラルが見出し
+            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+            Assert.True(notice.Success, $"@if (Model.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+                .Select(m => m.Groups["text"].Value)
+                .FirstOrDefault(text => text.Trim().Length > 0);
+            Assert.True(heading != null, $"@if (Model.{flag}) の注意書きに見出しの文面が無い。");
+
+            // 同じ見出しを既に別の旗が使っていないこと
+            Assert.False(headings.TryGetValue(heading!, out var owner),
+                $"Model.{flag} の注意書きの見出しが Model.{owner} と同じ(「{heading}」)。"
+                + "2 つの旗は同時に立ちうるので、同じ見出しだとほぼ同一の警告が 2 つ並び、"
+                + "二重描画の不具合に見える。旗ごとに違う見出しを付けること。");
+            headings[heading!] = flag;
+        }
+
+        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
+        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
+    }
 
     // 注意書きが案内する先（絞り込みパネル）が実際に開くこと、そして
     // 「フィルター適用中」の判定には混ざらないことを、両方まとめて固定する。

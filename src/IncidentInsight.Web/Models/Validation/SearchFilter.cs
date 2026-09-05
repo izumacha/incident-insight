@@ -221,7 +221,6 @@ namespace IncidentInsight.Web.Models.Validation;
 /// (<b><c>?incidentType=99</c> ではない</b> —— <c>IncidentTypeKind.Other</c> が
 /// <b>99 として定義済み</b>なので、その URL は「その他」で正しく絞り込まれる。
 /// issue #208 の本文はここを取り違えているので、再現手順として写さないこと)。</para>
-
 ///
 /// <para><b>この判定が正しいための前提: 選択肢の出所と定義が一致していること。</b>
 /// <c>Enum.IsDefined</c> で採用を決める一方、<c>&lt;select&gt;</c> の選択肢は

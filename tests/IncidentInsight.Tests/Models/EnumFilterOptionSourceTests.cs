@@ -95,4 +95,67 @@ public class EnumFilterOptionSourceTests
         foreach (var severity in Enum.GetValues<IncidentSeverity>()) data.Add(severity);
         return data;
     }
+
+    // --- 逆向き: 選択肢に「定義に無い値」が混ざっていないこと ---------------------
+    //
+    // 上の 2 つが見るのは「定義 ⊆ 選択肢」だけ。解決処理と SearchFilter が前提として
+    // 書いているのは<b>一致</b>なので、片側だけを固定すると反対側が死角になる。
+    //
+    // <b>反対側の壊れ方はむしろ重い。</b> 変換表へ定義に無い値を書く
+    // (`[(IncidentTypeKind)42] = "新種別"`)と、ドロップダウンに
+    // `<option value="42">新種別</option>` が並ぶ。利用者がそれを<b>画面から選ぶ</b>と
+    // Enum.IsDefined が false なので絞り込みは採用されず、「選べる値ではない」という
+    // 注意書きが出て select は「種別（全て）」へ戻る ——URL を改ざんしなくても、
+    // アプリが自分で出した選択肢を選んだだけで issue #192 の症状が起きる。
+
+    // インシデント種別の選択肢が、enum の定義に無い値を含まないこと
+    [Fact]
+    public void EveryIncidentTypeOption_IsADefinedEnumValue()
+    {
+        // 選択肢を 1 つずつ見て、enum の定義に含まれることを確かめる
+        Assert.All(IncidentTypeMapping.AllInDisplayOrder, kind =>
+            Assert.True(Enum.IsDefined(kind),
+                $"IncidentTypeMapping の変換表にある {(int)kind} は IncidentTypeKind の定義に無い。"
+                + "ドロップダウンには並ぶのに絞り込みは Enum.IsDefined で弾くため、"
+                + "画面から選んだだけで「選べる値ではない」と言われ、select が「（全て）」へ戻る。"
+                + "enum へ定義を足すか、変換表からその行を外すこと。"));
+    }
+
+    // 重症度の選択肢も同じく、enum の定義に無い値を含まないこと
+    [Fact]
+    public void EveryIncidentSeverityOption_IsADefinedEnumValue()
+    {
+        // 選択肢を 1 つずつ見て、enum の定義に含まれることを確かめる
+        Assert.All(EnumLabels.AllSeverities, severity =>
+            Assert.True(Enum.IsDefined(severity),
+                $"EnumLabels.AllSeverities にある {(int)severity} は IncidentSeverity の定義に無い。"
+                + "ドロップダウンには並ぶのに絞り込みは Enum.IsDefined で弾くため、"
+                + "画面から選んだだけで「選べる値ではない」と言われ、select が「（全て）」へ戻る。"));
+    }
+
+    // --- 前提: 採用の判定に Enum.IsDefined を使ってよい enum であること -------------
+    //
+    // Enum.IsDefined は<b>[Flags] の enum には使えない</b> —— `A|B` のような
+    // 正当な組み合わせは単独の定義として存在しないので false になり、
+    // 「画面が提示している組み合わせなのに『選べる値ではない』と言われる」ことになる。
+    //
+    // このリポジトリに [Flags] の enum は 1 つも無いので、解決処理側に分岐を先回りで
+    // 用意しない(§6「将来を見越した過度な抽象化を避ける」)。代わりに<b>前提が崩れたら
+    // 落ちる</b>ようにしておく —— 解決処理の解説は「enum の種類に依存する条件が 1 つも無い」
+    // 「他の画面へ広げるのは配線だけで済む」と書いており、それを読んだ人が [Flags] の
+    // 絞り込みを配線した瞬間に静かに壊れるため。落ちたときの対処は
+    // 「解決処理に [Flags] の分岐を足す」で、実行可能な指示になっている
+    [Theory]
+    // 現在この判定を通っている 2 つの enum
+    [InlineData(typeof(IncidentTypeKind))]
+    [InlineData(typeof(IncidentSeverity))]
+    public void EnumsGatedByIsDefined_AreNotFlagsEnums(Type enumType)
+    {
+        // [Flags] が付いていないこと(付いていたら Enum.IsDefined は正しい判定にならない)
+        Assert.False(enumType.IsDefined(typeof(FlagsAttribute), inherit: false),
+            $"{enumType.Name} は [Flags] の enum なので、"
+            + "UnlistedEnumFilterResolver の Enum.IsDefined による採用判定が使えない"
+            + "(A|B のような正当な組み合わせが「定義に無い」と判定される)。"
+            + "解決処理へ [Flags] の分岐を足すこと。");
+    }
 }
