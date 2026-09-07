@@ -52,13 +52,13 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <see cref="Models.Validation.SearchFilter"/> が答える別の問い)。</para>
 ///
 /// <para><b>読めなかった値が化ける先は <c>null</c> だけではない(issue #211)。</b>
-/// <c>int page = 1</c> のような<b>非 null 許容の値型＋既定値</b>の引数は、束縛に失敗しても
-/// <c>null</c> ではなく<b>既定値</b>に落ちる ——失敗の事実が
-/// <see cref="ModelStateDictionary"/> にしか残らない点は <c>Nullable&lt;T&gt;</c> と同じで、
-/// 見なければ同じように黙って落ちる。上の解説が「読めずに <c>null</c> へ化けうるのは
-/// <c>Nullable&lt;T&gt;</c> だけ」と書いているのは<b>化ける先が <c>null</c> の場合について
-/// だけ</b>正しく、この形を勘定に入れていなかった。<b>この形の絞り込みを足したら、
-/// ここへ渡すこと。</b></para>
+/// <c>Nullable&lt;T&gt;</c> 以外の値型(<c>int page = 1</c> や <c>bool overdueOnly</c>)は、
+/// 束縛に失敗しても <c>null</c> ではなく <c>default(T)</c> に落ちる ——失敗の事実が
+/// <see cref="ModelStateDictionary"/> にしか残らない点は <c>Nullable&lt;T&gt;</c> と同じなので、
+/// 見なければ同じように黙って落ちる。<b>既定値を書いたかどうかは関係ない</b>
+/// (書かなくても <c>default(T)</c> にはなる)。この repo は以前、上の解説も検出網の導出も
+/// <c>Nullable&lt;T&gt;</c> しか見ておらず、<c>page</c> はそれを見張るはずの検出網からも
+/// 同時に外れていた。<b>この形の絞り込みを足したら、ここへ渡すこと。</b></para>
 ///
 /// <para><b>ただし <c>page</c> 自身は意図的に対象外。</b> ページ番号は絞り込みではなく、
 /// <c>?page=abc</c>(読めない)も <c>?page=99999</c>(範囲外)も

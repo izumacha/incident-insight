@@ -1,3 +1,5 @@
+// 引数の型が「文字列から変換できるか」を調べるために使う(TypeDescriptor)
+using System.ComponentModel;
 // アクションの引数を走査するために使う(BindingFlags)
 using System.Reflection;
 // required 修飾子が残す [RequiredMember] を読むために使う
@@ -676,17 +678,27 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     public static TheoryData<string> UnreadableProneParameters()
     {
         // Index の引数のうち「読めなければ黙って別の値へ化ける」ものを、モデルバインドが
-        // ModelState のキーに使う「URL 上の名前」で拾い、意図的な除外だけを取り除く
-        var names = UnreadableProneQueryNames(IncidentsIndexMethod)
-            .Where(name => !MalformedFilterExemptions.ContainsKey(name))
-            .ToList();
+        // ModelState のキーに使う「URL 上の名前」で拾う
+        var derived = UnreadableProneQueryNames(IncidentsIndexMethod).ToList();
 
-        // 0 件は「対象が無くなった」より「引数の型か導出が変わった」可能性が高い
-        Assert.True(names.Count > 0,
+        // 除外の前に 0 件かどうかを見る。除外を引いた後の件数で判定すると、
+        // 「引数が変わった」のか「除外表が全部を覆った」のかを取り違えた案内になる
+        // (前者を直しに行っても、原因の除外表は手つかずのまま残る)
+        Assert.True(derived.Count > 0,
             $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に"
             + "「読めなければ別の値へ化ける」引数が 1 つも無い。"
             + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
             + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
+
+        // 意図的な除外を取り除く
+        var names = derived.Where(name => !MalformedFilterExemptions.ContainsKey(name)).ToList();
+
+        // 除外で全部消えた場合は、原因が除外表であることを名指しして落とす
+        // (対象ゼロで全件緑になるのは上と同じなので、こちらも fail-closed にする)
+        Assert.True(names.Count > 0,
+            $"{nameof(MalformedFilterExemptions)} が対象の引数をすべて覆っている"
+            + $"({string.Join(", ", derived)})。除外を足したのなら、"
+            + "手当てが要る引数まで巻き込んでいないか確認すること。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
         var data = new TheoryData<string>();
@@ -804,13 +816,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // その引数が「値として読めなかったとき、黙って別の値へ化ける」形かどうか。
     //
-    // 化ける先は 2 つある: Nullable<T> は null へ、非 null 許容の値型＋既定値は既定値へ。
-    // どちらも失敗の事実は ModelState にしか残らないので、手当てが要る条件は同じ。
-    // string? は(参照型なので)どちらにも当たらない ——どんな入力でも束縛でき、
-    // 「読めなかった」という状態が存在しないため
+    // 条件は 2 つ。
+    //
+    // (1) <b>値型であること。</b> 化ける先は Nullable&lt;T&gt; なら null、それ以外の値型なら
+    //     default(T) だが、どちらも失敗の事実は ModelState にしか残らないので手当ての条件は
+    //     同じ。参照型(string? など)はどんな入力でも束縛でき、「読めなかった」という状態が
+    //     存在しないので当たらない。
+    //     <b>既定値の有無で絞らない。</b> 既定値の無い bool overdueOnly も束縛に失敗すれば
+    //     default(bool) に化けるので、手当てが要る条件はまったく同じ ——
+    //     HasDefaultValue を条件に足すと、既定値を書かなかった引数だけが黙って
+    //     検出網から外れる(issue #211 とまったく同じ穴を、より狭い形で作り直すことになる)。
+    //
+    // (2) <b>クエリ文字列から文字として束縛される型であること。</b> 判定は
+    //     「TypeConverter が string から変換できるか」で、これは MVC の SimpleTypeModelBinder が
+    //     効く範囲そのもの。専用のバインダを持つ値型(CancellationToken など)を巻き込まないために要る
+    //     ——巻き込むと、Index に CancellationToken ct = default を足しただけで Theory が
+    //     「注意書きを出せ」と要求し、しかも変換エラーが積まれないので<b>直しようが無い</b>。
+    //     残る道は「絞り込みでない引数を解決処理へ渡す」か「除外表を広げる」の 2 つだけで、
+    //     どちらも設計を壊す(実行不能な指示を出す検出網は、いずれ緩められる)。
+    //     実測: int / bool / DateTime / enum / Guid とそれぞれの Nullable は変換でき、
+    //     CancellationToken はできない
     private static bool IsUnreadableProne(ParameterInfo parameter) =>
-        Nullable.GetUnderlyingType(parameter.ParameterType) != null
-        || (parameter.ParameterType.IsValueType && parameter.HasDefaultValue);
+        parameter.ParameterType.IsValueType
+        && TypeDescriptor.GetConverter(parameter.ParameterType).CanConvertFrom(typeof(string));
 
     // 型として読めない絞り込み値でも、黙って落とさず注意書きを出すこと(issue #198)。
     //
