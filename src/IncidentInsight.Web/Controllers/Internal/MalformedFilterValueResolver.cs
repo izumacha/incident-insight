@@ -41,13 +41,37 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <c>Controllers.UnlistedFilterValuePolicyTests</c> の
 /// <c>IncidentsIndex_ReportsAFilterValueThatCannotBeRead</c> と
 /// <c>MeasuresIndex_ReportsAFilterValueThatCannotBeRead</c> が、
-/// それぞれの <c>Index</c> が受ける <c>Nullable&lt;T&gt;</c> の引数という<b>独立な手がかり</b>から
-/// 一覧を導いて、1 つずつ実際に注意書きが出ることを確かめる ——型付き絞り込みを
-/// 足した人がここへ渡し忘れると、その引数だけが黙って元の壊れ方に戻るため。</para>
+/// それぞれの <c>Index</c> が受ける<b>「読めなければ黙って別の値へ化ける」引数</b>
+/// (<c>Nullable&lt;T&gt;</c> と、非 null 許容の値型＋既定値。下の issue #211 の項を参照)
+/// という<b>独立な手がかり</b>から一覧を導いて、1 つずつ実際に注意書きが出ることを
+/// 確かめる ——型付き絞り込みを足した人がここへ渡し忘れると、その引数だけが黙って
+/// 元の壊れ方に戻るため。</para>
 ///
 /// <para><b>文字列の絞り込みは対象外。</b> <c>string?</c> はどんな入力でも束縛できるので
 /// 「読めなかった」という状態が存在しない(空・空白のみの扱いは
 /// <see cref="Models.Validation.SearchFilter"/> が答える別の問い)。</para>
+///
+/// <para><b>読めなかった値が化ける先は <c>null</c> だけではない(issue #211)。</b>
+/// <c>int page = 1</c> のような<b>非 null 許容の値型＋既定値</b>の引数は、束縛に失敗しても
+/// <c>null</c> ではなく<b>既定値</b>に落ちる ——失敗の事実が
+/// <see cref="ModelStateDictionary"/> にしか残らない点は <c>Nullable&lt;T&gt;</c> と同じで、
+/// 見なければ同じように黙って落ちる。上の解説が「読めずに <c>null</c> へ化けうるのは
+/// <c>Nullable&lt;T&gt;</c> だけ」と書いているのは<b>化ける先が <c>null</c> の場合について
+/// だけ</b>正しく、この形を勘定に入れていなかった。<b>この形の絞り込みを足したら、
+/// ここへ渡すこと。</b></para>
+///
+/// <para><b>ただし <c>page</c> 自身は意図的に対象外。</b> ページ番号は絞り込みではなく、
+/// <c>?page=abc</c>(読めない)も <c>?page=99999</c>(範囲外)も
+/// <c>IncidentsController.Index</c> が <c>Math.Clamp</c> で<b>最寄りの有効なページへ丸める</b>
+/// ——どちらも同じ扱いで、着地したページは<b>ページャが実際に表示している</b>。
+/// 絞り込みの注意書きが要るのは「送ったのに効いていない」状態が<b>画面から見えなくなる</b>
+/// から(<c>&lt;select&gt;</c> は「（全て）」を指し、件数も全件になる)で、ページングには
+/// その食い違いが無い。文面(「絞り込みは適用していません」)もページングに合わず、
+/// 出せば絞り込みパネルまで開いて事実と違う案内になる。
+/// <b>この判断は <c>Controllers.UnlistedFilterValuePolicyTests</c> の
+/// <c>MalformedFilterExemptions</c>(理由付きの除外表)が唯一の真実の源</b>で、
+/// 表に無い「既定値へ化ける」引数は同テストの Theory が拾って落とす ——
+/// 次に同じ形の引数を足す人が、渡すか除外するかを必ず一度は決めることになる。</para>
 /// </remarks>
 internal static class MalformedFilterValueResolver
 {

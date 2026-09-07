@@ -640,8 +640,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「読めない値を受け取ったら注意書きを出す」対象の引数を、本体とは<b>独立な手がかり</b>から導く。
     //
     // 手がかりはアクションの署名: <c>string?</c> はどんな入力でも束縛できるので
-    // 「読めなかった」という状態が存在せず、<b>読めずに null へ化けうるのは Nullable&lt;T&gt; だけ</b>。
-    // つまり Index が受ける Nullable の引数が、この手当てが要る入力の実際の一覧になる。
+    // 「読めなかった」という状態が存在しない。逆に<b>読めなければ黙って別の値へ化ける</b>のは
+    // (a) <c>Nullable&lt;T&gt;</c>(null へ化ける)と (b) 非 null 許容の値型＋既定値
+    // (既定値へ化ける)の 2 つで、どちらも失敗の事実は ModelState にしか残らない。
+    // つまり Index が受けるその 2 種類の引数が、この手当てが要る入力の実際の一覧になる。
+    //
+    // <b>(b) を勘定に入れていなかったのが issue #211。</b> 以前ここは
+    // <c>Nullable.GetUnderlyingType(...) != null</c> だけで導出していたため、
+    // <c>int page = 1</c> は<b>この Theory のケースに入りようがなかった</b> ——
+    // 穴が、それを見張るはずの検出網からも同時に外れていた。次に同じ形の引数
+    // (<c>bool overdueOnly = false</c> など)を足す人が同じ穴を作らないよう、
+    // 導出は「化ける先が null か既定値か」を問わず両方を拾う。
+    // 意図的に対象外にする引数は下の MalformedFilterExemptions に理由付きで登録する
+    // ——「渡すか、除外するか」を必ず一度は決めさせる形にしてある。
     //
     // なぜ書き並べないのか。 本体側は見張る引数名を nameof で並べて渡しており、
     // 6 つ目の型付き絞り込みを足した人がそこへ渡し忘れると、その引数だけが黙って
@@ -662,22 +673,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。引数の型をすべて string? へ変えるような
     // 改修で「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
-    public static TheoryData<string> NullableFilterParameters()
+    public static TheoryData<string> UnreadableProneParameters()
     {
-        // Index の引数のうち Nullable<T>(値として読めなければ null に化けるもの)だけを、
-        // モデルバインドが ModelState のキーに使う「URL 上の名前」で拾う
-        var names = typeof(IncidentsController)
-            .GetMethod(nameof(IncidentsController.Index))!
-            .GetParameters()
-            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
-            .Select(p => QueryStringName(p)!)
-            // 実行ごとに順番が揺れないよう並びを固定する
-            .OrderBy(name => name, StringComparer.Ordinal)
+        // Index の引数のうち「読めなければ黙って別の値へ化ける」ものを、モデルバインドが
+        // ModelState のキーに使う「URL 上の名前」で拾い、意図的な除外だけを取り除く
+        var names = UnreadableProneQueryNames(IncidentsIndexMethod)
+            .Where(name => !MalformedFilterExemptions.ContainsKey(name))
             .ToList();
 
         // 0 件は「対象が無くなった」より「引数の型か導出が変わった」可能性が高い
         Assert.True(names.Count > 0,
-            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に Nullable の引数が 1 つも無い。"
+            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に"
+            + "「読めなければ別の値へ化ける」引数が 1 つも無い。"
             + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
             + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
 
@@ -686,6 +693,124 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         foreach (var name in names) data.Add(name);
         return data;
     }
+
+    // 上の導出が見る IncidentsController.Index。除外表の検査も同じものを見る
+    // (別々に引き直すと、対象のアクションを変えたときに片方だけ取り残される)
+    private static MethodInfo IncidentsIndexMethod =>
+        typeof(IncidentsController).GetMethod(nameof(IncidentsController.Index))!;
+
+    // <b>「読めない値」の手当てから意図的に外している引数</b>(URL 上の名前 → 外す理由)。
+    //
+    // この表が除外の唯一の真実の源で、導出も下の 3 つの検査も同じここを読む
+    // (写しを持つと、どちらへ足しても片方が取り残される ——この repo が
+    //  LengthGovernanceExclusions で繰り返し避けている形)。
+    //
+    // <b>残っている境界: 表そのものは人が判断するエスケープハッチ。</b>
+    // 「絞り込みか、そうでないか」は署名からは判定できない(値をクエリの絞り込みに
+    // 使っているかどうかは本体の実装の話で、独立な手がかりにならない)。したがって
+    // 本物の絞り込みをもっともらしい理由付きでここへ登録すれば、その引数は黙って
+    // 検出網から外れる。<b>この表にエントリが増える差分は、理由の妥当性をレビューで
+    // 必ず確認すること</b>(LengthGovernanceExclusions と同じ扱い)。
+    // せめて濫用の幅は狭めてあり、Nullable&lt;T&gt; の引数は登録できない(下の検査)。
+    private static readonly IReadOnlyDictionary<string, string> MalformedFilterExemptions =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["page"] =
+                "ページ番号は絞り込みではない。?page=abc(読めない)も ?page=99999(範囲外)も "
+                + "Index が Math.Clamp で最寄りの有効なページへ丸める同じ扱いで、着地した"
+                + "ページはページャが実際に表示している ——絞り込みの注意書きが要るのは"
+                + "「送ったのに効いていない」状態が画面から見えなくなるからで、ページングには"
+                + "その食い違いが無い。文面(「絞り込みは適用していません」)も合わず、出せば"
+                + "絞り込みパネルまで開いて事実と違う案内になる(issue #211。正本は "
+                + "MalformedFilterValueResolver の解説)。",
+        };
+
+    // 除外表のキーが、いまも実在する「読めなければ化ける」引数を指していること。
+    //
+    // 引数を消した・改名した・型を string? へ変えたときにエントリだけが残ると、
+    // 表は「何を外しているのか分からない飾り」になり、次に同じ名前の引数を足した人が
+    // 気付かないまま検出網の外へ置かれる
+    [Fact]
+    public void MalformedFilterExemptions_AreAllStillReal()
+    {
+        // 現時点で導出が拾う「読めなければ化ける」引数の URL 上の名前
+        var actual = UnreadableProneQueryNames(IncidentsIndexMethod).ToHashSet(StringComparer.Ordinal);
+
+        // 表のキーのうち、その一覧に無いもの(＝もう実在しない引数)を集める
+        var stale = MalformedFilterExemptions.Keys.Where(name => !actual.Contains(name)).ToList();
+
+        // 1 つでもあれば落とす
+        Assert.True(stale.Count == 0,
+            $"{nameof(MalformedFilterExemptions)} に実在しない引数が残っている: {string.Join(", ", stale)}。"
+            + $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} の引数を消した・"
+            + "改名した・型を変えたなら、同じ変更セットでこの表からも消すこと。");
+    }
+
+    // 除外の理由が空・空白でないこと。
+    //
+    // 値を誰も読まないと、理由を "   " にするだけで検出網を黙らせられる
+    // (LengthGovernanceExclusions_AllHaveAReason と同じ手当て)
+    [Fact]
+    public void MalformedFilterExemptions_AllHaveAReason()
+    {
+        // 理由が空・空白のみのエントリを集める
+        var blank = MalformedFilterExemptions
+            .Where(pair => string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => pair.Key)
+            .ToList();
+
+        // 1 つでもあれば落とす
+        Assert.True(blank.Count == 0,
+            $"{nameof(MalformedFilterExemptions)} の理由が空: {string.Join(", ", blank)}。"
+            + "「なぜ手当ての対象外でよいのか」を書くこと(理由を書けないなら、"
+            + "それは除外してよい引数ではない)。");
+    }
+
+    // 除外できるのは「既定値へ化ける」引数だけで、Nullable<T> は登録できないこと。
+    //
+    // Nullable の引数が読めずに null になると、画面は「そもそも指定が無かった」のと
+    // 区別が付かない ——これは issue #198 が塞いだ壊れ方そのもので、除外してよい
+    // 理由が原理的に存在しない。エスケープハッチをこの形へ広げないよう門番を置く
+    // (置かないと、severity を 1 行足すだけで注意書きを黙らせられる)
+    [Fact]
+    public void MalformedFilterExemptions_CannotHideANullableFilter()
+    {
+        // Index の Nullable<T> 引数を URL 上の名前で拾う
+        var nullableNames = IncidentsIndexMethod.GetParameters()
+            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
+            .Select(p => QueryStringName(p)!)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // 表がその中のどれかを外していないか調べる
+        var hidden = MalformedFilterExemptions.Keys.Where(nullableNames.Contains).ToList();
+
+        // 1 つでもあれば落とす
+        Assert.True(hidden.Count == 0,
+            $"{nameof(MalformedFilterExemptions)} が Nullable の絞り込みを外している: "
+            + $"{string.Join(", ", hidden)}。読めずに null へ化ける引数は「未指定」と"
+            + "区別が付かないので(issue #198)、除外ではなく "
+            + "MalformedFilterValueResolver へ渡して手当てすること。");
+    }
+
+    // アクションの引数のうち<b>読めなければ黙って別の値へ化けるもの</b>を、モデルバインドが
+    // ModelState のキーに使う「URL 上の名前」で拾う。/Incidents と /PreventiveMeasures の
+    // 導出が共有する(判定を書き写すと、片方だけ直したときにもう片方の検出網が静かに緩む)
+    private static IEnumerable<string> UnreadableProneQueryNames(MethodInfo action) =>
+        action.GetParameters()
+            .Where(IsUnreadableProne)
+            .Select(p => QueryStringName(p)!)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal);
+
+    // その引数が「値として読めなかったとき、黙って別の値へ化ける」形かどうか。
+    //
+    // 化ける先は 2 つある: Nullable<T> は null へ、非 null 許容の値型＋既定値は既定値へ。
+    // どちらも失敗の事実は ModelState にしか残らないので、手当てが要る条件は同じ。
+    // string? は(参照型なので)どちらにも当たらない ——どんな入力でも束縛でき、
+    // 「読めなかった」という状態が存在しないため
+    private static bool IsUnreadableProne(ParameterInfo parameter) =>
+        Nullable.GetUnderlyingType(parameter.ParameterType) != null
+        || (parameter.ParameterType.IsValueType && parameter.HasDefaultValue);
 
     // 型として読めない絞り込み値でも、黙って落とさず注意書きを出すこと(issue #198)。
     //
@@ -698,7 +823,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 引数ごとに掛けるのは、本体側が nameof を並べて渡す形だから ——
     // まとめて 1 件だけ見る検査にすると、5 つのうち 1 つを渡し忘れても緑のまま通る
     [Theory]
-    [MemberData(nameof(NullableFilterParameters))]
+    [MemberData(nameof(UnreadableProneParameters))]
     public async Task IncidentsIndex_ReportsAFilterValueThatCannotBeRead(string parameterName)
     {
         // 一覧に出る行を 1 件用意する(注意書きが「0 件だから出た」のではないことを示すため)
@@ -733,7 +858,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // <c>SetModelValue</c> で「束縛に成功した引数」の状態(エラーの無いエントリ)を作る ——
     // これは MVC が成功時に行うのと同じ記録の仕方
     [Theory]
-    [MemberData(nameof(NullableFilterParameters))]
+    [MemberData(nameof(UnreadableProneParameters))]
     public async Task IncidentsIndex_DoesNotReportAnything_WhenTheFilterValueWasReadable(string parameterName)
     {
         // 一覧に出る行を 1 件用意する
@@ -807,7 +932,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 3 つ目の enum 絞り込みを足した人が通し忘れると、その引数だけが黙って元の壊れ方
     // (絞り込みが掛かって 0 件・select は「（全て）」・再送信で無言解除)に戻る。
     // ここを [InlineData] の手書きにすると同じ人が同じように行を足し忘れるので、
-    // 検出網ごと素通りする —— NullableFilterParameters と同じ理由・同じやり方で導出にする。
+    // 検出網ごと素通りする —— UnreadableProneParameters と同じ理由・同じやり方で導出にする。
     //
     // <b>手がかりを「読めない値」の Theory と分けている</b>のは、再現のさせ方が違うため ——
     // こちらは実際に未定義の enum 値を引数へ渡す必要があり、あちらの作り方
@@ -2388,7 +2513,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // ——手書きにすると、6 つ目の型付き絞り込みを足した人が行を足し忘れた瞬間に
     // その引数だけが黙って元の壊れ方に戻る
     [Theory]
-    [MemberData(nameof(MeasuresNullableFilterParameters))]
+    [MemberData(nameof(MeasuresUnreadableProneParameters))]
     public async Task MeasuresIndex_ReportsAFilterValueThatCannotBeRead(string parameterName)
     {
         // 絞り込みが掛かれば消える 1 件を積む
@@ -2423,24 +2548,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Null(result.ViewData["FilterStatus"]);
     }
 
-    // カンバンの Index が受ける Nullable の引数(＝読めずに null へ化けうる入力)を導く。
-    // 導出の理由と fail-closed にする理由は /Incidents 側の NullableFilterParameters が正本
-    public static TheoryData<string> MeasuresNullableFilterParameters()
+    // カンバンの Index が受ける「読めなければ黙って別の値へ化ける」引数を導く。
+    // 導出の理由と fail-closed にする理由は /Incidents 側の UnreadableProneParameters が正本。
+    //
+    // 判定(UnreadableProneQueryNames)は /Incidents と共有する。以前ここは Nullable だけを
+    // C# の引数名で拾っており、あちらと 2 点ずれていた ——(1) 非 null 許容の値型＋既定値を
+    // 拾えない(issue #211 と同じ穴)、(2) [FromQuery(Name = ...)] で別名を付けると本体は
+    // 引数名を見張り MVC は別名にエラーを積む食い違いが検出できない。写しを持つ限り
+    // 片方だけ直されて、もう片方の検出網が静かに緩む(§6 DRY)。
+    //
+    // 除外表を持たないのは、この画面に外している引数が 1 つも無いため
+    // (先回りで用意すると、実在しない事情のための分岐を増やすことになる。§6)
+    public static TheoryData<string> MeasuresUnreadableProneParameters()
     {
-        // Nullable<T> の引数だけを C# の引数名で拾う(モデルバインドのキーは引数名そのもの)
-        var names = typeof(PreventiveMeasuresController)
-            .GetMethod(nameof(PreventiveMeasuresController.Index))!
-            .GetParameters()
-            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
-            .Select(p => p.Name!)
-            // 実行ごとに順番が揺れないよう並びを固定する
-            .OrderBy(name => name, StringComparer.Ordinal)
+        // 「読めなければ化ける」引数を、モデルバインドのキーになる URL 上の名前で拾う
+        var names = UnreadableProneQueryNames(
+            typeof(PreventiveMeasuresController).GetMethod(nameof(PreventiveMeasuresController.Index))!)
             .ToList();
 
         // 1 つも拾えないのは「引数が無くなった」より「型か導出が変わった」可能性が高い
         Assert.True(names.Count > 0,
             $"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)} に "
-            + "Nullable の引数が 1 つも無い。引数の型を変えたなら、この導出も同じ変更セットで直すこと"
+            + "「読めなければ別の値へ化ける」引数が 1 つも無い。引数の型を変えたなら、"
+            + "この導出も同じ変更セットで直すこと"
             + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
