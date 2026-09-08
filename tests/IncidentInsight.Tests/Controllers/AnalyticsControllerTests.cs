@@ -24,7 +24,7 @@ public class AnalyticsControllerTests : IDisposable
     // 「コントローラは翌月を最終バケットにするのに、データは前月に入る」ずれが起き、
     // 最終バケットの件数を名指しするアサーションが 0 を受け取って落ちていた(issue #199)。
     // FixedClock なら実行時刻にも OS のタイムゾーンにも一切依存しない。
-    private readonly IClock _clock = new FixedClock(TestFixtures.Today);
+    private readonly IClock _clock = TestFixtures.Clock;
 
     public AnalyticsControllerTests()
     {
@@ -142,7 +142,9 @@ public class AnalyticsControllerTests : IDisposable
     [Fact]
     public async Task MonthlyTrend_DateFrom_ExcludesIncidentBeforeCutoff()
     {
-        // 同じ日の午前(古い方)と午後(新しい方)に発生したインシデントを用意する(月境界のフレーク回避)
+        // 同じ日の午前(古い方)と午後(新しい方)に発生したインシデントを用意する。
+        // 同日内に分けるのは dateFrom が「日付」ではなく「日時」で効くことを見るため
+        // (別々の日にすると日付単位の比較でも通ってしまい、時刻部分が無検査になる)
         _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddHours(3)));
         _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddHours(15)));
         await _db.SaveChangesAsync();
@@ -218,6 +220,25 @@ public class AnalyticsControllerTests : IDisposable
                 IncidentId = incident.Id, Description = "B", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
                 Status = MeasureStatus.Completed, DueDate = _clock.Today.AddDays(-5)
+            },
+            // 期限超過バケットへ入る 1 件(未完了かつ期限が今日より前)。
+            // これが無いと、コントローラが期限超過の判定条件を取り違えても件数が動かず、
+            // 実測でも判定を反転させる変異が全件緑のまま通った(＝この経路が無検査だった)。
+            // 状態を Planned にしてあるのは、期限超過が「状態」ではなく「期限が過ぎたか」で
+            // 決まる派生バケットであること(＝計画中バケットからは外れること)まで固定するため
+            new PreventiveMeasure
+            {
+                IncidentId = incident.Id, Description = "C", MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "x", ResponsibleDepartment = "y",
+                Status = MeasureStatus.Planned, DueDate = _clock.Today.AddDays(-1)
+            },
+            // 進行中バケットへ入る 1 件(期限は未到来)。4 バケットすべてに 1 件ずつ置くことで、
+            // どのバケットの条件を取り違えても件数の並びが崩れるようにする
+            new PreventiveMeasure
+            {
+                IncidentId = incident.Id, Description = "D", MeasureType = MeasureTypeKind.ShortTerm,
+                ResponsiblePerson = "x", ResponsibleDepartment = "y",
+                Status = MeasureStatus.InProgress, DueDate = _clock.Today.AddDays(3)
             });
         await _db.SaveChangesAsync();
 
@@ -227,6 +248,13 @@ public class AnalyticsControllerTests : IDisposable
         Assert.Equal(4, doc.RootElement.GetProperty("labels").GetArrayLength());
         Assert.Equal(4, doc.RootElement.GetProperty("data").GetArrayLength());
         Assert.Equal(4, doc.RootElement.GetProperty("colors").GetArrayLength());
+
+        // 件数まで固定する。配列長だけを見ていると、バケットの振り分け条件
+        // (Planned / InProgress / 期限超過 / 完了)を取り違えても検査が緑のまま通る。
+        // 並びはコントローラが返す順(計画中 → 進行中 → 期限超過 → 完了)
+        var data = doc.RootElement.GetProperty("data").EnumerateArray()
+            .Select(e => e.GetInt32()).ToList();
+        Assert.Equal(new[] { 1, 1, 1, 1 }, data);
     }
 
     // 分析画面のサマリー欄(Scripts/analytics.ts)は、位置ではなくラベル一致で

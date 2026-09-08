@@ -466,7 +466,7 @@ public class IncidentsControllerTests : IDisposable
     public async Task Create_Post_FutureOccurredAt_ReturnsView_AndDoesNotSave()
     {
         // 「現在時刻」を固定日時に固定したコントローラを用意する
-        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        var controller = CreateControllerWithClock(TestFixtures.Clock);
         // 発生日時が現在時刻より 1 分未来のインシデントを送信する
         var vm = ValidViewModel();
         vm.OccurredAt = TestFixtures.Today.AddMinutes(1);
@@ -488,7 +488,7 @@ public class IncidentsControllerTests : IDisposable
     public async Task Create_Post_OccurredAtEqualToNow_Saves()
     {
         // 「現在時刻」を固定日時に固定したコントローラを用意する
-        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        var controller = CreateControllerWithClock(TestFixtures.Clock);
         // 発生日時をちょうど現在時刻(境界値)にして送信する
         var vm = ValidViewModel();
         vm.OccurredAt = TestFixtures.Today;
@@ -647,7 +647,7 @@ public class IncidentsControllerTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 「現在時刻」を固定日時に固定したコントローラを用意する
-        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        var controller = CreateControllerWithClock(TestFixtures.Clock);
         // 発生日時を未来(翌日)へ書き換えようとする編集フォームを作る
         var vm = ValidViewModel();
         vm.OccurredAt = TestFixtures.Today.AddDays(1);
@@ -685,7 +685,7 @@ public class IncidentsControllerTests : IDisposable
         await _db.SaveChangesAsync();
 
         // 「現在時刻」を固定日時に固定したコントローラを用意する
-        var controller = CreateControllerWithClock(new FixedClock(TestFixtures.Today));
+        var controller = CreateControllerWithClock(TestFixtures.Clock);
         // 発生日時を「現在時刻以前だが報告日時より後」(=本日)へ書き換えようとする編集フォームを作る
         var vm = ValidViewModel();
         vm.OccurredAt = TestFixtures.Today;
