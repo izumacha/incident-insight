@@ -7,7 +7,8 @@ namespace IncidentInsight.Tests;
 /// </summary>
 internal static class TestFixtures
 {
-    // テスト全体で「今日」として使う固定日付（決定論的テストのため DateTime.Today を使わない）
-    // PreventiveMeasureTests / IncidentTests / IncidentsControllerTests が参照する
+    // テスト全体で「今日」として使う固定日付（決定論的テストのため DateTime.Today を使わない）。
+    // 参照しているテストクラスをここに書き並べない — 参照が増えるたびにこの一覧だけが古くなる
+    // （実際、以前の一覧は AnalyticsControllerTests が参照し始めた時点で不足していた）。
     public static readonly DateTime Today = new DateTime(2026, 6, 11);
 }

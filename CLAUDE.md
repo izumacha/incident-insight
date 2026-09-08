@@ -109,6 +109,7 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 ### テスト（`tests/IncidentInsight.Tests/`）
 
 - xUnit / `net8.0`。`Microsoft.EntityFrameworkCore.InMemory` をテストごとに `Guid.NewGuid()` 名で使う。`TempData` を使うコントローラには `TestTempData` を注入。**Mock より `InMemory` を優先**し、新エンティティを読む/書くロジックを足したら対応 `*ControllerTests` の InMemory セットアップを拡張する。`UserContextHelper.AttachUser()` でユーザーコンテキストを設定。
+- **`IClock` を注入するコントローラのテストは、テストデータの日時も同じ時刻源から取る** — 本体は `IClock`（JST）で集計窓や「期限超過」を決めるのに、テストデータだけ `DateTime.Now` / `DateTime.Today`（**OS のローカル時刻**）で作ると時刻源が 2 つに割れる。`TZ=UTC` の CI ランナーでは両者が最大 9 時間ずれるため、**月末の 15:00〜24:00 UTC だけ**「本体は翌月を最終バケットにするのに、データは前月に入る」形で落ちる（issue #199。`AnalyticsControllerTests` が実際にこれで、月に 1 回・9 時間の窓でしか再現しない）。共有の仕方は 2 通りあり、実行時刻に依存しない `FixedClock(TestFixtures.Today)` を既定とする（`AnalyticsControllerTests`）。実時刻でなければ意味を持たない検査だけ、`SystemClock` のインスタンスをコントローラとデータ生成で使い回す（`HomeControllerTests`）。**この規約に検出網は無い**（意図的）— 「テストデータの日時」と「固定日を組み立てる正当な書き方・コメント中の言及」を署名から見分ける手掛かりが無く、`DateTime.Now` / `DateTime.Today` の一律禁止は、時刻源を注入していないテスト（`RecurrenceDetectorTests` のような純粋関数の検査や、コメント中の言及）まで巻き込んで**直しようの無い要求**を出す。実行不能な指示を出す検出網はいずれ緩められるため、ここは規約とレビューで守る。
 
 ### 注意点（固有の不変条件）
 

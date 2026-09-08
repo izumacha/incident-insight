@@ -17,6 +17,14 @@ public class AnalyticsControllerTests : IDisposable
 {
     private readonly ApplicationDbContext _db;
     private readonly AnalyticsController _controller;
+    // コントローラの集計窓と、このクラスが作るテストデータで「今日」を共有するための時刻源。
+    // 【なぜ固定時計なのか】以前はコントローラへ SystemClock(UTC → JST 変換)を渡す一方、
+    // テストデータの日時は DateTime.Now / DateTime.Today(OS のローカル時刻)で作っていた。
+    // 時刻源が 2 つに割れているため、TZ=UTC の CI ランナーでは月末の 15:00〜24:00 UTC に限り
+    // 「コントローラは翌月を最終バケットにするのに、データは前月に入る」ずれが起き、
+    // 最終バケットの件数を名指しするアサーションが 0 を受け取って落ちていた(issue #199)。
+    // FixedClock なら実行時刻にも OS のタイムゾーンにも一切依存しない。
+    private readonly IClock _clock = new FixedClock(TestFixtures.Today);
 
     public AnalyticsControllerTests()
     {
@@ -24,7 +32,7 @@ public class AnalyticsControllerTests : IDisposable
             .UseInMemoryDatabase(Guid.NewGuid().ToString())
             .Options;
         _db = new ApplicationDbContext(options);
-        _controller = new AnalyticsController(_db, new SystemClock());
+        _controller = new AnalyticsController(_db, _clock);
         // ログイン中の利用者を必ず付ける。この画面は [Authorize(Policy = CanViewAnalytics)] なので
         // 本番で User が空のまま動くことはなく、付けないと実在確認の部署スコープ
         // (ScopedByUser)が NullReferenceException になる。ロールは Admin
@@ -40,7 +48,9 @@ public class AnalyticsControllerTests : IDisposable
     private static JsonDocument ToJsonDocument(IActionResult result) =>
         JsonResultReader.ToJsonDocument(result);
 
-    private static Incident MakeIncident(string dept = "内科病棟",
+    // テスト用のインシデントを組み立てるヘルパー。日時の既定値はコントローラと同じ _clock から取る
+    // (static をやめてインスタンスメソッドにしたのは、この時刻源を共有するため)
+    private Incident MakeIncident(string dept = "内科病棟",
         IncidentTypeKind type = IncidentTypeKind.Medication,
         IncidentSeverity severity = IncidentSeverity.Level2,
         DateTime? occurredAt = null) => new()
@@ -50,8 +60,10 @@ public class AnalyticsControllerTests : IDisposable
         Severity = severity,
         Description = "テスト",
         ReporterName = "テスト太郎",
-        OccurredAt = occurredAt ?? DateTime.Now,
-        ReportedAt = DateTime.Now
+        // 発生日時は呼び出し側の指定を優先し、無ければ「コントローラにとっての今」を使う
+        OccurredAt = occurredAt ?? _clock.Now,
+        // 報告日時も同じ時刻源から取る(集計には使わないが、時刻源を 1 つに保つ)
+        ReportedAt = _clock.Now
     };
 
     // 部署フィルタの「空入力」判定が一覧画面と揃っていることを固定する(issue #187)。
@@ -115,8 +127,9 @@ public class AnalyticsControllerTests : IDisposable
     [Fact]
     public async Task MonthlyTrend_WithIncidents_CountsByCurrentMonth()
     {
-        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today));
-        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today));
+        // コントローラの最終バケット(＝_clock にとっての今月)に入る日付で 2 件用意する
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today));
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today));
         await _db.SaveChangesAsync();
 
         var result = await _controller.MonthlyTrend(null, null, null);
@@ -130,12 +143,12 @@ public class AnalyticsControllerTests : IDisposable
     public async Task MonthlyTrend_DateFrom_ExcludesIncidentBeforeCutoff()
     {
         // 同じ日の午前(古い方)と午後(新しい方)に発生したインシデントを用意する(月境界のフレーク回避)
-        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today.AddHours(3)));
-        _db.Incidents.Add(MakeIncident(occurredAt: DateTime.Today.AddHours(15)));
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddHours(3)));
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddHours(15)));
         await _db.SaveChangesAsync();
 
         // dateFrom を当日正午にして、午前発生分だけを除外する
-        var result = await _controller.MonthlyTrend(DateTime.Today.AddHours(12), null, null);
+        var result = await _controller.MonthlyTrend(_clock.Today.AddHours(12), null, null);
         using var doc = ToJsonDocument(result);
 
         var data = doc.RootElement.GetProperty("data").EnumerateArray().ToList();
@@ -196,13 +209,15 @@ public class AnalyticsControllerTests : IDisposable
             {
                 IncidentId = incident.Id, Description = "A", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = MeasureStatus.Planned, DueDate = DateTime.Today.AddDays(10)
+                // 期限は「コントローラにとっての今日」を基準に置く(期限超過バケットの判定も
+                // 同じ _clock.Today と比べるため、ここで実時刻を使うと時刻源が再び 2 つに割れる)
+                Status = MeasureStatus.Planned, DueDate = _clock.Today.AddDays(10)
             },
             new PreventiveMeasure
             {
                 IncidentId = incident.Id, Description = "B", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = MeasureStatus.Completed, DueDate = DateTime.Today.AddDays(-5)
+                Status = MeasureStatus.Completed, DueDate = _clock.Today.AddDays(-5)
             });
         await _db.SaveChangesAsync();
 
@@ -250,14 +265,14 @@ public class AnalyticsControllerTests : IDisposable
             {
                 IncidentId = incident.Id, Description = "A", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = MeasureStatus.Completed, DueDate = DateTime.Today,
+                Status = MeasureStatus.Completed, DueDate = _clock.Today,
                 EffectivenessRating = 5, RecurrenceObserved = false
             },
             new PreventiveMeasure
             {
                 IncidentId = incident.Id, Description = "B", MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "x", ResponsibleDepartment = "y",
-                Status = MeasureStatus.Completed, DueDate = DateTime.Today,
+                Status = MeasureStatus.Completed, DueDate = _clock.Today,
                 EffectivenessRating = 2, RecurrenceObserved = true
             });
         await _db.SaveChangesAsync();
