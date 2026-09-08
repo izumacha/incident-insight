@@ -1287,7 +1287,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private AnalyticsController NewAnalyticsController()
     {
         // シードと同じ日を「今日」として扱う時計を渡す
-        var controller = new AnalyticsController(_db, new FixedClock(TestFixtures.Today));
+        var controller = new AnalyticsController(_db, TestFixtures.Clock);
         // この画面は Admin / RiskManager 限定。実在確認の部署スコープにも User が要る
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
         return controller;

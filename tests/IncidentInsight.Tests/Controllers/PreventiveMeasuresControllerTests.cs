@@ -90,7 +90,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 対策登録画面(GET)の期限の初期値が、唯一の源 IncidentsController.DefaultMeasureDueDays
         // 日後(IClock 基準)になることを検証する(30 直書きへの回帰防止)
         // 期限の基準日を固定するテスト用クロックを用意する(実行日時に依存しない決定論的テスト)
-        var clock = new FixedClock(TestFixtures.Today);
+        var clock = TestFixtures.Clock;
         // 固定クロックを注入した専用のコントローラを構築する
         var controller = new PreventiveMeasuresController(
             _db,
@@ -968,7 +968,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     public async Task Index_OverdueFilter_IncludesInProgress_AndExcludesCompletedAndFutureDue()
     {
         // 実行日に依存しないよう基準日を固定する
-        var clock = new FixedClock(TestFixtures.Today);
+        var clock = TestFixtures.Clock;
         // 固定クロックを注入した専用のコントローラを構築する
         var controller = new PreventiveMeasuresController(
             _db,
@@ -1018,7 +1018,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     public async Task Index_WithoutOverdueFilter_ReturnsAllStatuses()
     {
         // 実行日に依存しないよう基準日を固定する
-        var clock = new FixedClock(TestFixtures.Today);
+        var clock = TestFixtures.Clock;
         // 固定クロックを注入した専用のコントローラを構築する
         var controller = new PreventiveMeasuresController(
             _db,
@@ -1062,7 +1062,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
     public async Task Index_OverdueFilterWithNoMatches_SetsHasActiveFilter()
     {
         // 実行日に依存しないよう基準日を固定する
-        var clock = new FixedClock(TestFixtures.Today);
+        var clock = TestFixtures.Clock;
         // 固定クロックを注入した専用のコントローラを構築する
         var controller = new PreventiveMeasuresController(
             _db,
