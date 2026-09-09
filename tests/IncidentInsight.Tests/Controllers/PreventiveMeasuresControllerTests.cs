@@ -579,7 +579,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 拒否され、元の CompletedAt / CompletionNote が黙って上書きされないことを確認する。
         // 上書きを許すと有効性評価日時が完了日時より前になる等、KPI の時系列整合性が壊れる。
         var measure = await SeedMeasureAsync("内科病棟");
-        var originalCompletedAt = new DateTime(2026, 6, 1, 10, 0, 0);
+        var originalCompletedAt = TestFixtures.Today.AddDays(-10);
         measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = originalCompletedAt;
         measure.CompletionNote = "最初の完了メモ";
