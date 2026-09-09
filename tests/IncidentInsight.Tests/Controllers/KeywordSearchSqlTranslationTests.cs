@@ -77,8 +77,26 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     // xUnit はテストごとにクラスを作り直すので、テスト間で混ざらない
     private readonly List<string> _commandLog = new();
 
-    /// <summary>接続を開き、スキーマを作ってから検索対象のデータを 1 件ずつ入れる。</summary>
+    /// <summary>準備(<see cref="SeedAsync"/>)を実行し、失敗したら接続を閉じてから投げ直す。</summary>
     public async Task InitializeAsync()
+    {
+        // 準備が途中でこけたら、この場で接続を閉じてから投げ直す。
+        // **xUnit v2 は InitializeAsync が例外を投げると DisposeAsync を呼ばない**(実測)ので、
+        // ここで閉じないと開いたままの接続がテスト実行の残り全体に残る
+        try
+        {
+            await SeedAsync();
+        }
+        catch
+        {
+            // 後片付けの失敗で本当の失敗原因を覆い隠さないよう、破棄は投げ直す前に済ませる
+            await _connection.DisposeAsync();
+            throw;
+        }
+    }
+
+    /// <summary>接続を開き、スキーマを作って、検索対象のデータを入れる。</summary>
+    private async Task SeedAsync()
     {
         // インメモリのデータベースを生存させるために接続を開く
         await _connection.OpenAsync();
@@ -167,21 +185,22 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 
     /// <summary>DbContext と、生かしておいた接続を後片付けする。</summary>
     /// <remarks>
-    /// <b>準備が途中で失敗した場合も通る経路</b>なので、DbContext がまだ無い可能性を見込む。
-    /// 無条件に参照すると、本当の失敗原因(接続を開けなかった等)が
-    /// <c>NullReferenceException</c> に置き換わって見えなくなり、しかも接続の破棄まで
-    /// 飛ばされて開いたまま残る。
+    /// <b>ここへ来るのは準備が最後まで通ったときだけ</b>(xUnit v2 は
+    /// <c>InitializeAsync</c> が例外を投げると <c>DisposeAsync</c> を呼ばない。実測)。
+    /// 途中で失敗した場合の接続の破棄は <c>InitializeAsync</c> 側が自分で行う。
+    /// それでも <c>finally</c> を置くのは、DbContext の破棄がこけても
+    /// 接続だけは必ず閉じるため(閉じ損ねるとインメモリの DB が残り続ける)。
     /// </remarks>
     public async Task DisposeAsync()
     {
         try
         {
-            // DbContext を先に閉じる(準備が途中で失敗していれば、まだ無い)
-            if (_db is not null) await _db.DisposeAsync();
+            // DbContext を先に閉じる
+            await _db.DisposeAsync();
         }
         finally
         {
-            // 途中で失敗しても接続だけは必ず閉じる(この時点でインメモリのデータベースは消える)
+            // DbContext の破棄がこけても接続は必ず閉じる(この時点でインメモリの DB は消える)
             await _connection.DisposeAsync();
         }
     }
