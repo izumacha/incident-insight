@@ -71,6 +71,18 @@ public class AuditLogsController : Controller
         DateTime? dateTo,
         int page = 1)
     {
+        // 型として読めなかった絞り込み値を先に拾っておく(issue #207 のうちこの画面の分)。
+        // 文字列以外の引数はモデルバインドに失敗すると null になり、失敗した事実は
+        // ModelState にしか残らない ——見ないと ?dateFrom=abc が「未指定」と同じ扱いになり、
+        // 注意書きも「フィルター適用中」の表示も出ないまま監査ログ全件が返る。判定と理由の
+        // 正本は MalformedFilterValueResolver の解説で、/Incidents ・ /PreventiveMeasures と
+        // まったく同じものを通す。キーはモデルバインドが使う引数名そのものなので nameof で渡す
+        // (直書きすると引数を改名したときに黙って外れる)。
+        // page を渡さないのは意図的 ——理由は解決処理の解説と、それを固定している
+        // UnlistedFilterValuePolicyTests.MalformedFilterExemptions が正本
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // 読み取り専用クエリを用意(監査ログは絶対に変更しないため AsNoTracking)
         var query = _db.AuditLogs.AsNoTracking().AsQueryable();
 
@@ -79,13 +91,19 @@ public class AuditLogsController : Controller
         // この変数を使う)。そのまま戻すと、絞り込みは効いていないのにパネルは「絞り込み中」を
         // 表示し、ドロップダウンは一致する選択肢が無いため「全て」を指す、という三者の食い違いに
         // なる。とくに監査対象からエンティティを外したあとの古いブックマーク
-        // (?entityName=CauseAnalysis)で起きる
-        var effectiveEntityName = SearchFilter.HasValue(entityName) && AllowedEntityNames.Contains(entityName)
-            ? entityName
-            : null;
-        var effectiveOperation = SearchFilter.HasValue(operation) && AllowedOperations.Contains(operation)
-            ? operation
-            : null;
+        // (?entityName=CauseAnalysis)で起きる。
+        //
+        // 採用しなかったことは画面へも伝える(issue #220)。以前ここは黙って落としていたが、
+        // 同じ画面が ?dateFrom=abc については注意書きを出すようになった時点で、
+        // <b>同じ画面の中で答えが割れた</b> ——2 つは利用者から見た結果が区別できず
+        // (どちらも絞り込んだつもりで監査ログ全件が返る)、どちらも古いブックマークか
+        // 改ざんでしか起きない。規制対応の証跡画面で「その条件の証跡はこれで全部」と
+        // 読まれるのは重い(規則と理由の正本は SearchFilter の解説)
+        var entityNameFilter = ResolveListedValue(entityName, AllowedEntityNames);
+        var operationFilter = ResolveListedValue(operation, AllowedOperations);
+        // 絞り込みに実際に使う値(採用しなかったときは null)
+        var effectiveEntityName = entityNameFilter.Effective;
+        var effectiveOperation = operationFilter.Effective;
 
         // エンティティ名で絞り込み(許可リストを通った値のときだけ)
         if (effectiveEntityName != null)
@@ -161,6 +179,18 @@ public class AuditLogsController : Controller
             EntityKey = SearchFilter.Adopted(entityKey),
             DateFrom = dateFrom,
             DateTo = dateTo,
+            // 「受け取ったのに型として読めなかった」ことを画面へ伝える旗。
+            // 上の 4 つと違い値そのものは運ばない(読めなかった値には採用しうる値が無い)。
+            // 代入の形を /Incidents ・ /PreventiveMeasures とそろえてあるのは、
+            // 旗の一覧をコントローラのソースから「… = ….Ignored」という代入の形で
+            // 導いている検出網がこの旗も自動で拾えるようにするため
+            MalformedFilterIgnored = malformedFilters.Ignored,
+            // 「読めたが許可リストに無い」ことを画面へ伝える旗。上の旗と分けてあるのは
+            // 採用しなかった理由が違うから ——あちらは「その型の値として読めない」、
+            // こちらは「読めたが選べる値ではない」。逆にエンティティ名と操作種別で
+            // 旗を分けないのは、その 2 つでは理由が同一だから(旗を分ける / まとめるの
+            // 基準は「採用しなかった理由が同じかどうか」で、既存の旗と共通)
+            UnlistedFilterIgnored = entityNameFilter.Ignored || operationFilter.Ignored,
             EntityNameOptions = entityOptions,
             OperationOptions = operationOptions
         };
@@ -168,6 +198,60 @@ public class AuditLogsController : Controller
         // 一覧ビューを描画
         return View(vm);
     }
+
+    /// <summary>
+    /// 許可リストで閉じた絞り込み入力について、<b>実際に絞り込みへ使う値</b>と
+    /// <b>受け取ったのに採用しなかったか</b>を同時に決める。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ 2 つを一緒に返すのか。</b> 採用した値と「採用しなかった」の判定は
+    /// <b>必ず整合していなければならない</b>。別々に書くと、片方だけ直したときに
+    /// 「絞り込みは効いていないのに旗が立たない(黙って落ちる)」か
+    /// 「効いているのに旗が立つ(嘘の注意書き)」のどちらかになる。
+    /// 既存の <see cref="Internal.DepartmentFilterResolver.DepartmentFilterSelection"/> や
+    /// <c>IncidentsController.CauseCategoryFilterSelection</c> と同じ形にしてあるのは、
+    /// 旗の一覧をコントローラのソースから(<c>… = ….Ignored</c> という代入の形で)導いている
+    /// <c>UnlistedFilterValuePolicyTests</c> がこの旗も自動で拾えるようにするため
+    /// ——書き方を揃えること自体が検出網の一部になっている。</para>
+    ///
+    /// <para><b>方式は「採用しない」(補完しない)。</b> エンティティ名は
+    /// <see cref="AuditSaveChangesInterceptor.AuditedEntities"/>、操作種別は
+    /// <see cref="AllowedOperations"/> という<b>コード側で閉じた語彙</b>なので、
+    /// 発生部署(自由記述＝実データにあれば選択肢へ補完する)のような逃げ道は採れない
+    /// ——選択肢に無い値を足すと、ドロップダウンに実在しない対象が並ぶ。
+    /// 方式の選び方そのものは <see cref="Models.Validation.SearchFilter"/> の表が正本。</para>
+    ///
+    /// <para><b>共有ヘルパーへ出していない</b>のは、いまの利用側がこの画面の 2 つだけだから
+    /// (§6「将来を見越した過度な抽象化を避ける」)。<b>2 画面目が同じ形を必要としたら
+    /// <c>Controllers/Internal/</c> へ移す</b>(この判断は CLAUDE.md §3 にも同じ形で
+    /// 書いてある。片方だけ違う条件を書くと、次の人がどちらに従うか決められない)。</para>
+    /// </remarks>
+    /// <param name="value">クエリ文字列から届いた絞り込み値(未指定なら <c>null</c>)。</param>
+    /// <param name="allowed">その入力が取りうる値の許可リスト。</param>
+    /// <returns>採用した値(採用しないなら <c>null</c>)と、受け取ったのに採用しなかったかどうか。</returns>
+    private static ListedValueFilterSelection ResolveListedValue(string? value, string[] allowed)
+    {
+        // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
+        // ——受け取っていないものは「採用しなかった」ではないので、旗も立てない
+        // (立てると、絞り込みを使っていない普通の一覧で警告が出続け、読まれなくなる)
+        if (!SearchFilter.HasValue(value))
+            return new ListedValueFilterSelection(null, Ignored: false);
+
+        // 許可リストに載っていればそのまま採用する(比較は序数＝完全一致)
+        if (allowed.Contains(value))
+            return new ListedValueFilterSelection(value, Ignored: false);
+
+        // 載っていない値は採用しない。絞り込みも掛けず、画面へも値を返さない
+        // ——これで「絞り込み無し・バッジ非表示・select は全て」の三者が揃う
+        return new ListedValueFilterSelection(null, Ignored: true);
+    }
+
+    /// <summary>
+    /// <see cref="ResolveListedValue"/> の結果。
+    /// </summary>
+    /// <param name="Effective">絞り込みに使う値。採用しなかった場合は <c>null</c>。</param>
+    /// <param name="Ignored"><b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。</param>
+    private readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
 
     // GET /AuditLogs/Details/123
     // 監査ログ 1 件の詳細。ChangesJson をプロパティ単位にパースして表示する

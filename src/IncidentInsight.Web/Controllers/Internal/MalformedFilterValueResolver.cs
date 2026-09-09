@@ -6,7 +6,8 @@ namespace IncidentInsight.Web.Controllers.Internal;
 
 /// <summary>
 /// <b>型として解釈できなかった絞り込み値</b>を「受け取ったが採用しなかった」として拾う共有処理。
-/// <c>/Incidents</c>(一覧)と <c>/PreventiveMeasures</c>(カンバン)が使う。
+/// 型付き絞り込みを受ける全画面が使う(<c>/Incidents</c> ・ <c>/PreventiveMeasures</c> ・
+/// <c>/AuditLogs</c> ・ <c>/Analytics</c>)。
 /// </summary>
 /// <remarks>
 /// <para><b>なぜ要るのか(issue #198)。</b> クエリ文字列から届く絞り込みのうち
@@ -39,13 +40,14 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// 引数を改名しても追随する(<c>ModelState.Remove</c> を <c>nameof</c> で書く既存の規約と同じ)。
 /// <b>渡し忘れは構造的には塞げない</b>ので、
 /// <c>Controllers.UnlistedFilterValuePolicyTests</c> の
-/// <c>IncidentsIndex_ReportsAFilterValueThatCannotBeRead</c> と
-/// <c>MeasuresIndex_ReportsAFilterValueThatCannotBeRead</c> が、
+/// <c>*Index_ReportsAFilterValueThatCannotBeRead</c>(画面ごとに 1 つ)が、
 /// それぞれの <c>Index</c> が受ける<b>「読めなければ黙って別の値へ化ける」引数</b>
 /// (<c>Nullable&lt;T&gt;</c> と、非 null 許容の値型＋既定値。下の issue #211 の項を参照)
 /// という<b>独立な手がかり</b>から一覧を導いて、1 つずつ実際に注意書きが出ることを
 /// 確かめる ——型付き絞り込みを足した人がここへ渡し忘れると、その引数だけが黙って
-/// 元の壊れ方に戻るため。</para>
+/// 元の壊れ方に戻るため。<b>画面ごとの検査を用意し忘れること自体</b>は
+/// <c>MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter</c> が
+/// アプリ全体の署名から導いて落とす(issue #207)。</para>
 ///
 /// <para><b>文字列の絞り込みは対象外。</b> <c>string?</c> はどんな入力でも束縛できるので
 /// 「読めなかった」という状態が存在しない(空・空白のみの扱いは
@@ -62,7 +64,8 @@ namespace IncidentInsight.Web.Controllers.Internal;
 ///
 /// <para><b>ただし <c>page</c> 自身は意図的に対象外。</b> ページ番号は絞り込みではなく、
 /// <c>?page=abc</c>(読めない)も <c>?page=99999</c>(範囲外)も
-/// <c>IncidentsController.Index</c> が <c>Math.Clamp</c> で<b>最寄りの有効なページへ丸める</b>
+/// ページングを持つ一覧(<c>/Incidents</c> ・ <c>/AuditLogs</c>)が
+/// <c>Math.Clamp</c> で<b>最寄りの有効なページへ丸める</b>
 /// ——どちらも同じ扱いで、着地したページは<b>ページャが実際に表示している</b>。
 /// 絞り込みの注意書きが要るのは「送ったのに効いていない」状態が<b>画面から見えなくなる</b>
 /// から(<c>&lt;select&gt;</c> は「（全て）」を指し、件数も全件になる)で、ページングには

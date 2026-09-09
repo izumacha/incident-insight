@@ -85,6 +85,13 @@ public class AnalyticsController : Controller
     // 過去 12 ヶ月の月別インシデント件数を返す
     public async Task<IActionResult> MonthlyTrend(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
+        // 型として読めなかった期間の指定を先に拾っておく(issue #207 のうちこの画面の分)。
+        // 判定と理由の正本は MalformedFilterValueResolver の解説で、一覧・カンバンと
+        // まったく同じものを通す。この画面だけ伝え先が JSON なのは注意書きを出す場所が
+        // 無いためで、扱い方は既存の departmentFilterIgnored と同じ(下の Json を参照)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // 今日の日付
         var today = _clock.Today;
         // 12 ヶ月前の月初を計算
@@ -136,13 +143,23 @@ public class AnalyticsController : Controller
         }
 
         // Chart.js が期待する {labels, data} 形状で JSON 返却(旗は足すだけで形状は変えない)
-        return Json(new { labels, data = counts, departmentFilterIgnored = departmentFilter.Ignored });
+        return Json(new
+        {
+            labels,
+            data = counts,
+            departmentFilterIgnored = departmentFilter.Ignored,
+            malformedFilterIgnored = malformedFilters.Ignored
+        });
     }
 
     // GET /Analytics/ByCause
     // 原因分類(親カテゴリ)別の件数を返す
     public async Task<IActionResult> ByCause(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
+        // 型として読めなかった期間の指定を先に拾う(理由と扱いは MonthlyTrend と同じ)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // なぜなぜ分析テーブルをベースにする
         var query = _db.CauseAnalyses.AsNoTracking().AsQueryable();
 
@@ -178,7 +195,8 @@ public class AnalyticsController : Controller
         {
             labels = grouped.Select(x => x.label),
             data = grouped.Select(x => x.count),
-            departmentFilterIgnored = departmentFilter.Ignored
+            departmentFilterIgnored = departmentFilter.Ignored,
+            malformedFilterIgnored = malformedFilters.Ignored
         });
     }
 
@@ -186,6 +204,10 @@ public class AnalyticsController : Controller
     // 部署別のインシデント件数を返す
     public async Task<IActionResult> ByDepartment(DateTime? dateFrom, DateTime? dateTo)
     {
+        // 型として読めなかった期間の指定を先に拾う(理由と扱いは MonthlyTrend と同じ)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // 読み取り専用クエリを用意
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         // 開始日で絞り込み
@@ -207,11 +229,12 @@ public class AnalyticsController : Controller
             .OrderByDescending(x => x.count)
             .ToListAsync();
 
-        // Chart.js 用の JSON 形状で返却
+        // Chart.js 用の JSON 形状で返却(旗は足すだけで形状は変えない)
         return Json(new
         {
             labels = grouped.Select(x => x.department),
-            data = grouped.Select(x => x.count)
+            data = grouped.Select(x => x.count),
+            malformedFilterIgnored = malformedFilters.Ignored
         });
     }
 
@@ -219,6 +242,10 @@ public class AnalyticsController : Controller
     // 重症度別の件数を返す
     public async Task<IActionResult> BySeverity(DateTime? dateFrom, DateTime? dateTo, string? department)
     {
+        // 型として読めなかった期間の指定を先に拾う(理由と扱いは MonthlyTrend と同じ)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // 読み取り専用クエリを用意
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         // 部署指定があれば絞る(判定は MonthlyTrend と同じ共有リゾルバ)
@@ -258,7 +285,8 @@ public class AnalyticsController : Controller
         {
             labels = ordered.Select(x => x.label),
             data = ordered.Select(x => x.count),
-            departmentFilterIgnored = departmentFilter.Ignored
+            departmentFilterIgnored = departmentFilter.Ignored,
+            malformedFilterIgnored = malformedFilters.Ignored
         });
     }
 
@@ -365,6 +393,10 @@ public class AnalyticsController : Controller
     // インシデント種別別の件数を返す
     public async Task<IActionResult> ByIncidentType(DateTime? dateFrom, DateTime? dateTo)
     {
+        // 型として読めなかった期間の指定を先に拾う(理由と扱いは MonthlyTrend と同じ)
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // ベースクエリを用意
         var query = _db.Incidents.AsNoTracking().AsQueryable();
         // 開始日で絞り込み
@@ -386,11 +418,12 @@ public class AnalyticsController : Controller
             .OrderByDescending(x => x.count)
             .ToListAsync();
 
-        // enum を日本語ラベルに変換して JSON 返却
+        // enum を日本語ラベルに変換して JSON 返却(旗は足すだけで形状は変えない)
         return Json(new
         {
             labels = grouped.Select(x => IncidentTypeMapping.JapaneseLabel(x.type)),
-            data = grouped.Select(x => x.count)
+            data = grouped.Select(x => x.count),
+            malformedFilterIgnored = malformedFilters.Ignored
         });
     }
 }
