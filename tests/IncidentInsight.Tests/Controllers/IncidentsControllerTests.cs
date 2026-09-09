@@ -1028,7 +1028,9 @@ public class IncidentsControllerTests : IDisposable
     // プロバイダには SQL が無く、式ツリーの col.ToUpper() が本番と違ってアプリ内で
     // 現在のカルチャに従って評価されるため。列の側を大文字のままにしておけば
     // トルコ語ロケールでも変化せず、判定対象をキーワード側の規則だけに絞れる
-    // (この切り分けの根拠は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)。
+    // (この切り分けの根拠は KeywordSearchPredicate の docstring「残る境界 2」を参照)。
+    // 裏を返すと、この形は列側の大文字化が無くても通る。列側は下の
+    // Index_SearchMatchesLowercaseColumnValues が見張る。
     [Fact]
     public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
     {
@@ -1056,6 +1058,40 @@ public class IncidentsControllerTests : IDisposable
             // ロケールに関わらず 1 件ヒットすること
             Assert.Equal(1, vm!.TotalCount);
         }
+    }
+
+    // 突き合わせる 2 つの辺のうち「列の側」の大文字化を、検索対象の列ごとに見張る(issue #188)。
+    // 上のロケールテストは列側を大文字 ASCII で保存するため、列側の .ToUpper() が
+    // 無くても通ってしまう。ここでは逆に**小文字で保存して小文字で引く**ので、
+    // 列側の大文字化が落ちると `"handover".Contains("HANDOVER")` が false になって落ちる。
+    // これが要るのは、列側を書き忘れても SQLite / SQL Server / テストの InMemory では
+    // 一致してしまい、PostgreSQL 配備でだけ 0 件になるため(集約前は実測で全件緑だった)。
+    // 列ごとに引くのは、OR で束ねた片方だけ落としたときにも落ちるようにするため。
+    // 使う文字を i / I 以外の ASCII に限っているのは、InMemory では列側もカルチャ依存で
+    // 評価されるため(KeywordSearchPredicate の「残る境界 2」)。
+    [Theory]
+    [InlineData("handover")]    // 状況説明の列に一致するキーワード
+    [InlineData("sato")]        // 報告者名の列に一致するキーワード
+    public async Task Index_SearchMatchesLowercaseColumnValues(string keyword)
+    {
+        // 状況説明・報告者名のどちらも小文字 ASCII で保存する
+        _db.Incidents.Add(new Incident
+        {
+            Department = "ICU",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "handover memo lost",
+            ReporterName = "sato",
+            OccurredAt = TestFixtures.Today
+        });
+        await _db.SaveChangesAsync();
+
+        // 同じく小文字のキーワードで検索する
+        var result = await _controller.Index(keyword, null, null, null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        // 列側も大文字化されていれば 1 件ヒットする
+        Assert.Equal(1, vm!.TotalCount);
     }
 
     // 空白のみのフリーワード検索は「絞り込み無し」として扱われることを固定する(issue #187)。

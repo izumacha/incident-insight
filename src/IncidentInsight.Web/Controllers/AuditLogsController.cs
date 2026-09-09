@@ -95,13 +95,10 @@ public class AuditLogsController : Controller
             query = query.Where(a => a.Operation == effectiveOperation);
         // 変更者(ユーザー名)で部分一致(大文字小文字を区別しない)
         // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
-        // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
+        // 述語そのものは KeywordSearchPredicate から出す(両辺の大文字化をペアで持たせる。
+        // 規則と実測は同クラスの解説が正本。issue #188)
         if (SearchFilter.HasValue(changedBy))
-        {
-            var normalizedChangedBy = IncidentControllerHelpers.NormalizeSearchKeyword(changedBy);
-            query = query.Where(a => a.ChangedBy.ToUpper().Contains(normalizedChangedBy));
-        }
+            query = query.Where(KeywordSearchPredicate.Matching<AuditLog>(changedBy, a => a.ChangedBy));
         // 対象キー(エンティティの ID)で完全一致(空白のみは絞り込み無し)
         if (SearchFilter.HasValue(entityKey))
             query = query.Where(a => a.EntityKey == entityKey);

@@ -42,7 +42,10 @@ public class PreventiveMeasuresControllerTests : IDisposable
     private async Task<PreventiveMeasure> SeedMeasureAsync(
         string incidentDepartment,
         string? responsibleDepartment = null,
-        int siblingMeasureCount = 0)
+        int siblingMeasureCount = 0,
+        // 担当者名は既定のままで足りる呼び出しがほとんどなので任意引数にしてある。
+        // 担当者キーワード検索は氏名と部署の OR なので、列ごとに見張るテストだけが指定する
+        string responsiblePerson = "担当A")
     {
         var incident = new Incident
         {
@@ -58,7 +61,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Incident = incident,
             Description = "対策",
             MeasureType = MeasureTypeKind.ShortTerm,
-            ResponsiblePerson = "担当A",
+            ResponsiblePerson = responsiblePerson,
             ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
             DueDate = DateTime.Today.AddDays(30),
             Priority = 2
@@ -745,7 +748,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
         using (LocaleSensitiveTest.UseTurkishCulture())
         {
             // 担当部署が大文字 ASCII の対策を 1 件投入する
-            // (大文字にしておく理由は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)
+            // (大文字にしておく理由は KeywordSearchPredicate の docstring「残る境界 2」を参照。
+            //  列側の大文字化は下の Index_ResponsibleSearchMatchesLowercaseColumnValues が見張る)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
 
             // 小文字のキーワードで担当者/担当部署を検索する
@@ -757,6 +761,32 @@ public class PreventiveMeasuresControllerTests : IDisposable
             var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
             Assert.Single(measures);
         }
+    }
+
+    // 突き合わせる 2 つの辺のうち「列の側」の大文字化を、検索対象の列ごとに見張る(issue #188)。
+    // 上のロケールテストは列側を大文字 ASCII で保存するため、列側の .ToUpper() が
+    // 無くても通ってしまう。ここでは逆に**小文字で保存して小文字で引く**ので、
+    // 列側の大文字化が落ちると `"sato".Contains("SATO")` が false になって落ちる。
+    // これが要るのは、列側を書き忘れても SQLite / SQL Server / テストの InMemory では
+    // 一致してしまい、PostgreSQL 配備でだけ 0 件になるため(集約前は実測で全件緑だった)。
+    // 列ごとに引くのは、OR で束ねた片方だけ落としたときにも落ちるようにするため。
+    // 使う文字を i / I 以外の ASCII に限っているのは、InMemory では列側もカルチャ依存で
+    // 評価されるため(KeywordSearchPredicate の「残る境界 2」)。
+    [Theory]
+    [InlineData("sato")]        // 担当者名の列に一致するキーワード
+    [InlineData("labo")]        // 担当部署の列に一致するキーワード
+    public async Task Index_ResponsibleSearchMatchesLowercaseColumnValues(string keyword)
+    {
+        // 担当者名・担当部署のどちらも小文字 ASCII で保存する
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "labo", responsiblePerson: "sato");
+
+        // 同じく小文字のキーワードで担当者/担当部署を検索する
+        var result = await _controller.Index(null, keyword, null, null, null);
+
+        // 列側も大文字化されていれば 1 件ヒットする
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        Assert.Single(measures);
     }
 
     // 空白のみの担当者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。
