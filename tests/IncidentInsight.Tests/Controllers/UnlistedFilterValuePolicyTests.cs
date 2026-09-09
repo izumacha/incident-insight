@@ -3128,7 +3128,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             // 監査対象の先頭(ドメインの順で最初＝インシデント)を使い、名前を書き写さない
             EntityName = AuditSaveChangesInterceptor.AuditedEntities[0],
             EntityKey = "1",
-            Operation = "Added",
+            // 語彙を書き写さず、本体が使っている許可リストの先頭から取る
+            Operation = AuditLogsAllowLists["operation"][0],
             ChangedBy = "tester",
             ChangedAt = TestFixtures.Today,
             ChangesJson = "{}"
@@ -3181,6 +3182,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 絞り込みは掛かっていない(全件が返る)。これは「読めない値では絞り込めない」以上
         // 避けられないので、注意書きはまさにこの状態を伝えるためにある
         Assert.Single(vm.Logs);
+
+        // 許可リストの話ではないので、もう一方の旗は立てない。
+        // <b>この対称の確認が要る</b> ——2 つの旗を OR で結んでしまう改修は、
+        // 見出しの重複を見る検査(旗ごとに 1 つずつ切り出す)にも掛からず全件緑で通る。
+        // 実際に立つと ?dateFrom=abc だけで注意書きが 2 つ並び、
+        // 利用者にはどちらが自分の入力の話か分からない(二重描画の不具合に見える)
+        Assert.False(vm.UnlistedFilterIgnored,
+            "読めない値だけを送ったのに「選べる値ではない」の注意書きまで出ている。");
     }
 
     // 逆に、正しく読めた値では注意書きを出さないこと。
@@ -3227,40 +3236,141 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // 許可リストで閉じた絞り込み入力を、本体とは<b>独立な手がかり</b>から導く。
     //
-    // 手がかりは<b>その入力が使う許可リストそのもの</b>(監査対象の一覧と操作種別の一覧)。
-    // どちらもコード側の宣言で、コントローラの実装とは別の宣言箇所なので、
-    // 3 つ目の許可リスト絞り込みを足した人が通し忘れると、その引数だけが
-    // 黙って元の壊れ方(全件が返るのに注意書きが出ない)に戻る ——ここで落ちる。
+    // <b>手がかりは画面の <select> の name。</b> この方式の不変条件は
+    // 「絞り込みに使った値は必ず選択肢にある」(SearchFilter の表)なので、
+    // 許可リストで閉じた絞り込みには<b>必ずドロップダウンがある</b>。
+    // Razor は本体(コントローラ)とは別の宣言箇所なので、3 つ目の許可リスト絞り込みを
+    // 足した人が解決処理を通し忘れると、<b>その name が導出には現れるのに
+    // 下の対応表と ResolveListedValue のどちらにも無い</b>状態として現れる。
     //
-    // <b>「許可リストに無い値」の作り方も一緒に返す。</b> 値の作り方を呼び出し側へ
-    // 書き写すと、許可リストの語彙を変えたときに片方だけが古くなる
-    public static TheoryData<string, string> AuditLogsListedFilterParameters()
+    // 書き並べる形にしないのはこの repo が繰り返し避けている「写しを持つ」形だから
+    // ——[InlineData] の手書きにすると、3 つ目を足した人が行を足し忘れた瞬間に
+    // その入力だけが検出網から黙って外れる(実際、初版はその手書きだった)。
+    //
+    // <b>残っている境界</b>: 拾えるのは<b>ドロップダウンを持つ</b>許可リスト絞り込みだけ。
+    // 選択肢を持たない入力欄(変更者・対象キー)は自由記述なので、そもそもこの方式の
+    // 対象外(SearchFilter の「自由記述のテキスト絞り込みには 2 択が要らない」の段落)。
+    // 逆に「閉じた語彙なのにドロップダウンを出さない」画面を作ると、この網からは外れる
+    // ——その形を作るときは手がかりごと決め直すこと。
+    public static TheoryData<string> AuditLogsListedFilterParameters()
     {
-        // URL 上の名前と、その入力で「許可リストに無い」ことが確実な値の組
-        var data = new TheoryData<string, string>();
-        // 監査対象の一覧に無いエンティティ名(語彙は AuditedEntities が正本なので書き写さない)
-        data.Add("entityName", UnlistedAuditValue);
-        // 操作種別の一覧に無い値(Added / Modified / Deleted のどれでもない)
-        data.Add("operation", UnlistedAuditValue);
+        // 画面のドロップダウンから、許可リストで閉じた絞り込みの名前を拾う
+        var selectNames = AuditLogsFilterSelectNames();
+
+        // 1 つも拾えなければ落とす(fail-closed)。ドロップダウンの書き方を変えると
+        // 「対象ゼロ＝全件緑」で下の検査がまとめて死ぬため
+        Assert.True(selectNames.Count > 0,
+            "Views/AuditLogs/Index.cshtml に <select name=\"...\"> が 1 つも無い。"
+            + "ドロップダウンの書き方を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、許可リストの絞り込みの検査が対象ゼロで全件緑になる)。");
+
+        // 拾った名前がすべて「許可リストの出どころ」の表に載っていること。
+        // 載っていない＝3 つ目の絞り込みを足したのに、この検査へ通していない
+        var unmapped = selectNames.Where(name => !AuditLogsAllowLists.ContainsKey(name)).ToList();
+        Assert.True(unmapped.Count == 0,
+            $"許可リストの出どころが分からない絞り込みがある: {string.Join(", ", unmapped)}。"
+            + $"{nameof(AuditLogsAllowLists)} へ出どころを足し、"
+            + "AuditLogsController.Index でも ResolveListedValue を通すこと"
+            + "(通さないと、その値だけが黙って落ちて監査ログ全件が返る)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す。
+        // 運ぶのは名前だけで、送る値(許可リストに載っている / 載っていない)は各検査が
+        // AuditLogsAllowLists から引く ——ケースへ両方の値を載せると、
+        // どちらか一方しか使わない検査に必ず捨てる引数ができる
+        var data = new TheoryData<string>();
+        foreach (var name in selectNames) data.Add(name);
         return data;
+    }
+
+    // 監査ログ画面の絞り込みドロップダウンの name を、Razor のソースから拾う。
+    // Theory のケース作りと下の配線の照合が同じここを読む(§6 DRY)
+    private static List<string> AuditLogsFilterSelectNames() =>
+        Regex.Matches(ReadIndexViewSource("AuditLogs"), @"<select\s+name\s*=\s*""(?<name>[^""]+)""")
+            .Select(m => m.Groups["name"].Value)
+            .Distinct(StringComparer.Ordinal)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+    // 絞り込みの名前 → その入力が取りうる値の許可リスト。
+    //
+    // <b>語彙は書き写さず、本体が使っているものをそのまま引く。</b>
+    // エンティティ名は監査対象の一覧(唯一の真実の源)、操作種別はコントローラが持つ
+    // private な配列をリフレクションで読む ——公開されていないからといって
+    // "Added" 等を書き写すと、語彙を変えたときにこの検査だけが古い値で緑になり、
+    // 落ちるのは無関係な検査(「載っている値なのに注意書きが出る」)になる。
+    private static readonly IReadOnlyDictionary<string, string[]> AuditLogsAllowLists =
+        new Dictionary<string, string[]>(StringComparer.Ordinal)
+        {
+            ["entityName"] = AuditSaveChangesInterceptor.AuditedEntities.ToArray(),
+            ["operation"] = ReadPrivateAllowList(typeof(AuditLogsController), "AllowedOperations"),
+        };
+
+    // コントローラが private static に持つ許可リストを読む。
+    // 読めなければ落とす(fail-closed)——名前を変えたときに「空の許可リスト」で
+    // 検査が通ってしまうのを防ぐ
+    private static string[] ReadPrivateAllowList(Type controller, string fieldName)
+    {
+        // private static フィールドを名前で引く
+        var field = controller.GetField(fieldName, BindingFlags.NonPublic | BindingFlags.Static);
+        // 見つからなければ、この検査が拠って立つ前提が崩れている
+        Assert.True(field != null, $"{controller.Name}.{fieldName} が見つからない。"
+            + "名前を変えたなら、この読み取りも同じ変更セットで直すこと。");
+        // 中身を取り出す(型が変わっていれば IsType が落とす)
+        var values = Assert.IsType<string[]>(field!.GetValue(null));
+        // 空の許可リストでは「載っている値」の検査が作れない
+        Assert.NotEmpty(values);
+        return values;
+    }
+
+    // ドロップダウンを持つ絞り込みが、すべて解決処理を通っていること。
+    //
+    // 上の導出は「画面に <select> がある」ことしか見ないので、
+    // <b>解決処理へ通し忘れた入力も導出には現れる</b>(そして「載っていない値でも
+    // 注意書きが出ない」として behavioural な検査が落ちる)。ただしその失敗メッセージは
+    // 症状しか言わないので、原因(配線漏れ)をコントローラのソースで名指しして落とす
+    [Fact]
+    public void AuditLogsListedFilters_AllGoThroughTheResolver()
+    {
+        // コントローラのソースを開く(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(AuditLogsController)}.cs");
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        // コメントを落としてから走査する(説明コメント中の呼び出し例を配線と取り違えない)
+        var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
+
+        // ドロップダウンを持つ絞り込みのうち、ResolveListedValue へ渡されていないものを集める
+        var unwired = AuditLogsFilterSelectNames()
+            .Where(name => !Regex.IsMatch(source, $@"ResolveListedValue\s*\(\s*{name}\b"))
+            .ToList();
+
+        // 1 つでもあれば落とす
+        Assert.True(unwired.Count == 0,
+            $"許可リストの絞り込みが解決処理を通っていない: {string.Join(", ", unwired)}。"
+            + "ResolveListedValue へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
+            + "(通さないと、許可リストに無い値で監査ログ全件が返るのに注意書きが出ない)。");
     }
 
     // どちらの許可リストにも載っていない値。実在する語彙と衝突しないことを
     // 下の門番が確かめるので、ここは 1 つの定数で足りる
     private const string UnlistedAuditValue = "Bogus";
 
-    // 上の値が本当に「許可リストに無い」ことを、許可リスト側から確かめる。
+    // 上の値が本当に「どの許可リストにも無い」ことを、許可リスト側から確かめる。
     //
     // 値を直書きしている以上、将来その綴りが実在の語彙になると
     // <b>検査が「採用される値」で採用されないことを求める</b>ことになり、
-    // 落ちる理由が分からないテストになる(fail-closed で先に落とす)
+    // 落ちる理由が分からないテストになる(fail-closed で先に落とす)。
+    // 比べる相手は本体が使っている許可リストそのもの ——ここで語彙を書き写すと、
+    // 語彙を変えたときにこの門番だけが古い値で緑になる
     [Fact]
-    public void UnlistedAuditValue_IsReallyOutsideBothAllowLists()
+    public void UnlistedAuditValue_IsReallyOutsideEveryAllowList()
     {
-        // 監査対象の一覧(ドロップダウンと許可リストの唯一の真実の源)に無いこと
-        Assert.DoesNotContain(UnlistedAuditValue, AuditSaveChangesInterceptor.AuditedEntities);
-        // 操作種別の 3 つのどれでもないこと(インターセプタが書く値と同じ語彙)
-        Assert.DoesNotContain(UnlistedAuditValue, new[] { "Added", "Modified", "Deleted" });
+        // 表に載っているすべての許可リストと突き合わせる
+        foreach (var (name, allowed) in AuditLogsAllowLists)
+            Assert.DoesNotContain(UnlistedAuditValue, allowed);
+
+        // 表が空だと「見るべき対象ゼロ＝緑」になるので落とす(fail-closed)
+        Assert.NotEmpty(AuditLogsAllowLists);
     }
 
     // 許可リストに無い絞り込み値でも、黙って落とさず注意書きを出すこと(issue #220)。
@@ -3272,18 +3382,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 利用者から見た結果は区別できない(どちらも絞り込んだつもりで全件が返る)
     [Theory]
     [MemberData(nameof(AuditLogsListedFilterParameters))]
-    public async Task AuditLogsIndex_ReportsAFilterValueOutsideTheAllowList(
-        string parameterName, string unlistedValue)
+    public async Task AuditLogsIndex_ReportsAFilterValueOutsideTheAllowList(string parameterName)
     {
         // 一覧に出る行を 1 件用意する(注意書きが「0 件だから出た」のではないことを示すため)
         await SeedSingleAuditLogAsync();
 
         // 許可リストに無い値だけを送って一覧を引く
-        var vm = await AuditLogsIndexWithListedFilterAsync(parameterName, unlistedValue);
+        var vm = await AuditLogsIndexWithListedFilterAsync(parameterName, UnlistedAuditValue);
 
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.UnlistedFilterIgnored,
-            $"?{parameterName}={unlistedValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
+            $"?{parameterName}={UnlistedAuditValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
             + $"{parameterName} を ResolveListedValue へ通し、その Ignored を"
             + "UnlistedFilterIgnored へ写しているか確認すること。");
 
@@ -3304,15 +3413,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // これが無いと「常に true を返す」実装が上の Theory を素通りする
     [Theory]
     [MemberData(nameof(AuditLogsListedFilterParameters))]
-    public async Task AuditLogsIndex_AppliesAFilterValueOnTheAllowList(
-        string parameterName, string unlistedValue)
+    public async Task AuditLogsIndex_AppliesAFilterValueOnTheAllowList(string parameterName)
     {
-        // 送る値は許可リストの先頭から取る(語彙を書き写さない)。
-        // unlistedValue は使わないが、ケースの組を 1 つの導出から作るために受け取る
-        _ = unlistedValue;
-        var listed = parameterName == "entityName"
-            ? AuditSaveChangesInterceptor.AuditedEntities[0]
-            : "Added";
+        // 送る値は本体が使っている許可リストの先頭から取る(語彙をここへ書き写さない)
+        var listed = AuditLogsAllowLists[parameterName][0];
+        // 一致しない行に使う値も同じ許可リストの末尾から取る
+        var other = AuditLogsAllowLists[parameterName][^1];
+        // 語彙が 1 つに縮むと「一致しない行」を作れず、絞り込みが効いたかどうかを
+        // 見分けられないまま緑になる(fail-closed で先に落とす)
+        Assert.NotEqual(listed, other);
 
         // その値に一致する行と、一致しない行を 1 件ずつ用意する
         await SeedSingleAuditLogAsync();
@@ -3321,7 +3430,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             // 一致しない側。エンティティ名も操作種別も上の 1 件と別の値にする
             EntityName = AuditSaveChangesInterceptor.AuditedEntities[^1],
             EntityKey = "2",
-            Operation = "Deleted",
+            Operation = AuditLogsAllowLists["operation"][^1],
             ChangedBy = "tester",
             ChangedAt = TestFixtures.Today,
             ChangesJson = "{}"
