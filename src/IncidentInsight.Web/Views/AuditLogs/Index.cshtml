@@ -44,6 +44,23 @@
         + "絞り込みたい条件は下の「絞り込み」から指定し直してください。"))" />
 }
 
+@* 許可リストに無い値（?entityName=Bogus / ?operation=Bogus）: 上の「読めない値」と
+   文面を分けているのは理由が違うから ——あちらは「値として読み取れない」、
+   こちらは「選べる値ではない」（理由の正本は AuditLogsController.ResolveListedValue
+   の解説。issue #220）。見出しも重ねない —— 2 つの旗は同時に立ちうる
+   （?entityName=Bogus&dateFrom=abc）ので、同じ見出しにするとほぼ同一の警告が
+   2 つ並び、二重描画の不具合に見える。
+   文面は /Incidents の同じ旗（UnlistedEnumFilterIgnored）と一字一句そろえてある ——
+   あちらは enum、こちらは文字列の許可リストだが、利用者から見た出来事は同じ
+   「選んだ値が選択肢に無い」なので、言い回しを変えると別の出来事だと受け取られる *@
+@if (Model.UnlistedFilterIgnored)
+{
+    <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
+        "選べる値ではない絞り込みは適用していません。",
+        "指定された条件のうち、選択肢に無い値のものがあったため、その条件を外して一覧を表示しています。"
+        + "絞り込みたい条件は下の「絞り込み」から選び直してください。"))" />
+}
+
 @* 絞り込みパネル *@
 @{
     @* 何らかの絞り込み条件が指定されているかの判定。
@@ -59,7 +76,7 @@
        注意書きが「適用していません」と言う横でバッジが「適用中」と言うことになる。
        一方パネルは開いておきたい: 送った値を選び直せる場所がそこにしか無いため
        （/Incidents の showFilterPanel と同じ判断。理由の正本はそちら） *@
-    var showFilterPanel = anyFilter || Model.MalformedFilterIgnored;
+    var showFilterPanel = anyFilter || Model.MalformedFilterIgnored || Model.UnlistedFilterIgnored;
 }
 <div class="card border-0 shadow-sm mb-3">
     @* クリックで折りたたみ開閉するヘッダ。div+role="button" だとキーボードで

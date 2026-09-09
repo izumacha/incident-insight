@@ -3223,6 +3223,158 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Single(vm.Logs);
     }
 
+    // --- /AuditLogs: 許可リストに無い絞り込み値(issue #220) --------------------------
+
+    // 許可リストで閉じた絞り込み入力を、本体とは<b>独立な手がかり</b>から導く。
+    //
+    // 手がかりは<b>その入力が使う許可リストそのもの</b>(監査対象の一覧と操作種別の一覧)。
+    // どちらもコード側の宣言で、コントローラの実装とは別の宣言箇所なので、
+    // 3 つ目の許可リスト絞り込みを足した人が通し忘れると、その引数だけが
+    // 黙って元の壊れ方(全件が返るのに注意書きが出ない)に戻る ——ここで落ちる。
+    //
+    // <b>「許可リストに無い値」の作り方も一緒に返す。</b> 値の作り方を呼び出し側へ
+    // 書き写すと、許可リストの語彙を変えたときに片方だけが古くなる
+    public static TheoryData<string, string> AuditLogsListedFilterParameters()
+    {
+        // URL 上の名前と、その入力で「許可リストに無い」ことが確実な値の組
+        var data = new TheoryData<string, string>();
+        // 監査対象の一覧に無いエンティティ名(語彙は AuditedEntities が正本なので書き写さない)
+        data.Add("entityName", UnlistedAuditValue);
+        // 操作種別の一覧に無い値(Added / Modified / Deleted のどれでもない)
+        data.Add("operation", UnlistedAuditValue);
+        return data;
+    }
+
+    // どちらの許可リストにも載っていない値。実在する語彙と衝突しないことを
+    // 下の門番が確かめるので、ここは 1 つの定数で足りる
+    private const string UnlistedAuditValue = "Bogus";
+
+    // 上の値が本当に「許可リストに無い」ことを、許可リスト側から確かめる。
+    //
+    // 値を直書きしている以上、将来その綴りが実在の語彙になると
+    // <b>検査が「採用される値」で採用されないことを求める</b>ことになり、
+    // 落ちる理由が分からないテストになる(fail-closed で先に落とす)
+    [Fact]
+    public void UnlistedAuditValue_IsReallyOutsideBothAllowLists()
+    {
+        // 監査対象の一覧(ドロップダウンと許可リストの唯一の真実の源)に無いこと
+        Assert.DoesNotContain(UnlistedAuditValue, AuditSaveChangesInterceptor.AuditedEntities);
+        // 操作種別の 3 つのどれでもないこと(インターセプタが書く値と同じ語彙)
+        Assert.DoesNotContain(UnlistedAuditValue, new[] { "Added", "Modified", "Deleted" });
+    }
+
+    // 許可リストに無い絞り込み値でも、黙って落とさず注意書きを出すこと(issue #220)。
+    //
+    // 直っていなかった頃の再現手順: /AuditLogs?entityName=Bogus を開くと
+    // 許可リスト照合で null に潰されて Where を飛ばすだけなので<b>監査ログ全件</b>が
+    // 注意書きも無しで返る ——同じ画面が ?dateFrom=abc については注意書きを出すのに、
+    // 綴りが許可リスト外だと黙る、という<b>同じ画面の中での一貫性の欠如</b>だった。
+    // 利用者から見た結果は区別できない(どちらも絞り込んだつもりで全件が返る)
+    [Theory]
+    [MemberData(nameof(AuditLogsListedFilterParameters))]
+    public async Task AuditLogsIndex_ReportsAFilterValueOutsideTheAllowList(
+        string parameterName, string unlistedValue)
+    {
+        // 一覧に出る行を 1 件用意する(注意書きが「0 件だから出た」のではないことを示すため)
+        await SeedSingleAuditLogAsync();
+
+        // 許可リストに無い値だけを送って一覧を引く
+        var vm = await AuditLogsIndexWithListedFilterAsync(parameterName, unlistedValue);
+
+        // 受け取ったのに採用しなかったことを画面へ伝えている
+        Assert.True(vm.UnlistedFilterIgnored,
+            $"?{parameterName}={unlistedValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
+            + $"{parameterName} を ResolveListedValue へ通し、その Ignored を"
+            + "UnlistedFilterIgnored へ写しているか確認すること。");
+
+        // 絞り込みは掛かっていない(全件が返る)。注意書きはまさにこの状態を伝えるためにある
+        Assert.Single(vm.Logs);
+
+        // 採用しなかった値は画面へ戻さない ——戻すとドロップダウンは一致する <option> が
+        // 無いので「(全て)」を指し、そのフォームを再送信した瞬間に絞り込みが解除される
+        Assert.Null(parameterName == "entityName" ? vm.EntityName : vm.Operation);
+
+        // 読めなかったわけではないので、もう一方の旗は立てない
+        // (2 つの文面が同時に出ると、利用者はどちらが自分の入力の話か分からない)
+        Assert.False(vm.MalformedFilterIgnored,
+            "許可リストに無いだけの値で「値として読み取れない」の注意書きまで出ている。");
+    }
+
+    // 逆に、許可リストに載っている値では注意書きを出さず、絞り込みも実際に効くこと。
+    // これが無いと「常に true を返す」実装が上の Theory を素通りする
+    [Theory]
+    [MemberData(nameof(AuditLogsListedFilterParameters))]
+    public async Task AuditLogsIndex_AppliesAFilterValueOnTheAllowList(
+        string parameterName, string unlistedValue)
+    {
+        // 送る値は許可リストの先頭から取る(語彙を書き写さない)。
+        // unlistedValue は使わないが、ケースの組を 1 つの導出から作るために受け取る
+        _ = unlistedValue;
+        var listed = parameterName == "entityName"
+            ? AuditSaveChangesInterceptor.AuditedEntities[0]
+            : "Added";
+
+        // その値に一致する行と、一致しない行を 1 件ずつ用意する
+        await SeedSingleAuditLogAsync();
+        _db.AuditLogs.Add(new AuditLog
+        {
+            // 一致しない側。エンティティ名も操作種別も上の 1 件と別の値にする
+            EntityName = AuditSaveChangesInterceptor.AuditedEntities[^1],
+            EntityKey = "2",
+            Operation = "Deleted",
+            ChangedBy = "tester",
+            ChangedAt = TestFixtures.Today,
+            ChangesJson = "{}"
+        });
+        await _db.SaveChangesAsync();
+
+        // 許可リストに載っている値で絞り込む
+        var vm = await AuditLogsIndexWithListedFilterAsync(parameterName, listed);
+
+        // 採用しているので旗は立てない
+        Assert.False(vm.UnlistedFilterIgnored,
+            $"?{parameterName}={listed}(許可リストに載っている値)で注意書きが出ている。");
+        // 絞り込みが実際に効いている(値が素通りしていないことの裏取り)
+        Assert.Single(vm.Logs);
+        // 採用した値は画面へ戻す(ドロップダウンの選択状態と一致させるため)
+        Assert.Equal(listed, parameterName == "entityName" ? vm.EntityName : vm.Operation);
+    }
+
+    // 未指定・空白のみは「採用しなかった」ではないこと。
+    // ここを区別しないと、絞り込みを使っていない普通の一覧で警告が出続け、読まれなくなる
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("   ")]
+    public async Task AuditLogsIndex_ReportsNothing_WhenNoListedFilterWasSent(string? sent)
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedSingleAuditLogAsync();
+
+        // 空・空白のみ(＝絞り込み無し)で一覧を引く
+        var vm = await AuditLogsIndexWithListedFilterAsync("entityName", sent);
+
+        // 受け取っていないものは「採用しなかった」ではない
+        Assert.False(vm.UnlistedFilterIgnored);
+        // 絞り込みも掛かっていない
+        Assert.Single(vm.Logs);
+    }
+
+    // 許可リストで閉じた絞り込みだけを指定して一覧を引く。
+    // 引数の位置を各テストへ書き写すと、Index の署名が変わったときに直す場所が散る
+    private async Task<AuditLogListViewModel> AuditLogsIndexWithListedFilterAsync(
+        string parameterName, string? value)
+    {
+        // 見張っている 2 つのうち、指定された側だけへ値を載せる
+        var entityName = parameterName == "entityName" ? value : null;
+        var operation = parameterName == "operation" ? value : null;
+        // 他の絞り込みは指定せずに一覧を引く
+        var result = await NewAuditLogsController()
+            .Index(entityName, operation, null, null, null, null, 1) as ViewResult;
+        // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<AuditLogListViewModel>(result!.Model);
+    }
+
     // --- /AuditLogs: 旗をビューが実際に読んでいるか --------------------------------
 
     // 監査ログ画面が立てる旗を、コントローラのソースから導く。
