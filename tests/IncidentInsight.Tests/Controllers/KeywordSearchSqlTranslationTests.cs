@@ -217,9 +217,11 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     //   - 利用者が入力した検索語が、DB コマンドのログへそのまま載る(CLAUDE.md §9)
     //   - 検索語ごとに別のクエリ文字列になり、PostgreSQL / SQL Server の実行計画キャッシュが汚れる
     //
-    // 見るのは「発行された SQL 本文」だけにする ——EF のログは 1 行目にパラメータの
-    // 値一覧も出すので、そこまで含めて探すと**パラメータとして正しく渡った値**まで
-    // 「リテラルが埋まっている」と誤検出してしまう。
+    // 見るのは「発行された SQL 本文」だけにする ——EF のログはヘッダ行に
+    // `[Parameters=[@__normalized_0='?' ...]]` を出すので、そこまで含めて探すと
+    // (a) パラメータ参照の検査がヘッダだけで満たされて骨抜きになり、
+    // (b) EnableSensitiveDataLogging を有効にした瞬間、正しくパラメータとして渡した値まで
+    //     「リテラルが埋まっている」と誤検出する。
     [Fact]
     public async Task KeywordSearch_PassesTheKeywordAsAParameter_NotAsALiteral()
     {
@@ -238,19 +240,45 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         // 大文字化されると "SATO" になるキーワードで検索する
         await controller.Index("sato", null, null, null, null, null, null, null, 1);
 
-        // 拾ったコマンドから、両辺の大文字化が現れている SELECT(＝検索本体)を取り出す。
-        // EF のログは「1 行目: 実行時間とパラメータ一覧 / 2 行目以降: SQL 本文」なので、
-        // 1 行目を落として SQL 本文だけにする
+        // 拾ったコマンドから、両辺の大文字化が現れている SELECT(＝検索本体)を取り出す
         var searchSql = _commandLog
-            .Select(entry => string.Join("\n", entry.Split('\n').Skip(1)))
+            .Select(ExtractSqlBody)
             .FirstOrDefault(sql => sql.Contains("upper(", StringComparison.OrdinalIgnoreCase));
         // 検索の SQL を 1 本も拾えなければ、この検査は何も見ていない(fail-closed)
         Assert.NotNull(searchSql);
+        // ヘッダ行(パラメータ一覧)を実際に落とせていることを確かめる。
+        // ここが残ると下の「@__ があること」がヘッダだけで満たされ、検査が骨抜きになる
+        Assert.DoesNotContain("Parameters=", searchSql, StringComparison.Ordinal);
 
         // 大文字化したキーワードが SQL 本文に直接現れていないこと(＝リテラル展開されていない)
         Assert.DoesNotContain("SATO", searchSql, StringComparison.Ordinal);
         // 代わりに EF Core のパラメータ参照(@__ で始まる)が現れていること
         Assert.Contains("@__", searchSql, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// EF Core のコマンドログ 1 件から、SQL 本文だけを取り出す。
+    /// </summary>
+    /// <remarks>
+    /// ログ 1 件は「ログレベルと EventId の行」「<c>Executed DbCommand (0ms)
+    /// [Parameters=[...], CommandType='Text', ...]</c> の行」「SQL 本文(複数行)」の並び。
+    /// <b>先頭 1 行を落とすだけでは足りない</b> ——パラメータ一覧を載せた行が残り、
+    /// 「SQL 本文にパラメータ参照があるか」の検査がその行だけで満たされてしまう。
+    /// そこで <c>Executed DbCommand</c> の行を見つけ、その<b>次の行から</b>を本文とする。
+    /// 見つからなければ空を返し、呼び出し側の fail-closed な検査で落とす。
+    /// </remarks>
+    /// <param name="logEntry">EF Core が 1 コマンドにつき 1 回渡してくるログ文字列。</param>
+    /// <returns>SQL 本文(見つからなければ空文字列)。</returns>
+    private static string ExtractSqlBody(string logEntry)
+    {
+        // 行に分ける(改行コードの違いは下の Trim で吸収する)
+        var lines = logEntry.Split('\n');
+        // パラメータ一覧を載せているヘッダ行の位置を探す
+        var headerIndex = Array.FindIndex(lines, line => line.Contains("Executed DbCommand", StringComparison.Ordinal));
+        // ヘッダが無い形式に変わっていたら、本文を取り出せないので空を返す
+        if (headerIndex < 0) return string.Empty;
+        // ヘッダの次の行から先が SQL 本文
+        return string.Join("\n", lines.Skip(headerIndex + 1));
     }
 
     // 列が 1 つだけ(OR で束ねない)の述語についても、同じことを確かめる
