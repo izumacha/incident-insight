@@ -734,20 +734,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private static MethodInfo AuditLogsIndexMethod =>
         typeof(AuditLogsController).GetMethod(nameof(AuditLogsController.Index))!;
 
-    // <b>「読めない値」の手当てを入れてある画面の一覧。</b>
+    // <b>「読めない値」の手当てを入れてあるアクションの一覧。</b>
     //
     // 除外表に掛かる 2 つの検査(キーが実在するか / Nullable を隠していないか)は
     // <b>この一覧すべて</b>を見る。以前は /Incidents だけを見ていたので、たとえば
     // /AuditLogs にしか無い引数を除外表へ登録しても「実在しない」と誤判定されず、
     // 逆に /AuditLogs の Nullable 引数は「隠せない」の門番をすり抜けた。
-    // 除外表は URL 上の名前をキーにする(画面ごとに分けない)ので、掛ける範囲も
-    // 画面をまたいで揃える必要がある。
+    // <b>除外表は URL 上の名前をキーにする(画面ごとに分けない)ので、掛ける範囲も
+    // 除外表を引く側とそろえる必要がある</b> ——引く側が 1 つでも多いと、その画面にしか
+    // 無い引数を表へ 1 行足すだけで黙らせられる。
     //
-    // /Analytics はここに載せない —— あの画面は JSON で旗を返すので ViewModel も
-    // 除外表の対象になる page も持たず、覆っていることの照合は
-    // MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter が別に行う
-    private static IReadOnlyList<MethodInfo> MalformedFilterGuardedListActions =>
-        new[] { IncidentsIndexMethod, MeasuresIndexMethod, AuditLogsIndexMethod };
+    // /Analytics のアクションも載せる。あの画面は ViewModel も page も持たないが、
+    // ケースの導出で同じ除外表を引く以上、門番の対象からだけ外すと上の穴になる
+    private static IReadOnlyList<MethodInfo> MalformedFilterGuardedActions =>
+        new[] { IncidentsIndexMethod, MeasuresIndexMethod, AuditLogsIndexMethod }
+            .Concat(AnalyticsActionsWithUnreadableProneParameters())
+            .ToList();
 
     // <b>「読めない値」の手当てから意図的に外している引数</b>(URL 上の名前 → 外す理由)。
     //
@@ -784,7 +786,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     public void MalformedFilterExemptions_AreAllStillReal()
     {
         // 現時点で導出が拾う「読めなければ化ける」引数の URL 上の名前(手当て済みの全画面ぶん)
-        var actual = MalformedFilterGuardedListActions
+        var actual = MalformedFilterGuardedActions
             .SelectMany(UnreadableProneQueryNames)
             .ToHashSet(StringComparer.Ordinal);
 
@@ -831,7 +833,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 手当て済みの全画面の Index が受ける Nullable<T> 引数を URL 上の名前で拾う。
         // 1 画面だけを見ると、他の画面にしか無い Nullable の絞り込みを
         // 表へ 1 行足すだけで黙らせられる(除外表は画面ごとに分かれていないため)
-        var nullableNames = MalformedFilterGuardedListActions
+        var nullableNames = MalformedFilterGuardedActions
             .SelectMany(action => action.GetParameters())
             .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
             .Select(p => QueryStringName(p)!)
@@ -1462,9 +1464,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「対象ゼロ＝全件緑」で検出網が黙って死ぬため
     public static TheoryData<string, string> AnalyticsUnreadableProneParameters()
     {
-        // /Analytics のアクションのうち「読めなければ化ける」引数を受けるものを拾う
+        // /Analytics のアクションのうち「読めなければ化ける」引数を受けるものを拾う。
+        // <b>除外表(MalformedFilterExemptions)は一覧画面と同じく引く。</b> 引かないと、
+        // /Analytics へ page のような「絞り込みではない」引数を足した瞬間に
+        // 「読めないページ番号にも旗を立てろ」という直しようの無い要求になり、
+        // 逃げ道は「絞り込みでない引数を解決処理へ渡す」か「除外表を広げる」しか無くなる
+        // (この repo が繰り返し避けている形。除外表は URL 上の名前をキーにするので、
+        //  画面ごとに効いたり効かなかったりする状態を作らない)
         var cases = AnalyticsActionsWithUnreadableProneParameters()
             .SelectMany(action => UnreadableProneQueryNames(action)
+                .Where(name => !MalformedFilterExemptions.ContainsKey(name))
                 .Select(name => (Action: action.Name, Parameter: name)))
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(c => c.Action, StringComparer.Ordinal)
@@ -1546,18 +1555,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(1, TotalCount(doc));
     }
 
-    // 何も送っていないときは旗を立てないこと。
-    // 未指定で立てると、期間を指定していない普通の集計でも旗が立ち続け、
-    // 旗を読む側(この JSON を使う画面・外部スクリプト)が読まなくなる
+    // 逆に、正しく読めた値では旗を立てないこと。
+    //
+    // <b>ModelState にエントリがあること自体を条件にしてはいけない。</b>
+    // モデルバインドは成功した引数にもエントリを作る(束縛した値を記録するため)ので、
+    // キーの存在で判定すると<b>正しい値を送るたびに旗が立つ</b>(誤検知)。
+    // この誤検知はコントローラを直接呼ぶだけでは再現しない(モデルバインドを通らないので
+    // ModelState が空のまま)ため、SetModelValue で「束縛に成功した引数」の状態を作る
     [Theory]
     [MemberData(nameof(AnalyticsUnreadableProneParameters))]
-    public async Task Analytics_ReportsNothing_WhenNoFilterValueWasSent(string action, string parameterName)
+    public async Task Analytics_ReportsNothing_WhenTheFilterValueWasReadable(string action, string parameterName)
     {
         // 集計対象を 1 件用意する
         await SeedAnalyticsRowAsync("ICU");
 
-        // 「値が届いて、束縛にも成功した」状態を作る(エラーの無いエントリ)。
-        // 「エントリの有無」で判定すると正しい値でも旗が立つ(誤検知)ので、その形を塞ぐ
+        // 「値が届いて、束縛にも成功した」状態を作る(エラーの無いエントリ)
         var controller = NewAnalyticsController();
         controller.ModelState.SetModelValue(parameterName, "1", "1");
         using var doc = JsonResultReader.ToJsonDocument(
@@ -1568,6 +1580,56 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"{action}?{parameterName}=<読める値> で旗が立っている。"
             + "MalformedFilterValueResolver が「エントリの有無」ではなく"
             + "「エラーの有無」を見ているか確認すること。");
+    }
+
+    // <b>そもそも値が届いていない</b>ときも旗を立てないこと。
+    //
+    // 上の検査とは別に要る ——あちらは「エントリはあるがエラーが無い」状態を見るので、
+    // 解決処理の「エントリが無ければ未指定」の枝(TryGetValue の門番)は一度も通らない。
+    // その枝を「エントリが無ければ採用しなかった扱い」へ変えると、期間を指定していない
+    // <b>普通の集計要求すべてで旗が立つ</b>のに、上の Theory は緑のまま通る。
+    // 旗が出っぱなしになると、読む側(この JSON を使う画面・外部スクリプト)が読まなくなる。
+    //
+    // アクションごとに掛けるのは、1 つの代表だけを見る形にすると
+    // 新しいエンドポイントがこの経路の検査から黙って外れるため
+    [Theory]
+    [MemberData(nameof(AnalyticsActionsWithDateRangeFilters))]
+    public async Task Analytics_ReportsNothing_WhenNoFilterValueWasSent(string action)
+    {
+        // 集計対象を 1 件用意する
+        await SeedAnalyticsRowAsync("ICU");
+
+        // 絞り込みを一切指定せずに集計を引く(ModelState は空のまま)
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsWithoutFiltersAsync(NewAnalyticsController(), action));
+
+        // 受け取っていないものは「採用しなかった」ではない
+        Assert.False(MalformedFilterIgnored(doc),
+            $"{action} を絞り込み無しで引いたのに旗が立っている。"
+            + "MalformedFilterValueResolver が「エントリが無い＝未指定」を"
+            + "正しく素通ししているか確認すること。");
+        // 集計そのものは普通に返る
+        Assert.Equal(1, TotalCount(doc));
+    }
+
+    // 上の検査のケース(アクション名だけ)。引数ごとの Theory と同じ導出から作るので、
+    // エンドポイントを足せば両方に自動で入る
+    public static TheoryData<string> AnalyticsActionsWithDateRangeFilters()
+    {
+        // 「読めなければ化ける」引数を受けるアクションの名前を並べる
+        var actions = AnalyticsActionsWithUnreadableProneParameters()
+            .Select(m => m.Name)
+            .ToList();
+
+        // 0 件は「エンドポイントが無くなった」より「導出が壊れた」可能性が高い(fail-closed)
+        Assert.True(actions.Count > 0,
+            $"{nameof(AnalyticsController)} に「読めなければ別の値へ化ける」引数を受ける"
+            + "アクションが 1 つも無い。導出を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var action in actions) data.Add(action);
+        return data;
     }
 
     // --- 画面をまたぐ網羅ガード: 期間の絞り込みを持つ画面を取りこぼさない ------------
@@ -1642,7 +1704,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(
             guarded.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
             actual);
+
+        // <b>伝え先の値も見る。</b> キーだけを突き合わせると、値は誰にも読まれない飾りになり、
+        // 「どの引数を、どの伝え先で覆っているか」の唯一の真実の源を名乗る表が黙って腐る
+        // (実在しない伝え先や空文字を書いても全件緑のまま通る)。値を既知の 3 つに限ると、
+        // <b>行を足す人は伝え先を選ばされる</b> ——選べない引数(たとえば絞り込みでない
+        // POST の DateTime?)はそもそもこの表に載せる対象ではない、と気付く入り口になる
+        // (LengthGovernanceExclusions_AllHaveAReason と同じ手当て。あちらは理由が
+        //  "   " でも通ってしまった実測があり、値を読まない表は必ずそうなる)
+        var unknown = guarded
+            .Where(pair => !MalformedFilterDeliveries.Contains(pair.Value))
+            .Select(pair => $"{pair.Key} = 「{pair.Value}」")
+            .ToList();
+        Assert.True(unknown.Count == 0,
+            $"表の伝え先が既知のどれでもない: {string.Join(" / ", unknown)}。"
+            + $"使える伝え先は {string.Join(" / ", MalformedFilterDeliveries)} の 3 つで、"
+            + "それぞれに対応する behavioural な検査がある。新しい伝え先を作ったのなら、"
+            + "その検査と一緒にここへ足すこと(選べないなら、それはこの表に載せる引数ではない)。");
     }
+
+    // 「読めなかったことをどう伝えるか」の選択肢。表の値はこの 3 つに限る。
+    // 文字列を表と検査の 2 か所へ直書きすると、片方だけ増やしたときに検査が黙って緩む(§6)
+    private static readonly IReadOnlySet<string> MalformedFilterDeliveries =
+        new HashSet<string>(StringComparer.Ordinal) { "ViewModel", "ViewBag", "Json" };
 
     // アプリ全体のコントローラから「DateTime? のアクション引数」を
     // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
