@@ -47,6 +47,16 @@ namespace IncidentInsight.Tests.Controllers;
 /// <para><b>PostgreSQL / SQL Server までは確かめていない</b>(CI に DB を立てていないため)。
 /// ただし翻訳の失敗はプロバイダ非依存の共通部分(<c>Relational</c>)で起きるので、
 /// 関係データベースのプロバイダを 1 つ通せば「組み立て方が翻訳可能な形か」は押さえられる。</para>
+///
+/// <para><b>各 <c>*ControllerTests</c> の <c>...SearchMatchesLowercaseColumnValues</c> と
+/// 種データ・キーワード・表明が重なっているのは意図的。</b> あちらは InMemory で、
+/// ここは実プロバイダという違いはあるが、列側の大文字化を見る役目そのものは同じで、
+/// 変異させると両者は一緒に落ちる(＝一方が他方より細かく見分けるわけではない)。
+/// それでも残しているのは、<b>この 1 クラスが 3 経路すべての唯一の砦になるのを避ける</b>ため
+/// ——SQLite の組み立て(接続の生存管理・<c>EnsureCreated</c>)は環境の影響を受けやすく、
+/// ここが丸ごと落ちたり外されたりすると 3 画面分の検出が同時に消える。
+/// 経路ごとのテストが各 <c>*ControllerTests</c> にもあれば、片方が失われても残る。
+/// <b>検索対象の列を足すときは両方に足すこと</b>(片方だけだと、そちらの列は見られない)。</para>
 /// </remarks>
 public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 {
@@ -189,8 +199,10 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         var result = await controller.Index(keyword, null, null, null, null, null, null, null, 1) as ViewResult;
         var vm = result?.Model as IncidentListViewModel;
 
-        // SQL 側でも両辺が大文字化されていれば 1 件ヒットする
+        // SQL 側でも両辺が大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
+        // 返ってきたのが一致する側であることまで見る(件数だけだと別の行でも緑になる)
+        Assert.Equal("sato", Assert.Single(vm.Incidents).ReporterName);
     }
 
     // 担当者名・担当部署の 2 列を OR で束ねた述語について、上と同じことを確かめる
@@ -313,7 +325,10 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         var result = await controller.Index(null, null, "sato", null, null, null, 1) as ViewResult;
         var vm = result?.Model as AuditLogListViewModel;
 
-        // SQL 側でも両辺が大文字化されていれば 1 件ヒットする
+        // SQL 側でも両辺が大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
+        // 返ってきたのが一致する側であることまで見る(件数だけだと、述語が逆向きになって
+        // 「一致しない側の 1 件」を返しても緑になる)
+        Assert.Equal("sato", Assert.Single(vm.Logs).ChangedBy);
     }
 }

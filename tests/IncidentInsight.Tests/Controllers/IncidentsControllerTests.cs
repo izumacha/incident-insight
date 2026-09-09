@@ -1103,6 +1103,9 @@ public class IncidentsControllerTests : IDisposable
 
         // 列側も大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
+        // **返ってきたのが一致する側であることまで見る** ——件数だけだと、述語が別の行を
+        // 拾っていても緑になる(一致しない行を 1 件置いた意味が半分しか効かない)
+        Assert.Equal("sato", Assert.Single(vm.Incidents).ReporterName);
     }
 
     // 空白のみのフリーワード検索は「絞り込み無し」として扱われることを固定する(issue #187)。

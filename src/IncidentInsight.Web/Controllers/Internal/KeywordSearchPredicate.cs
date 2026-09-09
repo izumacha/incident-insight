@@ -131,29 +131,23 @@ internal static class KeywordSearchPredicate
     /// <b>空でないことは呼び出し側が <see cref="Models.Validation.SearchFilter.HasValue"/> で確認済み</b>
     /// (上の「対になる規則」を参照)。
     /// </param>
-    /// <param name="columns">
-    /// 突き合わせる列のセレクタ(1 つ以上)。複数渡すと OR で束ねる。
+    /// <param name="column">
+    /// 突き合わせる列のセレクタ。<b>1 つ目だけ独立した引数にしてある</b> ——
+    /// 「列が 1 つ以上あること」を実行時の門番ではなく<b>型で保証する</b>ため。
+    /// 配列 1 つで受けると、空を渡されたときにどちらへ倒しても黙って壊れる
+    /// (常に true にすれば絞り込みが消え、常に false にすれば 0 件になり、
+    ///  どちらも画面上は「そういう結果」に見えて気づけない)。実行時に投げる門番を置いても、
+    /// この型は internal でテストから直接呼べず、呼び出し側は列をリテラルで書くので
+    /// <b>到達も検証もできない</b>(寛容なフォールバックへ差し替えても全件緑になる)。
+    /// 署名で閉じればコンパイルエラーになり、門番も検出網も要らなくなる。
     /// </param>
+    /// <param name="moreColumns">2 つ目以降の列のセレクタ。OR で束ねる。</param>
     /// <returns><c>query.Where(...)</c> へそのまま渡せる述語。</returns>
-    /// <exception cref="ArgumentException">列のセレクタが 1 つも渡されなかった場合。</exception>
     public static Expression<Func<TEntity, bool>> Matching<TEntity>(
         string keyword,
-        params Expression<Func<TEntity, string>>[] columns)
+        Expression<Func<TEntity, string>> column,
+        params Expression<Func<TEntity, string>>[] moreColumns)
     {
-        // 列が 1 つも無ければ述語を決められない。ここで落とすのは、どちらへ倒しても
-        // 黙って壊れるため(常に true にすれば絞り込みが消え、常に false にすれば 0 件になる。
-        // どちらも画面上は「そういう結果」に見えて気づけない) ——不明なら拒否する(§9 fail-closed)。
-        //
-        // 【この門番には検出網が無い】現在の 3 つの呼び出し側はいずれも列を
-        // リテラルで書いているので、この分岐は実行経路から到達しない。加えてこの型は
-        // internal でテストプロジェクトから直接は呼べない(IncidentControllerHelpers の
-        // 2 つの門番と同じ事情)ため、寛容なフォールバック(例: body ?? Expression.Constant(true))
-        // へ差し替えても全件緑のまま通る。守っているのは「配列を組み立てて渡す
-        // 呼び出し側を後から足したとき、空でも黙って全件返らない」ことなので、
-        // **そういう呼び出し側を足す人が、同じ変更セットでこの分岐を通るテストも足すこと**
-        if (columns.Length == 0)
-            throw new ArgumentException("検索する列を 1 つ以上指定してください。", nameof(columns));
-
         // キーワード側だけを、実行環境のロケールに左右されない不変(invariant)規則で大文字化する
         var normalized = keyword.ToUpperInvariant();
         // 守りたいペアを 1 行の C# として書く。col.ToUpper() は EF Core が SQL の UPPER(col) へ
@@ -162,22 +156,24 @@ internal static class KeywordSearchPredicate
 
         // 束ねた述語が受け取るエンティティ(全セレクタの引数をこれ 1 つへ寄せる)
         var entity = Expression.Parameter(typeof(TEntity), "entity");
-        // OR で積み上げていく本体(最初の 1 件が入るまでは null)
-        Expression? body = null;
-        // 渡された列を順に述語へ変換して OR で束ねる
-        foreach (var column in columns)
+
+        // 列セレクタ 1 つを「その列がキーワードを含むか」の式へ変換する
+        Expression ClauseFor(Expression<Func<TEntity, string>> selector)
         {
             // セレクタの本体(例: i.Description)の引数を、共通のエンティティ引数へ差し替える
-            var columnValue = SubstituteParameter(column.Body, column.Parameters[0], entity);
+            var columnValue = SubstituteParameter(selector.Body, selector.Parameters[0], entity);
             // 判定ラムダの引数(value)を、その列の値へ差し替える(= 列.ToUpper().Contains(キーワード))
-            var clause = SubstituteParameter(matchesKeyword.Body, matchesKeyword.Parameters[0], columnValue);
-            // 1 件目はそのまま、2 件目以降は || で連結する(C# の || と同じ OrElse を使う)
-            body = body is null ? clause : Expression.OrElse(body, clause);
+            return SubstituteParameter(matchesKeyword.Body, matchesKeyword.Parameters[0], columnValue);
         }
 
+        // 1 列目は必ずあるので、そこから積み上げを始める
+        var body = ClauseFor(column);
+        // 2 列目以降があれば || で連結していく(C# の || と同じ OrElse を使う)
+        foreach (var extraColumn in moreColumns)
+            body = Expression.OrElse(body, ClauseFor(extraColumn));
+
         // 束ねた本体を、共通のエンティティ引数を取るラムダに包んで返す
-        // (body は上のループで必ず 1 回は代入される ——列が 0 件の場合は入口で弾いてある)
-        return Expression.Lambda<Func<TEntity, bool>>(body!, entity);
+        return Expression.Lambda<Func<TEntity, bool>>(body, entity);
     }
 
     /// <summary>

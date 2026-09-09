@@ -91,6 +91,10 @@ public class AuditLogsControllerTests : IDisposable
 
         // 列側も大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
+        // **返ってきたのが一致する側であることまで見る** ——件数だけだと、述語が逆向きに
+        // なって「一致しない側の 1 件」を返しても緑になる(実測: 判定を否定する変異は
+        // 件数しか見ないこのテストを素通りした)
+        Assert.Equal("sato", Assert.Single(vm.Logs).ChangedBy);
     }
 
     // 空白のみの変更者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。
