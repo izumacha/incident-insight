@@ -88,13 +88,50 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         });
         // インシデント(と対策)を保存する
         _db.Incidents.Add(incident);
-        // 変更者名を小文字 ASCII にした監査ログを 1 件用意する
+
+        // **どのキーワードにも一致しない行を、エンティティごとに 1 件ずつ置く。**
+        // 一致する行だけを入れて「1 件返ること」を確かめる形だと、
+        // 述語がクエリから丸ごと消えても同じ 1 件が返るため全件緑のまま通る
+        // ——このクラスの目的(手で組み立てた式が翻訳器まで届いていること)が
+        // 黙って検証されなくなり、痕跡はテスト件数にも出ない(実測)。
+        var unrelatedIncident = new Incident
+        {
+            Department = "外科病棟",
+            IncidentType = IncidentTypeKind.Fall,
+            Severity = IncidentSeverity.Level1,
+            Description = "ward round done",
+            ReporterName = "tanaka",
+            OccurredAt = TestFixtures.Today
+        };
+        // 一致しない側にも対策をぶら下げる(カンバンの検索も 2 件から 1 件へ絞る形にするため)
+        unrelatedIncident.PreventiveMeasures.Add(new PreventiveMeasure
+        {
+            Description = "対策",
+            MeasureType = MeasureTypeKind.ShortTerm,
+            ResponsiblePerson = "tanaka",
+            ResponsibleDepartment = "ward",
+            DueDate = TestFixtures.Today.AddDays(30),
+            Priority = 2
+        });
+        // 一致しないインシデント(と対策)も保存する
+        _db.Incidents.Add(unrelatedIncident);
+
+        // 変更者名を小文字 ASCII にした監査ログを 1 件用意する(こちらがヒットする側)
         _db.AuditLogs.Add(new AuditLog
         {
             EntityName = "Incident",
             Operation = "Modified",
             ChangedBy = "sato",
             EntityKey = "1",
+            ChangedAt = TestFixtures.Today
+        });
+        // キーワードに一致しない監査ログも 1 件置く(上と同じ理由)
+        _db.AuditLogs.Add(new AuditLog
+        {
+            EntityName = "Incident",
+            Operation = "Modified",
+            ChangedBy = "tanaka",
+            EntityKey = "2",
             ChangedAt = TestFixtures.Today
         });
         // ここまでの投入をまとめて確定する
@@ -153,10 +190,12 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         // カンバンを担当者キーワードで絞り込む(翻訳できなければここで例外になる)
         var result = await controller.Index(null, keyword, null, null, null);
 
-        // SQL 側でも両辺が大文字化されていれば 1 件ヒットする
+        // SQL 側でも両辺が大文字化されていれば、一致する 1 件だけが返る
         var view = Assert.IsType<ViewResult>(result);
         var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
-        Assert.Single(measures);
+        var measure = Assert.Single(measures);
+        // 返ってきたのが一致する側であることまで確かめる(件数だけだと取り違えに気づけない)
+        Assert.Equal("sato", measure.ResponsiblePerson);
     }
 
     // 列が 1 つだけ(OR で束ねない)の述語についても、同じことを確かめる

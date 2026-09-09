@@ -78,15 +78,18 @@ public class AuditLogsControllerTests : IDisposable
     [Fact]
     public async Task Index_ChangedBySearchMatchesLowercaseColumnValues()
     {
-        // 変更者名を小文字 ASCII で保存する
+        // 変更者名を小文字 ASCII で保存する(こちらがヒットする側)
         _db.AuditLogs.Add(MakeLog(user: "sato"));
+        // キーワードに一致しない変更者の行も 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        _db.AuditLogs.Add(MakeLog(user: "tanaka"));
         await _db.SaveChangesAsync();
 
         // 同じく小文字のキーワードで検索する
         var result = await _controller.Index(null, null, "sato", null, null, null, 1) as ViewResult;
         var vm = result?.Model as AuditLogListViewModel;
 
-        // 列側も大文字化されていれば 1 件ヒットする
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
     }
 

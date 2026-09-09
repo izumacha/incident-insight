@@ -1074,7 +1074,7 @@ public class IncidentsControllerTests : IDisposable
     [InlineData("sato")]        // 報告者名の列に一致するキーワード
     public async Task Index_SearchMatchesLowercaseColumnValues(string keyword)
     {
-        // 状況説明・報告者名のどちらも小文字 ASCII で保存する
+        // 状況説明・報告者名のどちらも小文字 ASCII で保存する(こちらがヒットする側)
         _db.Incidents.Add(new Incident
         {
             Department = "ICU",
@@ -1084,13 +1084,24 @@ public class IncidentsControllerTests : IDisposable
             ReporterName = "sato",
             OccurredAt = TestFixtures.Today
         });
+        // どちらのキーワードにも一致しないインシデントも 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        _db.Incidents.Add(new Incident
+        {
+            Department = "ICU",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "ward round done",
+            ReporterName = "tanaka",
+            OccurredAt = TestFixtures.Today
+        });
         await _db.SaveChangesAsync();
 
         // 同じく小文字のキーワードで検索する
         var result = await _controller.Index(keyword, null, null, null, null, null, null, null, 1) as ViewResult;
         var vm = result?.Model as IncidentListViewModel;
 
-        // 列側も大文字化されていれば 1 件ヒットする
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
         Assert.Equal(1, vm!.TotalCount);
     }
 

@@ -777,16 +777,22 @@ public class PreventiveMeasuresControllerTests : IDisposable
     [InlineData("labo")]        // 担当部署の列に一致するキーワード
     public async Task Index_ResponsibleSearchMatchesLowercaseColumnValues(string keyword)
     {
-        // 担当者名・担当部署のどちらも小文字 ASCII で保存する
+        // 担当者名・担当部署のどちらも小文字 ASCII で保存する(こちらがヒットする側)
         await SeedMeasureAsync("内科病棟", responsibleDepartment: "labo", responsiblePerson: "sato");
+        // どちらのキーワードにも一致しない対策も 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        // ——実測でも、この画面の担当者フィルタを丸ごと無効化する変異が全件緑のまま通った
+        await SeedMeasureAsync("外科病棟", responsibleDepartment: "ward", responsiblePerson: "tanaka");
 
         // 同じく小文字のキーワードで担当者/担当部署を検索する
         var result = await _controller.Index(null, keyword, null, null, null);
 
-        // 列側も大文字化されていれば 1 件ヒットする
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
         var view = Assert.IsType<ViewResult>(result);
         var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
-        Assert.Single(measures);
+        var measure = Assert.Single(measures);
+        // 返ってきたのが一致する側であることまで確かめる(件数だけだと取り違えに気づけない)
+        Assert.Equal("sato", measure.ResponsiblePerson);
     }
 
     // 空白のみの担当者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。
