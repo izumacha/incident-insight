@@ -79,9 +79,15 @@ internal static class IncidentControllerHelpers
     /// （<c>string?</c> を受けるのはそのため）。<b>呼び出し側で先に弾く形へ戻すと、
     /// この門番はまた誰にも見られなくなる。</b></para>
     ///
-    /// <para><b>この関数を触る差分は、2 つの門番が残っているかをレビューでも確かめること。</b>
-    /// 上の 2 件が見ているのは <c>List&lt;string&gt;</c> 版だけで、
-    /// 隣の <see cref="SelectListItem"/> 版には対応するテストが無い。</para>
+    /// <para><b>要素型ごとのオーバーロードは置かない(issue #212)。</b>
+    /// 以前は <see cref="SelectListItem"/> の一覧向けにも同じ手順をもう 1 つ置いていたが、
+    /// 唯一の呼び出し元(<c>/Incidents</c> の原因分類)は手前で「既に選択肢にあるか」を
+    /// 判定して早期 return しており、渡していた送信値も <c>int</c> の文字列表現だったため、
+    /// <b>2 つの門番はどちらも成立しえなかった</b>(どちらを消しても全件緑=実測)。
+    /// 実質 <c>Insert(0, …)</c> でしかない写しに「門番を守れ」と案内する解説が付いている状態は、
+    /// 守られていない不変条件を守られていると読ませるので、次に読む人を誤らせる
+    /// (§6 デッドコードを残さない)。<b>2 つ目の要素型が実際に現れたら、そのとき改めて
+    /// 共通化を検討すること</b>(§6 の「将来を見越した過度な抽象化を避ける」)。</para>
     /// </remarks>
     /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
     /// <param name="appliedValue">
@@ -101,51 +107,6 @@ internal static class IncidentControllerHelpers
         if (options.Contains(appliedValue)) return;
         // 先頭の固定項目(「(全て)」/「-- 選択してください --」)の直後に来るよう先頭へ差し込む
         options.Insert(0, appliedValue);
-    }
-
-    /// <summary>
-    /// <see cref="SelectListItem"/> で選択肢を作る画面向けの
-    /// <see cref="EnsureAppliedValueIsSelectable(List{string}, string?)"/>。
-    /// 表示文字列と送信値が別々になるだけで、守る不変条件も置く位置も同じ。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>null の受け入れ方も隣と揃える。</b> 文字列版が <c>string?</c> を受けて
-    /// 「未指定でもそのまま渡してよい」なら、こちらも項目そのものが <c>null</c> でよい。
-    /// 片方だけ非 null にすると、隣のドキュメントを手本にした呼び出し
-    /// (絞り込みが解決できたときだけ項目を作り、それ以外は <c>null</c> を渡す形)が
-    /// <b>その画面だけ NullReferenceException で HTTP 500</b> になる ——
-    /// 「呼び出し側に規則を思い出させない」というこの関数の目的に反するので、
-    /// 判定を増やして揃える側を採る。</para>
-    ///
-    /// <para><b>重複を承知で 2 つ置いている理由。</b> 選択肢の要素型が違うだけで
-    /// 判定は「空でないか」「既にあるか」「先頭へ入れる」の 3 つとも同じなので、
-    /// <b>位置の規則が 2 か所に分かれないように隣同士へ置く</b>
-    /// ——型で共通化しようとすると、片方だけが持つ「同値の判定は <c>Value</c> で行う」
-    /// (表示文字列は違っても同じ選択肢)という性質を表せる抽象が要り、
-    /// 2 つの利用側のために作る抽象としては大きすぎる(§6 の「将来を見越した過度な抽象化」)。
-    /// <b>3 つ目の要素型が出てきたら、そのとき共通化を検討すること。</b></para>
-    ///
-    /// <para><b>同値の判定は <c>Value</c> だけで行う</b>(<c>Text</c> は見ない)。
-    /// <c>&lt;select&gt;</c> がサーバへ送るのは <c>Value</c> なので、
-    /// 「絞り込みに使った値が選択肢にある」かどうかを決めるのはそちらだけ。
-    /// 表示文字列まで一致条件に混ぜると、同じ id を別の見出しで 2 回並べてしまう
-    /// (例: <c>/Incidents</c> は補完する子カテゴリだけ「親名 &gt; 子名」で出すので、
-    ///  同じ id でも <c>Text</c> は既存の選択肢と一致しないことがある)。</para>
-    /// </remarks>
-    /// <param name="options">ドロップダウンの選択肢(この場に書き換える)。</param>
-    /// <param name="appliedItem">
-    /// 実際に絞り込みへ使っている値の選択肢。<b>未指定なら <c>null</c> を渡してよい</b>
-    /// ——足すかどうかはこの関数が決めるので、呼び出し側で先に弾かない(文字列版と同じ)。
-    /// </param>
-    public static void EnsureAppliedValueIsSelectable(List<SelectListItem> options, SelectListItem? appliedItem)
-    {
-        // 項目そのものが無い、または送信値が空・空白のみなら足さない(理由は上のオーバーロードと同じ)。
-        // 2 つを 1 つの条件にまとめてあるのは、どちらも「足すものが無い」という同じ判断だから
-        if (!SearchFilter.HasValue(appliedItem?.Value)) return;
-        // 同じ送信値の選択肢が既にあるなら何もしない(足すと同じ項目が 2 つ並ぶ)
-        if (options.Any(o => o.Value == appliedItem.Value)) return;
-        // 先頭の固定項目(「(全て)」/「-- 選択してください --」)の直後に来るよう先頭へ差し込む
-        options.Insert(0, appliedItem);
     }
 
     /// <summary>
