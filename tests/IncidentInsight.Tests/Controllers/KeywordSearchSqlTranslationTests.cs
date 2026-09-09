@@ -55,8 +55,16 @@ namespace IncidentInsight.Tests.Controllers;
 /// それでも残しているのは、<b>この 1 クラスが 3 経路すべての唯一の砦になるのを避ける</b>ため
 /// ——SQLite の組み立て(接続の生存管理・<c>EnsureCreated</c>)は環境の影響を受けやすく、
 /// ここが丸ごと落ちたり外されたりすると 3 画面分の検出が同時に消える。
-/// 経路ごとのテストが各 <c>*ControllerTests</c> にもあれば、片方が失われても残る。
-/// <b>検索対象の列を足すときは両方に足すこと</b>(片方だけだと、そちらの列は見られない)。</para>
+/// 経路ごとのテストが各 <c>*ControllerTests</c> にもあれば、片方が失われても残る。</para>
+///
+/// <para><b>ただし「列を足したら両方に足す」は義務ではない。</b> 列側の大文字化は
+/// <c>KeywordSearchPredicate</c> の中の 1 行が全列に効くので、列を足しても
+/// <b>その列だけ大文字化を忘れる、ということが起こらない</b>(issue #188 の壊れ方は
+/// 述語を共有した時点で構造的に閉じている)。列ごとに <c>[InlineData]</c> を並べているのは
+/// 「OR で束ねた片方だけを落とす」変異を捕まえるためで、これは束ねる側の性質＝
+/// どちらか一方の系統で見られていれば足りる。<b>新しい列のケースを足すかどうかは、
+/// その列が OR の何番目かを確かめたいかで決めてよい</b>(片方に足し忘れても
+/// PostgreSQL でだけ 0 件になる、という事故にはつながらない)。</para>
 /// </remarks>
 public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 {
@@ -291,25 +299,35 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         // 大文字化されると "SATO" になるキーワードで検索する
         await controller.Index("sato", null, null, null, null, null, null, null, 1);
 
-        // 拾ったコマンドから、両辺の大文字化が現れている SELECT(＝検索本体)を取り出す
-        var searchSql = _commandLog
+        // 拾ったコマンドから、両辺の大文字化が現れている SELECT をすべて取り出す。
+        // **「最初の 1 本」で済ませない** ——この画面は 1 リクエストで
+        // 「原因分類のドロップダウン」「COUNT」「ページ本体」の 3 本を流しており、
+        // 今 upper( を含むのは後ろの 2 本だけ。だが先に流れるクエリが将来
+        // 大文字小文字を無視する比較を持つと、最初の 1 本はそちらになり、
+        // 検索本体がリテラル展開されていても表明は素通りする(緑のまま骨抜きになる)
+        var searchSqls = _commandLog
             .Select(ExtractSqlBody)
-            .FirstOrDefault(sql => sql.Contains("upper(", StringComparison.OrdinalIgnoreCase));
+            .Where(sql => sql.Contains("upper(", StringComparison.OrdinalIgnoreCase))
+            .ToList();
         // 検索の SQL を 1 本も拾えなければ、この検査は何も見ていない(fail-closed)
-        Assert.NotNull(searchSql);
-        // ヘッダ行(パラメータ一覧)を実際に落とせていることを確かめる。
-        // ここが残ると下の「@__ があること」がヘッダだけで満たされ、検査が骨抜きになる
-        Assert.DoesNotContain("Parameters=", searchSql, StringComparison.Ordinal);
+        Assert.NotEmpty(searchSqls);
 
-        // 大文字化したキーワードが SQL 本文に直接現れていないこと(＝リテラル展開されていない)
-        Assert.DoesNotContain("SATO", searchSql, StringComparison.Ordinal);
-        // 代わりに SQL のパラメータ参照が現れていること。
-        // **具体的な名前(@__normalized_0 など)には依存しない** ——EF Core が付ける
-        // パラメータ名は公開契約ではなくメジャー版で変わる(EF Core 10 で `@__x_0` 形式から
-        // `@x` 形式へ変わり `__` が無くなった)。名前を決め打ちすると、
-        // dependabot の EF Core メジャー更新 PR で「リテラル展開されている」と読める
-        // 誤ったメッセージで落ちる ——正しくパラメータとして渡っているのに
-        Assert.Matches(@"@[A-Za-z_][A-Za-z0-9_]*", searchSql);
+        // 拾ったすべての SQL について確かめる
+        foreach (var searchSql in searchSqls)
+        {
+            // ヘッダ行(パラメータ一覧)を実際に落とせていることを確かめる。
+            // ここが残ると下の「パラメータ参照があること」がヘッダだけで満たされ、検査が骨抜きになる
+            Assert.DoesNotContain("Parameters=", searchSql, StringComparison.Ordinal);
+            // 大文字化したキーワードが SQL 本文に直接現れていないこと(＝リテラル展開されていない)
+            Assert.DoesNotContain("SATO", searchSql, StringComparison.Ordinal);
+            // 代わりに SQL のパラメータ参照が現れていること。
+            // **具体的な名前(@__normalized_0 など)には依存しない** ——EF Core が付ける
+            // パラメータ名は公開契約ではなくメジャー版で変わる(EF Core 10 で `@__x_0` 形式から
+            // `@x` 形式へ変わり `__` が無くなった)。名前を決め打ちすると、
+            // dependabot の EF Core メジャー更新 PR で「リテラル展開されている」と読める
+            // 誤ったメッセージで落ちる ——正しくパラメータとして渡っているのに
+            Assert.Matches(@"@[A-Za-z_][A-Za-z0-9_]*", searchSql);
+        }
     }
 
     /// <summary>
