@@ -785,7 +785,12 @@ public class IncidentsController : Controller
         // 既に選択肢にある id は、それ以上何も調べずそのまま採用してよい
         // (この枝が守る不変条件は「絞り込みに使った値は必ず選択肢にある」ことそのもの。
         //  基準を「親か子か」ではなくここに置いた理由は上の <remarks> が持つ。
-        //  同じ説明を書き写すと、規則を変えたときに片方だけが古くなる)
+        //  同じ説明を書き写すと、規則を変えたときに片方だけが古くなる)。
+        // **同値の判定は Value だけで行う**(Text は見ない)。<select> がサーバへ送るのは
+        // Value なので、「絞り込みに使った値が選択肢にある」かを決めるのはそちらだけ。
+        // 表示文字列まで一致条件に混ぜると、下で補完する子カテゴリは「親名 > 子名」の
+        // 見出しを持つ＝同じ id でも Text が既存の選択肢と一致しないため、
+        // 同じ id を別の見出しで 2 回並べてしまう
         if (options.Any(o => o.Value == requestedValue))
             return new CauseCategoryFilterSelection(requestedId, options, Ignored: false);
 
@@ -812,9 +817,18 @@ public class IncidentsController : Controller
             ? null
             : options.FirstOrDefault(o => o.Value == parentValue)?.Text;
         // 「親名 > 子名」の見出しで選択肢の先頭へ補完する。
-        // 「空なら足さない・既にあれば足さない・無ければ先頭へ」の手順は共有ヘルパに寄せてある
-        IncidentControllerHelpers.EnsureAppliedValueIsSelectable(
-            options,
+        // **先頭へ入れる理由**(末尾へ足すと選択肢が多い画面では現在値がスクロールしないと見えず、
+        // 「選ばれていない」と誤解した利用者が絞り込みを失う)は共有ヘルパ
+        // IncidentControllerHelpers.EnsureAppliedValueIsSelectable の解説が正本
+        // ——ここへ書き写すと、規則を変えたときに片方だけが古くなる。
+        //
+        // **共有ヘルパを通さないのは、あちらが持つ 2 つの門番がこの経路では
+        // どちらも成立しえないから**(issue #212)。「空なら足さない」は送信値が int の
+        // 文字列表現なので必ず値があり、「既にあれば足さない」は 30 行手前の早期 return が
+        // 既に弾いている(その間 options は書き換えていない)。成立しない門番を通すと、
+        // 「共有の手順で守られている」と読める一方で実際には何も守っていない状態になる
+        options.Insert(
+            0,
             new SelectListItem(CauseCategory.FormatFullName(parentName, requested.Name), requestedValue));
 
         // 実在する分類なので絞り込みを維持する(選択肢には補完済み)
