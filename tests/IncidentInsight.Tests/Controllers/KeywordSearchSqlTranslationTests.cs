@@ -18,6 +18,8 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 // SQLite のインメモリ接続を自分で開いて保持するため
 using Microsoft.Data.Sqlite;
+// 発行された SQL を拾うログの絞り込みに LogLevel を使う
+using Microsoft.Extensions.Logging;
 // テストでは何も出力しないロガー(NullLogger)を使うため
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -53,15 +55,22 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
     // 上の接続を使う DbContext(各テストから使う)
     private ApplicationDbContext _db = null!;
+    // EF Core が実際に発行したコマンド(パラメータ一覧 + SQL 本文)をためる。
+    // xUnit はテストごとにクラスを作り直すので、テスト間で混ざらない
+    private readonly List<string> _commandLog = new();
 
     /// <summary>接続を開き、スキーマを作ってから検索対象のデータを 1 件ずつ入れる。</summary>
     public async Task InitializeAsync()
     {
         // インメモリのデータベースを生存させるために接続を開く
         await _connection.OpenAsync();
-        // 開いたままの接続を使う DbContext を組み立てる
+        // 開いたままの接続を使う DbContext を組み立てる。
+        // 発行されたコマンドを拾えるようにしておく(下のパラメータ化の検査で読む)
         _db = new ApplicationDbContext(
-            new DbContextOptionsBuilder<ApplicationDbContext>().UseSqlite(_connection).Options);
+            new DbContextOptionsBuilder<ApplicationDbContext>()
+                .UseSqlite(_connection)
+                .LogTo(_commandLog.Add, new[] { DbLoggerCategory.Database.Command.Name }, LogLevel.Information)
+                .Options);
         // マイグレーション履歴ではなく現在のモデルからスキーマを作る
         // (見たいのはクエリの翻訳だけなので、移行の再現までは要らない)
         await _db.Database.EnsureCreatedAsync();
@@ -196,6 +205,52 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         var measure = Assert.Single(measures);
         // 返ってきたのが一致する側であることまで確かめる(件数だけだと取り違えに気づけない)
         Assert.Equal("sato", measure.ResponsiblePerson);
+    }
+
+    // キーワードが SQL に**リテラルとして埋め込まれず、パラメータとして渡る**ことを固定する。
+    //
+    // これは KeywordSearchPredicate の remarks が組み立て方の理由として挙げている性質だが、
+    // **理由を書いただけでは守られない**: 判定を Expression.Constant で組み立て直すと
+    // EF Core はキーワードを SQL 本文へ literal として展開する(Parameters は空になる)のに、
+    // 他のテストは「1 件返ること」しか見ていないので全件緑のまま通る(実測)。
+    // そのとき起きること:
+    //   - 利用者が入力した検索語が、DB コマンドのログへそのまま載る(CLAUDE.md §9)
+    //   - 検索語ごとに別のクエリ文字列になり、PostgreSQL / SQL Server の実行計画キャッシュが汚れる
+    //
+    // 見るのは「発行された SQL 本文」だけにする ——EF のログは 1 行目にパラメータの
+    // 値一覧も出すので、そこまで含めて探すと**パラメータとして正しく渡った値**まで
+    // 「リテラルが埋まっている」と誤検出してしまう。
+    [Fact]
+    public async Task KeywordSearch_PassesTheKeywordAsAParameter_NotAsALiteral()
+    {
+        // 種データ投入時のコマンドを捨て、これから流す検索のぶんだけを見る
+        _commandLog.Clear();
+        // SQLite を使う DbContext でインシデント一覧のコントローラを組み立てる
+        var controller = new IncidentsController(
+            _db,
+            UserContextHelper.BuildAuthService(),
+            new RecurrenceService(TestFixtures.Clock, NullLogger<RecurrenceService>.Instance),
+            TestFixtures.Clock,
+            NullLogger<IncidentsController>.Instance);
+        // 全部署を見られる管理者として実行する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        // 大文字化されると "SATO" になるキーワードで検索する
+        await controller.Index("sato", null, null, null, null, null, null, null, 1);
+
+        // 拾ったコマンドから、両辺の大文字化が現れている SELECT(＝検索本体)を取り出す。
+        // EF のログは「1 行目: 実行時間とパラメータ一覧 / 2 行目以降: SQL 本文」なので、
+        // 1 行目を落として SQL 本文だけにする
+        var searchSql = _commandLog
+            .Select(entry => string.Join("\n", entry.Split('\n').Skip(1)))
+            .FirstOrDefault(sql => sql.Contains("upper(", StringComparison.OrdinalIgnoreCase));
+        // 検索の SQL を 1 本も拾えなければ、この検査は何も見ていない(fail-closed)
+        Assert.NotNull(searchSql);
+
+        // 大文字化したキーワードが SQL 本文に直接現れていないこと(＝リテラル展開されていない)
+        Assert.DoesNotContain("SATO", searchSql, StringComparison.Ordinal);
+        // 代わりに EF Core のパラメータ参照(@__ で始まる)が現れていること
+        Assert.Contains("@__", searchSql, StringComparison.Ordinal);
     }
 
     // 列が 1 つだけ(OR で束ねない)の述語についても、同じことを確かめる

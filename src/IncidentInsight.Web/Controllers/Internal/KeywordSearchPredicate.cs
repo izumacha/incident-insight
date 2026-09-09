@@ -11,8 +11,10 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// はじめて正しい</b>(下記)。以前はキーワード側だけを共有ヘルパへ集約し、列側の
 /// <c>.ToUpper()</c> は呼び出し側の手書きに任せていたが、その形では
 /// <b>列側を書き忘れても CI は全件緑のまま通り、PostgreSQL 配備でだけ検索が 0 件になる</b>。
-/// 実測(issue #188 の対応時): 3 経路の列側 <c>.ToUpper()</c> を落として全テストを流すと、
-/// <c>/AuditLogs</c> が偶然 1 件落ちるだけで <c>/Incidents</c> と <c>/PreventiveMeasures</c> は
+/// 実測(issue #188 の対応時。当時の全体は 752 件): 3 経路すべての列側 <c>.ToUpper()</c> を
+/// 落とすと <b>751 passed / 1 failed</b> で、落ちた 1 件は <c>/AuditLogs</c> の
+/// <c>Index_FilterByChangedBy_PartialMatch</c>(検索とは別の目的のテストが偶然拾っていた)。
+/// <c>/Incidents</c> と <c>/PreventiveMeasures</c> の 2 経路だけを落とすと
 /// <b>752 件すべて緑</b>だった。ペアの片方を書ける構造が残っている限り、規約とレビューでしか
 /// 守れない。そこで<b>述語そのものをここから出し、呼び出し側が列側の大文字化を書く場所を無くす</b>
 /// (前例: <c>PreventiveMeasure.OverdueOn</c> も判定を <c>Expression</c> として出している)。</para>
@@ -77,16 +79,23 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <para><b>残る境界 4: 「この関数を通したか」を見るソース走査の検出網は無い。</b>
 /// 以前ここに書いていた「列側の <c>.ToUpper()</c> を手で付ける」という約束は、
 /// 述語をここから出したことで<b>守る対象が無くなった</b>(付ける場所がこの中にしかない)。
-/// 残っているのは「新しい一覧検索がこの関数を経由するか」で、それは
-/// <c>ModelStateKeyPrefixMatchTests</c> のようなソース走査では機械化できない
-/// ——素の <c>ToUpper()</c> を一律に禁じると、EF Core が SQL へ翻訳するために
-/// <b>必要な書き方</b>(この中の <c>col.ToUpper()</c>)まで違反として報告してしまい、
-/// 式ツリーの内側かどうかはテキスト走査では判別できない(構文解析が要る)。
-/// 正しいコードを咎める検出網になるくらいなら置かない、という判断は据え置く。
+/// 残っているのは「新しい一覧検索がこの関数を経由するか」だが、これは
+/// <c>ModelStateKeyPrefixMatchTests</c> のようなソース走査では捕まえられない。
+/// <b>理由は「必要な書き方まで咎めるから」ではない</b>(<c>col.ToUpper()</c> が現れる場所は
+/// もうこの 1 ファイルだけなので、そこを除いた走査なら誤検出は出ない)。
+/// そうではなく、<b>捕まえたい形にそもそも目印が無い</b>から:
+/// 実際に壊れるのは <c>query.Where(x =&gt; x.Col.Contains(keyword))</c> のように
+/// <b>大文字化を 1 つも書かない</b>形で、そこには <c>ToUpper</c> が現れない。
+/// <c>Contains</c> はコレクション判定・許可リスト照合などアプリ中に無数にあるので、
+/// それを手掛かりにすると正しいコードを大量に咎めることになる
+/// (式ツリーの内側かどうかはテキスト走査では判別できず、構文解析が要る)。
+/// <c>ToUpper</c> を禁じる走査は<b>「惜しい」書き方しか捕まえられず、本当に壊れる書き方は
+/// 素通りする</b>ため、置いても守りたい性質の保証にならない。
 /// <b>したがって新しい一覧検索を足すときは、この関数を経由することだけを守ればよい。</b>
 /// 既存の 3 経路については、経路ごとのコントローラ級テスト
 /// (<c>...SearchUsesInvariantUpperCasing</c> / <c>...SearchMatchesLowercaseColumnValues</c>)が
-/// 「この関数が実際に経路上にあること」まで固定している。</para>
+/// 「この関数が実際に経路上にあること」まで固定している
+/// ——どのテストも<b>一致しない行を併せて置く</b>ので、絞り込みが経路から消えると落ちる。</para>
 ///
 /// <para><b>対になる規則。</b> 「そもそも絞り込むかどうか」(空・空白のみの入力を
 /// 絞り込み無しとして扱う)は <see cref="Models.Validation.SearchFilter.HasValue"/> が持つ。
@@ -107,7 +116,10 @@ internal static class KeywordSearchPredicate
     /// そこで判定の本体は <c>matchesKeyword</c> という<b>ふつうの C# のラムダ</b>として書き、
     /// キーワードを C# のクロージャに捕まえさせている。EF Core はクロージャ経由の値を
     /// パラメータとして扱うため、集約前(呼び出し側がローカル変数を捕まえていた頃)と
-    /// 同じ SQL になる。</para>
+    /// 同じ SQL になる。<b>この性質は理由を書くだけでは守られない</b>
+    /// (組み立て直すと SQL は変わるのに、件数だけを見るテストは全件緑のまま通る。実測)ので、
+    /// <c>KeywordSearchSqlTranslationTests.KeywordSearch_PassesTheKeywordAsAParameter_NotAsALiteral</c>
+    /// が発行された SQL 本文を読んで固定している。</para>
     ///
     /// <para><b>ラムダで書くもう 1 つの理由</b>は、守りたいペア
     /// (<c>列.ToUpper()</c> と 大文字化済みキーワード)が<b>1 行の中で隣り合う</b>こと。
