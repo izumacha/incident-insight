@@ -2494,6 +2494,103 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"@if ({accessor}{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
     }
 
+    // 注意書きを出す画面と、その画面での旗の読み方。
+    // 下の「画面をまたいで文面をそろえる」検査が全画面を見るために要る
+    // ——1 画面でも書き漏らすと、その画面だけが照合から外れて文面が割れる
+    private static readonly (string ViewFolder, string Accessor)[] IgnoredFilterNoticeScreens =
+    {
+        ("Incidents", ViewModelFlagAccessor),
+        ("PreventiveMeasures", ViewBagFlagAccessor),
+        ("AuditLogs", ViewModelFlagAccessor),
+    };
+
+    // 同じ理由の注意書きは、画面をまたいで<b>一字一句そろっている</b>こと。
+    //
+    // <b>なぜ検査で縛るのか。</b> 「同じ理由で採用しなかったのに画面ごとに言い回しが違うと、
+    // 利用者は別の出来事だと受け取る」は各ビューのコメントが要求しているだけで、
+    // 守られているかを見る仕組みが無かった ——1 画面の説明文だけを書き換えても
+    // 全件緑のまま通る(per-flag の検査は「適用していません」を含むことと
+    // 「空でない文面が 2 つある」ことしか見ない)。これは §6 が禁じる
+    // 「同じ文言を各所へ直書きする」形そのものだった。
+    //
+    // <b>照合の仕方。</b> 対応表を手で持たない ——旗の名前は画面ごとに違いうる
+    // (/AuditLogs は許可リストなので UnlistedFilterIgnored、/Incidents は enum なので
+    //  UnlistedEnumFilterIgnored)ので、名前で突き合わせると対応表が必要になり、
+    // その表が古くなる。代わりに<b>文面そのもの</b>を手がかりにする:
+    // 見出しが同じなら説明も同じ、説明が同じなら見出しも同じ、を求める。
+    // これで「片方の画面だけ言い換える」変更は必ずどちらかの向きで落ちる。
+    [Fact]
+    public void IgnoredFilterNotices_UseTheSameWordingAcrossScreens()
+    {
+        // 画面をまたいで (見出し, 説明) の組をすべて集める
+        var notices = IgnoredFilterNoticeScreens
+            .SelectMany(screen => IgnoredFilterNoticeTexts(screen.ViewFolder, screen.Accessor))
+            .ToList();
+
+        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)
+        Assert.True(notices.Count > 0, "注意書きの文面を 1 つも拾えなかった。");
+
+        // 見出しが同じなら説明も同じであること
+        foreach (var group in notices.GroupBy(n => n.Heading, StringComparer.Ordinal))
+        {
+            // その見出しで使われている説明の種類
+            var details = group.Select(n => n.Detail).Distinct(StringComparer.Ordinal).ToList();
+            Assert.True(details.Count == 1,
+                $"見出し「{group.Key}」の説明文が画面ごとに違う"
+                + $"({string.Join(" / ", group.Select(n => n.Screen))})。"
+                + "同じ理由で採用しなかったのに言い回しが違うと、利用者は別の出来事だと受け取る。"
+                + "文面を変えるときは、その見出しを使っている画面すべてを同じ変更セットで直すこと。");
+        }
+
+        // 説明が同じなら見出しも同じであること(逆向きの取り違えを塞ぐ)
+        foreach (var group in notices.GroupBy(n => n.Detail, StringComparer.Ordinal))
+        {
+            // その説明で使われている見出しの種類
+            var headings = group.Select(n => n.Heading).Distinct(StringComparer.Ordinal).ToList();
+            Assert.True(headings.Count == 1,
+                $"同じ説明文に別の見出しが付いている: {string.Join(" / ", headings)}"
+                + $"({string.Join(" / ", group.Select(n => n.Screen))})。");
+        }
+    }
+
+    // 1 画面のビューから、注意書きの (見出し, 説明) を旗ごとに取り出す。
+    // 切り出し方は per-flag の検査と同じ(FilterIgnoredNotice の第 1・第 2 引数)
+    private static List<(string Screen, string Heading, string Detail)> IgnoredFilterNoticeTexts(
+        string viewFolder, string accessor)
+    {
+        // ビューの Razor ソースを読む(コメントは落としてある)
+        var source = ReadIndexViewSource(viewFolder);
+        // 旗で出し分けているブロックをすべて拾う
+        var texts = new List<(string, string, string)>();
+        foreach (Match header in Regex.Matches(source, $@"@if\s*\(\s*{Regex.Escape(accessor)}(?<flag>\w*FilterIgnored)\b"))
+        {
+            // そのブロックの本体を切り出す
+            var blockBody = ExtractBraceBlock(source, header.Index);
+            Assert.True(blockBody != null,
+                $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{header.Groups["flag"].Value}) に本体が無い。");
+            // FilterIgnoredNotice の組み立て位置を探す
+            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+            Assert.True(notice.Success,
+                $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{header.Groups["flag"].Value}) が "
+                + $"{nameof(FilterIgnoredNotice)} を組み立てていない。");
+            // 空でない文字列リテラルを順に取る。先頭が見出し、残りを連結したものが説明
+            // (説明は行をまたいで `+` で連結して書かれている)
+            var literals = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+                .Select(m => m.Groups["text"].Value)
+                .Where(text => text.Trim().Length > 0)
+                .ToList();
+            Assert.True(literals.Count >= 2,
+                $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{header.Groups["flag"].Value}) の"
+                + $"{nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
+            texts.Add((viewFolder, literals[0], string.Concat(literals.Skip(1))));
+        }
+
+        // その画面から 1 つも拾えないなら、走査が書き方の変更に追随できていない(fail-closed)
+        Assert.True(texts.Count > 0,
+            $"Views/{viewFolder}/Index.cshtml から注意書きの文面を 1 つも拾えなかった。");
+        return texts;
+    }
+
     // 旗の読み方の前置き。ViewModel を持つ画面(/Incidents ・ /AuditLogs)は Model. で、
     // ViewBag で渡す画面(/PreventiveMeasures)は ViewBag. で読む。
     // 文字列を各所へ直書きすると、読み方を変えたときに一部だけが取り残される(§6)
@@ -3264,14 +3361,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "ドロップダウンの書き方を変えたなら、この導出も同じ変更セットで直すこと"
             + "(直さないと、許可リストの絞り込みの検査が対象ゼロで全件緑になる)。");
 
-        // 拾った名前がすべて「許可リストの出どころ」の表に載っていること。
-        // 載っていない＝3 つ目の絞り込みを足したのに、この検査へ通していない
-        var unmapped = selectNames.Where(name => !AuditLogsAllowLists.ContainsKey(name)).ToList();
-        Assert.True(unmapped.Count == 0,
-            $"許可リストの出どころが分からない絞り込みがある: {string.Join(", ", unmapped)}。"
-            + $"{nameof(AuditLogsAllowLists)} へ出どころを足し、"
-            + "AuditLogsController.Index でも ResolveListedValue を通すこと"
-            + "(通さないと、その値だけが黙って落ちて監査ログ全件が返る)。");
+        // 拾った名前と「許可リストの出どころ」の表が<b>双方向で</b>一致していること。
+        //
+        // <b>片方向(拾った名前 ⊆ 表)では足りない。</b> 導出が 1 つ取りこぼすと
+        // その絞り込みは 3 つの検査から同時に、しかも黙って外れる ——痕跡はテスト件数の
+        // 減少だけで、正当なリファクタと見分けが付かない(この repo が
+        // LengthGovernedTypes_CoverEveryOwnedDbSet で同じ手当てをしている形)。
+        // 表は人が手で書く別の宣言箇所なので、導出が狭まればここで食い違いとして現れる。
+        // 絞り込みを本当に外すときは、表・画面・コントローラを同じ変更セットで直すことになる
+        Assert.Equal(
+            AuditLogsAllowLists.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+            selectNames);
 
         // xUnit の [MemberData] が読める形へ詰めて返す。
         // 運ぶのは名前だけで、送る値(許可リストに載っている / 載っていない)は各検査が
@@ -3285,7 +3385,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 監査ログ画面の絞り込みドロップダウンの name を、Razor のソースから拾う。
     // Theory のケース作りと下の配線の照合が同じここを読む(§6 DRY)
     private static List<string> AuditLogsFilterSelectNames() =>
-        Regex.Matches(ReadIndexViewSource("AuditLogs"), @"<select\s+name\s*=\s*""(?<name>[^""]+)""")
+        // 属性の並び順に依存しない形で name を拾う。`<select name=... class=...>` の
+        // 決め打ちにすると、<b>属性を並べ替えるだけ</b>でその絞り込みが導出から消え、
+        // 3 つの検査が同時に対象を失う(実測で全件緑のまま通り、痕跡はテスト件数だけだった)
+        Regex.Matches(ReadIndexViewSource("AuditLogs"), @"<select\b[^>]*?\bname\s*=\s*""(?<name>[^""]+)""")
             .Select(m => m.Groups["name"].Value)
             .Distinct(StringComparer.Ordinal)
             // 実行ごとに順番が揺れないよう並びを固定する
@@ -3302,7 +3405,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private static readonly IReadOnlyDictionary<string, string[]> AuditLogsAllowLists =
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
-            ["entityName"] = AuditSaveChangesInterceptor.AuditedEntities.ToArray(),
+            // どちらも「本体がその絞り込みに実際に使っている配列」を読む。
+            // entityName を AuditedEntities から引き直さないのは、
+            // AllowedEntityNames が将来そこから絞り込まれても(退役したエンティティを
+            // ドロップダウンから隠す等)、この検査が古い語彙のまま
+            // 「載っている値なのに注意書きが出る」という無関係な失敗を出さないため
+            ["entityName"] = ReadPrivateAllowList(typeof(AuditLogsController), "AllowedEntityNames"),
             ["operation"] = ReadPrivateAllowList(typeof(AuditLogsController), "AllowedOperations"),
         };
 
@@ -3341,7 +3449,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
         // ドロップダウンを持つ絞り込みのうち、ResolveListedValue へ渡されていないものを集める
         var unwired = AuditLogsFilterSelectNames()
-            .Where(name => !Regex.IsMatch(source, $@"ResolveListedValue\s*\(\s*{name}\b"))
+            // 名前は Razor から拾った文字列なので、正規表現へ入れる前に必ずエスケープする
+            // (`.` を含む name が任意の 1 文字と一致して、配線漏れを見逃すのを防ぐ)
+            .Where(name => !Regex.IsMatch(source, $@"ResolveListedValue\s*\(\s*{Regex.Escape(name)}\b"))
             .ToList();
 
         // 1 つでもあれば落とす
@@ -3401,7 +3511,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
         // 採用しなかった値は画面へ戻さない ——戻すとドロップダウンは一致する <option> が
         // 無いので「(全て)」を指し、そのフォームを再送信した瞬間に絞り込みが解除される
-        Assert.Null(parameterName == "entityName" ? vm.EntityName : vm.Operation);
+        Assert.Null(AppliedListedFilterValue(vm, parameterName));
 
         // 読めなかったわけではないので、もう一方の旗は立てない
         // (2 つの文面が同時に出ると、利用者はどちらが自分の入力の話か分からない)
@@ -3446,7 +3556,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 絞り込みが実際に効いている(値が素通りしていないことの裏取り)
         Assert.Single(vm.Logs);
         // 採用した値は画面へ戻す(ドロップダウンの選択状態と一致させるため)
-        Assert.Equal(listed, parameterName == "entityName" ? vm.EntityName : vm.Operation);
+        Assert.Equal(listed, AppliedListedFilterValue(vm, parameterName));
     }
 
     // 未指定・空白のみは「採用しなかった」ではないこと。
@@ -3474,6 +3584,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     private async Task<AuditLogListViewModel> AuditLogsIndexWithListedFilterAsync(
         string parameterName, string? value)
     {
+        // 知らない名前が来たら落とす(fail-closed)。3 つ目の絞り込みを足した人がここへ
+        // 呼び出しを足し忘れると、実際には<b>何も送らない</b>リクエストになり、
+        // 「注意書きが出ない」という<b>配線が正しくても出る失敗</b>になって、
+        // 直すべき場所を指さないメッセージが残る
+        Assert.True(parameterName is "entityName" or "operation",
+            $"{parameterName} の送り方がこのテストに無い。絞り込みを足したなら、"
+            + "ここへも送り方を足すこと(足さないと、値を送っていないのに"
+            + "「注意書きが出ない」という誤った失敗になる)。");
+
         // 見張っている 2 つのうち、指定された側だけへ値を載せる
         var entityName = parameterName == "entityName" ? value : null;
         var operation = parameterName == "operation" ? value : null;
@@ -3482,6 +3601,20 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Index(entityName, operation, null, null, null, null, 1) as ViewResult;
         // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
         return Assert.IsType<AuditLogListViewModel>(result!.Model);
+    }
+
+    // 画面へ戻ってきた「採用した値」を、絞り込みの名前で引く。
+    // 上の送り方と同じく、知らない名前は落とす(片方だけ足すと、送れているのに
+    // 別の入力欄を見て「採用されていない」という誤った失敗になる)
+    private static string? AppliedListedFilterValue(AuditLogListViewModel vm, string parameterName)
+    {
+        // 名前ごとに、その入力が画面へ戻す先を選ぶ
+        if (parameterName == "entityName") return vm.EntityName;
+        if (parameterName == "operation") return vm.Operation;
+        // 知らない名前は fail-closed
+        Assert.Fail($"{parameterName} が画面へ戻す先がこのテストに無い。"
+            + "絞り込みを足したなら、ここへも戻り先を足すこと。");
+        return null;
     }
 
     // --- /AuditLogs: 旗をビューが実際に読んでいるか --------------------------------
