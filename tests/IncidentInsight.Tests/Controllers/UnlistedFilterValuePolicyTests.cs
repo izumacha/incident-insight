@@ -139,8 +139,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var controller = new IncidentsController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance),
-            new SystemClock(),
+            new RecurrenceService(TestFixtures.Clock, NullLogger<RecurrenceService>.Instance),
+            TestFixtures.Clock,
             NullLogger<IncidentsController>.Instance);
         // 指定が無ければ全部署を見られる Admin(部署スコープの影響を切り離すため)
         UserContextHelper.AttachUser(controller, user ?? UserContextHelper.Admin());
@@ -185,7 +185,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var controller = new PreventiveMeasuresController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new SystemClock(),
+            TestFixtures.Clock,
             NullLogger<PreventiveMeasuresController>.Instance);
         // 部署スコープの影響を切り離すため、全部署を見られる Admin で実行する
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
@@ -3024,7 +3024,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var controller = new PreventiveMeasuresController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new SystemClock(),
+            TestFixtures.Clock,
             NullLogger<PreventiveMeasuresController>.Instance);
         // 実行ロールを載せる(指定が無ければ全部署が見える Admin)
         UserContextHelper.AttachUser(controller, user ?? UserContextHelper.Admin());
@@ -3043,7 +3043,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "テスト",
             ReporterName = "報告者",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         // 計画中の対策を 1 件ぶら下げる(?status=Planned で拾える状態にしておく)
         incident.PreventiveMeasures.Add(new PreventiveMeasure
@@ -3053,7 +3053,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当A",
             ResponsibleDepartment = "ICU",
-            DueDate = DateTime.Today.AddDays(30),
+            DueDate = TestFixtures.Today.AddDays(30),
             Status = MeasureStatus.Planned,
             Priority = 2
         });
@@ -3610,9 +3610,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void UnlistedAuditValue_IsReallyOutsideEveryAllowList()
     {
-        // 表に載っているすべての許可リストと突き合わせる
+        // 表に載っているすべての許可リストと突き合わせる。
+        // 衝突した許可リストの名前を失敗メッセージへ載せるのは、この検査が落ちる場面が
+        // 「UnlistedAuditValue の綴りが実在の語彙になった」ときだから ——
+        // どちらの許可リスト(entityName / operation)と衝突したかが分からないと、
+        // 読み手は両方の語彙を目で追うことになる
         foreach (var (name, allowed) in AuditLogsAllowLists)
-            Assert.DoesNotContain(UnlistedAuditValue, allowed);
+            Assert.False(
+                allowed.Contains(UnlistedAuditValue, StringComparer.Ordinal),
+                $"許可リスト {name} が {UnlistedAuditValue} を含んでいる。" +
+                "この定数は「どの許可リストにも無い値」である前提なので、別の綴りへ変えること。");
 
         // 表が空だと「見るべき対象ゼロ＝緑」になるので落とす(fail-closed)
         Assert.NotEmpty(AuditLogsAllowLists);

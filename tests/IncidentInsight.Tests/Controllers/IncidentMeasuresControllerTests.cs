@@ -28,8 +28,8 @@ public class IncidentMeasuresControllerTests : IDisposable
         _controller = new IncidentMeasuresController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new SystemClock(),
-            new RecurrenceService(new SystemClock(), NullLogger<RecurrenceService>.Instance),
+            TestFixtures.Clock,
+            new RecurrenceService(TestFixtures.Clock, NullLogger<RecurrenceService>.Instance),
             NullLogger<IncidentMeasuresController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -45,8 +45,8 @@ public class IncidentMeasuresControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "状況",
             ReporterName = "報告者",
-            OccurredAt = DateTime.Now,
-            ReportedAt = DateTime.Now
+            OccurredAt = TestFixtures.Today,
+            ReportedAt = TestFixtures.Today
         };
         _db.Incidents.Add(incident);
         await _db.SaveChangesAsync();
@@ -62,7 +62,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当",
             ResponsibleDepartment = "内科病棟",
-            DueDate = DateTime.Today.AddDays(30),
+            DueDate = TestFixtures.Today.AddDays(30),
             Priority = 2,
             Status = status
         };
@@ -83,7 +83,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当者A",
             ResponsibleDepartment = "内科病棟",
-            DueDate = DateTime.Today.AddDays(15),
+            DueDate = TestFixtures.Today.AddDays(15),
             Priority = 1
         };
 
@@ -113,7 +113,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "田中太郎",
             ResponsibleDepartment = "内科病棟",
-            DueDate = DateTime.Today.AddDays(30),
+            DueDate = TestFixtures.Today.AddDays(30),
             Priority = 2
             // Description(必須)を意図的に未設定のままにし、実際の POST で [Required] により
             // 発生する ModelState エラーを手動で再現する(モデルバインディングを経ないため)
@@ -147,7 +147,7 @@ public class IncidentMeasuresControllerTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = "担当",
             ResponsibleDepartment = "内科病棟",
-            DueDate = DateTime.Today.AddDays(10),
+            DueDate = TestFixtures.Today.AddDays(10),
             Priority = 2
         };
 
@@ -182,8 +182,9 @@ public class IncidentMeasuresControllerTests : IDisposable
         // 上書きを許すと有効性評価日時が完了日時より前になる等、KPI の時系列整合性が壊れる。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
-        // 元の完了日時・完了メモを設定しておく
-        var originalCompletedAt = new DateTime(2026, 6, 1, 10, 0, 0);
+        // 元の完了日時・完了メモを設定しておく(「今」より前であることが
+        // 裸のリテラルではなく固定日からの相対で読めるようにする)
+        var originalCompletedAt = TestFixtures.Today.AddDays(-10);
         measure.CompletedAt = originalCompletedAt;
         measure.CompletionNote = "最初の完了メモ";
         await _db.SaveChangesAsync();
