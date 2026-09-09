@@ -182,8 +182,9 @@ public class IncidentMeasuresControllerTests : IDisposable
         // 上書きを許すと有効性評価日時が完了日時より前になる等、KPI の時系列整合性が壊れる。
         var incident = await SeedIncidentAsync();
         var measure = await SeedMeasureAsync(incident.Id, MeasureStatus.Completed);
-        // 元の完了日時・完了メモを設定しておく
-        var originalCompletedAt = new DateTime(2026, 6, 1, 10, 0, 0);
+        // 元の完了日時・完了メモを設定しておく(「今」より前であることが
+        // 裸のリテラルではなく固定日からの相対で読めるようにする)
+        var originalCompletedAt = TestFixtures.Today.AddDays(-10);
         measure.CompletedAt = originalCompletedAt;
         measure.CompletionNote = "最初の完了メモ";
         await _db.SaveChangesAsync();

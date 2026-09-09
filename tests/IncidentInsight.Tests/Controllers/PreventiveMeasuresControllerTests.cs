@@ -312,6 +312,8 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // (Complete / CompleteMeasure が再完了を拒否しているのと同じライフサイクル強制)
         var measure = await SeedMeasureAsync("内科病棟");
         // 「過去に完了し、その後に有効性評価済み」の状態を作る
+        // 元の完了日時(「今」より前であることが裸のリテラルではなく
+        // 固定日からの相対で読めるようにする)
         var originalCompletedAt = TestFixtures.Today.AddDays(-30);
         measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = originalCompletedAt;
