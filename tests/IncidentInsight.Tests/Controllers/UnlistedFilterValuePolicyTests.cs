@@ -2143,13 +2143,30 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // ViewModel に宣言されている旗の名前(命名規約で拾い、並びを固定して返す)
     private static List<string> DeclaredIgnoredFilterFlags() =>
-        typeof(IncidentListViewModel)
+        DeclaredIgnoredFilterFlagsOn(typeof(IncidentListViewModel));
+
+    // 指定した ViewModel が宣言している旗の名前。
+    // 型を引数で受けるのは、旗を持つ ViewModel が 2 つ(/Incidents ・ /AuditLogs)に
+    // 増えたため ——決め打ちのまま写すと、片方だけ規約を直したときにもう片方が取り残される
+    private static List<string> DeclaredIgnoredFilterFlagsOn(Type viewModel) =>
+        viewModel
             .GetProperties()
             .Where(p => p.PropertyType == typeof(bool) && p.Name.EndsWith(IgnoredFlagSuffix, StringComparison.Ordinal))
             .Select(p => p.Name)
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
+
+    // <b>旗を ViewModel で運ぶ画面と、その旗を立てるコントローラの対応。</b>
+    // 下の照合が両方を見るために要る ——片方だけを見ると、見ていない画面では
+    // 「ViewModel に宣言はあるが誰も立てない旗」(＝注意書きが死んだマークアップになる)が
+    // 全件緑のまま通る。ViewBag で渡す /PreventiveMeasures は ViewModel を持たないので
+    // ここには載らず、あちらは代入側の導出だけで回っている
+    private static readonly (Type ViewModel, string Controller)[] ViewModelFlagScreens =
+    {
+        (typeof(IncidentListViewModel), nameof(IncidentsController)),
+        (typeof(AuditLogListViewModel), nameof(AuditLogsController)),
+    };
 
     // 上の導出(命名規約)が旗を取りこぼしていないことを、判定とは独立な手がかりで照合する。
     //
@@ -2167,20 +2184,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void IgnoredFilterFlags_CoverEveryFlagTheControllerSets()
     {
-        // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
-        // ソースを開く手順も走査の規則も、カンバン側とまったく同じなので共有する
-        // (IgnoredFilterFlagNamesIn が正本。写しを持つと、規則を直したときに片方が取り残される)
-        var assigned = IgnoredFilterFlagNamesIn(nameof(IncidentsController));
+        // 旗を ViewModel で運ぶ画面すべてで、2 つの宣言箇所を突き合わせる
+        foreach (var (viewModel, controller) in ViewModelFlagScreens)
+        {
+            // 「<ViewModel のプロパティ> = <解決結果>.Ignored」という代入を全部拾う。
+            // ソースを開く手順も走査の規則も、カンバン側とまったく同じなので共有する
+            // (IgnoredFilterFlagNamesIn が正本。写しを持つと、規則を直したときに片方が取り残される)
+            var assigned = IgnoredFilterFlagNamesIn(controller);
 
-        // 代入が 1 つも読めないなら、書き方が変わって手がかりが死んでいる。
-        // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
-        Assert.True(assigned.Count > 0,
-            $"{nameof(IncidentsController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+            // 代入が 1 つも読めないなら、書き方が変わって手がかりが死んでいる。
+            // 「違反ゼロ＝緑」にせず落として、書き方かこの検査のどちらを直すか人に決めさせる
+            Assert.True(assigned.Count > 0,
+                $"{controller} に「… = ….Ignored」の代入が 1 つも見つからない。"
+                + "書き方を変えたなら、この照合も同じ変更セットで直すこと。");
 
-        // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
-        // 逆に画面へ渡らなくなった旗が ViewModel に残っている
-        Assert.Equal(DeclaredIgnoredFilterFlags(), assigned);
+            // 2 つの宣言箇所が一致していること。ずれていれば、命名規約から外れた旗があるか、
+            // 逆に<b>誰も立てない旗が ViewModel に残っている</b>
+            // ——後者は注意書きが永久に出ない死んだマークアップになるのに、
+            // 代入側の導出だけでは 0 件にならないので気付けない
+            Assert.Equal(DeclaredIgnoredFilterFlagsOn(viewModel), assigned);
+        }
+
+        // 見るべき画面が 0 件だと「取りこぼしゼロ＝緑」になるので落とす(fail-closed)
+        Assert.NotEmpty(ViewModelFlagScreens);
     }
 
     // ドロップダウンの選択肢プロパティの命名規約。下の導出はこの接尾辞で拾う
@@ -2591,6 +2617,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         return texts;
     }
 
+    // 0 件のときに「絞り込みが効いている」と主張する文言。
+    // 画面ごとの見出し(「…インシデントはありません」/「…監査ログがありません」)ではなく
+    // <b>この 1 文</b>を手がかりにするのは、これが「効いていないフィルターをクリアしろ」と
+    // 促してしまう当の文言で、どの画面でも同じだから(画面ごとの文字列を引数で渡すと、
+    // 3 画面目でまた 1 つ増える)
+    private const string FilterActiveEmptyStatePrompt = "検索条件を変更するか、フィルターをクリアしてください";
+
     // 旗の読み方の前置き。ViewModel を持つ画面(/Incidents ・ /AuditLogs)は Model. で、
     // ViewBag で渡す画面(/PreventiveMeasures)は ViewBag. で読む。
     // 文字列を各所へ直書きすると、読み方を変えたときに一部だけが取り残される(§6)
@@ -2699,49 +2732,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 注意書きの検査と同じく、旗を 1 つずつ見る(片方だけの検査にすると新しい旗が素通りする)
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
-    public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag)
-    {
-        // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
-        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
-        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
-        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
-
-        // パネルの開閉を決める式を取り出す
-        var panel = Regex.Match(source, @"var\s+showFilterPanel\s*=(?<expr>[^;]*);");
-        Assert.True(panel.Success, "showFilterPanel の判定が見つからない。");
-        // 「絞り込みが効いているか」を決める式を取り出す
-        var active = Regex.Match(source, @"var\s+anyFilter\s*=(?<expr>[^;]*);");
-        Assert.True(active.Success, "anyFilter の判定が見つからない。");
-
-        // パネルは開く
-        Assert.True(ContainsIdentifier(panel.Groups["expr"].Value, $"Model.{flag}"),
-            $"採用しなかった値があるときも絞り込みパネルを開くこと(showFilterPanel に Model.{flag} を含める)。"
-            + "開かないと、注意書きが案内する「下の絞り込みから選び直す」先が閉じたままになる。");
-        // ただし「適用中」ではない
-        Assert.False(ContainsIdentifier(active.Groups["expr"].Value, $"Model.{flag}"),
-            $"anyFilter に Model.{flag} を混ぜないこと。"
-            + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出て、"
-            + "0 件のときは効いていないフィルターの「クリア」を促してしまう。");
-
-        // 判定の「定義」だけでなく「使われ方」も見る。
-        // anyFilter の定義を正しく保ったまま、バッジや 0 件時の文言の側を
-        // showFilterPanel へ差し替えれば同じ矛盾が戻る（実測で全件緑のまま通った）。
-        //
-        // anyFilter の読み手は現在 3 つある: showFilterPanel の定義、「フィルター適用中」
-        // バッジ、0 件時の文言。このうち<b>「絞り込みが効いている」と主張する 2 つ</b>を
-        // ここで固定する（showFilterPanel は「開くかどうか」なので対象外）。
-        // <b>この列挙は自動では追随しない</b> ——「絞り込み中だけ出す」表示を新しく足す人は、
-        // それを anyFilter で出し分けたうえでここへ 1 件足すこと。
-        // showFilterPanel で出し分けると、注意書きの横で「絞り込み中」と主張する
-        // 表示がまた増える
-        var badge = Regex.Match(source, @"@if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*フィルター適用中");
-        Assert.True(badge.Success, "「フィルター適用中」バッジの出し分けが見つからない。");
-        Assert.Equal("anyFilter", badge.Groups["flag"].Value);
-
-        var emptyState = Regex.Match(source, @"if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*一致するインシデントはありません");
-        Assert.True(emptyState.Success, "0 件時の文言の出し分けが見つからない。");
-        Assert.Equal("anyFilter", emptyState.Groups["flag"].Value);
-    }
+    public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
+        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        AssertIgnoredFlagOpensThePanelButIsNotCalledActive("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
     /// アプリ本体のアセンブリにある MVC のコントローラをすべて返す。
@@ -3402,7 +3395,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // private な配列をリフレクションで読む ——公開されていないからといって
     // "Added" 等を書き写すと、語彙を変えたときにこの検査だけが古い値で緑になり、
     // 落ちるのは無関係な検査(「載っている値なのに注意書きが出る」)になる。
-    private static readonly IReadOnlyDictionary<string, string[]> AuditLogsAllowLists =
+    //
+    // <b>フィールドではなくプロパティにしてある。</b> 下の ReadPrivateAllowList は
+    // 読めなかったときに Assert で落とすが、静的フィールドの初期化子で呼ぶと
+    // その例外が静的コンストラクタの中で起きる ——xUnit は [MemberData] の収集時に
+    // TypeInitializationException として報告するので、<b>書いたメッセージは表に出ず、
+    // このクラスの全ケースが一斉に落ちる</b>。原因を名指しして落とす設計と正反対なので、
+    // 読むたびに評価される形にして失敗をその検査の中へ閉じ込める
+    private static IReadOnlyDictionary<string, string[]> AuditLogsAllowLists =>
         new Dictionary<string, string[]>(StringComparer.Ordinal)
         {
             // どちらも「本体がその絞り込みに実際に使っている配列」を読む。
@@ -3675,32 +3675,78 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 同じ形で固定する
     [Theory]
     [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
-    public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag)
+    public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
+        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        AssertIgnoredFlagOpensThePanelButIsNotCalledActive("AuditLogs", ViewModelFlagAccessor, flag);
+
+    /// <summary>
+    /// 注意書きが案内する先(絞り込みパネル)が実際に開くこと、そして
+    /// 「絞り込みが効いている」と主張する表示には混ざらないことを、まとめて確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para>この 2 つは同じ旗を使うが役割が逆で、片方へ寄せるとどちらかが必ず壊れる:
+    /// パネルの開閉に入れないと、「下の絞り込みから選び直してください」と書いてあるのに
+    /// パネルは閉じたまま(送った値は画面のどこにも無いので手掛かりが消える)。
+    /// <c>anyFilter</c> に入れると、「適用していません」の横でバッジが「フィルター適用中」と言い、
+    /// 0 件の環境では効いていないフィルターを「クリアしてください」と促す。
+    /// どちらの差し戻しも実測で全件緑のまま通ったので、ソースの形で固定する。</para>
+    ///
+    /// <para><b>判定の「定義」だけでなく「使われ方」も見る。</b> <c>anyFilter</c> の定義を
+    /// 正しく保ったまま、バッジや 0 件時の文言の側を <c>showFilterPanel</c> へ差し替えれば
+    /// 同じ矛盾が戻る(実測で全件緑のまま通った)。「絞り込みが効いている」と主張する
+    /// 表示は<b>バッジと 0 件時の文言の 2 つ</b>で、どちらも <c>anyFilter</c> で
+    /// 出し分けていることを見る(<c>showFilterPanel</c> は「開くかどうか」なので対象外)。</para>
+    ///
+    /// <para><b>2 画面で共有する(§6 DRY)。</b> 以前は <c>/Incidents</c> 用の走査を
+    /// <c>/AuditLogs</c> へ手で写しており、その写しで<b>0 件時の文言の検査だけが落ちていた</b>
+    /// ——同じコミットが隣の 2 つの走査を共通化したのに、これだけ写したせいで
+    /// 片方の画面が守られていなかった。走査を 1 つにすれば、画面ごとに違うのは
+    /// 「ビューの置き場所」「旗の読み方」「0 件時の文言」の 3 つだけになる。</para>
+    /// </remarks>
+    /// <param name="viewFolder">ビューの置き場所(<c>Views/&lt;ここ&gt;/Index.cshtml</c>)。</param>
+    /// <param name="accessor">旗の読み方の前置き(<c>Model.</c> または <c>ViewBag.</c>)。</param>
+    /// <param name="flag">確かめる旗の名前。</param>
+    private static void AssertIgnoredFlagOpensThePanelButIsNotCalledActive(
+        string viewFolder, string accessor, string flag)
     {
-        // 監査ログビューの Razor ソースを読む(コメントは落としてある)
-        var source = ReadIndexViewSource("AuditLogs");
+        // 一覧ビューの Razor ソースを読む(コメントは落としてある)
+        var source = ReadIndexViewSource(viewFolder);
 
         // パネルの開閉を決める式を取り出す
         var panel = Regex.Match(source, @"var\s+showFilterPanel\s*=(?<expr>[^;]*);");
-        Assert.True(panel.Success, "showFilterPanel の判定が見つからない。");
+        Assert.True(panel.Success, $"Views/{viewFolder}/Index.cshtml に showFilterPanel の判定が見つからない。");
         // 「絞り込みが効いているか」を決める式を取り出す
         var active = Regex.Match(source, @"var\s+anyFilter\s*=(?<expr>[^;]*);");
-        Assert.True(active.Success, "anyFilter の判定が見つからない。");
+        Assert.True(active.Success, $"Views/{viewFolder}/Index.cshtml に anyFilter の判定が見つからない。");
 
         // パネルは開く
-        Assert.True(ContainsIdentifier(panel.Groups["expr"].Value, $"Model.{flag}"),
-            $"採用しなかった値があるときも絞り込みパネルを開くこと(showFilterPanel に Model.{flag} を含める)。"
+        Assert.True(ContainsIdentifier(panel.Groups["expr"].Value, $"{accessor}{flag}"),
+            $"採用しなかった値があるときも絞り込みパネルを開くこと"
+            + $"(showFilterPanel に {accessor}{flag} を含める)。"
             + "開かないと、注意書きが案内する「下の絞り込みから選び直す」先が閉じたままになる。");
         // ただし「適用中」ではない
-        Assert.False(ContainsIdentifier(active.Groups["expr"].Value, $"Model.{flag}"),
-            $"anyFilter に Model.{flag} を混ぜないこと。"
-            + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出る。");
+        Assert.False(ContainsIdentifier(active.Groups["expr"].Value, $"{accessor}{flag}"),
+            $"anyFilter に {accessor}{flag} を混ぜないこと。"
+            + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出て、"
+            + "0 件のときは効いていないフィルターの「クリア」を促してしまう。");
 
-        // 判定の「定義」だけでなく「使われ方」も見る(理由は /Incidents 側の解説が正本)。
-        // この画面で「絞り込みが効いている」と主張する表示は「フィルター適用中」バッジだけ
+        // 「絞り込み中だけ出す」表示が anyFilter で出し分けられていること。
+        // <b>この 2 つは自動では追随しない</b> ——新しくその種の表示を足す人は、
+        // anyFilter で出し分けたうえでここへ 1 件足すこと
         var badge = Regex.Match(source, @"@if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*フィルター適用中");
-        Assert.True(badge.Success, "「フィルター適用中」バッジの出し分けが見つからない。");
+        Assert.True(badge.Success,
+            $"Views/{viewFolder}/Index.cshtml に「フィルター適用中」バッジの出し分けが見つからない。");
         Assert.Equal("anyFilter", badge.Groups["flag"].Value);
+
+        // 0 件時の文言(「条件を変えるか、フィルターをクリア」)も同じく anyFilter で出し分ける。
+        // ここを showFilterPanel へ差し替えると、一度も適用されていない絞り込みについて
+        // 「クリアしてください」と促すことになる
+        var emptyState = Regex.Match(
+            source, $@"if\s*\(\s*(?<flag>\w+)\s*\)\s*\{{[^}}]*{Regex.Escape(FilterActiveEmptyStatePrompt)}");
+        Assert.True(emptyState.Success,
+            $"Views/{viewFolder}/Index.cshtml に 0 件時の文言"
+            + $"(「{FilterActiveEmptyStatePrompt}」)の出し分けが見つからない。");
+        Assert.Equal("anyFilter", emptyState.Groups["flag"].Value);
     }
 
     // --- 画面をまたぐ網羅ガード: enum の絞り込みを持つ画面を取りこぼさない ------------
