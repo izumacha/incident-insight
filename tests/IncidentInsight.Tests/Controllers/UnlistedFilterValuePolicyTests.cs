@@ -851,8 +851,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     // アクションの引数のうち<b>読めなければ黙って別の値へ化けるもの</b>を、モデルバインドが
-    // ModelState のキーに使う「URL 上の名前」で拾う。/Incidents と /PreventiveMeasures の
-    // 導出が共有する(判定を書き写すと、片方だけ直したときにもう片方の検出網が静かに緩む)
+    // ModelState のキーに使う「URL 上の名前」で拾う。
+    //
+    // <b>読み手はここ 1 か所ではない。</b> 4 画面の導出(UnreadableProneTheoryData /
+    // AnalyticsUnreadableProneParameters)と、除外表に掛かる 2 つの門番が同じここを読む。
+    // <b>この判定を狭めると、その全部が同時に、しかも黙って狭まる</b>
+    // (「対象ゼロ＝全件緑」の fail-open)ので、IsUnreadableProne を触るときは
+    // 呼び出し元を辿ってから決めること
     private static IEnumerable<string> UnreadableProneQueryNames(MethodInfo action) =>
         action.GetParameters()
             .Where(IsUnreadableProne)
@@ -1657,15 +1662,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter()
     {
-        // アプリ全体から「DateTime? の引数を受けるアクション」を拾う
-        var actual = DateRangeActionParametersInTheApp();
+        // アプリ全体から「DateTime? の引数を受けるアクション」を拾い、意図的な除外を引く
+        var derived = DateRangeActionParametersInTheApp();
+        var actual = derived.Where(name => !DateRangeGuardExemptions.ContainsKey(name)).ToList();
 
-        // 1 つも拾えないのは「期間の絞り込みが無くなった」より「導出が壊れた」可能性が高い。
-        // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
-        Assert.True(actual.Count > 0,
+        // 除外の前に 0 件かどうかを見る(「導出が壊れた」のか「除外表が全部を覆った」のかを
+        // 取り違えた案内にしないため。MalformedFilterExemptions と同じ 2 段階)
+        Assert.True(derived.Count > 0,
             "DateTime? の引数を受けるアクションが 1 つも見つからない。"
             + "導出を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、読めない期間指定の検査が対象ゼロで全件緑になる)。");
+        Assert.True(actual.Count > 0,
+            $"{nameof(DateRangeGuardExemptions)} が対象のアクションをすべて覆っている"
+            + $"({string.Join(", ", derived)})。");
 
         // 「どの引数が、どの検査で覆われているか」の表。
         //
@@ -1723,6 +1732,55 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "その検査と一緒にここへ足すこと(選べないなら、それはこの表に載せる引数ではない)。");
     }
 
+    // <b>期間の絞り込みの網羅ガードから意図的に外すアクション引数</b>(キー → 外す理由)。
+    //
+    // <b>なぜ空でも置くのか。</b> 上のガードは「アプリ全体の <c>DateTime?</c> の引数」を
+    // 手当ての対象として要求するが、<c>DateTime?</c> が絞り込み以外に現れないことは
+    // <b>署名からは保証できない</b> ——たとえば保存を伴う POST が
+    // <c>CompleteMeasure(int id, DateTime? completedAt)</c> のような引数を受けると、
+    // 伝え先(ViewModel / ViewBag / Json)のどれも当てはまらないのにガードが手当てを要求し、
+    // 逃げ道は「偽の伝え先を書く」か「ガードごと消す」になる。
+    // 実行不能な指示を出す検出網はいずれ緩められるので、逃げ道を<b>理由付きで</b>用意する。
+    //
+    // <b>ただし人が見るエスケープハッチ</b>(MalformedFilterExemptions /
+    // LengthGovernanceExclusions と同じ扱い)。「絞り込みかどうか」は署名から判定できないので、
+    // 本物の絞り込みをもっともらしい理由で登録すれば黙って外れる ——
+    // <b>この表にエントリが増える差分は、理由の妥当性をレビューで必ず確認すること</b>。
+    // 現在の登録は 0 件(このアプリの DateTime? はすべて絞り込み)。
+    private static readonly IReadOnlyDictionary<string, string> DateRangeGuardExemptions =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    // 除外表のキーが、いまも実在する DateTime? の引数を指していること。
+    // 引数を消した・改名したときにエントリだけが残ると、表は「何を外しているのか
+    // 分からない飾り」になり、次に同じ名前の引数を足した人が気付かないまま外へ置かれる
+    [Fact]
+    public void DateRangeGuardExemptions_AreAllStillReal()
+    {
+        // 現時点で導出が拾う DateTime? の引数
+        var actual = DateRangeActionParametersInTheApp().ToHashSet(StringComparer.Ordinal);
+        // 表のキーのうち、その一覧に無いもの
+        var stale = DateRangeGuardExemptions.Keys.Where(name => !actual.Contains(name)).ToList();
+        Assert.True(stale.Count == 0,
+            $"{nameof(DateRangeGuardExemptions)} に実在しない引数が残っている: {string.Join(", ", stale)}。"
+            + "引数を消した・改名したなら、同じ変更セットでこの表からも消すこと。");
+    }
+
+    // 除外の理由が空・空白でないこと。
+    // 値を誰も読まないと、理由を "   " にするだけで検出網を黙らせられる
+    [Fact]
+    public void DateRangeGuardExemptions_AllHaveAReason()
+    {
+        // 理由が空・空白のみのエントリを集める
+        var blank = DateRangeGuardExemptions
+            .Where(pair => string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => pair.Key)
+            .ToList();
+        Assert.True(blank.Count == 0,
+            $"{nameof(DateRangeGuardExemptions)} の理由が空: {string.Join(", ", blank)}。"
+            + "「なぜ手当ての対象外でよいのか」を書くこと(理由を書けないなら、"
+            + "それは除外してよい引数ではない)。");
+    }
+
     // 「読めなかったことをどう伝えるか」の選択肢。表の値はこの 3 つに限る。
     // 文字列を表と検査の 2 か所へ直書きすると、片方だけ増やしたときに検査が黙って緩む(§6)
     private static readonly IReadOnlySet<string> MalformedFilterDeliveries =
@@ -1730,12 +1788,32 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // アプリ全体のコントローラから「DateTime? のアクション引数」を
     // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
-    //
-    // コントローラの選び方・DeclaredOnly で絞らない理由は
-    // EnumActionParametersInTheApp と同じ(そちらの解説が正本)。
-    // 走査の形をそろえてあるのは、片方だけ拾い方を直したときに
-    // もう片方の検出網が黙って狭くなるのを避けるため
-    private static List<string> DateRangeActionParametersInTheApp()
+    // 走査そのものは enum 側と共有する(ActionParametersInTheApp が正本)
+    private static List<string> DateRangeActionParametersInTheApp() =>
+        // 期間の絞り込みは必ず DateTime? で受ける
+        ActionParametersInTheApp(p => p.ParameterType == typeof(DateTime?));
+
+    /// <summary>
+    /// アプリ全体のコントローラのアクション引数のうち、条件に当たるものを
+    /// <c>"&lt;コントローラ名&gt;.&lt;アクション名&gt;.&lt;引数名&gt;"</c> の形で拾う。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>2 つの網羅ガードで共有する(§6 DRY)。</b> 以前は「期間の絞り込み」用と
+    /// 「enum の絞り込み」用に、走査(アセンブリの選び方・<c>ControllerBase</c> の絞り込み・
+    /// <c>IsSpecialName</c> の除外・宣言元アセンブリの判定・キーの作り方・畳み方・並びの固定)を
+    /// 丸ごと写していた。<b>写しがあると、拾い方を直したときにもう片方が黙って狭くなる</b>
+    /// ——たとえば <c>[NonAction]</c> を除外する規則を片方だけへ足すと、
+    /// もう片方の網羅ガードは対象が広いまま食い違い、あるいは逆に狭まって取りこぼす。
+    /// 違うのは「どの引数を拾うか」だけなので、そこだけを引数で受ける。</para>
+    ///
+    /// <para><b>コントローラの選び方は <c>ControllerBase</c> 基準</b>。<c>Controller</c>
+    /// (ビューを返す基底)に絞ると <c>[ApiController]</c> の JSON エンドポイントが見えない。
+    /// <b><c>DeclaredOnly</c> でも絞らない</b> ——共通の基底コントローラへアクションを
+    /// 引き上げると、基底(abstract で除外)にも派生(そこでは宣言していない)にも現れず、
+    /// その画面がテスト件数すら変えずに消える。代わりに<b>宣言元が自分たちのアセンブリか</b>で切る。</para>
+    /// </remarks>
+    /// <param name="matches">拾いたい引数かどうかの判定。</param>
+    private static List<string> ActionParametersInTheApp(Func<ParameterInfo, bool> matches)
     {
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
         var ownAssembly = typeof(IncidentsController).Assembly;
@@ -1748,9 +1826,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 // 宣言元が自分たちのアセンブリのものだけ(Controller/object の public メソッドを拾わない)
                 .Where(m => m.DeclaringType?.Assembly == ownAssembly)
                 .SelectMany(m => m.GetParameters()
-                    // 期間の絞り込みは必ず DateTime? で受ける
-                    .Where(p => p.ParameterType == typeof(DateTime?))
-                    .Select(p => $"{t.Name}.{m.Name}.{p.Name}")))
+                    .Where(matches)
+                    // 名前は<b>宣言元の型</b>で作る。走査中の型で作ると、自前の基底から
+                    // 継いだアクションが基底と派生の 2 件として現れ、1 つのアクションに
+                    // 2 行の表エントリを求める(下の Distinct では畳めない)
+                    .Select(p => $"{m.DeclaringType!.Name}.{m.Name}.{p.Name}")))
             // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
             .Distinct(StringComparer.Ordinal)
             // 実行ごとに順番が揺れないよう並びを固定する
@@ -3090,8 +3170,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 引数名を見張り MVC は別名にエラーを積む食い違いが検出できない。写しを持つ限り
     // 片方だけ直されて、もう片方の検出網が静かに緩む(§6 DRY)。
     //
-    // 除外表を持たないのは、この画面に外している引数が 1 つも無いため
-    // (先回りで用意すると、実在しない事情のための分岐を増やすことになる。§6)
+    // <b>除外表(MalformedFilterExemptions)はこの画面にも掛かる。</b> 共有の導出が
+    // 画面を問わず引くので、たとえばこの画面へ page を足すと<b>自動で外れる</b>
+    // ——「渡すか、除外するか」を決めさせるのは表への<b>登録</b>であって画面ではない。
+    // いまこの画面から外れている引数は 1 つも無い(表の登録が page だけで、
+    // この画面は page を受けないため)
     public static TheoryData<string> MeasuresUnreadableProneParameters() =>
         // 導出そのものは画面をまたいで共有する(UnreadableProneTheoryData が正本)
         UnreadableProneTheoryData(MeasuresIndexMethod);
@@ -3378,6 +3461,58 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 監査ログ画面の絞り込みドロップダウンの name を、Razor のソースから拾う。
     // Theory のケース作りと下の配線の照合が同じここを読む(§6 DRY)
     private static List<string> AuditLogsFilterSelectNames() =>
+        AuditLogsSelectNames()
+            .Where(name => !AuditLogsNonFilterSelects.ContainsKey(name))
+            .ToList();
+
+    // <b>絞り込みではないドロップダウンを外す表</b>(name → 外す理由)。
+    //
+    // <b>なぜ要るのか。</b> 上の導出は「絞り込みパネルの <c>&lt;select&gt;</c> は
+    // すべて許可リストの絞り込み」という前提に立つが、それは署名からも Razor からも
+    // 保証できない ——表示件数(<c>pageSize</c>)や並び順(<c>sort</c>)のような
+    // <b>絞り込みでないドロップダウン</b>を足すと、ガードが
+    // 「<c>ResolveListedValue</c> を通せ」と要求し、逃げ道は
+    // 「絞り込みでない入力を解決処理へ通す」か「走査ごと緩める」になる。
+    // 実行不能な指示を出す検出網はいずれ緩められるので、逃げ道を<b>理由付きで</b>用意する。
+    //
+    // <b>人が見るエスケープハッチ</b>(MalformedFilterExemptions と同じ扱い)。
+    // 本物の絞り込みをもっともらしい理由で登録すれば黙って外れるので、
+    // <b>この表にエントリが増える差分は、理由の妥当性をレビューで必ず確認すること</b>。
+    // 現在の登録は 0 件(この画面のドロップダウンはどちらも許可リストの絞り込み)。
+    private static readonly IReadOnlyDictionary<string, string> AuditLogsNonFilterSelects =
+        new Dictionary<string, string>(StringComparer.Ordinal);
+
+    // 除外表のキーが、いまも画面に実在する <select> を指していること
+    [Fact]
+    public void AuditLogsNonFilterSelects_AreAllStillReal()
+    {
+        // 画面にあるドロップダウンの名前
+        var actual = AuditLogsSelectNames().ToHashSet(StringComparer.Ordinal);
+        // 表のキーのうち、その一覧に無いもの
+        var stale = AuditLogsNonFilterSelects.Keys.Where(name => !actual.Contains(name)).ToList();
+        Assert.True(stale.Count == 0,
+            $"{nameof(AuditLogsNonFilterSelects)} に実在しない <select> が残っている: "
+            + $"{string.Join(", ", stale)}。画面から消した・改名したなら、"
+            + "同じ変更セットでこの表からも消すこと。");
+    }
+
+    // 除外の理由が空・空白でないこと(理由を "   " にして黙らせられないようにする)
+    [Fact]
+    public void AuditLogsNonFilterSelects_AllHaveAReason()
+    {
+        // 理由が空・空白のみのエントリを集める
+        var blank = AuditLogsNonFilterSelects
+            .Where(pair => string.IsNullOrWhiteSpace(pair.Value))
+            .Select(pair => pair.Key)
+            .ToList();
+        Assert.True(blank.Count == 0,
+            $"{nameof(AuditLogsNonFilterSelects)} の理由が空: {string.Join(", ", blank)}。"
+            + "「なぜ絞り込みではないのか」を書くこと。");
+    }
+
+    // 画面にあるドロップダウンの name をそのまま並べる(除外を引く前の生の一覧)。
+    // 除外表の門番は、狭める側と同じ導出ではなくこちらを見る
+    private static List<string> AuditLogsSelectNames() =>
         // 属性の並び順に依存しない形で name を拾う。`<select name=... class=...>` の
         // 決め打ちにすると、<b>属性を並べ替えるだけ</b>でその絞り込みが導出から消え、
         // 3 つの検査が同時に対象を失う(実測で全件緑のまま通り、痕跡はテスト件数だけだった)
@@ -3562,21 +3697,39 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 未指定・空白のみは「採用しなかった」ではないこと。
     // ここを区別しないと、絞り込みを使っていない普通の一覧で警告が出続け、読まれなくなる
     [Theory]
-    [InlineData(null)]
-    [InlineData("")]
-    [InlineData("   ")]
-    public async Task AuditLogsIndex_ReportsNothing_WhenNoListedFilterWasSent(string? sent)
+    [MemberData(nameof(AuditLogsEmptyListedFilterValues))]
+    public async Task AuditLogsIndex_ReportsNothing_WhenNoListedFilterWasSent(
+        string parameterName, string? sent)
     {
         // 一覧に出る行を 1 件用意する
         await SeedSingleAuditLogAsync();
 
         // 空・空白のみ(＝絞り込み無し)で一覧を引く
-        var vm = await AuditLogsIndexWithListedFilterAsync("entityName", sent);
+        var vm = await AuditLogsIndexWithListedFilterAsync(parameterName, sent);
 
         // 受け取っていないものは「採用しなかった」ではない
         Assert.False(vm.UnlistedFilterIgnored);
         // 絞り込みも掛かっていない
         Assert.Single(vm.Logs);
+    }
+
+    // 「未指定」を表す入力を、許可リストの絞り込みごとに掛け合わせたケース。
+    //
+    // 1 つの入力欄だけを見る形にしない ——片方の入力だけを
+    // SearchFilter.HasValue を通さない書き方(素の Contains 判定など)へ変えると、
+    // ?operation=%20%20%20 で「選べる値ではない」の注意書きが出るのに全件緑で通る
+    // (姉妹の 2 つの検査はどちらも許可リストの絞り込み全部に掛かっているので、
+    //  ここだけ片方に絞ると穴になる)
+    public static TheoryData<string, string?> AuditLogsEmptyListedFilterValues()
+    {
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string, string?>();
+        // 絞り込みの名前は画面から導く(手書きにすると 3 つ目を足した人が行を足し忘れる)
+        foreach (var name in AuditLogsFilterSelectNames())
+            // 「未指定」と読むべき 3 通りをそれぞれ掛ける
+            foreach (var empty in new string?[] { null, "", "   " })
+                data.Add(name, empty);
+        return data;
     }
 
     // 許可リストで閉じた絞り込みだけを指定して一覧を引く。
@@ -3819,41 +3972,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 書いていたが、このリポジトリではその前提が既に成り立っていない ——
     // PreventiveMeasuresController.UpdateStatus は非 null 許容の MeasureStatus を受け、
     // まさに未定義値が届きうるので自前の Enum.IsDefined ゲートを持っている。
-    // 絞ると、既定値付きの非 null 許容 enum 引数
-    // (Index(MeasureStatus status = Planned, …) のような形。束縛に失敗すると
-    //  黙って既定値へ落ちる)が検出網から丸ごと外れる。
+    // 絞ると、既定値付きの非 null 許容 enum 引数が検出網から丸ごと外れる。
     //
-    // <b>コントローラの選び方は ControllerBase 基準</b>。Controller(ビューを返す基底)に
-    // 絞ると [ApiController] : ControllerBase の JSON エンドポイントが見えない ——
-    // SearchFilter の解説が「次に広げる画面」として名指ししている /Analytics が
-    // まさに JSON 専用なので、その形は現実的に増えうる。
-    //
-    // <b>DeclaredOnly でも絞らない</b>。共通の基底コントローラへアクションを引き上げると、
-    // 基底(abstract で除外)にも派生(そこでは宣言していない)にも現れず、
-    // その画面がテスト件数すら変えずに消える —— CLAUDE.md が
-    // LengthGovernedEntityTypes() について書いている「黙って狭まる」形そのもの。
-    // 代わりに<b>宣言元が自分たちのアセンブリか</b>で切る(フレームワーク側の
-    // public メソッドを拾わず、自前の基底から継いだアクションは拾う)
-    private static List<string> EnumActionParametersInTheApp()
-    {
-        // 自分たちのアセンブリ(名前空間の切り直しで外れない)
-        var ownAssembly = typeof(IncidentsController).Assembly;
-        // そのアセンブリのコントローラをすべて見る
-        return ownAssembly.GetTypes()
-            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
-            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
-                // プロパティのゲッターなど、アクションでないものを除く
-                .Where(m => !m.IsSpecialName)
-                // 宣言元が自分たちのアセンブリのものだけ(Controller/object の public メソッドを拾わない)
-                .Where(m => m.DeclaringType?.Assembly == ownAssembly)
-                .SelectMany(m => m.GetParameters()
-                    // null 許容かどうかを問わず、enum の引数をすべて拾う
-                    .Where(p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum)
-                    .Select(p => $"{t.Name}.{m.Name}.{p.Name}")))
-            // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
-            .Distinct(StringComparer.Ordinal)
-            // 実行ごとに順番が揺れないよう並びを固定する
-            .OrderBy(name => name, StringComparer.Ordinal)
-            .ToList();
-    }
+    // 走査そのものは期間の絞り込み側と共有する(ActionParametersInTheApp が正本)
+    private static List<string> EnumActionParametersInTheApp() =>
+        // null 許容かどうかを問わず、enum の引数をすべて拾う
+        ActionParametersInTheApp(
+            p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum);
 }

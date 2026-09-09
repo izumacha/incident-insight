@@ -111,7 +111,7 @@ namespace IncidentInsight.Web.Models.Validation;
 ///     自部署にまだ 1 件も無い分類で絞り込めなくなる実害だけが残る。</description></item>
 /// </list>
 ///
-/// <para><b>「採用しない」ときは黙って落とさない(<c>/Incidents</c> と <c>/Analytics</c>)。</b>
+/// <para><b>「採用しない」ときは黙って落とさない(画面を問わず)。</b>
 /// 入力を受け取ったのに絞り込まなかった場合、<c>/Incidents</c> は画面に注意書きを出す
 /// (<see cref="ViewModels.IncidentListViewModel.DepartmentFilterIgnored"/> /
 /// <see cref="ViewModels.IncidentListViewModel.CauseCategoryFilterIgnored"/>)。黙って落とすと、絞り込んだ
@@ -293,7 +293,10 @@ namespace IncidentInsight.Web.Models.Validation;
 /// (どちらも絞り込んだつもりで全件が返る)。同じ画面の同じ入力欄で、綴りが
 /// <c>abc</c> なら知らせて <c>99</c> なら黙る、という状態こそ
 /// <c>MalformedFilterValueResolver</c> が塞いだ「一貫性の欠如」そのもの。
-/// つまり<b>伝えるかどうかを分けているのは画面であって、値の集合の性質ではない</b>。</para>
+/// つまり<b>値の集合が閉じているかどうかは、伝えるかどうかを分ける根拠にならない</b>
+/// (かつてここには「分けているのは画面であって値の集合の性質ではない」と書いていたが、
+/// その言い方は「画面ごとに違ってよい」と読めてしまう。実際にそう読める状態を作ったのが
+/// issue #220 で、いまは<b>画面でも分けない</b> ——次の段落を参照)。</para>
 ///
 /// <para><b><c>/AuditLogs</c> の許可リストも同じ扱いになった(issue #220)。</b>
 /// 上の段落が「<c>/AuditLogs</c> には注意書きの仕組みが無い」と書いていた前提は

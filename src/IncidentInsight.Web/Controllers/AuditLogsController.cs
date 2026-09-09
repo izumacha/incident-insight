@@ -222,8 +222,9 @@ public class AuditLogsController : Controller
     /// 方式の選び方そのものは <see cref="Models.Validation.SearchFilter"/> の表が正本。</para>
     ///
     /// <para><b>共有ヘルパーへ出していない</b>のは、いまの利用側がこの画面の 2 つだけだから
-    /// (§6「将来を見越した過度な抽象化を避ける」)。3 画面目が同じ形を必要としたら
-    /// <c>Controllers/Internal/</c> へ移す。</para>
+    /// (§6「将来を見越した過度な抽象化を避ける」)。<b>2 画面目が同じ形を必要としたら
+    /// <c>Controllers/Internal/</c> へ移す</b>(この判断は CLAUDE.md §3 にも同じ形で
+    /// 書いてある。片方だけ違う条件を書くと、次の人がどちらに従うか決められない)。</para>
     /// </remarks>
     /// <param name="value">クエリ文字列から届いた絞り込み値(未指定なら <c>null</c>)。</param>
     /// <param name="allowed">その入力が取りうる値の許可リスト。</param>
