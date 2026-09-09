@@ -3610,9 +3610,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void UnlistedAuditValue_IsReallyOutsideEveryAllowList()
     {
-        // 表に載っているすべての許可リストと突き合わせる
+        // 表に載っているすべての許可リストと突き合わせる。
+        // 衝突した許可リストの名前を失敗メッセージへ載せるのは、この検査が落ちる場面が
+        // 「UnlistedAuditValue の綴りが実在の語彙になった」ときだから ——
+        // どちらの許可リスト(entityName / operation)と衝突したかが分からないと、
+        // 読み手は両方の語彙を目で追うことになる
         foreach (var (name, allowed) in AuditLogsAllowLists)
-            Assert.DoesNotContain(UnlistedAuditValue, allowed);
+            Assert.False(
+                allowed.Contains(UnlistedAuditValue, StringComparer.Ordinal),
+                $"許可リスト {name} が {UnlistedAuditValue} を含んでいる。" +
+                "この定数は「どの許可リストにも無い値」である前提なので、別の綴りへ変えること。");
 
         // 表が空だと「見るべき対象ゼロ＝緑」になるので落とす(fail-closed)
         Assert.NotEmpty(AuditLogsAllowLists);

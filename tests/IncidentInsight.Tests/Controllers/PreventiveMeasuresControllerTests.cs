@@ -4,7 +4,6 @@ using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
 using IncidentInsight.Web.Models.ViewModels;
-using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 // InMemoryEventId は InMemory プロバイダの警告 ID を参照するために必要
@@ -32,7 +31,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         _controller = new PreventiveMeasuresController(
             _db,
             UserContextHelper.BuildAuthService(),
-            new SystemClock(),
+            TestFixtures.Clock,
             NullLogger<PreventiveMeasuresController>.Instance);
         UserContextHelper.AttachUser(_controller, UserContextHelper.Admin());
     }
@@ -54,7 +53,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Severity = IncidentSeverity.Level2,
             Description = "テスト",
             ReporterName = "担当",
-            OccurredAt = DateTime.Now
+            OccurredAt = TestFixtures.Today
         };
         var measure = new PreventiveMeasure
         {
@@ -63,7 +62,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             MeasureType = MeasureTypeKind.ShortTerm,
             ResponsiblePerson = responsiblePerson,
             ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
-            DueDate = DateTime.Today.AddDays(30),
+            DueDate = TestFixtures.Today.AddDays(30),
             Priority = 2
         };
         incident.PreventiveMeasures.Add(measure);
@@ -78,7 +77,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 MeasureType = MeasureTypeKind.ShortTerm,
                 ResponsiblePerson = "担当B",
                 ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
-                DueDate = DateTime.Today.AddDays(30),
+                DueDate = TestFixtures.Today.AddDays(30),
                 Priority = 2
             });
         }
@@ -209,7 +208,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 完了 → 進行中へ差し戻したとき、CompletedAt が null にクリアされること
         var measure = await SeedMeasureAsync("内科病棟");
         measure.Status = MeasureStatus.Completed;
-        measure.CompletedAt = DateTime.Now;
+        measure.CompletedAt = TestFixtures.Today;
         await _db.SaveChangesAsync();
 
         var result = await _controller.UpdateStatus(
@@ -230,11 +229,11 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var measure = await SeedMeasureAsync("内科病棟");
         // 完了させ、さらに「再発あり・低評価」で有効性評価済みの状態を作る
         measure.Status = MeasureStatus.Completed;
-        measure.CompletedAt = DateTime.Now;
+        measure.CompletedAt = TestFixtures.Today;
         measure.EffectivenessRating = 2;
         measure.EffectivenessNote = "効果が薄かった";
         measure.RecurrenceObserved = true;
-        measure.EffectivenessReviewedAt = DateTime.Now;
+        measure.EffectivenessReviewedAt = TestFixtures.Today;
         await _db.SaveChangesAsync();
 
         // カンバン上で完了から進行中へ差し戻す
@@ -262,7 +261,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         var measure = await SeedMeasureAsync("内科病棟");
         // 完了済み + 完了報告メモありの状態を作る
         measure.Status = MeasureStatus.Completed;
-        measure.CompletedAt = DateTime.Now;
+        measure.CompletedAt = TestFixtures.Today;
         measure.CompletionNote = "手順書を改訂して周知済み";
         await _db.SaveChangesAsync();
 
@@ -313,13 +312,13 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // (Complete / CompleteMeasure が再完了を拒否しているのと同じライフサイクル強制)
         var measure = await SeedMeasureAsync("内科病棟");
         // 「過去に完了し、その後に有効性評価済み」の状態を作る
-        var originalCompletedAt = DateTime.Now.AddDays(-30);
+        var originalCompletedAt = TestFixtures.Today.AddDays(-30);
         measure.Status = MeasureStatus.Completed;
         measure.CompletedAt = originalCompletedAt;
         measure.EffectivenessRating = 4;
         measure.EffectivenessNote = "十分な効果があった";
         measure.RecurrenceObserved = false;
-        measure.EffectivenessReviewedAt = DateTime.Now.AddDays(-10);
+        measure.EffectivenessReviewedAt = TestFixtures.Today.AddDays(-10);
         await _db.SaveChangesAsync();
 
         // 完了済みの対策へ「完了」を再指定する(古いタブからの再送信や改ざん POST を模す)
@@ -470,7 +469,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                     Severity = IncidentSeverity.Level2,
                     Description = "テスト",
                     ReporterName = "担当",
-                    OccurredAt = DateTime.Now
+                    OccurredAt = TestFixtures.Today
                 };
                 var measureA = new PreventiveMeasure
                 {
@@ -479,7 +478,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                     MeasureType = MeasureTypeKind.ShortTerm,
                     ResponsiblePerson = "担当A",
                     ResponsibleDepartment = "内科病棟",
-                    DueDate = DateTime.Today.AddDays(30),
+                    DueDate = TestFixtures.Today.AddDays(30),
                     Priority = 2
                 };
                 var measureB = new PreventiveMeasure
@@ -489,7 +488,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                     MeasureType = MeasureTypeKind.ShortTerm,
                     ResponsiblePerson = "担当B",
                     ResponsibleDepartment = "内科病棟",
-                    DueDate = DateTime.Today.AddDays(30),
+                    DueDate = TestFixtures.Today.AddDays(30),
                     Priority = 2
                 };
                 incident.PreventiveMeasures.Add(measureA);
@@ -512,7 +511,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 var controller = new PreventiveMeasuresController(
                     db,
                     UserContextHelper.BuildAuthService(),
-                    new SystemClock(),
+                    TestFixtures.Clock,
                     NullLogger<PreventiveMeasuresController>.Instance);
                 UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
                 return await controller.Delete(measureId, concurrencyToken);
@@ -968,7 +967,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
         // 上限をわずかに超える件数
         const int seedCount = PreventiveMeasuresController.MaxKanbanRows + 5;
         // 全件で共有する期限日(同値にして第 2 キーの効きを見る)
-        var sharedDueDate = DateTime.Today.AddDays(30);
+        var sharedDueDate = TestFixtures.Today.AddDays(30);
         // 対策 1 件につきインシデント 1 件をぶら下げて組み立てる
         for (var i = 0; i < seedCount; i++)
         {
@@ -979,7 +978,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
                 Severity = IncidentSeverity.Level2,
                 Description = "上限検証用",
                 ReporterName = "担当",
-                OccurredAt = DateTime.Now
+                OccurredAt = TestFixtures.Today
             };
             var measure = new PreventiveMeasure
             {
