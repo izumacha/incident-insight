@@ -61,7 +61,15 @@ namespace IncidentInsight.Tests.Controllers;
 public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 {
     // インメモリの SQLite は「最後の接続が閉じるとデータベースごと消える」ので、
-    // テストの間ずっと開いたままにする接続を 1 本持つ
+    // テストの間ずっと開いたままにする接続を 1 本持つ。
+    //
+    // **既存の SQLite テスト(ConcurrencyTests / AuditTransactionAtomicityTests /
+    // PreventiveMeasuresControllerTests の並行削除)が一時ファイルの DB を使い
+    // Helpers/SqliteTestFiles で後始末しているのに対し、ここだけ :memory: なのは意図的。**
+    // あちらは「別々の接続からの同時実行」を見るのでファイルが要る。こちらは 1 つの
+    // DbContext から SQL を 1 本流すだけなので、ファイルを作ると消す責務が増えるだけで
+    // 得るものが無い(WAL / SHM / journal の消し忘れが CI に残る事故は SqliteTestFiles の
+    // docstring が記録している)。**同時実行を見るテストを足すときはあちらの形に倣うこと。**
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
     // 上の接続を使う DbContext(各テストから使う)
     private ApplicationDbContext _db = null!;

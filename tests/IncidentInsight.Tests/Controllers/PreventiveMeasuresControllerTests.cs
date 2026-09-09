@@ -738,8 +738,12 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     // 担当者/担当部署の部分一致検索の大文字化が、サーバの OS ロケールに
-    // 左右されないことを固定する。各コントローラが自分の呼び出し側を持つので、
-    // 経路ごとに個別に押さえる(呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
+    // 左右されないことを固定する。
+    //
+    // **このテストが単独で見張っているのは「この画面が共有の述語を通っていること」**。
+    // 大文字化の規則そのものは KeywordSearchPredicate 1 箇所にあるので、規則を壊す変異では
+    // 3 画面ぶんが同時に落ちる(「この 1 件だけが落ちる」のは、issue #188 で述語ごと
+    // 共有する前 ——画面ごとに呼び出し側が大文字化を書いていた頃の話)。
     [Fact]
     public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
     {
