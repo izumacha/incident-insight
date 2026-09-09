@@ -71,13 +71,15 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     // インメモリの SQLite は「最後の接続が閉じるとデータベースごと消える」ので、
     // テストの間ずっと開いたままにする接続を 1 本持つ。
     //
-    // **既存の SQLite テスト(ConcurrencyTests / AuditTransactionAtomicityTests /
-    // PreventiveMeasuresControllerTests の並行削除)が一時ファイルの DB を使い
-    // Helpers/SqliteTestFiles で後始末しているのに対し、ここだけ :memory: なのは意図的。**
-    // あちらは「別々の接続からの同時実行」を見るのでファイルが要る。こちらは 1 つの
-    // DbContext から SQL を 1 本流すだけなので、ファイルを作ると消す責務が増えるだけで
-    // 得るものが無い(WAL / SHM / journal の消し忘れが CI に残る事故は SqliteTestFiles の
-    // docstring が記録している)。**同時実行を見るテストを足すときはあちらの形に倣うこと。**
+    // **既存の SQLite テストが一時ファイルの DB を使い Helpers/SqliteTestFiles で
+    // 後始末しているのに対し、ここだけ :memory: なのは意図的。**
+    // あちらが必要なのは「別々の接続から同じ DB を同時に触る」ことを見るためで、
+    // それにはファイルが要る。こちらは 1 つの DbContext から SQL を流すだけなので、
+    // ファイルを作ると消す責務が増えるだけで得るものが無い
+    // (WAL / SHM / journal の消し忘れが CI に残る事故は SqliteTestFiles の docstring が記録)。
+    // **同時実行を見るテストを足すときは、一時ファイル + SqliteTestFiles の形に倣うこと。**
+    // どのテストがその形かはここに書き並べない ——参照が増えるたびに一覧だけが古くなる
+    // (CLAUDE.md §3。実際、この注記の初版は既に 1 クラス取りこぼしていた)
     private readonly SqliteConnection _connection = new("Data Source=:memory:");
     // 上の接続を使う DbContext(各テストから使う)
     private ApplicationDbContext _db = null!;
@@ -97,7 +99,10 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         }
         catch
         {
-            // 後片付けの失敗で本当の失敗原因を覆い隠さないよう、破棄は投げ直す前に済ませる
+            // 後片付けの失敗で本当の失敗原因を覆い隠さないよう、破棄は投げ直す前に済ませる。
+            // DbContext は組み立て済みかもしれない(スキーマ作成や投入でこけた場合)ので
+            // 併せて閉じる ——DisposeAsync 側と同じ順序・同じ対象にそろえておく
+            if (_db is not null) await _db.DisposeAsync();
             await _connection.DisposeAsync();
             throw;
         }
