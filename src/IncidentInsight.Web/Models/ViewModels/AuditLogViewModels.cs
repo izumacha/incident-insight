@@ -32,6 +32,19 @@ public class AuditLogListViewModel
     // 変更日時 終了
     public DateTime? DateTo { get; set; }
 
+    // 型として読み取れない絞り込み値を受け取ったので採用しなかったかどうか
+    // (true なら画面で知らせる。issue #207)。
+    //
+    // 対象は変更日時の開始/終了の 2 つ。入力ごとに分けていないのは、採用しなかった理由が
+    // どちらも同一だから ——「その型の値として読めない」。分ければ同じ文章が 2 つ並び、
+    // どちらか 1 つを直したときにもう片方が取り残される。
+    // 判定と理由の正本は Controllers/Internal/MalformedFilterValueResolver の解説で、
+    // /Incidents ・ /PreventiveMeasures とまったく同じものを通している。
+    //
+    // 値そのものではなく真偽値なのは、送った値を画面へ出し戻すのをやめたため
+    // (理由の正本は IncidentListViewModel.DepartmentFilterIgnored の解説)
+    public bool MalformedFilterIgnored { get; set; }
+
     // エンティティ名ドロップダウンの選択肢。
     // required にして既定値を持たせない理由は IncidentListViewModel.DepartmentOptions と同じ
     // (そちらの説明が正本)。空リストを既定にすると、この ViewModel を組み立てる経路が

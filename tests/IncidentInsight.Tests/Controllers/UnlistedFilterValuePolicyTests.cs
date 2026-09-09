@@ -675,17 +675,36 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。引数の型をすべて string? へ変えるような
     // 改修で「対象ゼロ＝全件緑」になり、検出網が黙って死ぬのを防ぐ
-    public static TheoryData<string> UnreadableProneParameters()
-    {
-        // Index の引数のうち「読めなければ黙って別の値へ化ける」ものを、モデルバインドが
-        // ModelState のキーに使う「URL 上の名前」で拾う
-        var derived = UnreadableProneQueryNames(IncidentsIndexMethod).ToList();
+    public static TheoryData<string> UnreadableProneParameters() =>
+        // 導出そのものは画面をまたいで共有する(下の UnreadableProneTheoryData が正本)
+        UnreadableProneTheoryData(IncidentsIndexMethod);
 
-        // 除外の前に 0 件かどうかを見る。除外を引いた後の件数で判定すると、
-        // 「引数が変わった」のか「除外表が全部を覆った」のかを取り違えた案内になる
-        // (前者を直しに行っても、原因の除外表は手つかずのまま残る)
+    /// <summary>
+    /// アクションの署名から「読めなければ黙って別の値へ化ける」引数を導き、
+    /// 意図的な除外を引いたうえで <c>[MemberData]</c> のケースにする。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>画面をまたいで共有する(§6 DRY)。</b> 以前この手順は
+    /// <c>/Incidents</c> 用と <c>/PreventiveMeasures</c> 用に写してあり、しかも
+    /// <b>除外表を引いていたのは前者だけ</b>だった。3 画面目(<c>/AuditLogs</c>)は
+    /// <c>page</c> を受けるので除外を引かないと「ページ番号にも注意書きを出せ」という
+    /// 直しようの無い要求になり、写しのまま増やすと除外の扱いが画面ごとにばらける。
+    /// 手順を 1 か所に集めれば、どの画面でも同じ規則が掛かる。</para>
+    ///
+    /// <para><b>0 件を 2 段階で見るのは意図的。</b> 除外を引く前と後で別々に落とすと、
+    /// 「引数が変わった」のか「除外表が全部を覆った」のかを取り違えた案内にならない
+    /// (前者を直しに行っても、原因の除外表は手つかずのまま残る)。</para>
+    /// </remarks>
+    /// <param name="action">対象のアクション(一覧の <c>Index</c> など)。</param>
+    private static TheoryData<string> UnreadableProneTheoryData(MethodInfo action)
+    {
+        // 引数のうち「読めなければ黙って別の値へ化ける」ものを、モデルバインドが
+        // ModelState のキーに使う「URL 上の名前」で拾う
+        var derived = UnreadableProneQueryNames(action).ToList();
+
+        // 除外の前に 0 件かどうかを見る(理由は上の解説)
         Assert.True(derived.Count > 0,
-            $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} に"
+            $"{action.DeclaringType?.Name}.{action.Name} に"
             + "「読めなければ別の値へ化ける」引数が 1 つも無い。"
             + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
             + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
@@ -696,8 +715,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 除外で全部消えた場合は、原因が除外表であることを名指しして落とす
         // (対象ゼロで全件緑になるのは上と同じなので、こちらも fail-closed にする)
         Assert.True(names.Count > 0,
-            $"{nameof(MalformedFilterExemptions)} が対象の引数をすべて覆っている"
-            + $"({string.Join(", ", derived)})。除外を足したのなら、"
+            $"{nameof(MalformedFilterExemptions)} が {action.DeclaringType?.Name}.{action.Name} の"
+            + $"引数をすべて覆っている({string.Join(", ", derived)})。除外を足したのなら、"
             + "手当てが要る引数まで巻き込んでいないか確認すること。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
@@ -710,6 +729,25 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // (別々に引き直すと、対象のアクションを変えたときに片方だけ取り残される)
     private static MethodInfo IncidentsIndexMethod =>
         typeof(IncidentsController).GetMethod(nameof(IncidentsController.Index))!;
+
+    // 上の導出が見る AuditLogsController.Index(監査ログ一覧)
+    private static MethodInfo AuditLogsIndexMethod =>
+        typeof(AuditLogsController).GetMethod(nameof(AuditLogsController.Index))!;
+
+    // <b>「読めない値」の手当てを入れてある画面の一覧。</b>
+    //
+    // 除外表に掛かる 2 つの検査(キーが実在するか / Nullable を隠していないか)は
+    // <b>この一覧すべて</b>を見る。以前は /Incidents だけを見ていたので、たとえば
+    // /AuditLogs にしか無い引数を除外表へ登録しても「実在しない」と誤判定されず、
+    // 逆に /AuditLogs の Nullable 引数は「隠せない」の門番をすり抜けた。
+    // 除外表は URL 上の名前をキーにする(画面ごとに分けない)ので、掛ける範囲も
+    // 画面をまたいで揃える必要がある。
+    //
+    // /Analytics はここに載せない —— あの画面は JSON で旗を返すので ViewModel も
+    // 除外表の対象になる page も持たず、覆っていることの照合は
+    // MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter が別に行う
+    private static IReadOnlyList<MethodInfo> MalformedFilterGuardedListActions =>
+        new[] { IncidentsIndexMethod, MeasuresIndexMethod, AuditLogsIndexMethod };
 
     // <b>「読めない値」の手当てから意図的に外している引数</b>(URL 上の名前 → 外す理由)。
     //
@@ -745,8 +783,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void MalformedFilterExemptions_AreAllStillReal()
     {
-        // 現時点で導出が拾う「読めなければ化ける」引数の URL 上の名前
-        var actual = UnreadableProneQueryNames(IncidentsIndexMethod).ToHashSet(StringComparer.Ordinal);
+        // 現時点で導出が拾う「読めなければ化ける」引数の URL 上の名前(手当て済みの全画面ぶん)
+        var actual = MalformedFilterGuardedListActions
+            .SelectMany(UnreadableProneQueryNames)
+            .ToHashSet(StringComparer.Ordinal);
 
         // 表のキーのうち、その一覧に無いもの(＝もう実在しない引数)を集める
         var stale = MalformedFilterExemptions.Keys.Where(name => !actual.Contains(name)).ToList();
@@ -754,8 +794,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 1 つでもあれば落とす
         Assert.True(stale.Count == 0,
             $"{nameof(MalformedFilterExemptions)} に実在しない引数が残っている: {string.Join(", ", stale)}。"
-            + $"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)} の引数を消した・"
-            + "改名した・型を変えたなら、同じ変更セットでこの表からも消すこと。");
+            + "手当て済みの画面のどの Index からも、その名前の「読めなければ化ける」引数が"
+            + "見つからない。引数を消した・改名した・型を変えたなら、"
+            + "同じ変更セットでこの表からも消すこと。");
     }
 
     // 除外の理由が空・空白でないこと。
@@ -787,8 +828,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void MalformedFilterExemptions_CannotHideANullableFilter()
     {
-        // Index の Nullable<T> 引数を URL 上の名前で拾う
-        var nullableNames = IncidentsIndexMethod.GetParameters()
+        // 手当て済みの全画面の Index が受ける Nullable<T> 引数を URL 上の名前で拾う。
+        // 1 画面だけを見ると、他の画面にしか無い Nullable の絞り込みを
+        // 表へ 1 行足すだけで黙らせられる(除外表は画面ごとに分かれていないため)
+        var nullableNames = MalformedFilterGuardedListActions
+            .SelectMany(action => action.GetParameters())
             .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
             .Select(p => QueryStringName(p)!)
             .ToHashSet(StringComparer.Ordinal);
@@ -1397,6 +1441,237 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 全件が返り、旗も立たない
         Assert.Equal(1, TotalCount(doc));
         Assert.False(DepartmentFilterIgnored(doc));
+    }
+
+    // --- /Analytics: 型として読めない絞り込み値(issue #207) --------------------------
+
+    // 集計 JSON の「読めなかったので採用しなかった」旗を取り出す
+    private static bool MalformedFilterIgnored(JsonDocument doc) =>
+        doc.RootElement.GetProperty("malformedFilterIgnored").GetBoolean();
+
+    // 手当てが要る (アクション, 引数) の組を、本体とは<b>独立な手がかり</b>(署名)から導く。
+    //
+    // <b>アクションも引数も書き並べない。</b> 本体側は集計エンドポイントごとに
+    // 解決処理を呼び、見張る引数名を nameof で並べて渡す形なので、
+    // 6 つ目のエンドポイントを足した人や、既存のエンドポイントへ 3 つ目の期間指定を
+    // 足した人が渡し忘れると、<b>そこだけが黙って元の壊れ方に戻る</b>。
+    // [InlineData] の手書きにすると同じ人が同じように行を足し忘れるので、
+    // 署名から導いて「足した時点で自動でケースに入る」形にする。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。署名の書き方を変えると
+    // 「対象ゼロ＝全件緑」で検出網が黙って死ぬため
+    public static TheoryData<string, string> AnalyticsUnreadableProneParameters()
+    {
+        // /Analytics のアクションのうち「読めなければ化ける」引数を受けるものを拾う
+        var cases = AnalyticsActionsWithUnreadableProneParameters()
+            .SelectMany(action => UnreadableProneQueryNames(action)
+                .Select(name => (Action: action.Name, Parameter: name)))
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(c => c.Action, StringComparer.Ordinal)
+            .ThenBy(c => c.Parameter, StringComparer.Ordinal)
+            .ToList();
+
+        // 0 件は「引数が無くなった」より「署名か導出が変わった」可能性が高い
+        Assert.True(cases.Count > 0,
+            $"{nameof(AnalyticsController)} に「読めなければ別の値へ化ける」引数を受ける"
+            + "アクションが 1 つも無い。署名を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string, string>();
+        foreach (var (action, parameter) in cases) data.Add(action, parameter);
+        return data;
+    }
+
+    // /Analytics のアクションのうち「読めなければ化ける」引数を受けるものを署名から拾う。
+    // Theory のケース作りと下の網羅ガードが同じここを読む(§6 DRY)
+    private static List<MethodInfo> AnalyticsActionsWithUnreadableProneParameters() =>
+        typeof(AnalyticsController)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            // プロパティのゲッターなど、アクションでないものを除く
+            .Where(m => !m.IsSpecialName && m.DeclaringType == typeof(AnalyticsController))
+            // 「読めなければ化ける」引数を 1 つでも受けるものだけ
+            .Where(m => m.GetParameters().Any(IsUnreadableProne))
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(m => m.Name, StringComparer.Ordinal)
+            .ToList();
+
+    // 導出で拾ったアクションを名前で呼び分ける(期間・部署はすべて未指定で呼ぶ)。
+    // 知らない名前が来たら落とす —— エンドポイントを足しただけで検査が素通りするのを防ぐ
+    // (fail-closed。?department= 側の InvokeAnalyticsAsync と同じ扱い)
+    private static Task<IActionResult> InvokeAnalyticsWithoutFiltersAsync(
+        AnalyticsController controller, string action) => action switch
+        {
+            nameof(AnalyticsController.MonthlyTrend) => controller.MonthlyTrend(null, null, null),
+            nameof(AnalyticsController.ByCause) => controller.ByCause(null, null, null),
+            nameof(AnalyticsController.ByDepartment) => controller.ByDepartment(null, null),
+            nameof(AnalyticsController.BySeverity) => controller.BySeverity(null, null, null),
+            nameof(AnalyticsController.ByIncidentType) => controller.ByIncidentType(null, null),
+            _ => throw new InvalidOperationException(
+                $"{action} の呼び出し方がこのテストに無い。"
+                + "「読めなければ化ける」引数を受けるアクションを足したなら、ここへも呼び出しを足すこと。")
+        };
+
+    // 型として読めない絞り込み値でも、黙って落とさず JSON で伝えること(issue #207)。
+    //
+    // 直っていなかった頃の再現手順: /Analytics/MonthlyTrend?dateFrom=abc を引くと
+    // モデルバインドが失敗して dateFrom は null になり、期間の Where を飛ばすだけなので
+    // <b>期間を絞ったかのような全期間のグラフ</b>が旗も無しで返る。医療インシデントの
+    // 集計画面で「その期間は 0 件だった」と「期間の指定が読めなかった」を区別できないのは
+    // 誤読が重い ——一覧・カンバンで注意書きを出しているのとまったく同じ理由。
+    //
+    // 伝え先が JSON なのはこの画面に注意書きを出す場所が無いためで、
+    // 既存の departmentFilterIgnored と同じ扱い(キーの追加は形状契約を壊さない)
+    [Theory]
+    [MemberData(nameof(AnalyticsUnreadableProneParameters))]
+    public async Task Analytics_ReportsAFilterValueThatCannotBeRead(string action, string parameterName)
+    {
+        // 集計対象を 1 件用意する(旗が「0 件だから立った」のではないことを示すため)
+        await SeedAnalyticsRowAsync("ICU");
+
+        // ModelState は ControllerContext と一緒に作られるので、先にコントローラを組み立てる
+        var controller = NewAnalyticsController();
+        // モデルバインドが「値は届いたが読めなかった」ときに積むエラーを再現する
+        controller.ModelState.AddModelError(parameterName, "値の形式が正しくありません。");
+        // 絞り込みの引数はすべて null(モデルバインドが失敗した後の状態)で集計を引く
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsWithoutFiltersAsync(controller, action));
+
+        // 受け取ったのに採用しなかったことを JSON で伝えている
+        Assert.True(MalformedFilterIgnored(doc),
+            $"{action}?{parameterName}=<読めない値> を受け取ったのに旗が立たない。"
+            + $"MalformedFilterValueResolver へ {parameterName} を渡し忘れていないか確認すること。");
+
+        // 絞り込みは掛かっていない(全件が返る)。旗はまさにこの状態を伝えるためにある
+        Assert.Equal(1, TotalCount(doc));
+    }
+
+    // 何も送っていないときは旗を立てないこと。
+    // 未指定で立てると、期間を指定していない普通の集計でも旗が立ち続け、
+    // 旗を読む側(この JSON を使う画面・外部スクリプト)が読まなくなる
+    [Theory]
+    [MemberData(nameof(AnalyticsUnreadableProneParameters))]
+    public async Task Analytics_ReportsNothing_WhenNoFilterValueWasSent(string action, string parameterName)
+    {
+        // 集計対象を 1 件用意する
+        await SeedAnalyticsRowAsync("ICU");
+
+        // 「値が届いて、束縛にも成功した」状態を作る(エラーの無いエントリ)。
+        // 「エントリの有無」で判定すると正しい値でも旗が立つ(誤検知)ので、その形を塞ぐ
+        var controller = NewAnalyticsController();
+        controller.ModelState.SetModelValue(parameterName, "1", "1");
+        using var doc = JsonResultReader.ToJsonDocument(
+            await InvokeAnalyticsWithoutFiltersAsync(controller, action));
+
+        // 読めなかった値は無いので旗は立たない
+        Assert.False(MalformedFilterIgnored(doc),
+            $"{action}?{parameterName}=<読める値> で旗が立っている。"
+            + "MalformedFilterValueResolver が「エントリの有無」ではなく"
+            + "「エラーの有無」を見ているか確認すること。");
+    }
+
+    // --- 画面をまたぐ網羅ガード: 期間の絞り込みを持つ画面を取りこぼさない ------------
+
+    // 「読めない期間指定を伝える」手当てが要るアクションを<b>アプリ全体から</b>導き、
+    // 実際にその全部が覆われていることを照合する。
+    //
+    // <b>なぜ要るのか(この検査が生まれた経緯)。</b> 手当てはもともと /Incidents にしか無く、
+    // それを見張る検査も画面を名指ししていた。そのため /AuditLogs?dateFrom=abc と
+    // /Analytics/MonthlyTrend?dateFrom=abc は<b>同じ壊れ方をしたまま、どの検査にも掛からず</b>
+    // 残っていた(SearchFilter の解説が「残っている境界」として書いていたとおり。issue #207)。
+    // 画面を名指しする検査だけを積んでも、名指ししなかった画面は増えるほど増える。
+    //
+    // <b>手がかりは DateTime? の引数</b>: このアプリで期間の絞り込みはすべてこの型で受ける。
+    // アクションの署名はコントローラの実装とは独立した宣言箇所なので、手当てを入れ忘れた
+    // 画面が<b>ここに現れる</b>。4 画面目が期間の絞り込みを持った時点でこの検査が落ち、
+    // 「解決処理へ通す」と「behavioural な検査を足す」の両方を促す。
+    //
+    // <b>「読めなければ化ける引数すべて」まで広げないのは意図的。</b> それだと
+    // Details(long id) / Delete(int id) のような<b>ルートのキー</b>まで巻き込む ——
+    // あちらは読めなければ 404 / 400 になって画面から見えるので、絞り込みの
+    // 「送ったのに効いていないことが見えない」問題が存在しない。実行不能な要求を出す
+    // 検出網はいずれ緩められるので、手がかりは「このアプリで絞り込みにしか使われない型」に絞る。
+    // <b>この境界は他の型の絞り込みを足す人が広げる</b>(int? の範囲指定など)。
+    [Fact]
+    public void MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter()
+    {
+        // アプリ全体から「DateTime? の引数を受けるアクション」を拾う
+        var actual = DateRangeActionParametersInTheApp();
+
+        // 1 つも拾えないのは「期間の絞り込みが無くなった」より「導出が壊れた」可能性が高い。
+        // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
+        Assert.True(actual.Count > 0,
+            "DateTime? の引数を受けるアクションが 1 つも見つからない。"
+            + "導出を変えたなら、この照合も同じ変更セットで直すこと"
+            + "(直さないと、読めない期間指定の検査が対象ゼロで全件緑になる)。");
+
+        // 「どの引数が、どの検査で覆われているか」の表。
+        //
+        // 覆い方は伝え先によって 3 通りあるが、<b>どれでもよい代わりに「どれでもない」は許さない</b>。
+        //   - ViewModel … 画面の注意書き(/Incidents ・ /AuditLogs)。
+        //     *Index_ReportsAFilterValueThatCannotBeRead が確かめる。
+        //   - ViewBag …… 画面の注意書き(/PreventiveMeasures。ViewModel を持たない画面)。
+        //     MeasuresIndex_ReportsAFilterValueThatCannotBeRead が確かめる。
+        //   - Json ……… 集計 JSON のキー(/Analytics。注意書きを出す場所が無い画面)。
+        //     Analytics_ReportsAFilterValueThatCannotBeRead が確かめる。
+        //
+        // 表を手で書くのはここだけで、<b>比べる相手は導出</b>なので、
+        // 表だけを増やしても導出に無ければ落ちる(逆も同じ)
+        var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.dateFrom"] = "ViewModel",
+            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.dateTo"] = "ViewModel",
+            [$"{nameof(AuditLogsController)}.{nameof(AuditLogsController.Index)}.dateFrom"] = "ViewModel",
+            [$"{nameof(AuditLogsController)}.{nameof(AuditLogsController.Index)}.dateTo"] = "ViewModel",
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.dateFrom"] = "ViewBag",
+            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.dateTo"] = "ViewBag",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.MonthlyTrend)}.dateFrom"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.MonthlyTrend)}.dateTo"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByCause)}.dateFrom"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByCause)}.dateTo"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByDepartment)}.dateFrom"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByDepartment)}.dateTo"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.BySeverity)}.dateFrom"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.BySeverity)}.dateTo"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByIncidentType)}.dateFrom"] = "Json",
+            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByIncidentType)}.dateTo"] = "Json",
+        };
+
+        // 2 つの宣言箇所が一致していること。ずれていれば、手当てを決めていない期間の絞り込みが
+        // 増えたか、逆に無くなった引数が表に残っている
+        Assert.Equal(
+            guarded.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+            actual);
+    }
+
+    // アプリ全体のコントローラから「DateTime? のアクション引数」を
+    // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
+    //
+    // コントローラの選び方・DeclaredOnly で絞らない理由は
+    // EnumActionParametersInTheApp と同じ(そちらの解説が正本)。
+    // 走査の形をそろえてあるのは、片方だけ拾い方を直したときに
+    // もう片方の検出網が黙って狭くなるのを避けるため
+    private static List<string> DateRangeActionParametersInTheApp()
+    {
+        // 自分たちのアセンブリ(名前空間の切り直しで外れない)
+        var ownAssembly = typeof(IncidentsController).Assembly;
+        // そのアセンブリのコントローラをすべて見る
+        return ownAssembly.GetTypes()
+            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
+            .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
+                // プロパティのゲッターなど、アクションでないものを除く
+                .Where(m => !m.IsSpecialName)
+                // 宣言元が自分たちのアセンブリのものだけ(Controller/object の public メソッドを拾わない)
+                .Where(m => m.DeclaringType?.Assembly == ownAssembly)
+                .SelectMany(m => m.GetParameters()
+                    // 期間の絞り込みは必ず DateTime? で受ける
+                    .Where(p => p.ParameterType == typeof(DateTime?))
+                    .Select(p => $"{t.Name}.{m.Name}.{p.Name}")))
+            // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
+            .Distinct(StringComparer.Ordinal)
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
     }
 
     // 方式表が「絞り込み入力の唯一の真実の源」を名乗る以上、
@@ -2044,14 +2319,32 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // なっても全件緑のままだった。一覧は手書きせず IgnoredFilterFlags から導く
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
-    public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag)
+    public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
+        // 走査そのものは 3 画面で共有する(下の AssertIgnoredFilterNoticeIsRendered が正本)
+        AssertIgnoredFilterNoticeIsRendered("Incidents", ViewModelFlagAccessor, flag);
+
+    /// <summary>
+    /// 旗を <b>ビューが実際に読んでいる</b>ことを、Razor のソースから確かめる共有の走査。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ 3 画面で共有するのか(§6 DRY)。</b> 以前この走査は
+    /// <c>/Incidents</c> 用と <c>/PreventiveMeasures</c> 用に丸ごと写してあった。
+    /// 3 画面目(<c>/AuditLogs</c>)を足す時点で 3 つ目の写しになるので、実際に重複した
+    /// この時点で共通化する。写しのまま増やすと、注意書きの見せ方を変えたとき
+    /// (枠を別のパーシャルへ移す・文面の渡し方を変える 等)に 1 つが取り残され、
+    /// <b>取り残された画面だけが検査の外へ出る</b> ——この repo が
+    /// <c>IgnoredFilterFlagNamesIn</c> でも同じ理由で共通化している形。</para>
+    ///
+    /// <para><b>画面ごとに違うのは 2 つだけ</b>: ビューの置き場所と、旗の読み方
+    /// (<c>Model.</c> か <c>ViewBag.</c> か)。それを引数で受ける。</para>
+    /// </remarks>
+    /// <param name="viewFolder">ビューの置き場所(<c>Views/&lt;ここ&gt;/Index.cshtml</c>)。</param>
+    /// <param name="accessor">旗の読み方の前置き(<c>Model.</c> または <c>ViewBag.</c>)。</param>
+    /// <param name="flag">確かめる旗の名前。</param>
+    private static void AssertIgnoredFilterNoticeIsRendered(string viewFolder, string accessor, string flag)
     {
-        // 一覧ビューの Razor ソースを読む(ビルド出力にはコピーされない)
-        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
-        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
-        // Razor のコメントは落としてから見る(コメントで満たせないようにする)
-        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+        // 一覧ビューの Razor ソースを読む(コメントは落としてある)
+        var source = ReadIndexViewSource(viewFolder);
 
         // 旗で表示を出し分けている。
         // 「名前がどこかに出てくるか」では足りない —— この旗は絞り込みパネルを開くかどうかの
@@ -2061,15 +2354,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 空白の有無や比較の書き方に依存しない形で探す。`@if (Model.X)` の完全一致で書くと、
         // `@if(Model.X)` のように同じ働きの正しい書き方を落としてしまい、
         // 次の人が動いているマークアップを「直し」に行く検出網になる
-        var header = Regex.Match(source, $@"@if\s*\(\s*Model\.{flag}\b");
+        var header = Regex.Match(source, $@"@if\s*\(\s*{Regex.Escape(accessor)}{flag}\b");
         Assert.True(header.Success,
-            $"Views/Incidents/Index.cshtml が Model.{flag} で注意書きを出し分けていない。");
+            $"Views/{viewFolder}/Index.cshtml が {accessor}{flag} で注意書きを出し分けていない。");
 
         // 出し分けているだけでなく、そのブロックに中身があることまで見る。
         // ヘッダだけを見ると、本文を空にする変異が素通りする
         var blockBody = ExtractBraceBlock(source, header.Index);
         Assert.True(blockBody != null,
-            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) に本体が無い。");
+            $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{flag}) に本体が無い。");
         // 何が適用されなかったのかを言い切る見出しは呼び出し側にある(旗ごとに文面が違う)
         Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
 
@@ -2085,15 +2378,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 「注意書きが実際に描画されるか」を見続けられるよう、呼び出し先まで追う
         var partialCall = Regex.Match(blockBody!, @"<partial\s+name\s*=\s*""(?<name>[^""]+)""");
         Assert.True(partialCall.Success,
-            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) が注意書きのパーシャルを呼んでいない。"
+            $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{flag}) が注意書きのパーシャルを呼んでいない。"
             + "枠のマークアップを直接書くか、この照合を同じ変更セットで直すこと。");
 
         // 呼んでいるパーシャルの中身を読む(ビルド出力にはコピーされないので絶対パスで開く)。
-        // 置き場所を Views/Incidents/ 決め打ちにしない —— Razor 自身は
+        // 置き場所をその画面のフォルダ決め打ちにしない —— Razor 自身は
         // /Views/{コントローラ名}/ と /Views/Shared/ の順に探すので、決め打ちにすると
         // 実行時には正しく解決されるパーシャルをテストだけが「見つからない」と言う
         // (実際 2 画面目が注意書きを持ったとき Views/Shared/ へ移してここが落ちた)
-        var partialSource = ReadPartial("Incidents", partialCall.Groups["name"].Value);
+        var partialSource = ReadPartial(viewFolder, partialCall.Groups["name"].Value);
 
         // 警告として見えること(§7 は色だけに意味を持たせないので、role と文言の両方を見る)
         Assert.Contains("alert", partialSource, StringComparison.Ordinal);
@@ -2107,14 +2400,85 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 渡す文面が空なら画面には枠しか出ない
         var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
         Assert.True(notice.Success,
-            $"Views/Incidents/Index.cshtml の @if (Model.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+            $"Views/{viewFolder}/Index.cshtml の @if ({accessor}{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
         // 引数として渡している文字列リテラルのうち、空でないものを数える
         var literals = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
             .Select(m => m.Groups["text"].Value)
             .Where(text => text.Trim().Length > 0)
             .ToList();
         Assert.True(literals.Count >= 2,
-            $"@if (Model.{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
+            $"@if ({accessor}{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
+    }
+
+    // 旗の読み方の前置き。ViewModel を持つ画面(/Incidents ・ /AuditLogs)は Model. で、
+    // ViewBag で渡す画面(/PreventiveMeasures)は ViewBag. で読む。
+    // 文字列を各所へ直書きすると、読み方を変えたときに一部だけが取り残される(§6)
+    private const string ViewModelFlagAccessor = "Model.";
+    private const string ViewBagFlagAccessor = "ViewBag.";
+
+    /// <summary>
+    /// 一覧ビューの Razor ソース(コメントを落としたもの)を読む。
+    /// </summary>
+    /// <remarks>
+    /// 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす。
+    /// Razor のコメントを先に落とすのは、コメントで検査を満たしたり破ったりできないようにするため。
+    /// </remarks>
+    private static string ReadIndexViewSource(string viewFolder)
+    {
+        // ビルド出力にはコピーされないので絶対パスで開く
+        var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, "Index.cshtml");
+        // 見つからなければ落とす(対象ゼロで全件緑になるのを避ける)
+        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
+        // Razor のコメントは落としてから返す
+        return RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+    }
+
+    /// <summary>
+    /// 旗ごとの注意書きの<b>見出しが互いに違う</b>ことを確かめる共有の走査。
+    /// </summary>
+    /// <remarks>
+    /// 旗は同時に立ちうる(<c>?severity=99&amp;dateFrom=abc</c>)ので、見出しが同じだと
+    /// ほぼ同一の警告が 2 つ並び、利用者からは<b>二重描画の不具合に見える</b>。
+    /// 実際 issue #208 の対応でこの取り違えが起き、全件緑のまま通った
+    /// (人のレビューでしか気付けなかった)。
+    /// per-flag の検査は「見出しと説明が空でないこと」までしか見ないので、
+    /// 衝突は旗をまたいで比べないと原理的に見えない。
+    /// <para>走査を 3 画面で共有する理由は
+    /// <see cref="AssertIgnoredFilterNoticeIsRendered"/> と同じ(§6 DRY)。</para>
+    /// </remarks>
+    private static void AssertIgnoredFilterNoticeHeadingsAreDistinct(
+        string viewFolder, string accessor, IEnumerable<string> flags)
+    {
+        // 一覧ビューの Razor ソースを読む
+        var source = ReadIndexViewSource(viewFolder);
+        // 見出し → その見出しを使っている旗、の対応を作りながら重複を見る
+        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
+        foreach (var flag in flags)
+        {
+            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
+            var header = Regex.Match(source, $@"@if\s*\(\s*{Regex.Escape(accessor)}{flag}\b");
+            Assert.True(header.Success, $"{accessor}{flag} で出し分けている注意書きが無い。");
+            var blockBody = ExtractBraceBlock(source, header.Index);
+            Assert.True(blockBody != null, $"@if ({accessor}{flag}) に本体が無い。");
+
+            // 見出しは FilterIgnoredNotice の第 1 引数(＝最初の空でない文字列リテラル)
+            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
+            Assert.True(notice.Success, $"@if ({accessor}{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
+            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
+                .Select(m => m.Groups["text"].Value)
+                .FirstOrDefault(text => text.Trim().Length > 0);
+            Assert.True(heading != null, $"@if ({accessor}{flag}) の注意書きに見出しの文面が無い。");
+
+            // 同じ見出しを既に別の旗が使っていないこと
+            Assert.False(headings.TryGetValue(heading!, out var owner),
+                $"{accessor}{flag} の注意書きの見出しが {accessor}{owner} と同じ(「{heading}」)。"
+                + "2 つの旗は同時に立ちうるので、同じ見出しだとほぼ同一の警告が 2 つ並び、"
+                + "二重描画の不具合に見える。旗ごとに違う見出しを付けること。");
+            headings[heading!] = flag;
+        }
+
+        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
+        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
     }
 
     // 名前を「識別子として」照合する(部分文字列だと Model.Department が
@@ -2136,43 +2500,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 衝突は原理的に見えない —— 旗をまたいで比べる必要があるため独立した [Fact] にする。
     // 5 つ目の旗を足した人が既存の文面を写して使うと、ここで落ちる
     [Fact]
-    public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading()
-    {
-        // 一覧ビューの Razor ソースを読む(Razor のコメントは落としてから見る)
-        var viewPath = Path.Combine(RepositoryPaths.Views, "Incidents", "Index.cshtml");
-        Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
-        var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
-
-        // 旗ごとに、その @if ブロックが組み立てる FilterIgnoredNotice の「見出し」を集める。
-        // 見出しは第 1 引数なので、ブロック内の最初の空でない文字列リテラルを取る
-        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var flag in DeclaredIgnoredFilterFlags())
-        {
-            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
-            var header = Regex.Match(source, $@"@if\s*\(\s*Model\.{flag}\b");
-            Assert.True(header.Success, $"Model.{flag} で出し分けている注意書きが無い。");
-            var blockBody = ExtractBraceBlock(source, header.Index);
-            Assert.True(blockBody != null, $"@if (Model.{flag}) に本体が無い。");
-
-            // FilterIgnoredNotice の組み立て位置から先の、最初の空でない文字列リテラルが見出し
-            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
-            Assert.True(notice.Success, $"@if (Model.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
-            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
-                .Select(m => m.Groups["text"].Value)
-                .FirstOrDefault(text => text.Trim().Length > 0);
-            Assert.True(heading != null, $"@if (Model.{flag}) の注意書きに見出しの文面が無い。");
-
-            // 同じ見出しを既に別の旗が使っていないこと
-            Assert.False(headings.TryGetValue(heading!, out var owner),
-                $"Model.{flag} の注意書きの見出しが Model.{owner} と同じ(「{heading}」)。"
-                + "2 つの旗は同時に立ちうるので、同じ見出しだとほぼ同一の警告が 2 つ並び、"
-                + "二重描画の不具合に見える。旗ごとに違う見出しを付けること。");
-            headings[heading!] = flag;
-        }
-
-        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
-        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
-    }
+    public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
+        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        AssertIgnoredFilterNoticeHeadingsAreDistinct(
+            "Incidents", ViewModelFlagAccessor, DeclaredIgnoredFilterFlags());
 
     // 注意書きが案内する先（絞り込みパネル）が実際に開くこと、そして
     // 「フィルター適用中」の判定には混ざらないことを、両方まとめて固定する。
@@ -2587,25 +2918,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 除外表を持たないのは、この画面に外している引数が 1 つも無いため
     // (先回りで用意すると、実在しない事情のための分岐を増やすことになる。§6)
-    public static TheoryData<string> MeasuresUnreadableProneParameters()
-    {
-        // 「読めなければ化ける」引数を、モデルバインドのキーになる URL 上の名前で拾う
-        var names = UnreadableProneQueryNames(
-            typeof(PreventiveMeasuresController).GetMethod(nameof(PreventiveMeasuresController.Index))!)
-            .ToList();
+    public static TheoryData<string> MeasuresUnreadableProneParameters() =>
+        // 導出そのものは画面をまたいで共有する(UnreadableProneTheoryData が正本)
+        UnreadableProneTheoryData(MeasuresIndexMethod);
 
-        // 1 つも拾えないのは「引数が無くなった」より「型か導出が変わった」可能性が高い
-        Assert.True(names.Count > 0,
-            $"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)} に "
-            + "「読めなければ別の値へ化ける」引数が 1 つも無い。引数の型を変えたなら、"
-            + "この導出も同じ変更セットで直すこと"
-            + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var name in names) data.Add(name);
-        return data;
-    }
+    // 上の導出が見るアクション。1 か所に置くのは、対象のアクションを変えたときに
+    // 導出と除外表の検査で片方だけ取り残されるのを防ぐため(/Incidents 側と同じ扱い)
+    private static MethodInfo MeasuresIndexMethod =>
+        typeof(PreventiveMeasuresController).GetMethod(nameof(PreventiveMeasuresController.Index))!;
 
     // --- /PreventiveMeasures: 旗をビューが実際に読んでいるか ------------------------
 
@@ -2678,98 +2998,231 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 同じやり方(Razor のソースを見る)で塞ぐ
     [Theory]
     [MemberData(nameof(MeasuresIgnoredFilterFlags))]
-    public void MeasuresIndexView_RendersTheIgnoredFilterNotice(string flag)
-    {
-        // カンバンビューの本文を読む(Razor のコメントは落としてから見る)
-        var source = ReadMeasuresIndexSource();
-
-        // 旗で表示を出し分けていること。空白や比較の書き方に依存しない形で探す
-        // (@if(ViewBag.X == true) のような同じ働きの正しい書き方を落とさないため)
-        var header = Regex.Match(source, $@"@if\s*\(\s*ViewBag\.{flag}\b");
-        Assert.True(header.Success,
-            $"Views/PreventiveMeasures/Index.cshtml が ViewBag.{flag} で注意書きを出し分けていない。");
-
-        // 出し分けているだけでなく、そのブロックに中身があることまで見る
-        var blockBody = ExtractBraceBlock(source, header.Index);
-        Assert.True(blockBody != null,
-            $"Views/PreventiveMeasures/Index.cshtml の @if (ViewBag.{flag}) に本体が無い。");
-        // 何が適用されなかったのかを言い切る見出しがあること
-        Assert.Contains("適用していません", blockBody!, StringComparison.Ordinal);
-
-        // 枠は共有パーシャルが持つので、実際に呼んでいることを見て続きはパーシャル側で確かめる
-        var partialCall = Regex.Match(blockBody!, @"<partial\s+name\s*=\s*""(?<name>[^""]+)""");
-        Assert.True(partialCall.Success,
-            $"Views/PreventiveMeasures/Index.cshtml の @if (ViewBag.{flag}) が"
-            + "注意書きのパーシャルを呼んでいない。");
-
-        // パーシャルは Razor と同じ順で探す(この画面のものは Views/Shared/ にある)
-        var partialSource = ReadPartial("PreventiveMeasures", partialCall.Groups["name"].Value);
-        // 警告として見えること(§7 は色だけに意味を持たせないので role と文言の両方を見る)
-        Assert.Contains("alert", partialSource, StringComparison.Ordinal);
-        // 呼び出し側が渡す文面が両方とも描画されること
-        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Heading)}", partialSource, StringComparison.Ordinal);
-        Assert.Contains($"@Model.{nameof(FilterIgnoredNotice.Detail)}", partialSource, StringComparison.Ordinal);
-
-        // 呼び出し側が空文字を渡していないこと(パーシャルが描画しても文面が空なら枠しか出ない)
-        var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
-        Assert.True(notice.Success,
-            $"@if (ViewBag.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
-        // 見出しと説明の 2 つの文面が入っていること
-        var literals = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
-            .Select(m => m.Groups["text"].Value)
-            .Where(text => text.Trim().Length > 0)
-            .ToList();
-        Assert.True(literals.Count >= 2,
-            $"@if (ViewBag.{flag}) の {nameof(FilterIgnoredNotice)} に、見出しと説明の両方の文面が要る。");
-    }
+    public void MeasuresIndexView_RendersTheIgnoredFilterNotice(string flag) =>
+        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)。
+        // この画面は ViewModel を持たず ViewBag で渡すので、読み方だけが違う
+        AssertIgnoredFilterNoticeIsRendered("PreventiveMeasures", ViewBagFlagAccessor, flag);
 
     // 旗ごとの見出しが互いに違うこと。
     // 2 つの旗は同時に立ちうる(?status=99&dateFrom=abc)ので、見出しが同じだと
     // ほぼ同一の警告が 2 つ並び、利用者からは二重描画の不具合に見える
     // (/Incidents 側で実際にこの取り違えが起き、人のレビューでしか気付けなかった)
     [Fact]
-    public void MeasuresIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading()
+    public void MeasuresIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
+        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        AssertIgnoredFilterNoticeHeadingsAreDistinct(
+            "PreventiveMeasures", ViewBagFlagAccessor, MeasuresIgnoredFilterFlagNames());
+
+    // --- /AuditLogs: 型として読めない絞り込み値(issue #207) --------------------------
+
+    // 監査ログ画面の「読めなければ化ける」引数を、本体とは独立な手がかり(署名)から導く。
+    // 導出そのものは画面をまたいで共有する(UnreadableProneTheoryData が正本)
+    public static TheoryData<string> AuditLogsUnreadableProneParameters() =>
+        UnreadableProneTheoryData(AuditLogsIndexMethod);
+
+    // 監査ログ画面を組み立てる。この画面は Admin 専用なので Admin を載せる
+    private AuditLogsController NewAuditLogsController()
     {
-        // カンバンビューの本文を読む
-        var source = ReadMeasuresIndexSource();
-        // 見出し → その見出しを使っている旗、の対応を作りながら重複を見る
-        var headings = new Dictionary<string, string>(StringComparer.Ordinal);
-        foreach (var flag in MeasuresIgnoredFilterFlagNames())
-        {
-            // その旗で出し分けているブロックを切り出す(per-flag の検査と同じ探し方)
-            var header = Regex.Match(source, $@"@if\s*\(\s*ViewBag\.{flag}\b");
-            Assert.True(header.Success, $"ViewBag.{flag} で出し分けている注意書きが無い。");
-            var blockBody = ExtractBraceBlock(source, header.Index);
-            Assert.True(blockBody != null, $"@if (ViewBag.{flag}) に本体が無い。");
-
-            // 見出しは FilterIgnoredNotice の第 1 引数(＝最初の空でない文字列リテラル)
-            var notice = Regex.Match(blockBody!, $@"new\s+{nameof(FilterIgnoredNotice)}\s*\(");
-            Assert.True(notice.Success, $"@if (ViewBag.{flag}) が {nameof(FilterIgnoredNotice)} を組み立てていない。");
-            var heading = Regex.Matches(blockBody![notice.Index..], @"""(?<text>[^""]*)""")
-                .Select(m => m.Groups["text"].Value)
-                .FirstOrDefault(text => text.Trim().Length > 0);
-            Assert.True(heading != null, $"@if (ViewBag.{flag}) の注意書きに見出しの文面が無い。");
-
-            // 同じ見出しを別の旗が既に使っていないこと
-            Assert.False(headings.TryGetValue(heading!, out var owner),
-                $"ViewBag.{flag} の注意書きの見出しが ViewBag.{owner} と同じ(「{heading}」)。"
-                + "2 つの旗は同時に立ちうるので、旗ごとに違う見出しを付けること。");
-            headings[heading!] = flag;
-        }
-
-        // 旗を 1 つも拾えないなら手がかりが死んでいる(fail-closed)
-        Assert.True(headings.Count > 0, "注意書きの見出しを 1 つも拾えなかった。");
+        // 依存は本物の InMemory DbContext を使う(Mock より InMemory を優先する repo の方針)
+        var controller = new AuditLogsController(_db);
+        // 実行ロールを載せる(監査ログは Admin 専用)
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+        // 組み立てたコントローラを返す
+        return controller;
     }
 
-    // カンバンビューの Razor ソース(コメントを落としたもの)。3 つの走査が同じここを読む
-    private static string ReadMeasuresIndexSource()
+    // 監査ログを 1 行だけ積む。どの検査も「絞り込みが効いたら消える 1 件」があれば足りる。
+    //
+    // インターセプタ経由ではなく直接 Add するのは、この検査の関心が
+    // 「絞り込みの受け取り方」だけで、行の出どころが結果に影響しないため
+    // (InMemory ではインターセプタが書く行も同じテーブルに入る)
+    private async Task SeedSingleAuditLogAsync()
     {
-        // ビルド出力にはコピーされないので絶対パスで開く
-        var viewPath = Path.Combine(RepositoryPaths.Views, "PreventiveMeasures", "Index.cshtml");
-        // 見つからなければ「対象ゼロ＝緑」を避けるため fail-closed で落とす
-        Assert.True(File.Exists(viewPath), $"カンバンビューが見つからない: {viewPath}");
-        // Razor のコメントは落としてから返す(コメントで検査を満たせないようにする)
-        return RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+        // 一覧に出る行を 1 つ用意する
+        _db.AuditLogs.Add(new AuditLog
+        {
+            // 監査対象の先頭(ドメインの順で最初＝インシデント)を使い、名前を書き写さない
+            EntityName = AuditSaveChangesInterceptor.AuditedEntities[0],
+            EntityKey = "1",
+            Operation = "Added",
+            ChangedBy = "tester",
+            ChangedAt = TestFixtures.Today,
+            ChangesJson = "{}"
+        });
+        // 保存して一覧から読めるようにする
+        await _db.SaveChangesAsync();
+    }
+
+    // /AuditLogs の一覧を引いて ViewModel を取り出す
+    private async Task<AuditLogListViewModel> AuditLogsIndexAsync(AuditLogsController controller)
+    {
+        // 絞り込みは指定せずに一覧を引く(ModelState の状態だけを変えて呼び分ける)
+        var result = await controller.Index(null, null, null, null, null, null, 1) as ViewResult;
+        // 一覧ビューのモデルとして取り出す(取れなければテストとして失敗させる)
+        return Assert.IsType<AuditLogListViewModel>(result!.Model);
+    }
+
+    // 型として読めない絞り込み値でも、黙って落とさず注意書きを出すこと(issue #207)。
+    //
+    // 直っていなかった頃の再現手順: /AuditLogs?dateFrom=abc を開くとモデルバインドが
+    // 失敗して dateFrom は null になり、期間の Where を飛ばすだけなので
+    // <b>監査ログ全件</b>が注意書きもバッジも無しで返る ——「その期間の証跡はこれで全部」と
+    // 読めてしまうが、実際は「期間の指定が読めなかった」。規制対応の証跡画面で
+    // この 2 つを区別できないのは誤読が重い。
+    //
+    // 引数ごとに掛けるのは、本体側が nameof を並べて渡す形だから ——
+    // まとめて 1 件だけ見る検査にすると、2 つのうち 1 つを渡し忘れても緑のまま通る
+    [Theory]
+    [MemberData(nameof(AuditLogsUnreadableProneParameters))]
+    public async Task AuditLogsIndex_ReportsAFilterValueThatCannotBeRead(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する(注意書きが「0 件だから出た」のではないことを示すため)
+        await SeedSingleAuditLogAsync();
+
+        // ModelState は ControllerContext と一緒に作られるので、先にコントローラを組み立てる
+        var controller = NewAuditLogsController();
+        // モデルバインドが「値は届いたが読めなかった」ときに積むエラーを再現する
+        controller.ModelState.AddModelError(parameterName, "値の形式が正しくありません。");
+        // 絞り込みの引数はすべて null(モデルバインドが失敗した後の状態)で一覧を引く
+        var vm = await AuditLogsIndexAsync(controller);
+
+        // 受け取ったのに採用しなかったことを画面へ伝えている
+        Assert.True(vm.MalformedFilterIgnored,
+            $"?{parameterName}=<読めない値> を受け取ったのに注意書きが出ない。"
+            + $"MalformedFilterValueResolver へ {parameterName} を渡し忘れていないか、"
+            + "あるいは [FromQuery(Name = ...)] で URL 上の名前を変えたのに本体が nameof の"
+            + "引数名を渡したままになっていないか確認すること"
+            + "(ModelState のキーになるのは URL 上の名前で、C# の引数名ではない)。");
+
+        // 絞り込みは掛かっていない(全件が返る)。これは「読めない値では絞り込めない」以上
+        // 避けられないので、注意書きはまさにこの状態を伝えるためにある
+        Assert.Single(vm.Logs);
+    }
+
+    // 逆に、正しく読めた値では注意書きを出さないこと。
+    // 「エントリの有無」で判定すると正しい値でも注意書きが出る(誤検知)ため、
+    // 束縛に成功した状態(エラーの無いエントリ)を作って確かめる(/Incidents 側と同じ理由)
+    [Theory]
+    [MemberData(nameof(AuditLogsUnreadableProneParameters))]
+    public async Task AuditLogsIndex_DoesNotReportAnything_WhenTheFilterValueWasReadable(string parameterName)
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedSingleAuditLogAsync();
+
+        // 「値が届いて、束縛にも成功した」状態を作る(エラーの無いエントリ)
+        var controller = NewAuditLogsController();
+        controller.ModelState.SetModelValue(parameterName, "1", "1");
+        var vm = await AuditLogsIndexAsync(controller);
+
+        // 読めなかった値は無いので注意書きは出ない
+        Assert.False(vm.MalformedFilterIgnored,
+            $"?{parameterName}=<読める値> で注意書きが出ている。"
+            + "MalformedFilterValueResolver が「エントリの有無」ではなく"
+            + "「エラーの有無」を見ているか確認すること。");
+    }
+
+    // 未指定(そもそも値が届いていない)でも注意書きを出さないこと。
+    // 未指定で出すと、絞り込みを一度も使っていない利用者の画面に出っぱなしの警告が並び、
+    // 本物の注意書きまで読み飛ばされる
+    [Fact]
+    public async Task AuditLogsIndex_ReportsNothing_WhenNoFilterValueWasSent()
+    {
+        // 一覧に出る行を 1 件用意する
+        await SeedSingleAuditLogAsync();
+
+        // 絞り込みを一切指定せずに一覧を引く
+        var vm = await AuditLogsIndexAsync(NewAuditLogsController());
+
+        // 受け取っていないものは「採用しなかった」ではない
+        Assert.False(vm.MalformedFilterIgnored);
+        // 絞り込みも掛かっていない
+        Assert.Single(vm.Logs);
+    }
+
+    // --- /AuditLogs: 旗をビューが実際に読んでいるか --------------------------------
+
+    // 監査ログ画面が立てる旗を、コントローラのソースから導く。
+    //
+    // この画面は ViewModel を持つが、導出は /PreventiveMeasures と同じ
+    // 「… = ….Ignored」という代入の形を手がかりにする ——命名規約(*FilterIgnored)から
+    // 導く形にすると、ViewModel を持つ画面ごとに同じ導出を写すことになる。
+    // 代入の形なら 1 つの走査(IgnoredFilterFlagNamesIn)を画面名だけ変えて使い回せる。
+    //
+    // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
+    // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
+    public static TheoryData<string> AuditLogsIgnoredFilterFlags()
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var flags = AuditLogsIgnoredFilterFlagNames();
+
+        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
+        Assert.True(flags.Count > 0,
+            $"{nameof(AuditLogsController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
+            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var flag in flags) data.Add(flag);
+        return data;
+    }
+
+    // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
+    private static List<string> AuditLogsIgnoredFilterFlagNames() =>
+        IgnoredFilterFlagNamesIn(nameof(AuditLogsController));
+
+    // 旗を監査ログのビューが実際に読んでいることを確かめる。
+    // コントローラ級の検査は ViewModel までしか見ないので、@if のブロックごと消しても
+    // 全件緑のまま通る ——他の 2 画面とまったく同じ理由・同じやり方で塞ぐ
+    [Theory]
+    [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
+    public void AuditLogsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
+        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        AssertIgnoredFilterNoticeIsRendered("AuditLogs", ViewModelFlagAccessor, flag);
+
+    // 旗ごとの見出しが互いに違うこと(理由は他の 2 画面と同じ)。
+    // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
+    [Fact]
+    public void AuditLogsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
+        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        AssertIgnoredFilterNoticeHeadingsAreDistinct(
+            "AuditLogs", ViewModelFlagAccessor, AuditLogsIgnoredFilterFlagNames());
+
+    // 注意書きが案内する先(絞り込みパネル)が実際に開くこと、そして
+    // 「フィルター適用中」の判定には混ざらないこと。
+    //
+    // 2 つの役割が逆であることと、片方へ寄せると必ずどちらかが壊れることは
+    // IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive の
+    // 解説が正本。この画面でも同じ 2 つの判定(showFilterPanel / anyFilter)を持つので、
+    // 同じ形で固定する
+    [Theory]
+    [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
+    public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag)
+    {
+        // 監査ログビューの Razor ソースを読む(コメントは落としてある)
+        var source = ReadIndexViewSource("AuditLogs");
+
+        // パネルの開閉を決める式を取り出す
+        var panel = Regex.Match(source, @"var\s+showFilterPanel\s*=(?<expr>[^;]*);");
+        Assert.True(panel.Success, "showFilterPanel の判定が見つからない。");
+        // 「絞り込みが効いているか」を決める式を取り出す
+        var active = Regex.Match(source, @"var\s+anyFilter\s*=(?<expr>[^;]*);");
+        Assert.True(active.Success, "anyFilter の判定が見つからない。");
+
+        // パネルは開く
+        Assert.True(ContainsIdentifier(panel.Groups["expr"].Value, $"Model.{flag}"),
+            $"採用しなかった値があるときも絞り込みパネルを開くこと(showFilterPanel に Model.{flag} を含める)。"
+            + "開かないと、注意書きが案内する「下の絞り込みから選び直す」先が閉じたままになる。");
+        // ただし「適用中」ではない
+        Assert.False(ContainsIdentifier(active.Groups["expr"].Value, $"Model.{flag}"),
+            $"anyFilter に Model.{flag} を混ぜないこと。"
+            + "混ぜると「適用していません」の注意書きの横に「フィルター適用中」バッジが出る。");
+
+        // 判定の「定義」だけでなく「使われ方」も見る(理由は /Incidents 側の解説が正本)。
+        // この画面で「絞り込みが効いている」と主張する表示は「フィルター適用中」バッジだけ
+        var badge = Regex.Match(source, @"@if\s*\(\s*(?<flag>\w+)\s*\)\s*\{[^}]*フィルター適用中");
+        Assert.True(badge.Success, "「フィルター適用中」バッジの出し分けが見つからない。");
+        Assert.Equal("anyFilter", badge.Groups["flag"].Value);
     }
 
     // --- 画面をまたぐ網羅ガード: enum の絞り込みを持つ画面を取りこぼさない ------------

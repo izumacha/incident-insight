@@ -71,6 +71,18 @@ public class AuditLogsController : Controller
         DateTime? dateTo,
         int page = 1)
     {
+        // 型として読めなかった絞り込み値を先に拾っておく(issue #207 のうちこの画面の分)。
+        // 文字列以外の引数はモデルバインドに失敗すると null になり、失敗した事実は
+        // ModelState にしか残らない ——見ないと ?dateFrom=abc が「未指定」と同じ扱いになり、
+        // 注意書きも「フィルター適用中」の表示も出ないまま監査ログ全件が返る。判定と理由の
+        // 正本は MalformedFilterValueResolver の解説で、/Incidents ・ /PreventiveMeasures と
+        // まったく同じものを通す。キーはモデルバインドが使う引数名そのものなので nameof で渡す
+        // (直書きすると引数を改名したときに黙って外れる)。
+        // page を渡さないのは意図的 ——理由は解決処理の解説と、それを固定している
+        // UnlistedFilterValuePolicyTests.MalformedFilterExemptions が正本
+        var malformedFilters = MalformedFilterValueResolver.Resolve(
+            ModelState, nameof(dateFrom), nameof(dateTo));
+
         // 読み取り専用クエリを用意(監査ログは絶対に変更しないため AsNoTracking)
         var query = _db.AuditLogs.AsNoTracking().AsQueryable();
 
@@ -161,6 +173,12 @@ public class AuditLogsController : Controller
             EntityKey = SearchFilter.Adopted(entityKey),
             DateFrom = dateFrom,
             DateTo = dateTo,
+            // 「受け取ったのに型として読めなかった」ことを画面へ伝える旗。
+            // 上の 4 つと違い値そのものは運ばない(読めなかった値には採用しうる値が無い)。
+            // 代入の形を /Incidents ・ /PreventiveMeasures とそろえてあるのは、
+            // 旗の一覧をコントローラのソースから「… = ….Ignored」という代入の形で
+            // 導いている検出網がこの旗も自動で拾えるようにするため
+            MalformedFilterIgnored = malformedFilters.Ignored,
             EntityNameOptions = entityOptions,
             OperationOptions = operationOptions
         };
