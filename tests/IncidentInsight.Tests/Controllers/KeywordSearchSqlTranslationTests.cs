@@ -148,12 +148,24 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     }
 
     /// <summary>DbContext と、生かしておいた接続を後片付けする。</summary>
+    /// <remarks>
+    /// <b>準備が途中で失敗した場合も通る経路</b>なので、DbContext がまだ無い可能性を見込む。
+    /// 無条件に参照すると、本当の失敗原因(接続を開けなかった等)が
+    /// <c>NullReferenceException</c> に置き換わって見えなくなり、しかも接続の破棄まで
+    /// 飛ばされて開いたまま残る。
+    /// </remarks>
     public async Task DisposeAsync()
     {
-        // DbContext を先に閉じる
-        await _db.DisposeAsync();
-        // 最後に接続を閉じる(この時点でインメモリのデータベースは消える)
-        await _connection.DisposeAsync();
+        try
+        {
+            // DbContext を先に閉じる(準備が途中で失敗していれば、まだ無い)
+            if (_db is not null) await _db.DisposeAsync();
+        }
+        finally
+        {
+            // 途中で失敗しても接続だけは必ず閉じる(この時点でインメモリのデータベースは消える)
+            await _connection.DisposeAsync();
+        }
     }
 
     // 状況説明・報告者名の 2 列を OR で束ねた述語が SQL へ翻訳でき、
@@ -252,8 +264,13 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 
         // 大文字化したキーワードが SQL 本文に直接現れていないこと(＝リテラル展開されていない)
         Assert.DoesNotContain("SATO", searchSql, StringComparison.Ordinal);
-        // 代わりに EF Core のパラメータ参照(@__ で始まる)が現れていること
-        Assert.Contains("@__", searchSql, StringComparison.Ordinal);
+        // 代わりに SQL のパラメータ参照が現れていること。
+        // **具体的な名前(@__normalized_0 など)には依存しない** ——EF Core が付ける
+        // パラメータ名は公開契約ではなくメジャー版で変わる(EF Core 10 で `@__x_0` 形式から
+        // `@x` 形式へ変わり `__` が無くなった)。名前を決め打ちすると、
+        // dependabot の EF Core メジャー更新 PR で「リテラル展開されている」と読める
+        // 誤ったメッセージで落ちる ——正しくパラメータとして渡っているのに
+        Assert.Matches(@"@[A-Za-z_][A-Za-z0-9_]*", searchSql);
     }
 
     /// <summary>
@@ -271,8 +288,9 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     /// <returns>SQL 本文(見つからなければ空文字列)。</returns>
     private static string ExtractSqlBody(string logEntry)
     {
-        // 行に分ける(改行コードの違いは下の Trim で吸収する)
-        var lines = logEntry.Split('\n');
+        // 行に分ける。CRLF のログでも行末に \r が残らないよう、ここで落としておく
+        // (残したまま返すと、後から行末に係る検査を足した人が CRLF の環境でだけ落ちる)
+        var lines = logEntry.Split('\n').Select(line => line.TrimEnd('\r')).ToArray();
         // パラメータ一覧を載せているヘッダ行の位置を探す
         var headerIndex = Array.FindIndex(lines, line => line.Contains("Executed DbCommand", StringComparison.Ordinal));
         // ヘッダが無い形式に変わっていたら、本文を取り出せないので空を返す
