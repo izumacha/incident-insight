@@ -755,15 +755,19 @@ public class PreventiveMeasuresControllerTests : IDisposable
             // (大文字にしておく理由は KeywordSearchPredicate の docstring「残る境界 2」を参照。
             //  列側の大文字化は下の Index_ResponsibleSearchMatchesLowercaseColumnValues が見張る)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
+            // キーワードに一致しない対策も 1 件置く。**これが無いと「絞り込みが 1 件も
+            // 掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**(実測: 一致行だけの
+            // 頃は、この画面の検索を丸ごと無効化してもこのテストは緑のまま通った)
+            await SeedMeasureAsync("外科病棟", responsibleDepartment: "WARD");
 
             // 小文字のキーワードで担当者/担当部署を検索する
             // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)
             var result = await _controller.Index(null, "icu", null, null, null);
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             var view = Assert.IsType<ViewResult>(result);
             var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
-            Assert.Single(measures);
+            Assert.Equal("ICU", Assert.Single(measures).ResponsibleDepartment);
         }
     }
 

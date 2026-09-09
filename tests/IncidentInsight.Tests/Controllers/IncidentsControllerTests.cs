@@ -1048,6 +1048,18 @@ public class IncidentsControllerTests : IDisposable
                 ReporterName = "A",
                 OccurredAt = TestFixtures.Today
             });
+            // キーワードに一致しないインシデントも 1 件置く。**これが無いと「絞り込みが
+            // 1 件も掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**
+            // (実測: 一致行だけの頃は、この画面の検索を丸ごと無効化しても緑のまま通った)
+            _db.Incidents.Add(new Incident
+            {
+                Department = "ICU",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level2,
+                Description = "WARD ROUND: 定時巡回",
+                ReporterName = "B",
+                OccurredAt = TestFixtures.Today
+            });
             await _db.SaveChangesAsync();
 
             // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
@@ -1055,8 +1067,9 @@ public class IncidentsControllerTests : IDisposable
             var result = await _controller.Index("incident", null, null, null, null, null, null, null, 1) as ViewResult;
             var vm = result?.Model as IncidentListViewModel;
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             Assert.Equal(1, vm!.TotalCount);
+            Assert.Equal("A", Assert.Single(vm.Incidents).ReporterName);
         }
     }
 

@@ -59,14 +59,19 @@ public class AuditLogsControllerTests : IDisposable
         {
             // 変更者名が大文字 ASCII の監査ログを 1 件用意する
             _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
+            // キーワードに一致しない行も 1 件置く。**これが無いと「絞り込みが 1 件も
+            // 掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**(実測: 一致行だけの
+            // 頃は、この画面の検索を丸ごと無効化してもこのテストは緑のまま通った)
+            _db.AuditLogs.Add(MakeLog(user: "TANAKA"));
             await _db.SaveChangesAsync();
 
             // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
             var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
             var vm = result?.Model as AuditLogListViewModel;
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             Assert.Equal(1, vm!.TotalCount);
+            Assert.Equal("ADMIN", Assert.Single(vm.Logs).ChangedBy);
         }
     }
 
