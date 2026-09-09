@@ -1019,16 +1019,18 @@ public class IncidentsControllerTests : IDisposable
     // 検索キーワードの大文字化が、サーバの OS ロケールに左右されないことを
     // 「コントローラ経由で」固定する。
     //
-    // 正規化はヘルパ 1 箇所に集約してあるが、それだけでは「コントローラが実際に
-    // そのヘルパを通っているか」は誰も見ていない(呼び出し側を素の ToUpper() へ戻すだけで
-    // 元の不具合が復活する)。ここはその経路を押さえる。各コントローラが
-    // 自分の呼び出し側を持つので、経路ごとに個別のテストを置く。
+    // 規則は KeywordSearchPredicate 1 箇所にあるが、それだけでは「コントローラが実際に
+    // その述語を通っているか」は誰も見ていない。ここはその経路を押さえる。
+    // **規則そのものを壊す変異(キーワード側を素の ToUpper() へ戻す)では 3 画面ぶんが
+    // 同時に落ちる**ので、この 1 件が単独で守っているのは規則ではなく「経路」の方。
     //
     // 保存する状況説明を「あらかじめ大文字の ASCII」にしてあるのは、テストの InMemory
     // プロバイダには SQL が無く、式ツリーの col.ToUpper() が本番と違ってアプリ内で
     // 現在のカルチャに従って評価されるため。列の側を大文字のままにしておけば
     // トルコ語ロケールでも変化せず、判定対象をキーワード側の規則だけに絞れる
-    // (この切り分けの根拠は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)。
+    // (この切り分けの根拠は KeywordSearchPredicate の docstring「残る境界 2」を参照)。
+    // 裏を返すと、この形は列側の大文字化が無くても通る。列側は下の
+    // Index_SearchMatchesLowercaseColumnValues が見張る。
     [Fact]
     public async Task Index_SearchUsesInvariantUpperCasing_NotServerLocale()
     {
@@ -1046,6 +1048,18 @@ public class IncidentsControllerTests : IDisposable
                 ReporterName = "A",
                 OccurredAt = TestFixtures.Today
             });
+            // キーワードに一致しないインシデントも 1 件置く。**これが無いと「絞り込みが
+            // 1 件も掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**
+            // (実測: 一致行だけの頃は、この画面の検索を丸ごと無効化しても緑のまま通った)
+            _db.Incidents.Add(new Incident
+            {
+                Department = "ICU",
+                IncidentType = IncidentTypeKind.Medication,
+                Severity = IncidentSeverity.Level2,
+                Description = "WARD ROUND: 定時巡回",
+                ReporterName = "B",
+                OccurredAt = TestFixtures.Today
+            });
             await _db.SaveChangesAsync();
 
             // 小文字のキーワードで検索する。素の ToUpper() だと "İNCİDENT"(U+0130)になり
@@ -1053,9 +1067,58 @@ public class IncidentsControllerTests : IDisposable
             var result = await _controller.Index("incident", null, null, null, null, null, null, null, 1) as ViewResult;
             var vm = result?.Model as IncidentListViewModel;
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             Assert.Equal(1, vm!.TotalCount);
+            Assert.Equal("A", Assert.Single(vm.Incidents).ReporterName);
         }
+    }
+
+    // 突き合わせる 2 つの辺のうち「列の側」の大文字化を、検索対象の列ごとに見張る(issue #188)。
+    // 上のロケールテストは列側を大文字 ASCII で保存するため、列側の .ToUpper() が
+    // 無くても通ってしまう。ここでは逆に**小文字で保存して小文字で引く**ので、
+    // 列側の大文字化が落ちると `"handover".Contains("HANDOVER")` が false になって落ちる。
+    // これが要るのは、列側を書き忘れても SQLite / SQL Server / テストの InMemory では
+    // 一致してしまい、PostgreSQL 配備でだけ 0 件になるため(集約前は実測で全件緑だった)。
+    // 列ごとに引くのは、OR で束ねた片方だけ落としたときにも落ちるようにするため。
+    // 使う文字を i / I 以外の ASCII に限っているのは、InMemory では列側もカルチャ依存で
+    // 評価されるため(KeywordSearchPredicate の「残る境界 2」)。
+    [Theory]
+    [InlineData("handover")]    // 状況説明の列に一致するキーワード
+    [InlineData("sato")]        // 報告者名の列に一致するキーワード
+    public async Task Index_SearchMatchesLowercaseColumnValues(string keyword)
+    {
+        // 状況説明・報告者名のどちらも小文字 ASCII で保存する(こちらがヒットする側)
+        _db.Incidents.Add(new Incident
+        {
+            Department = "ICU",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "handover memo lost",
+            ReporterName = "sato",
+            OccurredAt = TestFixtures.Today
+        });
+        // どちらのキーワードにも一致しないインシデントも 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        _db.Incidents.Add(new Incident
+        {
+            Department = "ICU",
+            IncidentType = IncidentTypeKind.Medication,
+            Severity = IncidentSeverity.Level2,
+            Description = "ward round done",
+            ReporterName = "tanaka",
+            OccurredAt = TestFixtures.Today
+        });
+        await _db.SaveChangesAsync();
+
+        // 同じく小文字のキーワードで検索する
+        var result = await _controller.Index(keyword, null, null, null, null, null, null, null, 1) as ViewResult;
+        var vm = result?.Model as IncidentListViewModel;
+
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
+        Assert.Equal(1, vm!.TotalCount);
+        // **返ってきたのが一致する側であることまで見る** ——件数だけだと、述語が別の行を
+        // 拾っていても緑になる(一致しない行を 1 件置いた意味が半分しか効かない)
+        Assert.Equal("sato", Assert.Single(vm.Incidents).ReporterName);
     }
 
     // 空白のみのフリーワード検索は「絞り込み無し」として扱われることを固定する(issue #187)。

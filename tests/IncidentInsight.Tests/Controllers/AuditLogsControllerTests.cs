@@ -39,10 +39,17 @@ public class AuditLogsControllerTests : IDisposable
     // --- Index ---
 
     // 変更者フィルタの大文字化が、サーバの OS ロケールに左右されないことを固定する。
-    // 各コントローラが自分の呼び出し側を持つので、経路ごとに個別に押さえる
-    // (呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
+    //
+    // **このテストが単独で見張っているのは「この画面が共有の述語を通っていること」**。
+    // 大文字化の規則そのものは KeywordSearchPredicate 1 箇所にあるので、規則を壊す変異
+    // (キーワード側を素の ToUpper() へ戻す)では 3 画面ぶんが同時に落ちる ——つまり
+    // 「この 1 件だけが落ちる」わけではない(issue #188 で述語ごと共有する前は、画面ごとに
+    // 呼び出し側が大文字化を書いていたのでそうなっていた)。それでも経路ごとに置くのは、
+    // この画面の検索が共有の述語から外れたときに、ここだけが落ちて教えてくれるため。
     // 保存する変更者名を大文字 ASCII にしてある理由は
-    // IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照。
+    // KeywordSearchPredicate の docstring「残る境界 2」を参照。
+    // その形は列側の大文字化が無くても通るので、列側は下の
+    // Index_ChangedBySearchMatchesLowercaseColumnValues が見張る。
     [Fact]
     public async Task Index_ChangedBySearchUsesInvariantUpperCasing_NotServerLocale()
     {
@@ -52,15 +59,52 @@ public class AuditLogsControllerTests : IDisposable
         {
             // 変更者名が大文字 ASCII の監査ログを 1 件用意する
             _db.AuditLogs.Add(MakeLog(user: "ADMIN"));
+            // キーワードに一致しない行も 1 件置く。**これが無いと「絞り込みが 1 件も
+            // 掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**(実測: 一致行だけの
+            // 頃は、この画面の検索を丸ごと無効化してもこのテストは緑のまま通った)
+            _db.AuditLogs.Add(MakeLog(user: "TANAKA"));
             await _db.SaveChangesAsync();
 
             // 小文字のキーワードで検索する(素の ToUpper() だと "ADMİN" になり一致しない)
             var result = await _controller.Index(null, null, "admin", null, null, null, 1) as ViewResult;
             var vm = result?.Model as AuditLogListViewModel;
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             Assert.Equal(1, vm!.TotalCount);
+            Assert.Equal("ADMIN", Assert.Single(vm.Logs).ChangedBy);
         }
+    }
+
+    // 突き合わせる 2 つの辺のうち「列の側」の大文字化を見張る(issue #188)。
+    // 上のロケールテストは列側を大文字 ASCII で保存するため、列側の .ToUpper() が
+    // 無くても通ってしまう。ここでは逆に**小文字で保存して小文字で引く**ので、
+    // 列側の大文字化が落ちると `"sato".Contains("SATO")` が false になって落ちる。
+    // これが要るのは、列側を書き忘れても SQLite / SQL Server / テストの InMemory では
+    // 一致してしまい、PostgreSQL 配備でだけ 0 件になるため
+    // (集約前は実測で /Incidents と /PreventiveMeasures が全件緑のまま通った)。
+    // 使う文字を i / I 以外の ASCII に限っているのは、InMemory では列側もカルチャ依存で
+    // 評価されるため(KeywordSearchPredicate の「残る境界 2」)。
+    // ドット付き i を避ければ、実行環境のカルチャによらず同じ結論になる。
+    [Fact]
+    public async Task Index_ChangedBySearchMatchesLowercaseColumnValues()
+    {
+        // 変更者名を小文字 ASCII で保存する(こちらがヒットする側)
+        _db.AuditLogs.Add(MakeLog(user: "sato"));
+        // キーワードに一致しない変更者の行も 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        _db.AuditLogs.Add(MakeLog(user: "tanaka"));
+        await _db.SaveChangesAsync();
+
+        // 同じく小文字のキーワードで検索する
+        var result = await _controller.Index(null, null, "sato", null, null, null, 1) as ViewResult;
+        var vm = result?.Model as AuditLogListViewModel;
+
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
+        Assert.Equal(1, vm!.TotalCount);
+        // **返ってきたのが一致する側であることまで見る** ——件数だけだと、述語が逆向きに
+        // なって「一致しない側の 1 件」を返しても緑になる(実測: 判定を否定する変異は
+        // 件数しか見ないこのテストを素通りした)
+        Assert.Equal("sato", Assert.Single(vm.Logs).ChangedBy);
     }
 
     // 空白のみの変更者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。

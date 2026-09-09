@@ -41,7 +41,7 @@ namespace IncidentInsight.Web.Models.Validation;
 /// URL のクエリ文字列は識別子であって自然言語ではないので、
 /// 実行環境のカルチャで結論が変わってはいけない
 /// (検索語の大文字化を不変規則で行っている
-/// <c>Controllers.Internal.IncidentControllerHelpers.NormalizeSearchKeyword</c> と同じ理由)。
+/// <c>Controllers.Internal.KeywordSearchPredicate</c> と同じ理由)。
 /// 大文字小文字は区別する ——<c>?sortBy=Severity</c> は受け付けない値として扱い、
 /// 既定の最新順で表示する(画面の <c>&lt;select&gt;</c> も最新順を指すので食い違わない)。</para>
 /// </summary>

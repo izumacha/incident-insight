@@ -112,13 +112,11 @@ public class PreventiveMeasuresController : Controller
             query = query.Where(PreventiveMeasure.OverdueOn(_clock.Today));
         // 担当者キーワードが指定されていれば氏名/部署名で部分一致検索(大文字小文字を区別しない)
         // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
-        // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
+        // 述語そのものは KeywordSearchPredicate から出す(両辺の大文字化をペアで持たせる。
+        // 規則と実測は同クラスの解説が正本。issue #188)
         if (SearchFilter.HasValue(responsible))
-        {
-            var normalizedResponsible = IncidentControllerHelpers.NormalizeSearchKeyword(responsible);
-            query = query.Where(m => m.ResponsiblePerson.ToUpper().Contains(normalizedResponsible) || m.ResponsibleDepartment.ToUpper().Contains(normalizedResponsible));
-        }
+            query = query.Where(KeywordSearchPredicate.Matching<PreventiveMeasure>(
+                responsible, m => m.ResponsiblePerson, m => m.ResponsibleDepartment));
         // 担当部署が指定されていれば完全一致で絞る(空白のみは絞り込み無し)
         if (SearchFilter.HasValue(responsibleDepartment))
             query = query.Where(m => m.ResponsibleDepartment == responsibleDepartment);

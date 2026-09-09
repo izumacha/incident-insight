@@ -93,13 +93,12 @@ public class IncidentsController : Controller
 
         // フリーワード検索(状況または報告者名を部分一致・大文字小文字を区別しない)
         // 「入力が空か」の判定は SearchFilter.HasValue に集約してある(空白のみは絞り込み無し)。
-        // 大文字化の規則と「なぜ両辺を大文字化するのか / なぜ不変規則なのか」は
-        // IncidentControllerHelpers.NormalizeSearchKeyword に集約してある
+        // 述語そのものは KeywordSearchPredicate から出す ——両辺(列とキーワード)の大文字化は
+        // ペアで揃ってはじめて正しく、片方を呼び出し側で書ける形にすると書き忘れが
+        // PostgreSQL 配備でだけ 0 件になって現れる(規則と実測は同クラスの解説が正本。issue #188)
         if (SearchFilter.HasValue(search))
-        {
-            var normalizedSearch = IncidentControllerHelpers.NormalizeSearchKeyword(search);
-            query = query.Where(i => i.Description.ToUpper().Contains(normalizedSearch) || i.ReporterName.ToUpper().Contains(normalizedSearch));
-        }
+            query = query.Where(KeywordSearchPredicate.Matching<Incident>(
+                search, i => i.Description, i => i.ReporterName));
         // 部署で絞り込み。「空白のみか」に加えて「ドロップダウンが表せる値か」まで決めるので、
         // 判定とドロップダウンの選択肢づくりを共有の DepartmentFilterResolver にまとめてある
         // (許可リストから外れた過去の部署名は選択肢へ補完し、実データに無い値は採用しない。

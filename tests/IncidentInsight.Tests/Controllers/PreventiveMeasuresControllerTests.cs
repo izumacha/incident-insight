@@ -42,7 +42,10 @@ public class PreventiveMeasuresControllerTests : IDisposable
     private async Task<PreventiveMeasure> SeedMeasureAsync(
         string incidentDepartment,
         string? responsibleDepartment = null,
-        int siblingMeasureCount = 0)
+        int siblingMeasureCount = 0,
+        // 担当者名は既定のままで足りる呼び出しがほとんどなので任意引数にしてある。
+        // 担当者キーワード検索は氏名と部署の OR なので、列ごとに見張るテストだけが指定する
+        string responsiblePerson = "担当A")
     {
         var incident = new Incident
         {
@@ -58,7 +61,7 @@ public class PreventiveMeasuresControllerTests : IDisposable
             Incident = incident,
             Description = "対策",
             MeasureType = MeasureTypeKind.ShortTerm,
-            ResponsiblePerson = "担当A",
+            ResponsiblePerson = responsiblePerson,
             ResponsibleDepartment = responsibleDepartment ?? incidentDepartment,
             DueDate = DateTime.Today.AddDays(30),
             Priority = 2
@@ -735,8 +738,12 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     // 担当者/担当部署の部分一致検索の大文字化が、サーバの OS ロケールに
-    // 左右されないことを固定する。各コントローラが自分の呼び出し側を持つので、
-    // 経路ごとに個別に押さえる(呼び出し側を素の ToUpper() へ戻すと、この 1 件だけが落ちる)。
+    // 左右されないことを固定する。
+    //
+    // **このテストが単独で見張っているのは「この画面が共有の述語を通っていること」**。
+    // 大文字化の規則そのものは KeywordSearchPredicate 1 箇所にあるので、規則を壊す変異では
+    // 3 画面ぶんが同時に落ちる(「この 1 件だけが落ちる」のは、issue #188 で述語ごと
+    // 共有する前 ——画面ごとに呼び出し側が大文字化を書いていた頃の話)。
     [Fact]
     public async Task Index_ResponsibleSearchUsesInvariantUpperCasing_NotServerLocale()
     {
@@ -745,18 +752,55 @@ public class PreventiveMeasuresControllerTests : IDisposable
         using (LocaleSensitiveTest.UseTurkishCulture())
         {
             // 担当部署が大文字 ASCII の対策を 1 件投入する
-            // (大文字にしておく理由は IncidentControllerHelpers.NormalizeSearchKeyword の docstring「残る境界 2」を参照)
+            // (大文字にしておく理由は KeywordSearchPredicate の docstring「残る境界 2」を参照。
+            //  列側の大文字化は下の Index_ResponsibleSearchMatchesLowercaseColumnValues が見張る)
             await SeedMeasureAsync("内科病棟", responsibleDepartment: "ICU");
+            // キーワードに一致しない対策も 1 件置く。**これが無いと「絞り込みが 1 件も
+            // 掛かっていない」状態でも同じ 1 件が返り、経路を固定できない**(実測: 一致行だけの
+            // 頃は、この画面の検索を丸ごと無効化してもこのテストは緑のまま通った)
+            await SeedMeasureAsync("外科病棟", responsibleDepartment: "WARD");
 
             // 小文字のキーワードで担当者/担当部署を検索する
             // (素の ToUpper() だと "icu" が "İCU" になり "ICU" に一致しない)
             var result = await _controller.Index(null, "icu", null, null, null);
 
-            // ロケールに関わらず 1 件ヒットすること
+            // ロケールに関わらず、一致する 1 件だけがヒットすること
             var view = Assert.IsType<ViewResult>(result);
             var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
-            Assert.Single(measures);
+            Assert.Equal("ICU", Assert.Single(measures).ResponsibleDepartment);
         }
+    }
+
+    // 突き合わせる 2 つの辺のうち「列の側」の大文字化を、検索対象の列ごとに見張る(issue #188)。
+    // 上のロケールテストは列側を大文字 ASCII で保存するため、列側の .ToUpper() が
+    // 無くても通ってしまう。ここでは逆に**小文字で保存して小文字で引く**ので、
+    // 列側の大文字化が落ちると `"sato".Contains("SATO")` が false になって落ちる。
+    // これが要るのは、列側を書き忘れても SQLite / SQL Server / テストの InMemory では
+    // 一致してしまい、PostgreSQL 配備でだけ 0 件になるため(集約前は実測で全件緑だった)。
+    // 列ごとに引くのは、OR で束ねた片方だけ落としたときにも落ちるようにするため。
+    // 使う文字を i / I 以外の ASCII に限っているのは、InMemory では列側もカルチャ依存で
+    // 評価されるため(KeywordSearchPredicate の「残る境界 2」)。
+    [Theory]
+    [InlineData("sato")]        // 担当者名の列に一致するキーワード
+    [InlineData("labo")]        // 担当部署の列に一致するキーワード
+    public async Task Index_ResponsibleSearchMatchesLowercaseColumnValues(string keyword)
+    {
+        // 担当者名・担当部署のどちらも小文字 ASCII で保存する(こちらがヒットする側)
+        await SeedMeasureAsync("内科病棟", responsibleDepartment: "labo", responsiblePerson: "sato");
+        // どちらのキーワードにも一致しない対策も 1 件置く。
+        // **1 件しか置かないと「絞り込みが 1 件も掛かっていない」状態と区別が付かない**
+        // ——実測でも、この画面の担当者フィルタを丸ごと無効化する変異が全件緑のまま通った
+        await SeedMeasureAsync("外科病棟", responsibleDepartment: "ward", responsiblePerson: "tanaka");
+
+        // 同じく小文字のキーワードで担当者/担当部署を検索する
+        var result = await _controller.Index(null, keyword, null, null, null);
+
+        // 列側も大文字化されていれば、一致する 1 件だけが返る
+        var view = Assert.IsType<ViewResult>(result);
+        var measures = Assert.IsType<List<PreventiveMeasure>>(view.Model);
+        var measure = Assert.Single(measures);
+        // 返ってきたのが一致する側であることまで確かめる(件数だけだと取り違えに気づけない)
+        Assert.Equal("sato", measure.ResponsiblePerson);
     }
 
     // 空白のみの担当者キーワードは「絞り込み無し」として扱われることを固定する(issue #187)。

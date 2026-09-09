@@ -37,8 +37,8 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 前後の空白を取り除いたりはしない。<c>&quot;田中 &quot;</c>(末尾スペース付き)のような
 /// 入力は今までどおりそのまま検索語として使われる。トリミングは検索の一致範囲を変える
 /// 別の判断なので、必要になったときに独立した変更として決めること。
-/// 検索語の大文字化(ロケール非依存の正規化)は
-/// <c>Controllers.Internal.IncidentControllerHelpers.NormalizeSearchKeyword</c> が担当する
+/// 検索語の大文字化(ロケール非依存の正規化)は、部分一致の述語ごと
+/// <c>Controllers.Internal.KeywordSearchPredicate</c> が担当する
 /// ——こちらは EF Core のクエリを組み立てる経路でしか使わないためコントローラ側に置いてある。</para>
 ///
 /// <para><b>ドロップダウンが表せない適用値をどう扱うか(issue #192)。</b>
