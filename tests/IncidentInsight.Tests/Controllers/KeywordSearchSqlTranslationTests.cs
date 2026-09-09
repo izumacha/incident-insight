@@ -16,8 +16,6 @@ using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Mvc;
 // DbContextOptionsBuilder / EnsureCreatedAsync
 using Microsoft.EntityFrameworkCore;
-// SQLite のインメモリ接続を自分で開いて保持するため
-using Microsoft.Data.Sqlite;
 // 発行された SQL を拾うログの絞り込みに LogLevel を使う
 using Microsoft.Extensions.Logging;
 // テストでは何も出力しないロガー(NullLogger)を使うため
@@ -53,7 +51,7 @@ namespace IncidentInsight.Tests.Controllers;
 /// ここは実プロバイダという違いはあるが、列側の大文字化を見る役目そのものは同じで、
 /// 変異させると両者は一緒に落ちる(＝一方が他方より細かく見分けるわけではない)。
 /// それでも残しているのは、<b>この 1 クラスが 3 経路すべての唯一の砦になるのを避ける</b>ため
-/// ——SQLite の組み立て(接続の生存管理・<c>EnsureCreated</c>)は環境の影響を受けやすく、
+/// ——SQLite の組み立て(一時ファイルの読み書き・<c>EnsureCreated</c>)は環境の影響を受けやすく、
 /// ここが丸ごと落ちたり外されたりすると 3 画面分の検出が同時に消える。
 /// 経路ごとのテストが各 <c>*ControllerTests</c> にもあれば、片方が失われても残る。</para>
 ///
@@ -68,19 +66,19 @@ namespace IncidentInsight.Tests.Controllers;
 /// </remarks>
 public class KeywordSearchSqlTranslationTests : IAsyncLifetime
 {
-    // インメモリの SQLite は「最後の接続が閉じるとデータベースごと消える」ので、
-    // テストの間ずっと開いたままにする接続を 1 本持つ。
+    // このテスト専用の SQLite ファイル DB。既存の SQLite テストと同じ形にしてある
+    // (一時ファイル + Helpers/SqliteTestFiles での後始末)。
     //
-    // **既存の SQLite テストが一時ファイルの DB を使い Helpers/SqliteTestFiles で
-    // 後始末しているのに対し、ここだけ :memory: なのは意図的。**
-    // あちらが必要なのは「別々の接続から同じ DB を同時に触る」ことを見るためで、
-    // それにはファイルが要る。こちらは 1 つの DbContext から SQL を流すだけなので、
-    // ファイルを作ると消す責務が増えるだけで得るものが無い
-    // (WAL / SHM / journal の消し忘れが CI に残る事故は SqliteTestFiles の docstring が記録)。
-    // **同時実行を見るテストを足すときは、一時ファイル + SqliteTestFiles の形に倣うこと。**
-    // どのテストがその形かはここに書き並べない ——参照が増えるたびに一覧だけが古くなる
-    // (CLAUDE.md §3。実際、この注記の初版は既に 1 クラス取りこぼしていた)
-    private readonly SqliteConnection _connection = new("Data Source=:memory:");
+    // **インメモリ(`Data Source=:memory:`)にしないのは、接続を開いたまま保持するために
+    // SqliteConnection 型を直接使うことになるため。** そのパッケージ
+    // (Microsoft.Data.Sqlite)は csproj に無く EF Core の Sqlite プロバイダ経由の
+    // 推移依存なので、直接使うと「宣言していない依存に対するコンパイル時の依存」が生まれる。
+    // しかもその版は EfCorePackageAlignmentTests の管理対象外(名前に EntityFrameworkCore /
+    // EFCore を含まないため。CLAUDE.md が Microsoft.Data.SqlClient について書いているのと
+    // 同じ穴)で、上流が依存構成を変えるとこのファイルだけがビルドエラーになる。
+    // 接続文字列だけで済ませれば、その依存はそもそも生まれない
+    private readonly string _dbPath =
+        Path.Combine(Path.GetTempPath(), $"incident-insight-keyword-search-{Guid.NewGuid():N}.db");
     // 上の接続を使う DbContext(各テストから使う)
     private ApplicationDbContext _db = null!;
     // EF Core が実際に発行したコマンド(パラメータ一覧 + SQL 本文)をためる。
@@ -90,34 +88,29 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
     /// <summary>準備(<see cref="SeedAsync"/>)を実行し、失敗したら接続を閉じてから投げ直す。</summary>
     public async Task InitializeAsync()
     {
-        // 準備が途中でこけたら、この場で接続を閉じてから投げ直す。
+        // 準備が途中でこけたら、この場で後片付けしてから投げ直す。
         // **xUnit v2 は InitializeAsync が例外を投げると DisposeAsync を呼ばない**(実測)ので、
-        // ここで閉じないと開いたままの接続がテスト実行の残り全体に残る
+        // ここで片付けないと一時ファイルがテスト実行後も残る
         try
         {
             await SeedAsync();
         }
         catch
         {
-            // 後片付けの失敗で本当の失敗原因を覆い隠さないよう、破棄は投げ直す前に済ませる。
-            // DbContext は組み立て済みかもしれない(スキーマ作成や投入でこけた場合)ので
-            // 併せて閉じる ——DisposeAsync 側と同じ順序・同じ対象にそろえておく
-            if (_db is not null) await _db.DisposeAsync();
-            await _connection.DisposeAsync();
+            // 後片付けの失敗で本当の失敗原因を覆い隠さないよう、破棄は投げ直す前に済ませる
+            await CleanUpAsync();
             throw;
         }
     }
 
-    /// <summary>接続を開き、スキーマを作って、検索対象のデータを入れる。</summary>
+    /// <summary>スキーマを作って、検索対象のデータを入れる。</summary>
     private async Task SeedAsync()
     {
-        // インメモリのデータベースを生存させるために接続を開く
-        await _connection.OpenAsync();
-        // 開いたままの接続を使う DbContext を組み立てる。
+        // このテスト専用のファイル DB を使う DbContext を組み立てる。
         // 発行されたコマンドを拾えるようにしておく(下のパラメータ化の検査で読む)
         _db = new ApplicationDbContext(
             new DbContextOptionsBuilder<ApplicationDbContext>()
-                .UseSqlite(_connection)
+                .UseSqlite($"Data Source={_dbPath}")
                 .LogTo(_commandLog.Add, new[] { DbLoggerCategory.Database.Command.Name }, LogLevel.Information)
                 .Options);
         // マイグレーション履歴ではなく現在のモデルからスキーマを作る
@@ -196,25 +189,28 @@ public class KeywordSearchSqlTranslationTests : IAsyncLifetime
         await _db.SaveChangesAsync();
     }
 
-    /// <summary>DbContext と、生かしておいた接続を後片付けする。</summary>
+    /// <summary>DbContext を閉じ、一時ファイルを片付ける。</summary>
     /// <remarks>
     /// <b>ここへ来るのは準備が最後まで通ったときだけ</b>(xUnit v2 は
     /// <c>InitializeAsync</c> が例外を投げると <c>DisposeAsync</c> を呼ばない。実測)。
-    /// 途中で失敗した場合の接続の破棄は <c>InitializeAsync</c> 側が自分で行う。
-    /// それでも <c>finally</c> を置くのは、DbContext の破棄がこけても
-    /// 接続だけは必ず閉じるため(閉じ損ねるとインメモリの DB が残り続ける)。
+    /// 途中で失敗した場合の後片付けは <c>InitializeAsync</c> 側が自分で行うので、
+    /// どちらの経路も同じ <see cref="CleanUpAsync"/> を通す(写しを持つと片方だけ古くなる)。
     /// </remarks>
-    public async Task DisposeAsync()
+    public Task DisposeAsync() => CleanUpAsync();
+
+    /// <summary>DbContext と一時ファイルを片付ける(成功時・失敗時の共通経路)。</summary>
+    private async Task CleanUpAsync()
     {
         try
         {
-            // DbContext を先に閉じる
-            await _db.DisposeAsync();
+            // DbContext を先に閉じる(準備が途中で失敗していれば、まだ無い)
+            if (_db is not null) await _db.DisposeAsync();
         }
         finally
         {
-            // DbContext の破棄がこけても接続は必ず閉じる(この時点でインメモリの DB は消える)
-            await _connection.DisposeAsync();
+            // DbContext の破棄がこけてもファイルは必ず消す。
+            // 本体だけでなく WAL / SHM / journal も消す規則は共有ヘルパーが持つ
+            SqliteTestFiles.Cleanup(_dbPath);
         }
     }
 
