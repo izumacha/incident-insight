@@ -72,22 +72,57 @@ public class RepositoryPathsBuildArtifactTests
     }
 
     [Theory]
-    // 親へ出る形(Unix でも Windows でも、Root の外はこの形になる)
+    // 親へ出る形(GetRelativePath は基準の外を必ずこの形で返す)
     [InlineData("../other/x.cshtml", true)]
-    // 分解した先頭だけを見るので、途中に .. があっても Root の外へは出ていない
-    [InlineData("src/../obj/x.cs", false)]
     // 相対化できず絶対パスのまま返った形。**Linux では IsBuildArtifact 越しに作れない**
     // (Unix の絶対パスは必ず / を共有するので GetRelativePath が絶対パスを返さない)。
-    // Windows のドライブ違いでだけ起きる枝なので、相対パスを直接渡して固定する
+    // 実際に成立するのは Windows のドライブ違いだが、判定は「rooted かどうか」しか見ないので、
+    // ここでは POSIX の絶対パスでその枝を固定する(ドライブ付きの文字列は Linux では
+    // rooted と判定されず、この枝を通らない)
     [InlineData("/absolute/obj/x.cs", true)]
     // ルート自身を指す形("." は親へ出ていない)
     [InlineData(".", false)]
     // 通常の内側のパス
     [InlineData("src/Views/Index.cshtml", false)]
-    public void PointsOutsideRoot_ClassifiesRelativePaths(string relativePath, bool expected)
+    // **既知の限界**: 正規化前の文字列は正しく判定できない。GetRelativePath の結果は
+    // .. が先頭にまとまるので実際の入力では起きないが、別の作り方の相対パスを渡す利用側が
+    // 現れたら正規化が要る、という境界をここで可視にしておく(docstring と対にしている)
+    [InlineData("src/../../other/bin/x.cs", false)]
+    public void PointsOutsideRoot_ClassifiesNormalizedRelativePaths(string relativePath, bool expected)
     {
         // 相対パスだけを見る純粋な判定なので、そのまま呼んで結果を突き合わせる
         Assert.Equal(expected, RepositoryPaths.PointsOutsideRoot(relativePath));
+    }
+
+    [Fact]
+    public void RelativePaths_AreRejected()
+    {
+        // リポジトリ相対のパス。走査テストが Path.GetRelativePath(Root, file) で手元に持つ形で、
+        // 誤って渡す経路が隣り合わせにある
+        var relativePath = Path.Combine("src", "Views", "Index.cshtml");
+        // 相対パスはテスト実行時のカレント(ビルド出力)基準で解決され、必ず bin を踏むため、
+        // 黙って true を返さずに落ちることを確かめる
+        var error = Assert.Throws<ArgumentException>(() => RepositoryPaths.IsBuildArtifact(relativePath));
+        // どのパスが問題なのかがメッセージから分かることまで求める
+        Assert.Contains(relativePath, error.Message, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void ScannedEnumerations_ExcludeBuildArtifacts()
+    {
+        // 走査系の列挙が実際にこの判定を通していることを見る。
+        // **判定そのものの検査だけでは足りない**: 列挙側の .Where を外しても判定は正しいままなので、
+        // 配線が切れたことに誰も気付けない(実測: 両方の .Where を外しても全件緑だった)
+        var scanned = RepositoryPaths.EnumerateViewFiles()
+            .Concat(RepositoryPaths.EnumerateWebSourceFiles())
+            .ToList();
+        // 「対象ゼロだから違反ゼロ」で緑にならないよう、まず列挙できていることを確かめる(fail-closed)
+        Assert.True(scanned.Count > 0, "走査対象のファイルを 1 つも列挙できなかった。");
+        // 生成物が 1 つでも混ざっていれば、どのファイルかを名指しして落とす
+        var artifacts = scanned.Where(RepositoryPaths.IsBuildArtifact).ToList();
+        Assert.True(
+            artifacts.Count == 0,
+            $"走査対象にビルド生成物が混ざっている: {string.Join(" / ", artifacts)}");
     }
 
     [Fact]
