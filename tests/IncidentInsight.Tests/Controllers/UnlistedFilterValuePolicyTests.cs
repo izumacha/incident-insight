@@ -709,8 +709,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "引数の型を変えたなら、この導出も同じ変更セットで直すこと"
             + "(直さないと、読めない値の検査が対象ゼロで全件緑になる)。");
 
-        // 意図的な除外を取り除く
-        var names = derived.Where(name => !MalformedFilterExemptions.ContainsKey(name)).ToList();
+        // 意図的な除外を取り除く(除外はこの画面に登録されているものだけが効く)
+        var names = derived
+            .Where(name => !IsExemptFromMalformedFilterHandling(action, name))
+            .ToList();
 
         // 除外で全部消えた場合は、原因が除外表であることを名指しして落とす
         // (対象ゼロで全件緑になるのは上と同じなので、こちらも fail-closed にする)
@@ -740,9 +742,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // <b>この一覧すべて</b>を見る。以前は /Incidents だけを見ていたので、たとえば
     // /AuditLogs にしか無い引数を除外表へ登録しても「実在しない」と誤判定されず、
     // 逆に /AuditLogs の Nullable 引数は「隠せない」の門番をすり抜けた。
-    // <b>除外表は URL 上の名前をキーにする(画面ごとに分けない)ので、掛ける範囲も
-    // 除外表を引く側とそろえる必要がある</b> ——引く側が 1 つでも多いと、その画面にしか
-    // 無い引数を表へ 1 行足すだけで黙らせられる。
+    // <b>除外表は (画面, URL 上の名前) をキーにするので、門番も画面ごとに突き合わせる</b>
+    // (どちらも上の UnreadableProneQueryNamesByController を通す)。掛ける範囲が
+    // 除外表を引く側より狭いと、その画面にしか無い引数を表へ 1 行足すだけで黙らせられる。
     //
     // /Analytics のアクションも載せる。あの画面は ViewModel も page も持たないが、
     // ケースの導出で同じ除外表を引く以上、門番の対象からだけ外すと上の穴になる
@@ -751,11 +753,33 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Concat(AnalyticsActionsWithUnreadableProneParameters())
             .ToList();
 
-    // <b>「読めない値」の手当てから意図的に外している引数</b>(URL 上の名前 → 外す理由)。
+    // page を除外してよい理由。2 画面が同じ理由で外しているので文面を 1 つにまとめる(§6 DRY)
+    // ——書き写すと、片方だけ理由を直したときにもう片方が古い説明のまま残る
+    private const string PageExemptionReason =
+        "ページ番号は絞り込みではない。?page=abc(読めない)も ?page=99999(範囲外)も "
+        + "Index が Math.Clamp で最寄りの有効なページへ丸める同じ扱いで、着地した"
+        + "ページはページャが実際に表示している ——絞り込みの注意書きが要るのは"
+        + "「送ったのに効いていない」状態が画面から見えなくなるからで、ページングには"
+        + "その食い違いが無い。文面(「絞り込みは適用していません」)も合わず、出せば"
+        + "絞り込みパネルまで開いて事実と違う案内になる(issue #211。正本は "
+        + "MalformedFilterValueResolver の解説)。";
+
+    // <b>「読めない値」の手当てから意図的に外している引数</b>((画面, URL 上の名前) → 外す理由)。
     //
     // この表が除外の唯一の真実の源で、導出も下の 3 つの検査も同じここを読む
     // (写しを持つと、どちらへ足しても片方が取り残される ——この repo が
     //  LengthGovernanceExclusions で繰り返し避けている形)。
+    //
+    // <b>キーに画面(コントローラ名)を含めるのはなぜか。</b> 以前は URL 上の名前だけを
+    // キーにしていたため、除外が<b>名前の一致だけで全画面へ効いた</b>。page の除外理由は
+    // 「Index が Math.Clamp で最寄りの有効なページへ丸め、着地したページをページャが
+    // 実際に表示している」ことだが、<b>その Math.Clamp が他の画面にある保証は無い</b>。
+    // 実際いま持っているのは /Incidents と /AuditLogs だけで、/PreventiveMeasures に
+    // 同じ名前の引数を足せば、根拠が成り立たないまま除外が効いた
+    // (issue #224 の 1 件目)。しかも広がったのは<b>既存エントリの適用範囲</b>なので、
+    // 差分にもテスト件数にも現れず、「エントリが増える差分はレビューで確認する」という
+    // 下の注意書きが効かない形だった。画面込みのキーなら、3 画面目が同じ除外を
+    // 欲しがった時点で 1 行増え、レビューの対象になる。
     //
     // <b>残っている境界: 表そのものは人が判断するエスケープハッチ。</b>
     // 「絞り込みか、そうでないか」は署名からは判定できない(値をクエリの絞り込みに
@@ -764,18 +788,30 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 検出網から外れる。<b>この表にエントリが増える差分は、理由の妥当性をレビューで
     // 必ず確認すること</b>(LengthGovernanceExclusions と同じ扱い)。
     // せめて濫用の幅は狭めてあり、Nullable&lt;T&gt; の引数は登録できない(下の検査)。
-    private static readonly IReadOnlyDictionary<string, string> MalformedFilterExemptions =
-        new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["page"] =
-                "ページ番号は絞り込みではない。?page=abc(読めない)も ?page=99999(範囲外)も "
-                + "Index が Math.Clamp で最寄りの有効なページへ丸める同じ扱いで、着地した"
-                + "ページはページャが実際に表示している ——絞り込みの注意書きが要るのは"
-                + "「送ったのに効いていない」状態が画面から見えなくなるからで、ページングには"
-                + "その食い違いが無い。文面(「絞り込みは適用していません」)も合わず、出せば"
-                + "絞り込みパネルまで開いて事実と違う案内になる(issue #211。正本は "
-                + "MalformedFilterValueResolver の解説)。",
-        };
+    // 比較子を渡していないのは、組(ValueTuple)の既定の等価比較が
+    // 要素ごとの EqualityComparer<string>.Default ＝序数比較になるため
+    // (文字列キーだった頃に StringComparer.Ordinal を明示していたのと同じ比べ方)
+    private static readonly IReadOnlyDictionary<(string Controller, string Parameter), string>
+        MalformedFilterExemptions =
+            new Dictionary<(string Controller, string Parameter), string>
+            {
+                // ページャを持つ 2 画面。どちらも Index が Math.Clamp で丸めている
+                [(nameof(IncidentsController), "page")] = PageExemptionReason,
+                [(nameof(AuditLogsController), "page")] = PageExemptionReason,
+            };
+
+    /// <summary>
+    /// その (画面, 引数) が「読めない値」の手当てから意図的に外されているか。
+    /// </summary>
+    /// <remarks>
+    /// 除外表を引く側が複数ある(一覧 3 画面の導出と /Analytics の導出)ので、
+    /// キーの組み立てを 1 か所に置く ——書き写すと、キーの形を変えたときに
+    /// 片方だけが取り残され、その画面で除外が黙って効かなく(または効くように)なる。
+    /// 画面はアクションの宣言型(コントローラ)で表す。
+    /// </remarks>
+    private static bool IsExemptFromMalformedFilterHandling(MethodInfo action, string queryName) =>
+        // 宣言型の名前と URL 上の名前の組で引く
+        MalformedFilterExemptions.ContainsKey((action.DeclaringType!.Name, queryName));
 
     // 除外表のキーが、いまも実在する「読めなければ化ける」引数を指していること。
     //
@@ -785,21 +821,43 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void MalformedFilterExemptions_AreAllStillReal()
     {
-        // 現時点で導出が拾う「読めなければ化ける」引数の URL 上の名前(手当て済みの全画面ぶん)
-        var actual = MalformedFilterGuardedActions
-            .SelectMany(UnreadableProneQueryNames)
-            .ToHashSet(StringComparer.Ordinal);
+        // 現時点で導出が拾う「読めなければ化ける」引数を (画面, URL 上の名前) の組で集める。
+        // <b>画面込みで見るのが要点。</b> 名前だけで照合すると、page を持つ画面が
+        // 1 つでもあるかぎり「どの画面に登録しても実在する」ことになり、
+        // 根拠の無い画面への登録をこの検査が素通りさせる
+        var actual = UnreadableProneQueryNamesByController();
 
-        // 表のキーのうち、その一覧に無いもの(＝もう実在しない引数)を集める
-        var stale = MalformedFilterExemptions.Keys.Where(name => !actual.Contains(name)).ToList();
+        // 表のキーのうち、その画面に実在しない引数を指しているものを集める
+        var stale = MalformedFilterExemptions.Keys
+            .Where(key => !actual.TryGetValue(key.Controller, out var names)
+                || !names.Contains(key.Parameter))
+            .Select(key => $"{key.Controller}.{key.Parameter}")
+            .ToList();
 
         // 1 つでもあれば落とす
         Assert.True(stale.Count == 0,
-            $"{nameof(MalformedFilterExemptions)} に実在しない引数が残っている: {string.Join(", ", stale)}。"
-            + "手当て済みの画面のどの Index からも、その名前の「読めなければ化ける」引数が"
-            + "見つからない。引数を消した・改名した・型を変えたなら、"
-            + "同じ変更セットでこの表からも消すこと。");
+            $"{nameof(MalformedFilterExemptions)} に実在しない (画面, 引数) が残っている: "
+            + $"{string.Join(", ", stale)}。その画面の手当て済みアクションに、その名前の"
+            + "「読めなければ化ける」引数が見つからない。引数を消した・改名した・型を変えた、"
+            + "あるいは画面名を取り違えたなら、同じ変更セットでこの表も直すこと。");
     }
+
+    /// <summary>
+    /// 手当て済みの画面ごとに「読めなければ黙って別の値へ化ける」引数の
+    /// URL 上の名前を集める(コントローラ名 → 名前の集合)。
+    /// </summary>
+    /// <remarks>
+    /// 除外表に掛かる 2 つの門番が同じここを読む ——除外表が (画面, 引数) をキーにする以上、
+    /// 門番の側も画面ごとに見なければ「その画面には無い引数を登録して黙らせる」形が残る。
+    /// </remarks>
+    private static Dictionary<string, HashSet<string>> UnreadableProneQueryNamesByController() =>
+        MalformedFilterGuardedActions
+            // 同じコントローラの複数アクション(/Analytics)をまとめる
+            .GroupBy(action => action.DeclaringType!.Name, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group.SelectMany(UnreadableProneQueryNames).ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal);
 
     // 除外の理由が空・空白でないこと。
     //
@@ -811,7 +869,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 理由が空・空白のみのエントリを集める
         var blank = MalformedFilterExemptions
             .Where(pair => string.IsNullOrWhiteSpace(pair.Value))
-            .Select(pair => pair.Key)
+            .Select(pair => $"{pair.Key.Controller}.{pair.Key.Parameter}")
             .ToList();
 
         // 1 つでもあれば落とす
@@ -830,17 +888,28 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void MalformedFilterExemptions_CannotHideANullableFilter()
     {
-        // 手当て済みの全画面の Index が受ける Nullable<T> 引数を URL 上の名前で拾う。
-        // 1 画面だけを見ると、他の画面にしか無い Nullable の絞り込みを
-        // 表へ 1 行足すだけで黙らせられる(除外表は画面ごとに分かれていないため)
-        var nullableNames = MalformedFilterGuardedActions
-            .SelectMany(action => action.GetParameters())
-            .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
-            .Select(p => QueryStringName(p)!)
-            .ToHashSet(StringComparer.Ordinal);
+        // 手当て済みの画面ごとに、Index が受ける Nullable<T> 引数を URL 上の名前で拾う。
+        // <b>画面ごとに分けて見る。</b> 除外表が (画面, 引数) をキーにしている以上、
+        // 名前だけで束ねると「A 画面の Nullable 引数と同名の、B 画面の非 Nullable 引数」を
+        // 登録できなくなる(＝正当な除外を拒む実行不能な要求になる)一方、
+        // 逆向きの取りこぼしも起きる
+        var nullableNamesByController = MalformedFilterGuardedActions
+            .GroupBy(action => action.DeclaringType!.Name, StringComparer.Ordinal)
+            .ToDictionary(
+                group => group.Key,
+                group => group
+                    .SelectMany(action => action.GetParameters())
+                    .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
+                    .Select(p => QueryStringName(p)!)
+                    .ToHashSet(StringComparer.Ordinal),
+                StringComparer.Ordinal);
 
         // 表がその中のどれかを外していないか調べる
-        var hidden = MalformedFilterExemptions.Keys.Where(nullableNames.Contains).ToList();
+        var hidden = MalformedFilterExemptions.Keys
+            .Where(key => nullableNamesByController.TryGetValue(key.Controller, out var names)
+                && names.Contains(key.Parameter))
+            .Select(key => $"{key.Controller}.{key.Parameter}")
+            .ToList();
 
         // 1 つでもあれば落とす
         Assert.True(hidden.Count == 0,
@@ -1474,11 +1543,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // /Analytics へ page のような「絞り込みではない」引数を足した瞬間に
         // 「読めないページ番号にも旗を立てろ」という直しようの無い要求になり、
         // 逃げ道は「絞り込みでない引数を解決処理へ渡す」か「除外表を広げる」しか無くなる
-        // (この repo が繰り返し避けている形。除外表は URL 上の名前をキーにするので、
-        //  画面ごとに効いたり効かなかったりする状態を作らない)
+        // (この repo が繰り返し避けている形。除外表は (画面, URL 上の名前) をキーにするので、
+        //  ここへ登録しないかぎり他画面の除外がこの画面まで効くことはない)
         var cases = AnalyticsActionsWithUnreadableProneParameters()
             .SelectMany(action => UnreadableProneQueryNames(action)
-                .Where(name => !MalformedFilterExemptions.ContainsKey(name))
+                .Where(name => !IsExemptFromMalformedFilterHandling(action, name))
                 .Select(name => (Action: action.Name, Parameter: name)))
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(c => c.Action, StringComparer.Ordinal)
@@ -2289,6 +2358,93 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.NotEmpty(ViewModelFlagScreens);
     }
 
+    // 上の対応表が<b>旗を持つ ViewModel を取りこぼしていない</b>ことを、
+    // 表とは独立な手がかり(アセンブリ上の宣言)で照合する。
+    //
+    // <b>なぜ要るのか。</b> ViewModelFlagScreens は手書きの包含リストで、
+    // 掛かっていた表明は Assert.NotEmpty だけだった。4 画面目が独自 ViewModel に
+    // <c>SomethingFilterIgnored</c> を足してこの 1 行の登録を忘れると、その画面の旗は
+    // IgnoredFilterFlags_CoverEveryFlagTheControllerSets の比較対象に<b>入らない</b>。
+    // 配列は空でないので NotEmpty は通り、登録済みの画面どうしは一致し続けるので
+    // <b>全件緑</b>になる ——結果、宣言だけあってコントローラが一度もセットしない旗
+    // (＝絶対に描画されない注意書き)がそのまま出荷される(issue #224 の 2 件目)。
+    //
+    // MalformedFilterScreens_CoverEveryActionThatAcceptsADateRangeFilter は
+    // 「伝え先の表」への登録は強制するが、<b>この表への登録は強制しない</b>。
+    //
+    // <b>手がかりを変えるのが要点。</b> 同じ表から導いたガードを書くと、
+    // 表が狭まったときにガードも一緒に狭まって「取りこぼしゼロ＝緑」で無力化される
+    // (この repo が LengthGovernedTypes_CoverEveryOwnedDbSet でやっているのと同じ)。
+    // ここでは<b>自分たちのアセンブリで旗の命名規約に当てはまる bool を宣言している型</b>を
+    // 独立な宣言箇所として使う。ViewBag で渡す /PreventiveMeasures は ViewModel を
+    // 持たないので、この手がかりにも表にも現れない(あちらは代入側の導出だけで回っている)
+    [Fact]
+    public void ViewModelFlagScreens_CoverEveryViewModelThatDeclaresAFlag()
+    {
+        // アセンブリ上で旗を宣言している型をすべて拾う
+        var declaring = ViewModelsDeclaringIgnoredFilterFlags();
+
+        // 1 つも拾えなければ、命名規約か走査が変わって手がかりが死んでいる(fail-closed)
+        Assert.True(declaring.Count > 0,
+            $"*{IgnoredFlagSuffix} という名前の bool プロパティを宣言している型が"
+            + "アセンブリ内に 1 つも無い。命名規約を変えたなら、この照合も"
+            + "同じ変更セットで直すこと(直さないと、対象ゼロで全件緑になる)。");
+
+        // 表に載っている ViewModel
+        var registered = ViewModelFlagScreens.Select(screen => screen.ViewModel).ToHashSet();
+
+        // 旗を宣言しているのに表へ載っていない型(＝検査から黙って外れる画面)
+        var missing = declaring
+            .Where(type => !registered.Contains(type))
+            .Select(type => type.Name)
+            .ToList();
+        Assert.True(missing.Count == 0,
+            $"旗を宣言しているのに {nameof(ViewModelFlagScreens)} に載っていない ViewModel がある: "
+            + $"{string.Join(", ", missing)}。その画面の旗は「コントローラが実際に立てているか」の"
+            + "照合に入らないので、誰も立てない旗(＝絶対に描画されない注意書き)が"
+            + "全件緑のまま出荷される。旗を持つ画面を足したら、この表にも 1 行足すこと。");
+
+        // 逆向き: 表に載っているのに旗を 1 つも宣言していない型。
+        // 上の照合は「宣言 vs 代入」を比べるので気付けはするが、落ちるのは
+        // Assert.Equal の中身の食い違いとしてで、原因(表が古い)を名指ししない
+        var stale = registered
+            .Where(type => !declaring.Contains(type))
+            .Select(type => type.Name)
+            .ToList();
+        Assert.True(stale.Count == 0,
+            $"{nameof(ViewModelFlagScreens)} に、旗を 1 つも宣言していない ViewModel が残っている: "
+            + $"{string.Join(", ", stale)}。旗を消した・改名したなら、"
+            + "同じ変更セットでこの表からも消すこと。");
+    }
+
+    /// <summary>
+    /// 自分たちのアセンブリで「旗の命名規約に当てはまる bool プロパティ」を
+    /// <b>自分で宣言している</b>型をすべて集める。
+    /// </summary>
+    /// <remarks>
+    /// <para>名前空間や "ViewModel" という接尾辞では絞らない ——置き場所や命名を変えた
+    /// 瞬間に対象から外れる形は、この repo が LengthGovernedEntityTypes で
+    /// 「名前空間の完全一致」をやめたのとまったく同じ理由で避ける。</para>
+    ///
+    /// <para><b>DeclaredOnly で見る。</b> 継承したプロパティまで数えると、旗を持つ
+    /// ViewModel を継承しただけの型(詳細画面など)が「旗を宣言している」と誤判定され、
+    /// 表への登録を求める<b>直しようの無い要求</b>になる。</para>
+    /// </remarks>
+    private static List<Type> ViewModelsDeclaringIgnoredFilterFlags() =>
+        // 旗を持つ既知の ViewModel と同じアセンブリ(＝Web プロジェクト)を走査する
+        typeof(IncidentListViewModel).Assembly
+            .GetTypes()
+            // 実体のあるクラスだけを見る(インターフェイスや抽象型は宣言の置き場にならない)
+            .Where(type => type.IsClass && !type.IsAbstract)
+            // その型自身が宣言した public インスタンスプロパティに、旗の命名規約のものがあるか
+            .Where(type => type
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Any(p => p.PropertyType == typeof(bool)
+                    && p.Name.EndsWith(IgnoredFlagSuffix, StringComparison.Ordinal)))
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(type => type.FullName, StringComparer.Ordinal)
+            .ToList();
+
     // ドロップダウンの選択肢プロパティの命名規約。下の導出はこの接尾辞で拾う
     private const string OptionsPropertySuffix = "Options";
 
@@ -2659,6 +2815,137 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         }
     }
 
+    // 上の対応表が<b>注意書きを出す画面を取りこぼしていない</b>ことを、
+    // 表とは独立な手がかり(ビューのソースそのもの)で照合する。
+    //
+    // <b>なぜ要るのか。</b> IgnoredFilterNotices_UseTheSameWordingAcrossScreens は、
+    // CLAUDE.md §3 と各ビューの散文が要求している「同じ理由の文面は画面をまたいで
+    // 一字一句そろえる」を機械的に守る<b>唯一の仕組み</b>なのに、その対象は手書きの
+    // 一覧だった。4 画面目が注意書きをコピーして細部だけ言い換えても
+    // (例:「…読み取れない値が含まれていたため…」)、一覧に無いので収集されない。
+    // 見出しも説明も衝突せず、notices.Count > 0 は登録済みの画面で通るため
+    // <b>全件緑</b>になり、防ごうとしていた文面の分岐がそのまま通る(issue #224 の 3 件目)。
+    //
+    // <b>手がかりを変えるのが要点</b>(2 件目の ViewModelFlagScreens と同じ)。
+    // 表から導いたガードでは、表が狭まったときにガードも一緒に狭まる。
+    // ここでは Web プロジェクト配下の .cshtml を実際に走査し、
+    // 「旗で注意書きを出し分けているビュー」を独立な宣言箇所として使う。
+    [Fact]
+    public void IgnoredFilterNoticeScreens_CoverEveryViewThatRendersANotice()
+    {
+        // ビューを走査して (画面フォルダ, 旗の読み方) を集める
+        var (derived, unsupported) = ViewsRenderingIgnoredFilterNotices();
+
+        // <b>表で表せない置き場所は先に落とす(fail-closed)。</b> 対応表は
+        // 「Views/<フォルダ>/Index.cshtml」しか指せないので、それ以外の場所に
+        // 注意書きが増えると、黙って検査の外に置かれる
+        Assert.True(unsupported.Count == 0,
+            $"{nameof(IgnoredFilterNoticeScreens)} が指せない場所に注意書きがある: "
+            + $"{string.Join(" / ", unsupported)}。この表は Views/<フォルダ>/Index.cshtml を"
+            + "前提にしているので、置き場所を増やすなら表の形と走査を同じ変更セットで直すこと"
+            + "(直さないと、その注意書きだけが文面そろえの照合から黙って外れる)。");
+
+        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)
+        Assert.True(derived.Count > 0,
+            $"ビューから @if (Model./ViewBag.*{IgnoredFlagSuffix}) の出し分けを 1 つも拾えなかった。"
+            + "マークアップの書き方を変えたなら、この走査も同じ変更セットで直すこと。");
+
+        // 表に載っている組
+        var registered = IgnoredFilterNoticeScreens.ToHashSet();
+
+        // 注意書きを出しているのに表へ載っていない画面
+        var missing = derived
+            .Where(screen => !registered.Contains(screen))
+            .Select(screen => $"{screen.ViewFolder}({screen.Accessor}…)")
+            .ToList();
+        Assert.True(missing.Count == 0,
+            $"注意書きを出しているのに {nameof(IgnoredFilterNoticeScreens)} に載っていない画面がある: "
+            + $"{string.Join(", ", missing)}。その画面の文面は「画面をまたいで一字一句そろえる」"
+            + "照合に入らないので、言い回しの分岐が全件緑のまま通る。"
+            + "注意書きを出す画面を足したら、この表にも 1 行足すこと。");
+
+        // 逆向き: 表に載っているのに、もう注意書きを出していない画面。
+        // 残すと per-flag の検査が「見つからない」で落ちるが、
+        // 原因(表が古い)を名指しできるのはこちらだけ
+        var derivedSet = derived.ToHashSet();
+        var retired = registered
+            .Where(screen => !derivedSet.Contains(screen))
+            .Select(screen => $"{screen.ViewFolder}({screen.Accessor}…)")
+            .ToList();
+        Assert.True(retired.Count == 0,
+            $"{nameof(IgnoredFilterNoticeScreens)} に、注意書きを出していない画面が残っている: "
+            + $"{string.Join(", ", retired)}。注意書きを消した・旗の読み方を変えたなら、"
+            + "同じ変更セットでこの表も直すこと。");
+    }
+
+    /// <summary>
+    /// Web プロジェクト配下の Razor ビューを走査し、
+    /// 「旗で注意書きを出し分けている画面」を (画面フォルダ, 旗の読み方) で集める。
+    /// </summary>
+    /// <remarks>
+    /// <para>走査の根はビュー列挙の共有ヘルパーに任せる(<c>Views/</c> の外に置かれた
+    /// <c>.cshtml</c> も対象に入り、ビルド生成物は除かれる)。ファイル名を書き並べないのは
+    /// 対応表を手書きにしないのと同じ理由で、増えた分が黙って外れるのを避けるため。</para>
+    ///
+    /// <para>Razor のコメントは落としてから探す ——解説として文面や旗の名前に触れている
+    /// 行を「出し分けている」と読み違えると、実在しない画面を表へ登録させる
+    /// <b>直しようの無い要求</b>になる(実際 /PreventiveMeasures のビューは
+    /// コメントでパーシャル名に触れている)。</para>
+    /// </remarks>
+    /// <returns>
+    /// 拾えた (画面フォルダ, 旗の読み方) の一覧と、対応表では指せない置き場所の一覧。
+    /// </returns>
+    private static (List<(string ViewFolder, string Accessor)> Screens, List<string> Unsupported)
+        ViewsRenderingIgnoredFilterNotices()
+    {
+        // 拾えた画面を溜める入れ物(同じフォルダで旗が複数あっても 1 組にまとめる)
+        var screens = new HashSet<(string ViewFolder, string Accessor)>();
+        // 対応表では指せない置き場所を溜める入れ物
+        var unsupported = new List<string>();
+
+        // Web プロジェクト配下の .cshtml を 1 つずつ見る
+        foreach (var viewPath in RepositoryPaths.EnumerateViewFiles())
+        {
+            // Razor のコメントを落としてから走査する
+            var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
+            // 旗で出し分けているブロックの読み方(Model. / ViewBag.)をすべて拾う
+            var accessors = Regex
+                .Matches(source, $@"@if\s*\(\s*(?<accessor>Model|ViewBag)\.\w*{IgnoredFlagSuffix}\b")
+                .Select(m => $"{m.Groups["accessor"].Value}.")
+                .Distinct(StringComparer.Ordinal)
+                .ToList();
+            // 注意書きを出していないビューは対象外
+            if (accessors.Count == 0) continue;
+
+            // 対応表が指せる形(Views/<フォルダ>/Index.cshtml)かどうかを見る。
+            // ビュー列挙の根は Web プロジェクト全体なので、Views の外も届きうる
+            var relative = Path.GetRelativePath(RepositoryPaths.Views, viewPath);
+            var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            if (segments.Length != 2
+                || segments[0] == ".."
+                || !string.Equals(segments[1], IndexViewFileName, StringComparison.Ordinal))
+            {
+                // 指せない置き場所は、どのファイルかが分かる形で控える
+                unsupported.Add(Path.GetRelativePath(RepositoryPaths.Root, viewPath));
+                continue;
+            }
+
+            // 画面フォルダと読み方の組にして控える
+            foreach (var accessor in accessors) screens.Add((segments[0], accessor));
+        }
+
+        // 実行ごとに順番が揺れないよう並びを固定して返す
+        return (screens
+                .OrderBy(screen => screen.ViewFolder, StringComparer.Ordinal)
+                .ThenBy(screen => screen.Accessor, StringComparer.Ordinal)
+                .ToList(),
+            unsupported.OrderBy(path => path, StringComparer.Ordinal).ToList());
+    }
+
+    // 一覧ビューのファイル名。走査と読み取りが同じ名前を見るために定数へ出す
+    // (書き写すと、片方だけ変えたときにもう片方が黙って対象を取り違える)
+    private const string IndexViewFileName = "Index.cshtml";
+
     // 1 画面のビューから、注意書きの (見出し, 説明) を旗ごとに取り出す。
     // 切り出し方は per-flag の検査と同じ(FilterIgnoredNotice の第 1・第 2 引数)
     private static List<(string Screen, string Heading, string Detail)> IgnoredFilterNoticeTexts(
@@ -2719,8 +3006,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// </remarks>
     private static string ReadIndexViewSource(string viewFolder)
     {
-        // ビルド出力にはコピーされないので絶対パスで開く
-        var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, "Index.cshtml");
+        // ビルド出力にはコピーされないので絶対パスで開く。
+        // ファイル名は定数から取る —— 上の走査(どのビューが注意書きを出しているか)と
+        // ここ(その中身を読む)が別々の綴りを持つと、片方だけを変えたときに
+        // 「表に載っているのに読めない」状態を作る
+        var viewPath = Path.Combine(RepositoryPaths.Views, viewFolder, IndexViewFileName);
         // 見つからなければ落とす(対象ゼロで全件緑になるのを避ける)
         Assert.True(File.Exists(viewPath), $"一覧ビューが見つからない: {viewPath}");
         // Razor のコメントは落としてから返す
@@ -3298,8 +3588,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 一覧に出る行を 1 つ用意する
         _db.AuditLogs.Add(new AuditLog
         {
-            // 監査対象の先頭(ドメインの順で最初＝インシデント)を使い、名前を書き写さない
-            EntityName = AuditSaveChangesInterceptor.AuditedEntities[0],
+            // 語彙を書き写さず、本体が使っている許可リストの先頭から取る。
+            //
+            // <b>監査対象の一覧(AuditedEntities)からは引かない。</b> この行は
+            // AuditLogsIndex_AppliesAFilterValueOnTheAllowList が
+            // AuditLogsAllowLists["entityName"][0] で絞り込んだときに<b>残る 1 件</b>なので、
+            // 2 つの源から組み立てると、AllowedEntityNames が AuditedEntities より
+            // 狭められた瞬間(その将来は AllowedEntityNames の解説が明示的に想定している)に
+            // 先頭どうしが食い違い、絞り込みで 0 件になって Assert.Single が
+            // <b>検査対象と無関係な理由で</b>落ちる。一致しない側の行も同じ理由で
+            // 許可リストから取っている
+            EntityName = AuditLogsAllowLists["entityName"][0],
             EntityKey = "1",
             // 語彙を書き写さず、本体が使っている許可リストの先頭から取る
             Operation = AuditLogsAllowLists["operation"][0],
@@ -3679,8 +3978,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         await SeedSingleAuditLogAsync();
         _db.AuditLogs.Add(new AuditLog
         {
-            // 一致しない側。エンティティ名も操作種別も上の 1 件と別の値にする
-            EntityName = AuditSaveChangesInterceptor.AuditedEntities[^1],
+            // 一致しない側。エンティティ名も操作種別も上の 1 件と別の値にする。
+            //
+            // <b>どちらも AuditLogsAllowLists から取る(監査対象の一覧からは引かない)。</b>
+            // この検査が見たいのは「許可リストに載っている値で絞り込みが実際に効くか」で、
+            // 送る値(listed)も許可リストの先頭から取っている。一致しない側だけを
+            // AuditSaveChangesInterceptor.AuditedEntities から取ると、1 つの不変条件を
+            // <b>2 つの源から組み立てる</b>ことになる ——AllowedEntityNames の解説が
+            // 明示的に想定している「監査対象から外したエンティティをドロップダウンに
+            // 出さないよう AllowedEntityNames を狭める」将来が来た瞬間、
+            // AuditedEntities[^1] は AllowedEntityNames[^1] と食い違いうる。
+            // 外したエントリが末尾なら listed(= AllowedEntityNames[0])と一致しうるので、
+            // 「一致しないはずの行」が一致して Assert.Single が
+            // <b>検査対象と無関係な理由で</b>落ちる(上の Assert.NotEqual は許可リスト同士を
+            // 比べているだけなので、実際に seed した値とは突き合わせておらず捕まえられない)
+            EntityName = AuditLogsAllowLists["entityName"][^1],
             EntityKey = "2",
             Operation = AuditLogsAllowLists["operation"][^1],
             ChangedBy = "tester",
