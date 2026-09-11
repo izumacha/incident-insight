@@ -100,6 +100,15 @@ public class ModelStateKeyPrefixMatchTests
     //  その綴りなら全件緑のまま出荷できてしまう)
     private static readonly Regex StartsWithCallRegex = new(@"StartsWith\s*\(", RegexOptions.Compiled);
 
+    // Razor コメント(@* … *@)だけを落とす、Neutralize とは独立した素朴な実装。
+    // **わざと綴りを共有していない** —— ビュー走査が生きていることを確かめる期待値を
+    // Neutralize 自身で作ると、その実装が壊れたときに期待値も一緒に 0 へ寄り、
+    // 「差が無い＝緑」でガードごと無力化される(この repo が
+    //  EveryLengthLimitedEnumColumn_IsActuallyExamined などで繰り返し採っている形)。
+    // Razor のコメントは入れ子にできないので、最短一致で 1 組ずつ落とせば足りる
+    // (量指定子の入れ子が無いので ReDoS にもならない。§9)
+    private static readonly Regex RazorCommentRegex = new(@"@\*[\s\S]*?\*@", RegexOptions.Compiled);
+
     [Fact]
     public void ModelStateKeyPrefixMatches_AlwaysUseOrdinalComparison()
     {
@@ -214,6 +223,13 @@ public class ModelStateKeyPrefixMatchTests
         // .cs 側は業務上つねに ModelState のキー除去を持つので、こちらで空振りを押さえる。
         AssertScanned(controllerSources.Select(f => f.Path), "Web プロジェクト配下(.cs)");
 
+        // ビュー側は「生のビュー本文」という **判定と独立な手がかり** で空振りを見る。
+        // 何も置かずにいると fail-open だった(issue #191 課題 2): Neutralize の Razor 経路が
+        // 退行してビュー本文を丸ごと空白化すると、callsByFile が 0・violations が空になり
+        // **全件緑**のまま通る。その状態で Details.cshtml の StringComparison.Ordinal を
+        // 素の StartsWith(...) へ戻しても検出されない。
+        AssertViewScanningAlive(viewSources);
+
         // 違反があれば、直し方まで示して落とす
         Assert.True(violations.Count == 0,
             "StringComparison.Ordinal を明示してください"
@@ -240,6 +256,96 @@ public class ModelStateKeyPrefixMatchTests
                 $"{label} から StartsWith( を 1 件も検出できませんでした。"
                 + "前方一致を別の場所へ移したのなら、走査対象の導出条件も併せて直してください。");
         }
+    }
+
+    /// <summary>
+    /// ビューの本文にある<b>英文のアポストロフィ</b>が、後続の Razor コメントの
+    /// 打ち消しを妨げないことを固定する(issue #191 の回帰テスト)。
+    ///
+    /// <para>' を C# の文字リテラルの開始として扱うと、<c>don't</c> の ' が開いて
+    /// <c>isn't</c> の ' で閉じ、スキャナが <c>i = end</c> でその間を飛び越す。
+    /// 間にある <c>@* *@</c> の開始が見えなくなるので、コメント内の散文がコードとして
+    /// 走査され、<b>前方一致を 1 つも持たないビューが違反として報告される</b>。
+    /// 著者が従える修正指示が無い誤検出で、検出網を緩める圧力になる。</para>
+    /// </summary>
+    [Fact]
+    public void Neutralize_InViews_SuppressesRazorCommentSurroundedByApostrophes()
+    {
+        // アポストロフィ 2 つに挟まれた Razor コメントの中で前方一致に言及する 1 行
+        const string view = "<p>don't @* k.StartsWith(\"A\") と書きます *@ isn't</p>";
+        // ビューの扱い(文字列の中身は潰さず、Razor コメントだけを潰す)で無害化する
+        var neutralized = Neutralize(view, blankStringContents: false);
+        // コメントが潰れていれば、走査対象の本文に呼び出しの綴りは残らない
+        Assert.False(StartsWithCallRegex.IsMatch(neutralized),
+            "Razor コメントが潰れていません(' を文字リテラルの開始として扱うと、"
+            + $"コメントの開始を飛び越します)。無害化後: {neutralized}");
+        // 位置(行番号)を保つ契約 —— 無害化は同じ長さの空白へ置換する
+        Assert.Equal(view.Length, neutralized.Length);
+    }
+
+    /// <summary>
+    /// 上の修正が<b>逆方向に効きすぎていない</b>ことを固定する。
+    /// アポストロフィを読み飛ばさなくしたせいで本文まで潰してしまうと、
+    /// ビューの本物の呼び出しが走査から消えて取りこぼす側の fail-open になる。
+    /// </summary>
+    [Fact]
+    public void Neutralize_InViews_KeepsRealCallsThatFollowApostrophes()
+    {
+        // アポストロフィの後ろに、コメントではない本物の呼び出しが続く 1 行
+        const string view = "<p>don't</p>@(k.StartsWith(\"A\", StringComparison.Ordinal))";
+        // 同じくビューの扱いで無害化する
+        var neutralized = Neutralize(view, blankStringContents: false);
+        // 本物の呼び出しは走査対象として残っていなければならない
+        Assert.True(StartsWithCallRegex.IsMatch(neutralized),
+            $"ビューの本物の呼び出しまで潰れています。無害化後: {neutralized}");
+    }
+
+    /// <summary>
+    /// <b>ビューの走査が生きていること</b>を、<c>Neutralize</c> とは別の実装で作った期待値と
+    /// 突き合わせて確かめる。
+    ///
+    /// <para><b>.cs 側と同じ「検査件数 &gt; 0」を置けない。</b> ビューの前方一致を
+    /// コントローラへ寄せる正当なリファクタ(ビューからロジックを減らす方向)で 0 件になり、
+    /// 欠陥が無いのに落ちるため。緑へ戻す唯一の道が「この表明を弱める」になる形は、
+    /// この検査自身が繰り返し警戒している浸食の経路そのもの。</para>
+    ///
+    /// <para><b>代わりに「生のビュー本文」を手がかりにする。</b> 生の本文から Razor コメントだけを
+    /// 落として前方一致を数え、<b>書かれているのに 1 件も拾えていないファイル</b>があれば落とす。
+    /// 書かれていなければ要求すべきものが無いので緑でよい。</para>
+    ///
+    /// <para><b>ファイル単位で見る。</b> 合計で 1 件でも拾えていれば緑、にすると
+    /// 「ビュー 1 本だけが丸ごと走査から外れた」状態を見逃す。</para>
+    ///
+    /// <para><b>件数の一致までは求めない。</b> 求めると、<c>Neutralize</c> の Razor 経路を
+    /// 後から正当に精密化した(たとえばビューでも文字列の中を追うようにした)ときに
+    /// 期待値とずれて落ち、直す道が「ガードを弱める」しか無くなる。ここで守りたいのは
+    /// 「その経路が生きているか」なので、0 件かどうかだけを見る。</para>
+    /// </summary>
+    private static void AssertViewScanningAlive(
+        IReadOnlyCollection<(string Path, string Source, string Raw)> viewSources)
+    {
+        // ビューを 1 つも読めていないなら、列挙の根か配置が壊れている。
+        // ここを緑にすると「見るべき対象ゼロ＝緑」で以降の照合ごと無意味になる(fail-closed)
+        Assert.True(viewSources.Count > 0,
+            "Web プロジェクト配下に .cshtml が 1 つもありません。走査の根が壊れています。");
+
+        // 生の本文には前方一致があるのに、無害化後の本文からは 1 件も拾えなかったビューを集める
+        var blinded = viewSources
+            // 期待値は Razor コメントを落とした生の本文から数える(Neutralize を通さない)
+            .Where(v => StartsWithCallRegex.IsMatch(RazorCommentRegex.Replace(v.Raw, ""))
+                // 実際に走査できたのは無害化後の本文なので、そちらを同じ綴りで数える
+                && !StartsWithCallRegex.IsMatch(v.Source))
+            // 報告用にリポジトリルートからの相対パスへ直す
+            .Select(v => Path.GetRelativePath(RepositoryPaths.Root, v.Path))
+            .ToList();
+
+        // 1 本でもあれば Razor 経路が死んでいるので、どのファイルかを示して落とす
+        Assert.True(blinded.Count == 0,
+            "生の本文には StartsWith( があるのに、無害化後の本文からは 1 件も検出できない"
+            + "ビューがあります。Neutralize の Razor 経路(Razor コメントだけを潰す扱い)が退行し、"
+            + "そのビューが丸ごと走査対象から外れている可能性があります"
+            + "(この状態では違反 0 件と区別が付かず、全件緑のまま素通りします)。該当ファイル:"
+            + Environment.NewLine + string.Join(Environment.NewLine, blinded));
     }
 
     /// <summary>
@@ -385,17 +491,29 @@ public class ModelStateKeyPrefixMatchTests
         for (var i = 0; i < chars.Length; i++)
         {
             // 文字列リテラル・文字リテラルはそのまま残す(中の // や " をコメント/文字列扱いしないため)。
-            // 文字リテラルを見落とすと '"' の 1 文字だけで解釈がずれ、そこから先のコメントが
-            // 一切潰されなくなる——§5 が求める日本語コメントに StartsWith( と書いてあるだけで
-            // 正しいコードが違反として報告される(実測)。文字列と同じ場所で必ず一緒に扱う
+            // **以下は .cs の話** —— 文字リテラルを見落とすと '"' の 1 文字だけで解釈がずれ、
+            // そこから先のコメントが一切潰されなくなる——§5 が求める日本語コメントに
+            // StartsWith( と書いてあるだけで正しいコードが違反として報告される(実測)。
+            // 文字列と同じ場所で必ず一緒に扱う。
+            // **ビュー(.cshtml)はこの前提が成り立たないので、直下の分岐で別扱いにする**
+            // (そちらの理由はその場所のコメントが正本)
             if (chars[i] == '"' || chars[i] == '\'')
             {
-                // Razor では " が HTML 属性の区切りでもあるため、C# の文字列リテラルとして
-                // 追うと属性の開き引用符とコードの中の引用符が対になり、間のコードごと
-                // 飲み込んでしまう(実測: data-a="@(k.StartsWith("A") ? ... )" と書くと
-                // 呼び出しが丸ごと見えなくなり、違反が素通りした)。
-                // .cshtml では引用符を「ただの 1 文字」として読み進め、コメントだけを潰す
-                if (!blankStringContents && chars[i] == '"') continue;
+                // Razor では " も ' も C# のリテラルの記号として現れるとは限らないので、
+                // ビューではどちらも追わない。追うと 2 通りの壊れ方をする(どちらも実測):
+                //  - " は HTML 属性の区切りでもあるため、文字列リテラルとして追うと
+                //    属性の開き引用符とコードの中の引用符が対になり、間のコードごと飲み込む
+                //    (data-a="@(k.StartsWith("A") ? ... )" と書くと呼び出しが丸ごと見えなくなり、
+                //     違反が素通りした = 取りこぼす側の fail-open)。
+                //  - ' は英文のアポストロフィとして本文に普通に現れる。文字リテラルとして追うと
+                //    don't の ' が開き、isn't の ' で閉じ、スキャナが i = end でその間を飛び越す。
+                //    間にある @* *@ の開始が見えなくなるので、コメント内の散文がコードとして
+                //    走査され、前方一致を 1 つも持たないビューが違反として報告される
+                //    (issue #191。<p>don't @* k.StartsWith("A") と書きます *@ isn't</p> の
+                //     1 行で実際に落ちた = 咎める側の誤検出で、しかも著者が従える修正指示が無い)。
+                // ビューでは引用符もアポストロフィも「ただの 1 文字」として読み進め、
+                // Razor コメントだけを潰す
+                if (!blankStringContents) continue;
                 // 閉じ記号まで位置を進める
                 // 補間文字列（$"..."）は「穴（{...}）の中がコード」なので、ふつうの文字列として
                 // 飛ばすと穴の中の呼び出しごと見えなくなる（実測: $"hit={k.StartsWith("X")}" が素通り）。
