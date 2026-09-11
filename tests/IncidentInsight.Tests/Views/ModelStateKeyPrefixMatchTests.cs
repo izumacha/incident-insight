@@ -279,8 +279,10 @@ public class ModelStateKeyPrefixMatchTests
         Assert.False(StartsWithCallRegex.IsMatch(neutralized),
             "Razor コメントが潰れていません(' を文字リテラルの開始として扱うと、"
             + $"コメントの開始を飛び越します)。無害化後: {neutralized}");
-        // 位置(行番号)を保つ契約 —— 無害化は同じ長さの空白へ置換する
-        Assert.Equal(view.Length, neutralized.Length);
+        // 「位置(行番号)を保つ」契約はここでは表明しない —— Neutralize は char 配列を
+        // その場で書き換えて new string(chars) を返す形なので、長さの一致は
+        // **どんな入力でも構造的に成り立つ**。書いても永久に真のままで、
+        // 「見ているつもりで何も見ていない」検査になる(この repo が繰り返し警戒している形)
     }
 
     /// <summary>
@@ -291,8 +293,13 @@ public class ModelStateKeyPrefixMatchTests
     [Fact]
     public void Neutralize_InViews_KeepsRealCallsThatFollowApostrophes()
     {
-        // アポストロフィの後ろに、コメントではない本物の呼び出しが続く 1 行
-        const string view = "<p>don't</p>@(k.StartsWith(\"A\", StringComparison.Ordinal))";
+        // **アポストロフィで挟む**のが要点。1 つしか置かないと SkipCharLiteral が
+        // 閉じ記号を見つけられず -1 を返し、Neutralize は end < 0 の枝で読み進めるだけになる。
+        // つまり文字リテラルの経路に一度も入らないので、この検査は**どう変異させても
+        // 落ちない**(実測: 挟まない書き方では、ビューでも ' を追い中身を潰す変異を
+        // 加えても全件緑のままだった)。挟んで初めて「間の本物の呼び出しが潰される」
+        // 退行を捕まえられる
+        const string view = "<p>don't</p>@(k.StartsWith(\"A\", StringComparison.Ordinal))<p>isn't</p>";
         // 同じくビューの扱いで無害化する
         var neutralized = Neutralize(view, blankStringContents: false);
         // 本物の呼び出しは走査対象として残っていなければならない

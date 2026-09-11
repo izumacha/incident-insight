@@ -49,15 +49,33 @@ namespace IncidentInsight.Web.Controllers.Internal;
 ///
 /// <para><b><c>/Analytics</c> の現状を合成すると fail-open になる。</b> この画面は
 /// Admin / RiskManager 限定なので、ここのスコープは実質 no-op である。一方で
-/// <b>集計本体のクエリにはスコープが掛かっていない</b>(<c>AnalyticsController</c> は
-/// いずれも素の <c>_db.Incidents.AsNoTracking()</c> から組み立てる)。
-/// したがって <c>CanViewAnalytics</c> を Staff へ広げると、次のことが起きる:
-/// ICU の Staff が <c>?department=ER</c> を送ると、ここはスコープ内に ER の行を見つけられず
-/// 「採用しない」を返す → コントローラは <c>Where</c> を<b>飛ばすだけ</b> →
-/// 応答は<b>全部署</b>の集計になる。絞り込みを厳しくしたことが、そのまま応答を広げる。
-/// ここだけを見て「ポリシーが広がっても自動で安全側へ倒れる」と読まないこと —— 倒れるのは
-/// この解決処理の中だけで、画面が返す数字ではない。<b>ポリシーを広げるときは、集計クエリへ
-/// <c>ScopedByUser</c> を掛けるところまでが 1 つの変更</b>(issue #213)。</para>
+/// <b>集計本体のクエリにはスコープが 1 つも掛かっていない</b>。
+/// ここだけを見て「ポリシーが広がっても自動で安全側へ倒れる」と読まないこと ——
+/// 倒れるのはこの解決処理の中だけで、画面が返す数字ではない。</para>
+///
+/// <para><c>CanViewAnalytics</c> を Staff へ広げると、<b>漏れ方が 2 通りある</b>。
+/// 効き方が違うので、片方だけを見て手当てを終えないこと:
+/// <list type="number">
+/// <item><b>許可リストに載っている部署名</b>(<c>?department=救急</c> など)は、この解決処理の
+/// <c>options.Contains</c> の早期 return で<b>そのまま採用される</b>(実在確認の DB 走査に
+/// 到達しないので、部署スコープも掛からない)。コントローラは無スコープのクエリへ
+/// <c>Where(i =&gt; i.Department == "救急")</c> を掛けるため、ICU の Staff が
+/// <b>救急の重症度別・月別の件数をそのまま受け取る</b>。狙った部署を名指しできる分、
+/// 下の 2 より漏れ方として重い。</item>
+/// <item><b>許可リストに無い値</b>は実在確認へ進み、スコープ内に見つからないので
+/// 「採用しない」を返す。するとコントローラは <c>Where</c> を<b>飛ばすだけ</b>なので、
+/// 応答は<b>全部署</b>の集計になる —— 絞り込みを厳しくしたことが、そのまま応答を広げる。</item>
+/// </list></para>
+///
+/// <para><b>ポリシーを広げるときは、集計クエリへスコープを掛けるところまでが 1 つの変更</b>
+/// (issue #213)。<b>対象は <c>Incident</c> だけではない</b> —— <c>AnalyticsController</c> は
+/// <c>_db.Incidents</c> のほかに <c>_db.CauseAnalyses</c>(なぜなぜ分析の深さ分布)と
+/// <c>_db.PreventiveMeasures</c>(対策の状態・効果)も無スコープで集計する。
+/// <c>_db.Incidents</c> だけを grep して直すと、残りは全部署のデータを返し続ける。
+/// なお <see cref="Authorization.DepartmentScope"/> の <c>ScopedByUser</c> は
+/// <c>IQueryable&lt;Incident&gt;</c> と <c>IQueryable&lt;PreventiveMeasure&gt;</c> の
+/// 2 つしか無いので、<c>CauseAnalysis</c> は<b>オーバーロードを足すところから</b>になる
+/// (機械的な置換では終わらない)。</para>
 /// </remarks>
 internal static class DepartmentFilterResolver
 {
