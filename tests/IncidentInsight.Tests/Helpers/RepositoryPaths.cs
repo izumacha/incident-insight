@@ -101,8 +101,9 @@ internal static class RepositoryPaths
     /// 基準を <see cref="Root"/> に固定したうえでここ 1 か所へ移した。</para>
     /// </summary>
     /// <param name="filePath">
-    /// <see cref="Root"/> そのものか、その配下にある絶対パス
-    /// (<see cref="Root"/> 自身も受け付ける。相対パスは <c>"."</c> になり、生成物ではないと答える)。
+    /// <see cref="Root"/> そのものか、その配下にある<b>絶対</b>パス。
+    /// <see cref="Root"/> 自身を渡した場合は「生成物ではない」と答える(相対パスが <c>"."</c> になり、
+    /// 親へも出ていないため)。<b>相対パスは受け付けない</b>(下の例外を参照)。
     /// </param>
     /// <exception cref="ArgumentException">
     /// <paramref name="filePath"/> が絶対パスでないか、<see cref="Root"/> の外にあるとき。
@@ -220,8 +221,11 @@ internal static class RepositoryPaths
 
     // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)。
     // internal なのは、列挙が実際にこの判定を通しているかを見る検査が、
-    // ここへ候補ファイルを置いて確かめるため(ディレクトリ名を書き写させない)
-    internal static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
+    // ここへ候補ファイルを置いて確かめるため(ディレクトリ名を書き写させない)。
+    // 読み取り専用の型で公開するのは、可変の配列だとアセンブリ内のどこからでも
+    // 要素を差し替えられ、この判定を共有する全走査テストの範囲が実行順に依存して
+    // 変わりうるため(並列実行下では「違反ゼロ＝緑」で検出網が黙って無力化される)
+    internal static readonly IReadOnlyList<string> BuildArtifactDirectoryNames = new[] { "obj", "bin" };
 
     // Razor ビューのファイル名パターン(走査条件の唯一の源)
     private const string ViewFileSearchPattern = "*.cshtml";
