@@ -743,7 +743,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // /AuditLogs にしか無い引数を除外表へ登録しても「実在しない」と誤判定されず、
     // 逆に /AuditLogs の Nullable 引数は「隠せない」の門番をすり抜けた。
     // <b>除外表は (画面, URL 上の名前) をキーにするので、門番も画面ごとに突き合わせる</b>
-    // (どちらも上の UnreadableProneQueryNamesByController を通す)。掛ける範囲が
+    // (どちらも下の QueryNamesByScreen を通す)。掛ける範囲が
     // 除外表を引く側より狭いと、その画面にしか無い引数を表へ 1 行足すだけで黙らせられる。
     //
     // /Analytics のアクションも載せる。あの画面は ViewModel も page も持たないが、
@@ -796,9 +796,25 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             new Dictionary<(string Controller, string Parameter), string>
             {
                 // ページャを持つ 2 画面。どちらも Index が Math.Clamp で丸めている
-                [(nameof(IncidentsController), "page")] = PageExemptionReason,
-                [(nameof(AuditLogsController), "page")] = PageExemptionReason,
+                [(ScreenKeyOf(typeof(IncidentsController)), "page")] = PageExemptionReason,
+                [(ScreenKeyOf(typeof(AuditLogsController)), "page")] = PageExemptionReason,
             };
+
+    /// <summary>
+    /// 画面(コントローラ)を除外表のキーとして表すときの綴り。<b>完全修飾名を使う。</b>
+    /// </summary>
+    /// <remarks>
+    /// 単純名(<c>Name</c>)で切ると、名前空間だけが違う同名のコントローラ ——
+    /// MVC の Areas(<c>…Areas.Admin.Controllers.AuditLogsController</c>)がまさにこの形 ——
+    /// が<b>同じバケットに畳まれ</b>、既存エントリの除外がその新しい画面にも黙って効く。
+    /// それは画面込みのキーにして塞いだはずの穴が 1 段上で再発した状態で、しかも
+    /// 広がるのは既存エントリの適用範囲なので<b>差分にもテスト件数にも現れない</b>。
+    /// Areas は仮定の話ではなく、<c>RepositoryPaths.EnumerateViewFiles</c> は
+    /// 「Areas の <c>.cshtml</c> が <c>Views/</c> の外にある」ことを理由に走査の根を広げている。
+    /// </remarks>
+    private static string ScreenKeyOf(Type controller) =>
+        // 名前空間まで含めた名前で 1 画面を一意に表す
+        controller.FullName!;
 
     /// <summary>
     /// その (画面, 引数) が「読めない値」の手当てから意図的に外されているか。
@@ -810,8 +826,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 画面はアクションの宣言型(コントローラ)で表す。
     /// </remarks>
     private static bool IsExemptFromMalformedFilterHandling(MethodInfo action, string queryName) =>
-        // 宣言型の名前と URL 上の名前の組で引く
-        MalformedFilterExemptions.ContainsKey((action.DeclaringType!.Name, queryName));
+        // 宣言型の完全修飾名と URL 上の名前の組で引く
+        MalformedFilterExemptions.ContainsKey((ScreenKeyOf(action.DeclaringType!), queryName));
 
     // 除外表のキーが、いまも実在する「読めなければ化ける」引数を指していること。
     //
@@ -825,7 +841,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // <b>画面込みで見るのが要点。</b> 名前だけで照合すると、page を持つ画面が
         // 1 つでもあるかぎり「どの画面に登録しても実在する」ことになり、
         // 根拠の無い画面への登録をこの検査が素通りさせる
-        var actual = UnreadableProneQueryNamesByController();
+        var actual = QueryNamesByScreen(IsUnreadableProne);
 
         // 表のキーのうち、その画面に実在しない引数を指しているものを集める
         var stale = MalformedFilterExemptions.Keys
@@ -843,20 +859,35 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     /// <summary>
-    /// 手当て済みの画面ごとに「読めなければ黙って別の値へ化ける」引数の
-    /// URL 上の名前を集める(コントローラ名 → 名前の集合)。
+    /// 手当て済みの画面ごとに、条件に当てはまる引数の URL 上の名前を集める
+    /// (画面のキー → 名前の集合)。
     /// </summary>
     /// <remarks>
-    /// 除外表に掛かる 2 つの門番が同じここを読む ——除外表が (画面, 引数) をキーにする以上、
-    /// 門番の側も画面ごとに見なければ「その画面には無い引数を登録して黙らせる」形が残る。
+    /// <para><b>除外表に掛かる 2 つの門番が同じここを読む</b>(「キーが実在する」と
+    /// 「Nullable を隠していない」)。除外表が (画面, 引数) をキーにする以上、門番の側も
+    /// 画面ごとに見なければ「その画面には無い引数を登録して黙らせる」形が残る。
+    /// <b>グループ化を書き写さないこと</b> ——画面のキーの切り方(<c>ScreenKeyOf</c>)を
+    /// 変えたときに片方だけが古い切り方のまま残ると、除外表と門番が「画面」の意味について
+    /// 食い違う。この食い違いこそ、このファイル全体が防ごうとしているものそのもの。</para>
+    ///
+    /// <para><b>絞り込む条件だけを引数で受ける。</b> 2 つの門番は見たい引数が異なる
+    /// (一方は「読めなければ化ける」もの、もう一方は <c>Nullable&lt;T&gt;</c> すべて)。
+    /// 後者をあえて広く取るのは、除外表への登録を拒む fail-safe な門番だから ——
+    /// 狭めると、登録できてしまう Nullable の引数が生まれる。</para>
     /// </remarks>
-    private static Dictionary<string, HashSet<string>> UnreadableProneQueryNamesByController() =>
+    /// <param name="matches">集める引数の条件。</param>
+    private static Dictionary<string, HashSet<string>> QueryNamesByScreen(
+        Func<ParameterInfo, bool> matches) =>
         MalformedFilterGuardedActions
             // 同じコントローラの複数アクション(/Analytics)をまとめる
-            .GroupBy(action => action.DeclaringType!.Name, StringComparer.Ordinal)
+            .GroupBy(action => ScreenKeyOf(action.DeclaringType!), StringComparer.Ordinal)
             .ToDictionary(
                 group => group.Key,
-                group => group.SelectMany(UnreadableProneQueryNames).ToHashSet(StringComparer.Ordinal),
+                group => group
+                    .SelectMany(action => action.GetParameters())
+                    .Where(matches)
+                    .Select(p => QueryStringName(p)!)
+                    .ToHashSet(StringComparer.Ordinal),
                 StringComparer.Ordinal);
 
     // 除外の理由が空・空白でないこと。
@@ -892,21 +923,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // <b>画面ごとに分けて見る。</b> 除外表が (画面, 引数) をキーにしている以上、
         // 名前だけで束ねると「A 画面の Nullable 引数と同名の、B 画面の非 Nullable 引数」を
         // 登録できなくなる(＝正当な除外を拒む実行不能な要求になる)一方、
-        // 逆向きの取りこぼしも起きる
-        var nullableNamesByController = MalformedFilterGuardedActions
-            .GroupBy(action => action.DeclaringType!.Name, StringComparer.Ordinal)
-            .ToDictionary(
-                group => group.Key,
-                group => group
-                    .SelectMany(action => action.GetParameters())
-                    .Where(p => Nullable.GetUnderlyingType(p.ParameterType) != null)
-                    .Select(p => QueryStringName(p)!)
-                    .ToHashSet(StringComparer.Ordinal),
-                StringComparer.Ordinal);
+        // 逆向きの取りこぼしも起きる。
+        // グループ化はもう一方の門番と共有する(画面の切り方が食い違わないようにするため)
+        var nullableNamesByScreen =
+            QueryNamesByScreen(p => Nullable.GetUnderlyingType(p.ParameterType) != null);
 
         // 表がその中のどれかを外していないか調べる
         var hidden = MalformedFilterExemptions.Keys
-            .Where(key => nullableNamesByController.TryGetValue(key.Controller, out var names)
+            .Where(key => nullableNamesByScreen.TryGetValue(key.Controller, out var names)
                 && names.Contains(key.Parameter))
             .Select(key => $"{key.Controller}.{key.Parameter}")
             .ToList();
@@ -2393,9 +2417,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 表に載っている ViewModel
         var registered = ViewModelFlagScreens.Select(screen => screen.ViewModel).ToHashSet();
 
-        // 旗を宣言しているのに表へ載っていない型(＝検査から黙って外れる画面)
+        // 旗を宣言しているのに表へ載っていない型(＝検査から黙って外れる画面)。
+        //
+        // <b>「表に載っている型の基底」は見逃してよい。</b> 旗を共有の基底クラスへ
+        // くくり出すのは §6 DRY のふつうのリファクタだが、基底クラスは<b>画面ではない</b>
+        // ——表のエントリは (ViewModel, コントローラ) の組で、照合相手の
+        // IgnoredFilterFlagNamesIn はそのコントローラのソースを開く。基底に対応する
+        // コントローラは存在しないので、登録を求めると<b>満たしようのない要求</b>になる
+        // (この repo が繰り返し避けている形)。派生型が登録されていれば、
+        // DeclaredIgnoredFilterFlagsOn は継承したプロパティも拾うので
+        // 旗は照合対象に入ったままで、取りこぼしは起きない
         var missing = declaring
-            .Where(type => !registered.Contains(type))
+            .Where(type => !registered.Contains(type)
+                && !registered.Any(screen => type.IsAssignableFrom(screen)))
             .Select(type => type.Name)
             .ToList();
         Assert.True(missing.Count == 0,
@@ -2404,11 +2438,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "照合に入らないので、誰も立てない旗(＝絶対に描画されない注意書き)が"
             + "全件緑のまま出荷される。旗を持つ画面を足したら、この表にも 1 行足すこと。");
 
-        // 逆向き: 表に載っているのに旗を 1 つも宣言していない型。
+        // 逆向き: 表に載っているのに旗を 1 つも持たない型。
         // 上の照合は「宣言 vs 代入」を比べるので気付けはするが、落ちるのは
-        // Assert.Equal の中身の食い違いとしてで、原因(表が古い)を名指ししない
+        // Assert.Equal の中身の食い違いとしてで、原因(表が古い)を名指ししない。
+        //
+        // <b>ここは継承したプロパティも数える</b>(DeclaredIgnoredFilterFlagsOn を使う)。
+        // 宣言だけを数えると、旗を共有の基底へくくり出した瞬間に
+        // 「登録されているのに何も宣言していない」と誤判定し、上で満たしようのない要求を
+        // 避けたのと同じ穴を逆向きに作り直す。照合相手と同じ数え方にそろえるのが要点
         var stale = registered
-            .Where(type => !declaring.Contains(type))
+            .Where(type => DeclaredIgnoredFilterFlagsOn(type).Count == 0)
             .Select(type => type.Name)
             .ToList();
         Assert.True(stale.Count == 0,
@@ -2908,9 +2947,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         {
             // Razor のコメントを落としてから走査する
             var source = RazorComment.Replace(File.ReadAllText(viewPath), string.Empty);
-            // 旗で出し分けているブロックの読み方(Model. / ViewBag.)をすべて拾う
+            // そのビューが旗を読んでいる箇所の読み方(Model. / ViewBag.)をすべて拾う。
+            //
+            // <b>`@if` の直後に限定しない。</b> 限定すると、旗をいったんローカルへ受けてから
+            // 分岐する書き方(<c>@{ var ignored = ViewBag.XFilterIgnored == true; }</c> …
+            // <c>@if (ignored) { … }</c>)がこの走査から丸ごと外れ、
+            // <b>4 画面目の言い換えを見逃す</b>という、この検査が閉じたはずの穴が
+            // 綴り違いで残る(実測で全件緑のまま通った)。すぐ下の per-flag の検査も
+            // 「空白の有無や比較の書き方に依存しない形で探す」と書いているとおり、
+            // 綴りに依存する判定はここでは採らない。
+            // 旗を参照していれば拾う形にすると、注意書きを描画せず
+            // 絞り込みパネルの開閉(anyFilter)にだけ使うビューも拾いうるが、
+            // その場合は表へ 1 行足せば済む(文面の収集は @if ブロックを見るので
+            // 何も足さない)——<b>誤りが「余計に拾う」側へ倒れる</b>ので安全側
             var accessors = Regex
-                .Matches(source, $@"@if\s*\(\s*(?<accessor>Model|ViewBag)\.\w*{IgnoredFlagSuffix}\b")
+                .Matches(source, $@"(?<accessor>Model|ViewBag)\.\w*{IgnoredFlagSuffix}\b")
                 .Select(m => $"{m.Groups["accessor"].Value}.")
                 .Distinct(StringComparer.Ordinal)
                 .ToList();
@@ -2955,7 +3006,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var source = ReadIndexViewSource(viewFolder);
         // 旗で出し分けているブロックをすべて拾う
         var texts = new List<(string, string, string)>();
-        foreach (Match header in Regex.Matches(source, $@"@if\s*\(\s*{Regex.Escape(accessor)}(?<flag>\w*FilterIgnored)\b"))
+        // 接尾辞は定数から組み立てる(命名規約を変えたときに、この走査と
+        // 対象画面を導く走査が別々の綴りを持たないようにするため)
+        foreach (Match header in Regex.Matches(
+            source, $@"@if\s*\(\s*{Regex.Escape(accessor)}(?<flag>\w*{IgnoredFlagSuffix})\b"))
         {
             // そのブロックの本体を切り出す
             var blockBody = ExtractBraceBlock(source, header.Index);
