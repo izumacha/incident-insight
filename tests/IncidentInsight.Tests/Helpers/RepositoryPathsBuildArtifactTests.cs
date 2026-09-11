@@ -112,17 +112,63 @@ public class RepositoryPathsBuildArtifactTests
     {
         // 走査系の列挙が実際にこの判定を通していることを見る。
         // **判定そのものの検査だけでは足りない**: 列挙側の .Where を外しても判定は正しいままなので、
-        // 配線が切れたことに誰も気付けない(実測: 両方の .Where を外しても全件緑だった)
-        var scanned = RepositoryPaths.EnumerateViewFiles()
-            .Concat(RepositoryPaths.EnumerateWebSourceFiles())
-            .ToList();
-        // 「対象ゼロだから違反ゼロ」で緑にならないよう、まず列挙できていることを確かめる(fail-closed)
-        Assert.True(scanned.Count > 0, "走査対象のファイルを 1 つも列挙できなかった。");
-        // 生成物が 1 つでも混ざっていれば、どのファイルかを名指しして落とす
-        var artifacts = scanned.Where(RepositoryPaths.IsBuildArtifact).ToList();
-        Assert.True(
-            artifacts.Count == 0,
-            $"走査対象にビルド生成物が混ざっている: {string.Join(" / ", artifacts)}");
+        // 配線が切れたことに誰も気付けない(実測: .Where を外しても全件緑だった)。
+        //
+        // **候補ファイルは自分で用意する。** 実際のビルド出力に頼ると、ビュー側の配線が
+        // 検査されないまま緑になる —— Razor SDK はビューをアセンブリへ取り込むので
+        // obj / bin 配下に .cshtml は 1 つも現れず、EnumerateViewFiles の .Where を外しても
+        // 拾える候補が存在しない(実測)。.cs の側がたまたま自動生成ファイル
+        // (*.AssemblyInfo.cs 等)を持っているだけで、そちらも出力先の設定 1 つで空になりうる。
+        var probeDirectories = new List<string>();
+        try
+        {
+            // 生成物として扱われるディレクトリ名すべてに、ビューとソースの候補を 1 つずつ置く
+            foreach (var artifactDirectoryName in RepositoryPaths.BuildArtifactDirectoryNames)
+            {
+                // 並行実行と後始末の取りこぼしに備えて、毎回一意な名前のディレクトリを使う
+                var probeDirectory = Path.Combine(
+                    RepositoryPaths.WebProject, artifactDirectoryName, $"scan-probe-{Guid.NewGuid():N}");
+                // 生成物の配下に置くので、リポジトリの追跡対象にはならない(obj / bin は gitignore 済み)
+                Directory.CreateDirectory(probeDirectory);
+                // 後始末できるよう控えておく
+                probeDirectories.Add(probeDirectory);
+
+                // ビュー側の候補(EnumerateViewFiles が拾う拡張子)
+                var probeView = Path.Combine(probeDirectory, "ScanProbe.cshtml");
+                File.WriteAllText(probeView, "@* 走査から除外されることの確認用 *@");
+                // ソース側の候補(EnumerateWebSourceFiles が拾う拡張子)
+                var probeSource = Path.Combine(probeDirectory, "ScanProbe.cs");
+                File.WriteAllText(probeSource, "// 走査から除外されることの確認用");
+
+                // 列挙ごとに「置いた候補が出てこないこと」を確かめる(まとめて見ると片側の穴が隠れる)
+                AssertEnumerationExcludes(
+                    RepositoryPaths.EnumerateViewFiles(), probeView, nameof(RepositoryPaths.EnumerateViewFiles));
+                AssertEnumerationExcludes(
+                    RepositoryPaths.EnumerateWebSourceFiles(), probeSource, nameof(RepositoryPaths.EnumerateWebSourceFiles));
+            }
+        }
+        finally
+        {
+            // 検査が落ちても候補を残さない(次の実行に持ち越すと原因の切り分けが難しくなる)
+            foreach (var probeDirectory in probeDirectories)
+            {
+                Directory.Delete(probeDirectory, recursive: true);
+            }
+        }
+    }
+
+    // 列挙に「置いた候補」が現れないことを確かめる。
+    // 「対象ゼロだから違反ゼロ」で緑にならないよう、まず列挙できていること自体を見る(fail-closed)
+    private static void AssertEnumerationExcludes(IEnumerable<string> enumerated, string probePath, string enumerationName)
+    {
+        // 列挙を 1 度だけ回して結果を確定させる
+        var files = enumerated.ToList();
+        // 1 件も列挙できていなければ、以降の判定は意味を持たないので前提崩れとして落とす
+        Assert.True(files.Count > 0, $"{enumerationName} が 1 件も列挙しなかった。");
+        // 生成物配下に置いた候補が出てくれば、除外の配線が切れている
+        Assert.False(
+            files.Contains(probePath, StringComparer.Ordinal),
+            $"{enumerationName} がビルド生成物配下のファイルを列挙した: {probePath}");
     }
 
     [Fact]

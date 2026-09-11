@@ -100,9 +100,12 @@ internal static class RepositoryPaths
     /// (Web プロジェクト)も走査するようになり、判定を使う側が増えたため、
     /// 基準を <see cref="Root"/> に固定したうえでここ 1 か所へ移した。</para>
     /// </summary>
-    /// <param name="filePath"><see cref="Root"/> の配下にある絶対パス。</param>
+    /// <param name="filePath">
+    /// <see cref="Root"/> そのものか、その配下にある絶対パス
+    /// (<see cref="Root"/> 自身も受け付ける。相対パスは <c>"."</c> になり、生成物ではないと答える)。
+    /// </param>
     /// <exception cref="ArgumentException">
-    /// <paramref name="filePath"/> が絶対パスでないか、<see cref="Root"/> の配下にないとき。
+    /// <paramref name="filePath"/> が絶対パスでないか、<see cref="Root"/> の外にあるとき。
     /// この判定は基準ルートが判定対象の祖先であることを前提にしており、外のパスでは
     /// リポジトリ外のディレクトリ名を見てしまう(理由は実装のコメント)。前提が崩れた呼び出しは
     /// 黙って通さず落とす(CLAUDE.md §9 の fail-closed)。
@@ -133,9 +136,8 @@ internal static class RepositoryPaths
         // 【集約で変えたのは基準にするルートだけ】統合前の実装も相対パス化はしており
         // (Path.GetRelativePath(scanRoot, filePath))、絶対パスをそのまま分解する版は
         // 一度も存在しない(履歴を走査して確認済み)。変わったのは基準が呼び出し側の走査起点
-        // (tests 配下)から Root へ広がった点だけで、判定結果は変わらない。Root にしたのは、
-        // 共有ヘルパーが tests の外(Web プロジェクト)も走査するようになり、
-        // 両方の走査起点を内側に持つ階層でなければ基準にできなくなったため。
+        // (tests 配下)から Root へ広がった点だけで、判定結果は変わらない
+        // (Root を基準にした理由は上の summary が持つ。同じ説明を 2 か所に置かない)。
         var relativePath = Path.GetRelativePath(Root, filePath);
 
         // 【基準ルートは判定対象の祖先でなければならない】Root の内側のパスなら、Root までの
@@ -156,7 +158,8 @@ internal static class RepositoryPaths
         // この前提はコメントに書くだけにせず、ここで fail-closed にする
         // (CLAUDE.md §9「パスの判定は『不明なら拒否』をデフォルトにする」)。
         // 前提が崩れた呼び出しを黙って通すと、上のとおり縮んだ範囲が緑のまま残るため
-        // ——「読んだ人が気付く」に頼らず、その場で原因を名指しして落とす
+        // ——「読んだ人が気付く」に頼らず、その場で原因を名指しして落とす。
+
         // 相対パスをディレクトリ区切りで分解する(外を指しているかの判定と生成物の判定で使い回す)
         var segments = SplitPathSegments(relativePath);
         if (PointsOutsideRoot(relativePath, segments))
@@ -215,8 +218,10 @@ internal static class RepositoryPaths
     // 親ディレクトリを指す相対パスのセグメント。Root の外へ出たことの目印として使う
     private const string ParentDirectorySegment = "..";
 
-    // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)
-    private static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
+    // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)。
+    // internal なのは、列挙が実際にこの判定を通しているかを見る検査が、
+    // ここへ候補ファイルを置いて確かめるため(ディレクトリ名を書き写させない)
+    internal static readonly string[] BuildArtifactDirectoryNames = { "obj", "bin" };
 
     // Razor ビューのファイル名パターン(走査条件の唯一の源)
     private const string ViewFileSearchPattern = "*.cshtml";
