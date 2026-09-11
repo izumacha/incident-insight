@@ -117,10 +117,11 @@ public class ModelStateKeyPrefixMatchTests
         // 当初 EnumerateViewFiles は Views/ 配下だけを辿っており、それは fail-open だった
         // (Areas/<Name>/Views/ や Pages/ 配下の .cshtml が走査対象から静かに外れる。
         //  実測: Pages/Probe.cshtml に素の StartsWith を置くと全件緑のまま通った)。
-        // ここで自分だけ広い列挙を持つと、同じ列挙を使う 4 つの guard-rail テスト
-        // (ConcurrencyTokenFormTests など)は取りこぼしたままになり、しかも
-        // RepositoryPaths が「走査条件の唯一の源」だという宣言が嘘になる。
-        // そこで共有ヘルパー側を広げ、こちらはそれを使う。
+        // ここで自分だけ広い列挙を持つと、同じ列挙を使う他の guard-rail テストは
+        // 取りこぼしたままになり、しかも RepositoryPaths が「走査条件の唯一の源」だという
+        // 宣言が嘘になる。そこで共有ヘルパー側を広げ、こちらはそれを使う
+        // (どのテストが使っているかはここに書き並べない。一覧は増えるたびに古くなり、
+        //  しかも古くなったことに誰も気付けない。issue #190)。
         var viewFiles = RepositoryPaths.EnumerateViewFiles().ToList();
 
         // .cs 側は Web プロジェクト配下を丸ごと対象にする（ビルド生成物だけ除く）。
