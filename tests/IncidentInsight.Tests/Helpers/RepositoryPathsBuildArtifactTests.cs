@@ -55,7 +55,7 @@ public class RepositoryPathsBuildArtifactTests
     // リポジトリ構成の目印(ディレクトリ名)をこのファイルへ書き写さない
     // (書き写すと RepositoryPathsUsageTests が落ちる。issue #164 の集約の趣旨そのもの)
     private static string CombineUnderWebProject(params string[] segmentsUnderWebProject) =>
-        Path.Combine(new[] { RepositoryPaths.WebProject }.Concat(segmentsUnderWebProject).ToArray());
+        Path.Combine(RepositoryPaths.WebProject, Path.Combine(segmentsUnderWebProject));
 
     [Fact]
     public void PathsOutsideTheRepositoryRoot_AreRejected()
@@ -64,10 +64,30 @@ public class RepositoryPathsBuildArtifactTests
         // 実在しなくてよい。判定はファイルシステムを触らず文字列だけを見る
         var outsidePath = Path.Combine(Path.GetDirectoryName(RepositoryPaths.Root)!, "other-checkout", "bin", "x.cshtml");
         // 前提が崩れた呼び出しは「黙って通す」のではなく例外で落ちることを確かめる
-        var error = Assert.Throws<ArgumentOutOfRangeException>(
+        var error = Assert.Throws<ArgumentException>(
             () => RepositoryPaths.IsBuildArtifact(outsidePath));
-        // どのパスが問題なのかがメッセージから分かることまで求める(原因を指さない失敗を避ける)
+        // どのパスが問題なのかがメッセージから分かることまで求める(原因を指さない失敗を避ける)。
+        // 例外の型が自動で付け足す情報ではなく、書いた文面そのものに載っていることを見る
         Assert.Contains(outsidePath, error.Message, StringComparison.Ordinal);
+    }
+
+    [Theory]
+    // 親へ出る形(Unix でも Windows でも、Root の外はこの形になる)
+    [InlineData("../other/x.cshtml", true)]
+    // 分解した先頭だけを見るので、途中に .. があっても Root の外へは出ていない
+    [InlineData("src/../obj/x.cs", false)]
+    // 相対化できず絶対パスのまま返った形。**Linux では IsBuildArtifact 越しに作れない**
+    // (Unix の絶対パスは必ず / を共有するので GetRelativePath が絶対パスを返さない)。
+    // Windows のドライブ違いでだけ起きる枝なので、相対パスを直接渡して固定する
+    [InlineData("/absolute/obj/x.cs", true)]
+    // ルート自身を指す形("." は親へ出ていない)
+    [InlineData(".", false)]
+    // 通常の内側のパス
+    [InlineData("src/Views/Index.cshtml", false)]
+    public void PointsOutsideRoot_ClassifiesRelativePaths(string relativePath, bool expected)
+    {
+        // 相対パスだけを見る純粋な判定なので、そのまま呼んで結果を突き合わせる
+        Assert.Equal(expected, RepositoryPaths.PointsOutsideRoot(relativePath));
     }
 
     [Fact]

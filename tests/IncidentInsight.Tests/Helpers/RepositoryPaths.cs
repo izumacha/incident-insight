@@ -100,6 +100,13 @@ internal static class RepositoryPaths
     /// (Web プロジェクト)も走査するようになり、判定を使う側が増えたため、
     /// 基準を <see cref="Root"/> に固定したうえでここ 1 か所へ移した。</para>
     /// </summary>
+    /// <param name="filePath"><see cref="Root"/> の配下にある絶対パス。</param>
+    /// <exception cref="ArgumentException">
+    /// <paramref name="filePath"/> が <see cref="Root"/> の配下にないとき。
+    /// この判定は基準ルートが判定対象の祖先であることを前提にしており、外のパスでは
+    /// リポジトリ外のディレクトリ名を見てしまう(理由は実装のコメント)。前提が崩れた呼び出しは
+    /// 黙って通さず落とす(CLAUDE.md §9 の fail-closed)。
+    /// </exception>
     public static bool IsBuildArtifact(string filePath)
     {
         // 判定は必ず「リポジトリルートからの相対パス」に対して行う。
@@ -112,42 +119,64 @@ internal static class RepositoryPaths
         // 両方の走査起点を内側に持つ階層でなければ基準にできなくなったため。
         var relativePath = Path.GetRelativePath(Root, filePath);
 
-        // 【基準ルートは判定対象の祖先でなければならない】Root の内側のパスなら、分解される
-        // セグメントはリポジトリ内のディレクトリ名だけになる。Root の外のパスを渡すと
-        // GetRelativePath は .. を含む相対パスを返し(別ドライブなど共通の根を持たない場合は
-        // 絶対パスをそのまま返す)、分解の対象がリポジトリの外側のディレクトリ名まで広がる
-        // (実測: Root=/home/user/bin/incident-insight に対し /home/other/bin/x.cshtml は
-        //  ../../../other/bin/x.cshtml となり、リポジトリと無関係な bin セグメントで
-        //  生成物と判定される)。誤判定されるのは渡したそのパスだけなので、走査テストからは
-        // 「1 件だけ黙って対象から外れる」形になり、落ちずに検査範囲が縮む。
+        // 【基準ルートは判定対象の祖先でなければならない】Root の内側のパスなら、Root までの
+        // 祖先は共通の前置きとして取り除かれるので、分解されるセグメントはリポジトリ内の
+        // ディレクトリ名だけになる(祖先の名前は .. にもならず、そもそも現れない。実測:
+        // Root=/home/user/bin/incident-insight 配下の src/.../V.cshtml は src/.../V.cshtml)。
+        // だから「リポジトリの祖先に bin という名前のディレクトリがある」配置そのものは
+        // 問題にならず、下のガードにも当たらない。
+        //
+        // 一方 Root の外のパスを渡すと GetRelativePath は .. を含む相対パスを返し
+        // (別ドライブなど共通の根を持たない場合は絶対パスをそのまま返す)、分解の対象が
+        // リポジトリの外側のディレクトリ名まで広がる(実測: 同じ Root に対し
+        // /home/other/bin/x.cshtml は ../../../other/bin/x.cshtml となり、リポジトリと
+        // 無関係な bin セグメントで生成物と判定される)。誤判定されるのは渡したそのパスだけ
+        // なので、走査テストからは「1 件だけ黙って対象から外れる」形になり、
+        // 落ちずに検査範囲が縮む。
         //
         // この前提はコメントに書くだけにせず、ここで fail-closed にする
         // (CLAUDE.md §9「パスの判定は『不明なら拒否』をデフォルトにする」)。
         // 前提が崩れた呼び出しを黙って通すと、上のとおり縮んだ範囲が緑のまま残るため
-        // ——「読んだ人が気付く」に頼らず、その場で原因を名指しして落とす。
-        // 判定は 2 つ: 先頭セグメントが .. (Root の外へ出た) か、相対化できず絶対パスのまま
-        // 返ってきたか。誤検出はしない(Root 配下のパスはどちらにも当たらない)。
-        //
-        // なお「リポジトリの祖先に bin という名前のディレクトリがある」配置
-        // (/home/user/bin/incident-insight そのもの)は問題にならない——
-        // 祖先は相対パス化で .. に畳まれるため、セグメントとして現れない(実測)。
-        // その配置でも Root 配下のパスを渡すかぎり下のガードには当たらない
-        var segments = relativePath.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        // Root の外を指していれば、この判定は意味を持たないので呼び出し側の誤用として落とす
-        if (Path.IsPathRooted(relativePath) || segments[0] == ParentDirectorySegment)
+        // ——「読んだ人が気付く」に頼らず、その場で原因を名指しして落とす
+        if (PointsOutsideRoot(relativePath))
         {
-            // どのパスが、どの基準から外れたのかを名指しする(原因を指さないメッセージを避ける)
-            throw new ArgumentOutOfRangeException(
-                nameof(filePath),
-                filePath,
+            // どのパスが、どの基準から外れたのかを名指しする(原因を指さないメッセージを避ける)。
+            // filePath を文面へ埋めるのは、例外の型が持つ付加情報に頼らないため
+            // ——頼ると「文面を空にしても気付けない」状態になり、型を替えただけで
+            // 検査が落ちる(ガードの正しさと無関係な理由でテストを緩める動機ができる)
+            throw new ArgumentException(
                 $"ビルド生成物の判定はリポジトリルート({Root})の配下にあるパスにしか使えません。"
+                + $"渡されたパス: {filePath}。"
                 + $"外のパスを渡すと相対パス({relativePath})にリポジトリ外のディレクトリ名が現れ、"
-                + "そのパスだけが黙って走査対象から外れます(issue #190)。");
+                + "そのパスだけが黙って走査対象から外れます(issue #190)。",
+                nameof(filePath));
         }
 
+        // 相対パスをディレクトリ区切りで分解する
+        var segments = SplitPathSegments(relativePath);
         // 途中に obj / bin があればビルド生成物とみなす(大文字小文字は区別しない)
         return segments.Any(segment => BuildArtifactDirectoryNames.Contains(segment, StringComparer.OrdinalIgnoreCase));
     }
+
+    /// <summary>
+    /// リポジトリルートからの相対パスが、ルートの外を指しているかを返す。
+    ///
+    /// <para><b>判定を切り出してあるのは、片方の条件が Linux では原理的に成立しないから。</b>
+    /// Unix ではすべての絶対パスが <c>/</c> という共通の根を持つため
+    /// <c>Path.GetRelativePath</c> が絶対パスを返すことは無く、<c>IsPathRooted</c> の側が
+    /// 真になるのは Windows のドライブ違い(基準が <c>D:\</c>、対象が <c>C:\</c>)だけ。
+    /// CI は ubuntu だけなので、<see cref="IsBuildArtifact"/> 越しに試そうとしても
+    /// その枝には到達できず、<b>条件ごと消しても全件緑のまま通る</b>(実測)。
+    /// 相対パスを直接受ける形にしておけば、Windows 形の文字列を渡してテストで固定できる。</para>
+    /// </summary>
+    internal static bool PointsOutsideRoot(string relativePath) =>
+        // 相対化できず絶対パスのまま返った(共通の根が無い)か、先頭が親ディレクトリを指すか
+        Path.IsPathRooted(relativePath) || SplitPathSegments(relativePath)[0] == ParentDirectorySegment;
+
+    // 相対パスをディレクトリ区切り(OS 既定と代替の両方)で分解する。
+    // 判定と分解で 2 回書くと、区切りの扱いを直したとき片方だけが取り残される
+    private static string[] SplitPathSegments(string path) =>
+        path.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
 
     // 親ディレクトリを指す相対パスのセグメント。Root の外へ出たことの目印として使う
     private const string ParentDirectorySegment = "..";
