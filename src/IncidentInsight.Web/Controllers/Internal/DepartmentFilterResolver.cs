@@ -47,10 +47,17 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// スコープは no-op になり、差が出ない)。<c>DbContext</c> と
 /// <see cref="ClaimsPrincipal"/> を受け取って中で掛ければ、掛け忘れようがない。</para>
 ///
-/// <para><c>/Analytics</c> は Admin / RiskManager 限定なので現状スコープは実質 no-op だが、
-/// ポリシーが広がったときに自動で安全側へ倒れる(§9 fail-safe)。
-/// <b>ただし集計本体のクエリにはスコープが掛かっていない</b>ので、
-/// ポリシーを広げるときはそちらも同じ変更セットで手当てすること。</para>
+/// <para><b><c>/Analytics</c> の現状を合成すると fail-open になる。</b> この画面は
+/// Admin / RiskManager 限定なので、ここのスコープは実質 no-op である。一方で
+/// <b>集計本体のクエリにはスコープが掛かっていない</b>(<c>AnalyticsController</c> は
+/// いずれも素の <c>_db.Incidents.AsNoTracking()</c> から組み立てる)。
+/// したがって <c>CanViewAnalytics</c> を Staff へ広げると、次のことが起きる:
+/// ICU の Staff が <c>?department=ER</c> を送ると、ここはスコープ内に ER の行を見つけられず
+/// 「採用しない」を返す → コントローラは <c>Where</c> を<b>飛ばすだけ</b> →
+/// 応答は<b>全部署</b>の集計になる。絞り込みを厳しくしたことが、そのまま応答を広げる。
+/// ここだけを見て「ポリシーが広がっても自動で安全側へ倒れる」と読まないこと —— 倒れるのは
+/// この解決処理の中だけで、画面が返す数字ではない。<b>ポリシーを広げるときは、集計クエリへ
+/// <c>ScopedByUser</c> を掛けるところまでが 1 つの変更</b>(issue #213)。</para>
 /// </remarks>
 internal static class DepartmentFilterResolver
 {
