@@ -62,11 +62,19 @@ internal static class RepositoryPaths
     /// MVC の Areas(<c>Areas/&lt;Name&gt;/Views/</c>)や Razor Pages(<c>Pages/</c>)の
     /// <c>.cshtml</c> がその外にあり、走査対象から静かに外れていた(実測)。</para>
     ///
-    /// View ソースを走査する guard-rail テスト(ChartAccessibilityTests /
-    /// ConcurrencyTokenFormTests / RoleGatedNavigationTests / MeasurePrioritySelectTests)が
-    /// 同じ列挙を各自で書いていたため、走査対象を変えるとき(例: Areas 配下の追加、
-    /// 生成物ディレクトリの除外)に直し漏れたテストだけが静かに検査範囲を取り違える状態だった。
-    /// 走査条件の唯一の源としてここに集約する(CLAUDE.md §6 DRY)。
+    /// View ソースを走査する guard-rail テストが同じ列挙を各自で書いていたため、走査対象を
+    /// 変えるとき(例: Areas 配下の追加、生成物ディレクトリの除外)に直し漏れたテストだけが
+    /// 静かに検査範囲を取り違える状態だった。走査条件の唯一の源としてここに集約する
+    /// (CLAUDE.md §6 DRY)。
+    ///
+    /// <para><b>利用側はここに書き並べない。</b> 誰が使っているかは参照を辿れば分かる一方、
+    /// 書き並べた一覧は利用側が増えるたびに古くなり、しかも**古くなったことに誰も気付けない**
+    /// (実測: 一覧が 4 件を名指ししていた時点で、実際の利用側は 6 件あった)。
+    /// 走査範囲を狭めようとした人が短い一覧を読み、そこに無いテストを「影響しない」と
+    /// 結論すると、そのテストの Razor 側カバレッジだけが黙って縮む——
+    /// 走査の根を広げた当初の目的(下記の fail-open を塞ぐこと)が失われるのに、テストは緑のまま。
+    /// 同じ理由で <c>IncidentControllerHelpers</c> のクラス docstring からも利用側の列挙を
+    /// 取り除いてある(issue #190)。</para>
     /// </summary>
     // Web プロジェクト配下を再帰的に辿り .cshtml のパスを返す(生成物は除く)。
     //
@@ -96,11 +104,21 @@ internal static class RepositoryPaths
     /// 片方だけが生成物を走査して生成コードを違反として報告しうる。判定はここ 1 か所に置く。</para>
     /// </summary>
     public static bool IsBuildArtifact(string filePath) =>
-        // 判定は必ず「リポジトリルートからの相対パス」に対して行う。絶対パスを分解すると、
-        // チェックアウト先の途中に obj / bin という名前のディレクトリがあるだけで
-        // (例: /home/user/bin/incident-insight)全ファイルが生成物と判定され、
-        // これを使う 5 つの走査テストが「対象が 1 つも無い」で一斉に落ちる——
-        // しかも原因を指さないメッセージで落ちるので、追跡が難しい
+        // 判定は必ず「リポジトリルートからの相対パス」に対して行う。
+        //
+        // 【集約で変えたのは基準にするルートだけ】統合前のテストも相対パス化はしており
+        // (Path.GetRelativePath(scanRoot, filePath))、絶対パスをそのまま分解する版は
+        // 一度も存在しない。変わったのは基準が各テストの走査起点(tests 配下)から
+        // Root へ広がった点で、共有ヘルパーは tests の外(Web プロジェクト)も走査するため、
+        // 両方の走査起点を内側に持つ階層を基準にする必要があった。
+        //
+        // 【基準ルートは判定対象の祖先でなければならない】Root の外にあるパスを渡すと
+        // GetRelativePath は .. セグメントを返し、分解の対象がチェックアウトの外側へ広がる。
+        // 例: リポジトリが /home/user/bin/incident-insight にあるとき、その外のファイルは
+        // ../bin/... という相対パスになり、bin セグメントを踏んで生成物と誤判定される。
+        // 走査テストから見れば「対象が 1 つも無い」で落ちる形になり、しかも原因を指さない
+        // メッセージなので追跡が難しい。**この判定を Root の外のパスへ再利用しないこと**
+        // (セグメント分割はどんな基準パスに対しても安全、ではない。issue #190)
         Path.GetRelativePath(Root, filePath)
             .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
             .Any(segment => BuildArtifactDirectoryNames.Contains(segment, StringComparer.OrdinalIgnoreCase));
