@@ -106,7 +106,7 @@ internal static class RepositoryPaths
     /// 親へも出ていないため)。<b>相対パスは受け付けない</b>(下の例外を参照)。
     /// </param>
     /// <exception cref="ArgumentException">
-    /// <paramref name="filePath"/> が絶対パスでないか、<see cref="Root"/> の外にあるとき。
+    /// <paramref name="filePath"/> が完全修飾のパスでないか、<see cref="Root"/> の外にあるとき。
     /// この判定は基準ルートが判定対象の祖先であることを前提にしており、外のパスでは
     /// リポジトリ外のディレクトリ名を見てしまう(理由は実装のコメント)。前提が崩れた呼び出しは
     /// 黙って通さず落とす(CLAUDE.md §9 の fail-closed)。
@@ -120,12 +120,19 @@ internal static class RepositoryPaths
         // が true)。しかも解決先は Root の内側に収まるため、下の「外を指しているか」の
         // ガードには当たらない。このリポジトリの走査テストは
         // Path.GetRelativePath(RepositoryPaths.Root, file) の値を手元に持っているので、
-        // それを誤って渡す形は隣り合わせにある。絶対パスでなければここで落とす
-        if (!Path.IsPathRooted(filePath))
+        // それを誤って渡す形は隣り合わせにある。完全修飾でなければここで落とす。
+        //
+        // **IsPathRooted ではなく IsPathFullyQualified を使う。** Windows の
+        // ドライブ相対パス(C:Views\Index.cshtml のように、ドライブを指しつつ
+        // そのドライブの現在のディレクトリからの相対)は IsPathRooted が true を返すが、
+        // GetRelativePath は内部の GetFullPath でカレント基準に解決する。
+        // つまり rooted で絞ると、このガードが塞ぐと宣言している当の事故が
+        // 綴り違いのパス表記でそのまま再現する
+        if (!Path.IsPathFullyQualified(filePath))
         {
             // 何が渡されたのかと、なぜ受け付けられないのかを添える
             throw new ArgumentException(
-                "ビルド生成物の判定には絶対パスを渡してください。"
+                "ビルド生成物の判定には完全修飾の絶対パスを渡してください。"
                 + $"渡されたパス: {filePath}。"
                 + "相対パスはテスト実行時のカレントディレクトリ(ビルド出力)を基準に解決されるため、"
                 + "リポジトリ内のどのファイルを指していても生成物と判定されます(issue #190)。",
@@ -222,10 +229,13 @@ internal static class RepositoryPaths
     // ビルド生成物を収めるディレクトリ名(走査条件の唯一の源)。
     // internal なのは、列挙が実際にこの判定を通しているかを見る検査が、
     // ここへ候補ファイルを置いて確かめるため(ディレクトリ名を書き写させない)。
-    // 読み取り専用の型で公開するのは、可変の配列だとアセンブリ内のどこからでも
-    // 要素を差し替えられ、この判定を共有する全走査テストの範囲が実行順に依存して
-    // 変わりうるため(並列実行下では「違反ゼロ＝緑」で検出網が黙って無力化される)
-    internal static readonly IReadOnlyList<string> BuildArtifactDirectoryNames = new[] { "obj", "bin" };
+    // 読み取り専用で公開するのは、可変の配列だとアセンブリ内のどこからでも要素を
+    // 差し替えられ、この判定を共有する全走査テストの範囲が実行順に依存して変わりうるため
+    // (並列実行下では「違反ゼロ＝緑」で検出網が黙って無力化される)。
+    // **型を IReadOnlyList にするだけでは足りない** —— 実体が配列のままだと
+    // (string[]) へキャストして書き換えられるので、AsReadOnly でラップする
+    internal static readonly IReadOnlyList<string> BuildArtifactDirectoryNames =
+        Array.AsReadOnly(new[] { "obj", "bin" });
 
     // Razor ビューのファイル名パターン(走査条件の唯一の源)
     private const string ViewFileSearchPattern = "*.cshtml";

@@ -116,19 +116,26 @@ public class RepositoryPathsBuildArtifactTests
     [Fact]
     public void ScannedEnumerations_ExcludeBuildArtifacts()
     {
-        // 走査系の列挙が実際にこの判定を通していることを見る。
-        // **判定そのものの検査だけでは足りない**: 列挙側の .Where を外しても判定は正しいままなので、
-        // 配線が切れたことに誰も気付けない(実測: .Where を外しても全件緑だった)。
+        // 走査系の列挙が「生成物を対象に含めない」ことを見る。
+        // **判定そのものの検査だけでは足りない**: 列挙側で判定を通さなくなっても判定自体は
+        // 正しいままなので、対象が広がったことに誰も気付けない(実測: .Where を外しても全件緑)。
+        // 見ているのは**性質**(生成物が出てこないこと)であって書き方ではないので、
+        // 将来ディレクトリを辿る段階で枝刈りする形へ変えても、性質が保たれていれば緑でよい。
         //
-        // **候補ファイルは自分で用意する。** 実際のビルド出力に頼ると、ビュー側の配線が
+        // **候補ファイルは自分で用意する。** 実際のビルド出力に頼ると、ビュー側が
         // 検査されないまま緑になる —— Razor SDK はビューをアセンブリへ取り込むので
         // obj / bin 配下に .cshtml は 1 つも現れず、EnumerateViewFiles の .Where を外しても
         // 拾える候補が存在しない(実測)。.cs の側がたまたま自動生成ファイル
         // (*.AssemblyInfo.cs 等)を持っているだけで、そちらも出力先の設定 1 つで空になりうる。
-        // 生成物として扱われるディレクトリ名すべてに、ビューとソースの候補を 1 つずつ置く
+
+        // ビュー側の候補の置き場所(生成物ディレクトリごとに 1 つ)
         var probeViews = new List<string>();
+        // ソース側の候補の置き場所(同上)
         var probeSources = new List<string>();
+        // 後始末の対象にするディレクトリ
         var probeDirectories = new List<string>();
+        // 消せなかったディレクトリ。**finally の中で表明しない**ため、いったん受け取るだけにする
+        IReadOnlyList<string> undeleted;
         try
         {
             foreach (var artifactDirectoryName in RepositoryPaths.BuildArtifactDirectoryNames)
@@ -136,7 +143,8 @@ public class RepositoryPathsBuildArtifactTests
                 // 並行実行と後始末の取りこぼしに備えて、毎回一意な名前のディレクトリを使う
                 var probeDirectory = Path.Combine(
                     RepositoryPaths.WebProject, artifactDirectoryName, $"scan-probe-{Guid.NewGuid():N}");
-                // 生成物の配下に置くので、リポジトリの追跡対象にはならない(obj / bin は gitignore 済み)
+                // 生成物の配下に置くので、リポジトリの追跡対象にはならない(obj / bin は gitignore 済み)。
+                // 後始末できずに残っても git status を汚さず、次のビルドにも混ざらない
                 Directory.CreateDirectory(probeDirectory);
                 // 後始末できるよう控えておく
                 probeDirectories.Add(probeDirectory);
@@ -157,9 +165,16 @@ public class RepositoryPathsBuildArtifactTests
         }
         finally
         {
-            // 検査が落ちても候補を残さない(次の実行に持ち越すと原因の切り分けが難しくなる)
-            DeleteProbeDirectories(probeDirectories);
+            // 検査が落ちても候補を残さない(次の実行に持ち越すと原因の切り分けが難しくなる)。
+            // **ここでは表明しない** —— finally から例外を投げると、伝播中の本来の失敗
+            //(「生成物が列挙されている」)がその例外に置き換わり、原因が消える
+            undeleted = DeleteProbeDirectories(probeDirectories);
         }
+
+        // 本体が成功したときだけ、後始末の取りこぼしを報告する
+        Assert.True(
+            undeleted.Count == 0,
+            $"検査用に作った候補ディレクトリを削除できなかった: {string.Join(" / ", undeleted)}");
     }
 
     [Fact]
@@ -170,34 +185,31 @@ public class RepositoryPathsBuildArtifactTests
         // 生成物配下に置いた候補はどのみち列挙されないので除外の検査は緑のまま通る(実測)。
         // 根が狭まるのは docstring が 2 段落を割いて説明している当の fail-open
         // (Areas/ や Pages/ の .cshtml が黙って検査対象から外れる)なので、対で固定する。
-
-        // .cs 側は既存ファイルで足りる —— Web プロジェクト直下の Program.cs は、
-        // 根をどのサブディレクトリへ狭めても真っ先に落ちる(候補を作らないので副作用も無い)
+        //
+        // 既存ファイルで確かめられるのは .cs 側だけ —— Web プロジェクト直下の Program.cs は、
+        // 根をどのサブディレクトリへ狭めても真っ先に落ちる。候補ファイルを作らないので、
+        // 並行して走る他のテストに何の影響も与えない
         var programPath = Path.Combine(RepositoryPaths.WebProject, "Program.cs");
         Assert.True(
             RepositoryPaths.EnumerateWebSourceFiles().Contains(programPath, StringComparer.Ordinal),
             $"{nameof(RepositoryPaths.EnumerateWebSourceFiles)} が Web プロジェクト直下の Program.cs を列挙しなかった。"
             + "走査の根がサブディレクトリへ狭まっている可能性がある。");
 
-        // .cshtml 側は Views/ の外に 1 つも無いので、候補を置いて確かめるしかない。
-        // 中身は Razor コメントだけにしてある —— 他のビュー走査テストが並行して
-        // 列挙しても違反として拾わないため(実測で全件緑を確認)
-        var probeDirectory = Path.Combine(RepositoryPaths.WebProject, $"scan-root-probe-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(probeDirectory);
-        try
-        {
-            // Views/ の外・かつ生成物ディレクトリの外に置くのが要点
-            var probeView = WriteProbe(probeDirectory, "ScanRootProbe.cshtml", "@* 走査の根の確認用 *@");
-            Assert.True(
-                RepositoryPaths.EnumerateViewFiles().Contains(probeView, StringComparer.Ordinal),
-                $"{nameof(RepositoryPaths.EnumerateViewFiles)} が Views/ の外に置いたビューを列挙しなかった: {probeView}。"
-                + "走査の根が Views/ 配下へ狭まると、Areas/ や Pages/ のビューが黙って検査対象から外れる。");
-        }
-        finally
-        {
-            // 追跡対象になりうる場所に作るので、必ず消す
-            DeleteProbeDirectories(new[] { probeDirectory });
-        }
+        // **残っている境界: ビュー側の根は機械的に固定できない。**
+        // Views/ の外に .cshtml が 1 つも無いので、根が Views/ へ狭まっても結果が変わらず、
+        // 見分けるには候補を「Views/ の外・かつ生成物の外」へ置くしかない。しかしその場所は
+        // 他のビュー走査テストの対象そのもので、xUnit はテストクラスを既定で並列に走らせる。
+        // 各テストは「列挙してパスを控え、あとから File.ReadAllText で読む」形なので、
+        // 控えたあとに候補が消えると **無関係なテストが FileNotFoundException で落ちる**
+        // (窓は数十 ms と短く、ローカルでは再現しなかったが実在する)。しかもその場所は
+        // gitignore の対象外なので、後始末できずに終了すると追跡候補のゴミが残る。
+        // 実行のたびに当たり外れが変わる検出網は、いずれ「不安定だから」と外される
+        // ——この repo が繰り返し避けている形なので、機械化せず境界として残す。
+        //
+        // 代わりの歯止め: (1) 2 つの列挙は同じ定数を根に取って隣り合わせに書かれており、
+        // 片方だけを狭める差分はもう片方(上で固定済み)の真横に現れる。
+        // (2) Views/ の外に本物の .cshtml が 1 つでも置かれた時点で、それが上と同じ形の
+        // 固定材料になる —— そのときにビュー側の表明をここへ足すこと。
     }
 
     // 候補ファイルを 1 つ書き出し、その絶対パスを返す
@@ -211,11 +223,11 @@ public class RepositoryPathsBuildArtifactTests
         return path;
     }
 
-    // 候補ディレクトリをすべて消す。**1 つの失敗で残りを諦めない** ——
-    // 途中で例外を送出すると、残った候補がソースツリーに居座るうえ、
-    // finally から投げた例外が本来の失敗メッセージを置き換えてしまう
-    // (「配線が切れている」ではなく「削除できません」としか出なくなる)
-    private static void DeleteProbeDirectories(IEnumerable<string> directories)
+    // 候補ディレクトリをすべて消し、**消せなかったものを返す**。
+    // 1 つの失敗で残りを諦めないのと、ここで表明しないのが要点 ——
+    // finally から例外を投げると、伝播中の本来の失敗メッセージが
+    // 「削除できません」に置き換わり、原因(配線が切れている)が消える
+    private static IReadOnlyList<string> DeleteProbeDirectories(IEnumerable<string> directories)
     {
         // 消せなかったものを控え、全部試してからまとめて報告する
         var undeleted = new List<string>();
@@ -237,10 +249,8 @@ public class RepositoryPathsBuildArtifactTests
                 undeleted.Add($"{directory} ({error.Message})");
             }
         }
-        // 1 つでも残っていれば、次の実行に持ち越さないよう知らせる
-        Assert.True(
-            undeleted.Count == 0,
-            $"検査用に作った候補ディレクトリを削除できなかった: {string.Join(" / ", undeleted)}");
+        // 判断は呼び出し側に委ねる(本体の失敗が優先されるように)
+        return undeleted;
     }
 
     // 列挙に「置いた候補」が 1 つも現れないことを確かめる。
