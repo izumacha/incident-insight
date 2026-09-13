@@ -1929,9 +1929,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// (実測で全件緑のまま通った。issue #227)。除外表のキー(<c>ScreenKeyOf</c>)を
     /// 完全修飾名にして塞いだはずの穴が、そのガードを網羅性で支える導出側に残っていた形。</para>
     ///
-    /// <para><b><c>Distinct</c> の目的は損なわれない。</b> 畳みたいのは「自前の基底から継いだ
-    /// 同一のアクションが複数の型から見える」場合だが、キーは走査中の型ではなく
-    /// <b>宣言元の型</b>から作るので、完全修飾名でも同じく 1 件へ畳まれる。</para>
+    /// <para><b>キーの「画面」は走査中の具象型で、宣言元の型ではない。</b> 以前は宣言元
+    /// (<c>DeclaringType</c>)で作っており、その根拠は「自前の基底から継いだアクションが
+    /// 基底と派生の 2 件として現れ、1 つのアクションに 2 行を求めてしまう」だった。これは
+    /// <b>誤り</b>で、2 行を求めるのが正しい ——MVC は継いだ public メソッドも派生側の
+    /// ルートとして公開するので、基底 1 つを 2 つの画面が継げば<b>到達できる URL は 2 本</b>
+    /// あり、注意書きもそれぞれのビューに要る。宣言元で畳むと、基底の 1 行を表へ登録するだけで
+    /// <b>継いだ全画面が「手当て済み」として数えられた</b>(実測: 抽象基底 ＋ 具象 2 画面で
+    /// 表に 2 行足すと全件緑のまま、どちらの画面も解決処理を通っていない)。これは issue #227 が
+    /// Areas について塞いだのと同じ fail-open の兄弟にあたる。抽象基底はそもそも走査対象外
+    /// (<c>!IsAbstract</c>)なので、具象型で作れば「到達できる画面ごとに 1 行」になる。</para>
     ///
     /// <para><b>2 つの網羅ガードで共有する(§6 DRY)。</b> 以前は「期間の絞り込み」用と
     /// 「enum の絞り込み」用に、走査(アセンブリの選び方・<c>ControllerBase</c> の絞り込み・
@@ -1953,8 +1960,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
         var ownAssembly = typeof(IncidentsController).Assembly;
         // そのアセンブリのコントローラをすべて見る
-        return ownAssembly.GetTypes()
-            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract)
+        return ScannedControllers()
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 // プロパティのゲッターなど、アクションでないものを除く
                 .Where(m => !m.IsSpecialName)
@@ -1962,18 +1968,109 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 .Where(m => m.DeclaringType?.Assembly == ownAssembly)
                 .SelectMany(m => m.GetParameters()
                     .Where(matches)
-                    // 名前は<b>宣言元の型</b>で作る。走査中の型で作ると、自前の基底から
-                    // 継いだアクションが基底と派生の 2 件として現れ、1 つのアクションに
-                    // 2 行の表エントリを求める(下の Distinct では畳めない)。
+                    // 名前は<b>走査中の具象型</b>で作る(宣言元ではない)。詳細は上の解説。
                     // 型の綴りは ActionParameterKey ＝ ScreenKeyOf(完全修飾名)に任せる。
                     // 引数名はリフレクション上 null になりうる型だが、アクションの引数では
                     // 常に付く(名前が無ければキーが欠けた形になり、表との照合が落ちる)
-                    .Select(p => ActionParameterKey(m.DeclaringType!, m.Name, p.Name!))))
-            // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
+                    .Select(p => ActionParameterKey(t, m.Name, p.Name!))))
+            // 同じ画面に同じ (アクション名, 引数名) が複数回現れても 1 件に畳む
+            // (引数の数だけが違うオーバーロードがこの形。画面が違えばキーも違うので畳まれない)
             .Distinct(StringComparer.Ordinal)
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// 2 つの網羅ガードが「アプリ全体」として実際に見ているコントローラ。
+    /// </summary>
+    /// <remarks>
+    /// 走査の入り口を 1 か所に出すのは、下の <c>ControllerScan_ReachesEveryControllerFile</c> が
+    /// <b>導出が実際に見ている集合</b>を照合できるようにするため(検査が自前で同じ絞り込みを
+    /// 書き写すと、導出だけを狭めたときに検査も一緒に狭まって無力化される)。
+    /// </remarks>
+    private static IEnumerable<Type> ScannedControllers() =>
+        // 自分たちのアセンブリの、具象のコントローラすべて(抽象基底はルートを持たないので除く)
+        typeof(IncidentsController).Assembly.GetTypes()
+            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+
+    // 走査が、Web プロジェクトに実在するコントローラを<b>1 つも取りこぼしていない</b>こと。
+    //
+    // <b>なぜ要るのか。</b> すぐ下の「キーが完全修飾名か」は<b>綴り</b>しか見ないので、
+    // 導出の<b>対象範囲</b>を狭める差分 ——たとえば
+    // <c>.Where(t =&gt; t.Namespace == "IncidentInsight.Web.Controllers")</c> を足す——
+    // は全件緑のまま通り、Areas の画面が網羅ガードから丸ごと外れる(実測)。
+    // これは CLAUDE.md §3 が LengthGovernedEntityTypes について
+    // 「名前空間の完全一致で切ると、サブフォルダへ移すだけで外れる」と書いているのと同じ形。
+    //
+    // <b>手がかりを変える</b>のが要点: 型の走査ではなく<b>ソースファイルの実在</b>を見る。
+    // 同じ手がかりで書くと導出と一緒に狭まるため(LengthGovernedTypes_CoverEveryOwnedDbSet と同じ)。
+    //
+    // <b>照合は完全修飾名で行う</b>(単純名ではない)。型名だけで突き合わせると、
+    // Areas/Admin/Controllers/AuditLogsController.cs は既存の Controllers/AuditLogsController と
+    // 名前が一致するだけで「走査できている」と読まれ、名前空間で狭める変異が
+    // <b>全件緑のまま通る</b>(実測)。この検査自身が issue #227 と同じ畳み込みを
+    // 起こす形なので、ファイルが宣言している名前空間まで見る。
+    //
+    // <b>残っている境界</b>: 手がかりはファイル名とそのファイルの名前空間宣言なので、
+    // 1 ファイルに 2 つのコントローラを書く・ファイル名と型名を違える書き方までは追えない。
+    // 最初にそう書く人がこの照合を広げること。
+    [Fact]
+    public void ControllerScan_ReachesEveryControllerFile()
+    {
+        // 導出が実際に見ている型の完全修飾名(検査が自前で絞り込みを書き写さない)
+        var scanned = ScannedControllers()
+            .Select(t => t.FullName!)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // 1 つも見えていないなら手がかりが死んでいる(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.True(scanned.Count > 0,
+            "走査がコントローラを 1 つも見つけられなかった。"
+            + "導出を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // ソース上に実在するのに走査から外れているコントローラを集める
+        var missing = new List<string>();
+        // 名前空間を読み取れず、走査できているか判断できなかったファイル(fail-closed)
+        var unreadable = new List<string>();
+        // Web プロジェクト配下の .cs を 1 つずつ見る(ビルド生成物は除かれている)
+        foreach (var sourcePath in RepositoryPaths.EnumerateWebSourceFiles())
+        {
+            // ファイル名から型名を取る(このリポジトリは 1 ファイル 1 コントローラ)
+            var typeName = Path.GetFileNameWithoutExtension(sourcePath);
+            // コントローラのファイルだけを見る
+            if (!typeName.EndsWith("Controller", StringComparison.Ordinal)) continue;
+
+            // ソースを読む(abstract の判定と、宣言している名前空間の読み取りに使う)
+            var source = File.ReadAllText(sourcePath);
+            // 抽象基底はルートを持たないので走査対象外でよい(!IsAbstract と同じ判断)
+            if (Regex.IsMatch(source, $@"\babstract\s+(?:partial\s+)?class\s+{Regex.Escape(typeName)}\b")) continue;
+
+            // そのファイルが宣言している名前空間(ファイルスコープ / ブロックのどちらでも拾う)
+            var declared = Regex.Match(source, @"^\s*namespace\s+(?<ns>[\w.]+)", RegexOptions.Multiline);
+            if (!declared.Success)
+            {
+                // 読めないものを「走査できている」と読まない(fail-closed)
+                unreadable.Add(Path.GetRelativePath(RepositoryPaths.Root, sourcePath));
+                continue;
+            }
+
+            // 走査が<b>その名前空間の型として</b>見えているなら問題ない
+            if (scanned.Contains($"{declared.Groups["ns"].Value}.{typeName}")) continue;
+            // どれにも当てはまらない ＝ 走査が取りこぼしている
+            missing.Add(Path.GetRelativePath(RepositoryPaths.Root, sourcePath));
+        }
+
+        Assert.True(unreadable.Count == 0,
+            $"名前空間を読み取れないコントローラのファイルがある: {string.Join(", ", unreadable)}。"
+            + "走査できているかを確かめられないので落とす ——読めないものを緑にすると、"
+            + "その書き方のファイルだけが黙って照合の外に置かれる。"
+            + "宣言の書き方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        Assert.True(missing.Count == 0,
+            $"走査から外れているコントローラがある: {string.Join(", ", missing)}。"
+            + "導出の対象範囲を狭めると、その画面は 2 つの網羅ガードから同時に、しかも"
+            + "黙って外れる(絞り込みの手当てを 1 行も通していなくても全件緑になる)。"
+            + "名前空間やフォルダで切らず、アセンブリ単位で拾うこと。");
     }
 
     // 2 つの網羅ガードが使う導出のキーが、<b>完全修飾名</b>で作られていること。
