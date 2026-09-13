@@ -817,6 +817,23 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         controller.FullName!;
 
     /// <summary>
+    /// 網羅ガードが「(画面, アクション, 引数)」を 1 件として表すときの綴り。
+    /// </summary>
+    /// <remarks>
+    /// <b>導出(<c>ActionParametersInTheApp</c>)と手書きの表が同じここを通る。</b>
+    /// キーの組み立てを両側へ書き写すと、片方だけを直したときに<b>すべての行が食い違って</b>
+    /// 落ちるか、逆に(単純名どうしで揃っているあいだは)Areas の同名コントローラが
+    /// 黙って畳まれる ——後者は差分にもテスト件数にも現れない(issue #227)。
+    /// 画面の綴りは除外表と同じ <see cref="ScreenKeyOf"/> に任せる。
+    /// </remarks>
+    /// <param name="controller">アクションの宣言元(コントローラ)。</param>
+    /// <param name="action">アクション名。</param>
+    /// <param name="parameter">引数名(モデルバインドが使う URL 上の名前)。</param>
+    private static string ActionParameterKey(Type controller, string action, string parameter) =>
+        // 画面の綴りは ScreenKeyOf が唯一の源。そこへアクションと引数を継ぐ
+        $"{ScreenKeyOf(controller)}.{action}.{parameter}";
+
+    /// <summary>
     /// その (画面, 引数) が「読めない値」の手当てから意図的に外されているか。
     /// </summary>
     /// <remarks>
@@ -1783,22 +1800,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 表だけを増やしても導出に無ければ落ちる(逆も同じ)
         var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
         {
-            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.dateFrom"] = "ViewModel",
-            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.dateTo"] = "ViewModel",
-            [$"{nameof(AuditLogsController)}.{nameof(AuditLogsController.Index)}.dateFrom"] = "ViewModel",
-            [$"{nameof(AuditLogsController)}.{nameof(AuditLogsController.Index)}.dateTo"] = "ViewModel",
-            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.dateFrom"] = "ViewBag",
-            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.dateTo"] = "ViewBag",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.MonthlyTrend)}.dateFrom"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.MonthlyTrend)}.dateTo"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByCause)}.dateFrom"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByCause)}.dateTo"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByDepartment)}.dateFrom"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByDepartment)}.dateTo"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.BySeverity)}.dateFrom"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.BySeverity)}.dateTo"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByIncidentType)}.dateFrom"] = "Json",
-            [$"{nameof(AnalyticsController)}.{nameof(AnalyticsController.ByIncidentType)}.dateTo"] = "Json",
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "dateFrom")] = "ViewModel",
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "dateTo")] = "ViewModel",
+            [ActionParameterKey(typeof(AuditLogsController), nameof(AuditLogsController.Index), "dateFrom")] = "ViewModel",
+            [ActionParameterKey(typeof(AuditLogsController), nameof(AuditLogsController.Index), "dateTo")] = "ViewModel",
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "dateFrom")] = "ViewBag",
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "dateTo")] = "ViewBag",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.MonthlyTrend), "dateFrom")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.MonthlyTrend), "dateTo")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByCause), "dateFrom")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByCause), "dateTo")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByDepartment), "dateFrom")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByDepartment), "dateTo")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.BySeverity), "dateFrom")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.BySeverity), "dateTo")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByIncidentType), "dateFrom")] = "Json",
+            [ActionParameterKey(typeof(AnalyticsController), nameof(AnalyticsController.ByIncidentType), "dateTo")] = "Json",
         };
 
         // 2 つの宣言箇所が一致していること。ずれていれば、手当てを決めていない期間の絞り込みが
@@ -1840,6 +1857,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 本物の絞り込みをもっともらしい理由で登録すれば黙って外れる ——
     // <b>この表にエントリが増える差分は、理由の妥当性をレビューで必ず確認すること</b>。
     // 現在の登録は 0 件(このアプリの DateTime? はすべて絞り込み)。
+    //
+    // <b>「0 件なら先回りの抽象化では」との違い。</b> §6 が避けよと言う先回りは
+    // <b>実在しない事情のために分岐を増やす</b>ことで、増えた分岐そのものが欠陥を生む
+    // (このファイルが MeasuresUnreadableProneParameters について同じ理由で
+    //  単位ごとの場合分けを持たないのと同じ)。空の除外表は分岐ではなく、
+    // <b>上のガードが要求できない事情に出会った人の逃げ道が「ガードを消す」以外にある</b>
+    // ことを、その場で読める形にしておくための宣言。ここを消すと、最初に
+    // CompleteMeasure(int id, DateTime? completedAt) のような引数を足した人の前に
+    // 「偽の伝え先を書く」か「ガードごと消す」しか残らない ——このリポジトリが
+    // 繰り返し警戒している「実行不能な指示を出す検出網はいずれ緩められる」の入り口になる。
+    // 下の 2 つの検査(実在する / 理由がある)は、その逃げ道が<b>使われた瞬間から</b>
+    // 正直であることを保つためのもので、0 件のあいだ空振りなのは織り込み済み。
     private static readonly IReadOnlyDictionary<string, string> DateRangeGuardExemptions =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -1880,7 +1909,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         new HashSet<string>(StringComparer.Ordinal) { "ViewModel", "ViewBag", "Json" };
 
     // アプリ全体のコントローラから「DateTime? のアクション引数」を
-    // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
+    // "<コントローラの完全修飾名>.<アクション名>.<引数名>" の形で拾う。
     // 走査そのものは enum 側と共有する(ActionParametersInTheApp が正本)
     private static List<string> DateRangeActionParametersInTheApp() =>
         // 期間の絞り込みは必ず DateTime? で受ける
@@ -1888,9 +1917,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     /// <summary>
     /// アプリ全体のコントローラのアクション引数のうち、条件に当たるものを
-    /// <c>"&lt;コントローラ名&gt;.&lt;アクション名&gt;.&lt;引数名&gt;"</c> の形で拾う。
+    /// <c>"&lt;コントローラの完全修飾名&gt;.&lt;アクション名&gt;.&lt;引数名&gt;"</c> の形で拾う。
     /// </summary>
     /// <remarks>
+    /// <para><b>キーは完全修飾名で作る(<c>ActionParameterKey</c> ＝ <c>ScreenKeyOf</c>)。</b>
+    /// 以前ここは単純名(<c>DeclaringType.Name</c>)でキーを作ったうえで <c>Distinct</c> して
+    /// いたため、<c>Areas/Admin/Controllers/AuditLogsController.Index(DateTime? dateFrom, …)</c>
+    /// を足すと、キーが既存の <c>AuditLogsController.Index.dateFrom</c> と完全に一致して
+    /// <b>1 件へ畳まれた</b>。畳まれた先は手書きの表に「手当て済み」として登録されているので、
+    /// その新しい画面は解決処理を 1 行も通していないのに<b>網羅ガードを通過</b>する
+    /// (実測で全件緑のまま通った。issue #227)。除外表のキー(<c>ScreenKeyOf</c>)を
+    /// 完全修飾名にして塞いだはずの穴が、そのガードを網羅性で支える導出側に残っていた形。</para>
+    ///
+    /// <para><b><c>Distinct</c> の目的は損なわれない。</b> 畳みたいのは「自前の基底から継いだ
+    /// 同一のアクションが複数の型から見える」場合だが、キーは走査中の型ではなく
+    /// <b>宣言元の型</b>から作るので、完全修飾名でも同じく 1 件へ畳まれる。</para>
+    ///
     /// <para><b>2 つの網羅ガードで共有する(§6 DRY)。</b> 以前は「期間の絞り込み」用と
     /// 「enum の絞り込み」用に、走査(アセンブリの選び方・<c>ControllerBase</c> の絞り込み・
     /// <c>IsSpecialName</c> の除外・宣言元アセンブリの判定・キーの作り方・畳み方・並びの固定)を
@@ -1922,13 +1964,52 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     .Where(matches)
                     // 名前は<b>宣言元の型</b>で作る。走査中の型で作ると、自前の基底から
                     // 継いだアクションが基底と派生の 2 件として現れ、1 つのアクションに
-                    // 2 行の表エントリを求める(下の Distinct では畳めない)
-                    .Select(p => $"{m.DeclaringType!.Name}.{m.Name}.{p.Name}")))
+                    // 2 行の表エントリを求める(下の Distinct では畳めない)。
+                    // 型の綴りは ActionParameterKey ＝ ScreenKeyOf(完全修飾名)に任せる。
+                    // 引数名はリフレクション上 null になりうる型だが、アクションの引数では
+                    // 常に付く(名前が無ければキーが欠けた形になり、表との照合が落ちる)
+                    .Select(p => ActionParameterKey(m.DeclaringType!, m.Name, p.Name!))))
             // 同じアクションが複数の型から見えても 1 件に畳む(自前の基底から継いだ場合)
             .Distinct(StringComparer.Ordinal)
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(name => name, StringComparer.Ordinal)
             .ToList();
+    }
+
+    // 2 つの網羅ガードが使う導出のキーが、<b>完全修飾名</b>で作られていること。
+    //
+    // <b>なぜ要るのか。</b> キーを単純名へ戻す差分は、手書きの表も同じ綴りで揃えれば
+    // <b>全件緑のまま通る</b>(実際 issue #227 はその状態を見つけた)。畳まれた結果は
+    // 「Areas の同名コントローラが、解決処理を通さないまま手当て済みとして数えられる」
+    // ことで、差分にもテスト件数にも現れない。ガードを導出と同じ綴りから作ると、
+    // 導出が狭まったときにガードも一緒に狭まって無力化されるので、<b>手がかりを変える</b>
+    // ——コントローラ自身が名乗っている名前空間の根を、導出とは独立な宣言箇所として使う
+    // (この repo が LengthGovernedTypes_CoverEveryOwnedDbSet で採っているのと同じ形)
+    [Fact]
+    public void ActionParameterKeys_AreFullyQualified()
+    {
+        // 2 つの網羅ガードが実際に使う導出を、そのまま走らせて拾う
+        var derived = DateRangeActionParametersInTheApp()
+            .Concat(EnumActionParametersInTheApp())
+            .ToList();
+
+        // 1 件も拾えないなら手がかりが死んでいる(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.True(derived.Count > 0,
+            "網羅ガードの導出が 1 件も拾えなかった。導出を変えたなら、"
+            + "この照合も同じ変更セットで直すこと。");
+
+        // 手がかり: コントローラ自身が名乗る名前空間の根(導出の綴りには依存しない)
+        var rootNamespace = typeof(IncidentsController).Namespace!.Split('.')[0] + ".";
+
+        // その根から始まらないキー ＝ 名前空間が落ちている(単純名で作られている)
+        var unqualified = derived
+            .Where(name => !name.StartsWith(rootNamespace, StringComparison.Ordinal))
+            .ToList();
+        Assert.True(unqualified.Count == 0,
+            $"網羅ガードのキーが完全修飾名になっていない: {string.Join(", ", unqualified)}。"
+            + $"「{rootNamespace}…」で始まる名前で作ること(単純名だと、名前空間だけが違う"
+            + "同名のコントローラ ——MVC の Areas がこの形—— が既存エントリへ黙って畳まれ、"
+            + "その画面は解決処理を 1 行も通さないまま手当て済みとして数えられる)。");
     }
 
     // 方式表が「絞り込み入力の唯一の真実の源」を名乗る以上、
@@ -2957,9 +3038,24 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             // 「空白の有無や比較の書き方に依存しない形で探す」と書いているとおり、
             // 綴りに依存する判定はここでは採らない。
             // 旗を参照していれば拾う形にすると、注意書きを描画せず
-            // 絞り込みパネルの開閉(anyFilter)にだけ使うビューも拾いうるが、
-            // その場合は表へ 1 行足せば済む(文面の収集は @if ブロックを見るので
-            // 何も足さない)——<b>誤りが「余計に拾う」側へ倒れる</b>ので安全側
+            // 絞り込みパネルの開閉(anyFilter)にだけ使うビューも拾いうる。
+            //
+            // <b>そのとき「表へ 1 行足せば済む」わけではない</b>(以前ここはそう書いて
+            // いたが誤り)。文面を集める IgnoredFilterNoticeTexts は
+            // <c>@if (Model./ViewBag.&lt;旗&gt;)</c> の形しか読まず、1 つも拾えなければ
+            // fail-closed で落ちる ——登録しなければ下の網羅ガードが、登録すれば文面の
+            // 照合が落ちるので、<b>そのビューは登録してもしなくても赤</b>になる。
+            //
+            // それでもこの広さを採るのは、赤の直し方が実在するから:
+            //   (a) 旗を立てたのに注意書きを描画していない ——CLAUDE.md §3 が求める
+            //       「採用しなかった絞り込み値は必ず伝える」の違反そのもので、
+            //       直し方は注意書きを足すこと。
+            //   (b) 描画はしているが <c>@{ var ignored = …; } @if (ignored)</c> のように
+            //       別名を挟んでいる ——直し方は旗を直接見る形へ書き直すこと。
+            // どちらも「そう書けば緑になる」書き方があるので、実行不能な要求ではない
+            // (逆に、読める形だけを拾うよう狭めると (b) が<b>検出網から丸ごと外れ</b>、
+            //  4 画面目の言い換えを見逃す ——実測で全件緑のまま通った穴が綴り違いで戻る)。
+            // <b>誤りは「余計に拾う」側へ倒れる</b>ので安全側
             var accessors = Regex
                 .Matches(source, $@"(?<accessor>Model|ViewBag)\.\w*{IgnoredFlagSuffix}\b")
                 .Select(m => $"{m.Groups["accessor"].Value}.")
@@ -3032,9 +3128,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             texts.Add((viewFolder, literals[0], string.Concat(literals.Skip(1))));
         }
 
-        // その画面から 1 つも拾えないなら、走査が書き方の変更に追随できていない(fail-closed)
+        // その画面から 1 つも拾えないなら、走査が書き方の変更に追随できていない(fail-closed)。
+        // <b>直し方まで言う</b> ——この画面を拾ったのは「旗をどこかで参照している」ことなので、
+        // 赤の原因は「注意書きを描画していない」か「読めない書き方をしている」のどちらか。
+        // 直し方を書かないと、緑に戻す唯一の道が「どちらかのガードを緩める」になる
         Assert.True(texts.Count > 0,
-            $"Views/{viewFolder}/Index.cshtml から注意書きの文面を 1 つも拾えなかった。");
+            $"Views/{viewFolder}/Index.cshtml から注意書きの文面を 1 つも拾えなかった。"
+            + $"この走査が読めるのは @if ({accessor}<旗>) {{ … new {nameof(FilterIgnoredNotice)}(…) }} の形だけ。"
+            + "旗を立てているのに注意書きを描画していないなら描画を足し、"
+            + "ローカル変数へ受けてから分岐しているなら旗を直接見る形へ書き直すこと"
+            + "(どちらでもない新しい書き方を採るなら、この走査も同じ変更セットで広げる)。");
         return texts;
     }
 
@@ -3832,6 +3935,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 本物の絞り込みをもっともらしい理由で登録すれば黙って外れるので、
     // <b>この表にエントリが増える差分は、理由の妥当性をレビューで必ず確認すること</b>。
     // 現在の登録は 0 件(この画面のドロップダウンはどちらも許可リストの絞り込み)。
+    // <b>0 件のまま置いておく理由</b>は DateRangeGuardExemptions の解説が正本
+    // (同じ説明を 2 か所へ書き写すと、判断を見直したときに片方が古くなる。§6)。
     private static readonly IReadOnlyDictionary<string, string> AuditLogsNonFilterSelects =
         new Dictionary<string, string>(StringComparer.Ordinal);
 
@@ -4227,7 +4332,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <c>/AuditLogs</c> へ手で写しており、その写しで<b>0 件時の文言の検査だけが落ちていた</b>
     /// ——同じコミットが隣の 2 つの走査を共通化したのに、これだけ写したせいで
     /// 片方の画面が守られていなかった。走査を 1 つにすれば、画面ごとに違うのは
-    /// 「ビューの置き場所」「旗の読み方」「0 件時の文言」の 3 つだけになる。</para>
+    /// 引数で受ける<b>「ビューの置き場所」「旗の読み方」「確かめる旗」の 3 つだけ</b>になる。
+    /// <b>0 件時の文言は画面ごとに違わない</b> ——<c>FilterActiveEmptyStatePrompt</c> を
+    /// 画面をまたいで共有しており(その定数の解説が理由の正本)、引数にも現れない。</para>
     /// </remarks>
     /// <param name="viewFolder">ビューの置き場所(<c>Views/&lt;ここ&gt;/Index.cshtml</c>)。</param>
     /// <param name="accessor">旗の読み方の前置き(<c>Model.</c> または <c>ViewBag.</c>)。</param>
@@ -4322,12 +4429,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.Index)}.status"] = "Filter",
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "status")] = "Filter",
             // 絞り込み: IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.incidentType"] = "Filter",
-            [$"{nameof(IncidentsController)}.{nameof(IncidentsController.Index)}.severity"] = "Filter",
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "incidentType")] = "Filter",
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "severity")] = "Filter",
             // 保存: UpdateStatus 自身が Enum.IsDefined で弾く(未定義値を DB へ入れない)
-            [$"{nameof(PreventiveMeasuresController)}.{nameof(PreventiveMeasuresController.UpdateStatus)}.status"] = "OwnGate",
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.UpdateStatus), "status")] = "OwnGate",
         };
 
         // 2 つの宣言箇所が一致していること。ずれていれば、守り方を決めていない enum 引数が
@@ -4338,7 +4445,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     // アプリ全体のコントローラから「enum のアクション引数」を
-    // "<コントローラ名>.<アクション名>.<引数名>" の形で拾う。
+    // "<コントローラの完全修飾名>.<アクション名>.<引数名>" の形で拾う。
     //
     // <b>null 許容かどうかで絞らない(レビュー指摘で修正)。</b> 以前ここは
     // Nullable&lt;TEnum&gt; だけを見て「Enum.IsDefined から外れうるのはそれだけ」と
