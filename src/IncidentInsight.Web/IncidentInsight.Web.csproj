@@ -12,20 +12,27 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.31" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.19">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.20">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.19" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.19" />
-    <!-- EF Core SqlServer 9.0.19 が推移的にピンする Microsoft.Data.SqlClient 5.1.6 は、
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.20" />
+    <!-- 【このピンの発端】EF Core SqlServer 9.0.19 が推移的にピンしていた Microsoft.Data.SqlClient 5.1.6 は、
          直前まで 8.0.29 経由で解決されていた 5.1.7 より古いサービシングパッチだった。
          オンプレ SQL Server 配備が本番ターゲットのため、セキュリティ更新のバージョンを
          後退させないよう直接依存として床値をピン留めしている。床値そのもの（現在 5.2.3、
-         付随する SNI.runtime は 5.2.0）は Dependabot の minor / patch 更新で引き上げていく
-         ——止めているのは下の理由で major だけ。その更新 PR をそのままマージすると CI が
+         付随する SNI.runtime は 5.2.0）は Dependabot の minor / patch 更新で引き上げる想定で、
+         止めているのは下の理由で major だけ。その更新 PR をそのままマージすると CI が
          NU1004 で落ちる（手順は CLAUDE.md §3「ロックファイルは全プロジェクト分を同時に再生成する」）。
-         実際に 5.2.3 が採用されるのは、EF Core SqlServer の 5.1.6 要求とこの直接参照の
+         【この引き上げ経路はいま塞がっている】5.2 は STS で 5.2.3（2025-04-29）が最後の公開版、
+         一方 5.1 は LTS として 5.1.9（2026-01-13）まで保守が続いている。つまり 5.2.x の
+         minor / patch はもう出ず、残る 5.x → 6.x は上の ignore が止めるため、この床値は
+         どの経路でも動かない。しかも EF Core が宣言する版（現在 5.1.9）の方が新しいので、
+         このピンは「後退を防ぐ」どころか新しいサービシングを押しとどめている。
+         数値としては 5.2.3 >= 5.1.9 が成立するため、どの検査も緑のまま気付けない。
+         ピンを保守の続く 5.1 系へ移す変更は別の変更セットで扱う。
+         実際に 5.2.3 が採用されるのは、EF Core SqlServer の 5.1.9 要求とこの直接参照の
          [5.2.3, ) 要求を NuGet が突き合わせて上位を採るため。
          【5.2.3 で 1 件だけ版が下がる】5.1.7 が要求していた System.Security.Cryptography.Cng
          5.0.0 は 5.2.3 では要求されなくなり、残る要求元（Microsoft.IdentityModel.Tokens 6.35.0）
@@ -36,12 +43,12 @@
          別メジャーへ上げても、テストは InMemory / SQLite しか触らないため全て緑のまま通り、
          SQL Server 配備でだけ実行時に壊れる。dependabot.yml の ignore が major 更新を保留し、
          EfCorePackageAlignmentTests がメジャー一致と床値の後退を検出する。
-         【この行を消さない】床値検査が比べる相手は EF Core の宣言（現在 5.1.6）であって
+         【この行を消さない】床値検査が比べる相手は EF Core の宣言（現在 5.1.9）であって
          ここに書かれた値ではないため、この行を「冗長だから」と消しても床値検査は素通りする
-         （解決版が 5.1.6 まで落ちても 5.1.6 >= 5.1.6 は成立する）。削除だけは
+         （解決版が 5.1.9 まで落ちても 5.1.9 >= 5.1.9 は成立する）。削除だけは
          SqlClientPin_StaysADirectReference がロックファイルの type で捕まえる。
-         残る穴は「この値を 5.1.6 以上・現在のピン未満へ下げる」変更（例: この更新を revert して
-         5.1.7 に戻す）で、5.1.7 >= 5.1.6 が成立するため検査は全て緑のまま通る。
+         残る穴は「この値を 5.1.9 以上・現在のピン未満へ下げる」変更（例: 5.2.0 へ下げる）で、
+         5.2.0 >= 5.1.9 が成立するため検査は全て緑のまま通る。
          下げ幅の大小によらずレビューでしか止まらない。 -->
     <PackageReference Include="Microsoft.Data.SqlClient" Version="5.2.3" />
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.31" />
