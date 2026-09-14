@@ -35,11 +35,17 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <c>suppressBindingUndefinedValueToEnumType</c> と
 /// <c>EnumTypeModelBinderProvider</c> の <c>MvcOptions</c> は、どちらも
 /// 公式リファレンスが "currently ignored" と明記している(net8.0)。
-/// 実測でもフラグの true/false で挙動は変わらない(どちらも束縛失敗・
-/// <c>ModelState</c> 無効。<c>Models.UndefinedEnumModelBindingTests</c> が固定)。
-/// <b>それでも残す理由は 3 つ</b>: (a) 唯一の迂回路である
-/// <c>MvcOptions.ModelBinderProviders</c> への<b>独自 binder provider の差し込み</b>は
-/// 今も可能で、差し込まれた瞬間に 1 段目が消えて上の壊れ方が戻る、
+/// 実測でもフラグの true/false で挙動は変わらない(どちらも束縛されず、
+/// <c>ModelState</c> に<b>エラーが積まれる</b>。
+/// <c>Models.UndefinedEnumModelBindingTests</c> が固定。
+/// <b><c>ModelState.IsValid</c> では見ないこと</b> —— バインダが作る項目は検証前なので
+/// 束縛が成功しても false のままで、何も区別しない)。
+/// <b>それでも残す理由は 3 つ</b>: (a) 1 段目は<b>引数 1 つ単位で外せる</b> ——
+/// <c>MvcOptions.ModelBinderProviders</c> への独自 binder provider の差し込みに加えて、
+/// <c>[ModelBinder(typeof(…))]</c> と <c>[FromBody]</c> が使う provider は
+/// 既定の並びで <c>EnumTypeModelBinderProvider</c> より<b>前</b>にいる(実測: 索引 0 / 2 対 5)。
+/// とくに <c>[FromBody]</c> の <c>System.Text.Json</c> は未定義の数値を
+/// <c>Enum.IsDefined</c> で確かめずに通すので、そこでは 1 段目が消えて上の壊れ方が戻る、
 /// (b) このアクションを<b>他のコードから直接呼ぶ</b>経路はモデルバインドを通らない、
 /// (c) 判定を <c>Enum.IsDefined</c> というこちら側の定義に固定しておけば、
 /// 上流の既定が変わっても答えが変わらない。</para>

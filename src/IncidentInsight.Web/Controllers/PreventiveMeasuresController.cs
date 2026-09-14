@@ -587,6 +587,21 @@ public class PreventiveMeasuresController : Controller
     [ValidateAntiForgeryToken]
     public async Task<IActionResult> UpdateStatus(int id, MeasureStatus status, Guid concurrencyToken)
     {
+        // **束縛に失敗した引数を先に弾く(fail-closed)。** status は非 null 許容なので、
+        // 束縛に失敗すると default(MeasureStatus) = Planned(0) に**黙って化ける**。
+        // Planned は定義済みの値なので下の Enum.IsDefined ゲートは素通りし、
+        // 「完了済みの対策が Planned へ差し戻され、完了日時・完了報告・効果評価 4 項目まで
+        // 巻き添えで消える」という、このエンドポイントでいちばん重い副作用が
+        // 警告も出ないまま起きる(?status=99 / ?status=abc のどちらでも成立する)。
+        // 失敗の事実は ModelState にしか残らない(CLAUDE.md の「読めない値」の項)ので、
+        // 値を見る前にここで確かめる —— 下のゲートは「読めた値が定義値か」しか見ない。
+        if (!ModelState.IsValid)
+        {
+            // 他の失敗経路と同じ伝え方にそろえる(カンバン画面の文脈を失わせない)
+            TempData["Warning"] = "不正なステータス値です。";
+            return RedirectToAction(nameof(Index));
+        }
+
         // 対象対策を取得
         var measure = await _db.PreventiveMeasures
             .Include(m => m.Incident)

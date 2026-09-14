@@ -246,9 +246,11 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 「モデルバインドがどう振る舞うか」を結論づけないこと。</b></para>
 ///
 /// <para><b>それでも門番は残す(fail-safe)。</b> 現状この経路は
-/// <b>2 段目の防御</b>として働く: (a) 1 段目を消せる唯一の経路である
-/// <c>MvcOptions.ModelBinderProviders</c> への<b>独自 binder provider の差し込み</b>が
-/// 今も可能で、差し込まれると元の壊れ方が戻る、(b) 一覧のアクションを
+/// <b>2 段目の防御</b>として働く: (a) 1 段目は<b>引数 1 つ単位で外せる</b> ——
+/// <c>MvcOptions.ModelBinderProviders</c> への独自 binder provider の差し込みに加え、
+/// <c>[ModelBinder(typeof(…))]</c> / <c>[FromBody]</c> が使う provider は既定の並びで
+/// <c>EnumTypeModelBinderProvider</c> より<b>前</b>にいる(実測: 索引 0 / 2 対 5)。
+/// どれかを通った引数では元の壊れ方が戻る、(b) 一覧のアクションを
 /// 他のコードから直接呼ぶ経路ではモデルバインドを通らない、(c) 判定が
 /// <c>Enum.IsDefined</c> というこちら側の定義に固定されるので、
 /// 上流の既定が変わっても答えが変わらない。
