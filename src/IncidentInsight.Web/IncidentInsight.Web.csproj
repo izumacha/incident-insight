@@ -12,12 +12,12 @@
 
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.Identity.EntityFrameworkCore" Version="8.0.31" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.19">
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="9.0.20">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
-    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.19" />
-    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.19" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.Sqlite" Version="9.0.20" />
+    <PackageReference Include="Microsoft.EntityFrameworkCore.SqlServer" Version="9.0.20" />
     <!-- EF Core SqlServer 9.0.19 が推移的にピンする Microsoft.Data.SqlClient 5.1.6 は、
          直前まで 8.0.29 経由で解決されていた 5.1.7 より古いサービシングパッチだった。
          オンプレ SQL Server 配備が本番ターゲットのため、セキュリティ更新のバージョンを
