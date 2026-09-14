@@ -1,4 +1,4 @@
-// packages.lock.json を読むために取り込む
+﻿// packages.lock.json を読むために取り込む
 using System.Text.Json;
 // dependabot.yml のパターン照合に正規表現を使うため取り込む
 using System.Text.RegularExpressions;
@@ -595,9 +595,9 @@ public class EfCorePackageAlignmentTests
 
         // 【なぜ「直接参照であること」まで固定するのか】
         // 上の SqlClientPin_StaysWithinEfCoreDeclaredMajor が床値の比較相手にするのは
-        // EF Core SqlServer の宣言(現在 5.1.6)であって、csproj に書かれたピンの値ではない。
+        // EF Core SqlServer の宣言(現在 5.1.9)であって、csproj に書かれたピンの値ではない。
         // そのためピンを「冗長だから」と削除すると、解決版が EF Core の宣言どおりに落ちても
-        // 5.1.6 >= 5.1.6 で床値検査を素通りし、ビルドもテストも緑のまま SQL Server 配備だけが
+        // 5.1.9 >= 5.1.9 で床値検査を素通りし、ビルドもテストも緑のまま SQL Server 配備だけが
         // 古いドライバに戻る(このリポジトリで最も起きやすい形の無言の後退)。
         // ここで type が Direct であることを見ておけば、削除も「推移依存に戻す」リファクタも
         // 検出できる。期待する版をテストに書かずに済むので、期待値を宣言側から読む方針とも両立する
