@@ -28,9 +28,21 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// 「一部の絞り込みは適用していません。」の文面)。
 /// <b>以前の「実測」が食い違ったのは測った場所が違うから</b> ——
 /// コントローラ級のテストはアクションを直接呼ぶのでモデルバインドを通らない。
-/// <b>それでもこの門番は残す</b>: 未定義値の拒否は <c>MvcOptions</c> で無効にでき、
-/// 無効にすると 1 段目が消えて上の壊れ方が戻る。判定を <c>Enum.IsDefined</c> という
-/// こちら側の定義に固定しておけば、上流の既定が変わっても答えが変わらない(§9 fail-safe)。</para>
+/// <b>それでもこの門番は残す(§9 fail-safe)。</b> ただし<b>その理由として
+/// 「未定義値の拒否は <c>MvcOptions</c> で無効にできる」と書いてあったのは誤り</b>
+/// (issue #215 の「検討すること 3」を実測した結果)。<c>MvcOptions</c> に
+/// その設定は<b>存在せず</b>、<c>EnumTypeModelBinder</c> の
+/// <c>suppressBindingUndefinedValueToEnumType</c> と
+/// <c>EnumTypeModelBinderProvider</c> の <c>MvcOptions</c> は、どちらも
+/// 公式リファレンスが "currently ignored" と明記している(net8.0)。
+/// 実測でもフラグの true/false で挙動は変わらない(どちらも束縛失敗・
+/// <c>ModelState</c> 無効。<c>Models.UndefinedEnumModelBindingTests</c> が固定)。
+/// <b>それでも残す理由は 3 つ</b>: (a) 唯一の迂回路である
+/// <c>MvcOptions.ModelBinderProviders</c> への<b>独自 binder provider の差し込み</b>は
+/// 今も可能で、差し込まれた瞬間に 1 段目が消えて上の壊れ方が戻る、
+/// (b) このアクションを<b>他のコードから直接呼ぶ</b>経路はモデルバインドを通らない、
+/// (c) 判定を <c>Enum.IsDefined</c> というこちら側の定義に固定しておけば、
+/// 上流の既定が変わっても答えが変わらない。</para>
 ///
 /// <para><b>前提: 選択肢の出所と enum の定義が一致していること。</b> 採用を
 /// <c>Enum.IsDefined</c> で決める一方、<c>&lt;select&gt;</c> の選択肢は

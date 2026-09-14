@@ -246,11 +246,20 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 「モデルバインドがどう振る舞うか」を結論づけないこと。</b></para>
 ///
 /// <para><b>それでも門番は残す(fail-safe)。</b> 現状この経路は
-/// <b>2 段目の防御</b>として働く: (a) 未定義値の拒否は <c>MvcOptions</c> の設定で
-/// 無効にでき、そうすると 1 段目が消えて元の壊れ方が戻る、(b) 一覧のアクションを
+/// <b>2 段目の防御</b>として働く: (a) 1 段目を消せる唯一の経路である
+/// <c>MvcOptions.ModelBinderProviders</c> への<b>独自 binder provider の差し込み</b>が
+/// 今も可能で、差し込まれると元の壊れ方が戻る、(b) 一覧のアクションを
 /// 他のコードから直接呼ぶ経路ではモデルバインドを通らない、(c) 判定が
 /// <c>Enum.IsDefined</c> というこちら側の定義に固定されるので、
-/// 上流の既定が変わっても答えが変わらない。<b>「今は届かないから消す」としないのは
+/// 上流の既定が変わっても答えが変わらない。
+/// <b>(a) を「<c>MvcOptions</c> の設定で無効にできる」と書いていたのは誤り</b>
+/// (issue #215 の「検討すること 3」を実測)。その設定は<b>存在しない</b> ——
+/// <c>EnumTypeModelBinder</c> の <c>suppressBindingUndefinedValueToEnumType</c> と
+/// <c>EnumTypeModelBinderProvider</c> の <c>MvcOptions</c> は公式リファレンスが
+/// どちらも "currently ignored" と明記しており、実測でもフラグの true/false で
+/// 挙動は変わらない。<b>つまり「設定を明示的に固定する」ことはできない</b>ので、
+/// 代わりに<b>その挙動そのもの</b>を <c>Models.UndefinedEnumModelBindingTests</c> が
+/// 固定する(上流が将来フラグを尊重し始めたら落ちて、この段落の見直しへ誘導する)。<b>「今は届かないから消す」としないのは
 /// §9 fail-closed の原則どおり</b>で、費用は総称メソッド 1 回の呼び出しだけ。
 /// なお<b>利用者から見た結果は今も正しい</b>(絞り込みは掛からず、注意書きは出る)。
 /// 出る文面が「読めない」側になるだけで、2 つの文面を分けたままでよいかは issue #215。</para>
