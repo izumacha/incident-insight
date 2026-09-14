@@ -86,11 +86,18 @@ public class UndefinedEnumModelBindingTests
     /// <summary>
     /// <c>?&lt;name&gt;=&lt;rawValue&gt;</c> 1 件だけを供給する束縛文脈を組み立てる。
     /// </summary>
-    private static DefaultModelBindingContext QueryContext(Type modelType, string rawValue,
+    /// <param name="rawValue">
+    /// 供給する値。<b><c>null</c> は「そのキーごと送られなかった」</b>を表す
+    /// (<c>?value=</c> と書いた空文字とは別の形で、実測でも結果が違う)。
+    /// </param>
+    private static DefaultModelBindingContext QueryContext(Type modelType, string? rawValue,
         IModelMetadataProvider metadataProvider)
     {
-        // 実際の経路と同じクエリ文字列の値プロバイダへ 1 件だけ載せる
-        var query = new QueryCollection(new Dictionary<string, StringValues> { ["value"] = rawValue });
+        // 実際の経路と同じクエリ文字列の値プロバイダを作る。
+        // rawValue が null のときはキーを 1 つも載せない(= 送られなかった形)
+        var query = rawValue is null
+            ? new QueryCollection()
+            : new QueryCollection(new Dictionary<string, StringValues> { ["value"] = rawValue });
         // 束縛の文脈(束縛名・エラーの置き場・値の出どころ・束縛先の型)
         return new DefaultModelBindingContext
         {
@@ -107,18 +114,36 @@ public class UndefinedEnumModelBindingTests
     }
 
     /// <summary>
-    /// <b>本番と同じ構成</b>(既定の <c>MvcOptions</c>)でバインダを選ばせ、束縛を実行する。
+    /// 本番と同じ MVC サービス(既定の <c>MvcOptions</c>)。
     /// </summary>
-    private static (bool IsModelSet, int ErrorCount, object? Model) BindAsConfigured(
-        Type modelType, string rawValue)
+    /// <remarks>
+    /// <b>1 度だけ作って使い回す。</b> <c>AddControllersWithViews()</c> は MVC 一式を
+    /// 登録するので、ケースごとに組み直すとこのクラスだけで 9 回構築することになる
+    /// (実測で 1 回あたり約 90ms)。ここでは読み取りにしか使わないので共有して問題ない。
+    /// <b>自前の <c>MvcOptions</c> を渡さないのが要点</b>(既定値のまま読む)。
+    /// </remarks>
+    private static readonly Lazy<ServiceProvider> ConfiguredServices = new(() =>
     {
-        // 本番と同じ MVC サービスを組み立てる(自前の MvcOptions を渡さないのが要点)
+        // 本番と同じ MVC サービスを組み立てる
         var services = new ServiceCollection();
         services.AddLogging();
         services.AddControllersWithViews();
-        using var provider = services.BuildServiceProvider();
+        return services.BuildServiceProvider();
+    });
 
-        // メタデータとバインダ工場を本番の登録から取り出す
+    /// <summary>
+    /// <b>本番が選ぶバインダ</b>と、それに渡す束縛文脈を組み立てる。
+    /// </summary>
+    /// <remarks>
+    /// 組み立ての手順を 1 か所に置く。写しを作ると、構成の変更(たとえば
+    /// <c>MvcOptions</c> の渡し方)を片方だけ直したときに、もう片方が
+    /// <b>別の構成のパイプライン</b>を測り続ける。
+    /// </remarks>
+    private static (IModelBinder Binder, DefaultModelBindingContext Context) CreateConfiguredBinder(
+        Type modelType, string? rawValue)
+    {
+        // 本番の登録からメタデータとバインダ工場を取り出す
+        var provider = ConfiguredServices.Value;
         var metadataProvider = provider.GetRequiredService<IModelMetadataProvider>();
         var binderFactory = provider.GetRequiredService<IModelBinderFactory>();
 
@@ -130,6 +155,19 @@ public class UndefinedEnumModelBindingTests
             // 束縛先の型情報
             Metadata = context.ModelMetadata,
         });
+
+        // 呼び出し側が束縛を実行できるよう両方返す
+        return (binder, context);
+    }
+
+    /// <summary>
+    /// <b>本番と同じ構成</b>でバインダを選ばせ、束縛を実行する。
+    /// </summary>
+    private static (bool IsModelSet, int ErrorCount, object? Model) BindAsConfigured(
+        Type modelType, string? rawValue)
+    {
+        // 本番の選定を通したバインダと束縛文脈を用意する
+        var (binder, context) = CreateConfiguredBinder(modelType, rawValue);
 
         // 束縛を実行する(同期的に完了するので待ち合わせる)
         binder.BindModelAsync(context).GetAwaiter().GetResult();
@@ -193,22 +231,55 @@ public class UndefinedEnumModelBindingTests
         Assert.NotNull(result.Model);
     }
 
+    [Theory]
+    // 絞り込み 3 画面が受ける形(いずれも Nullable<T>)
+    [InlineData(typeof(IncidentSeverity?))]
+    [InlineData(typeof(IncidentTypeKind?))]
+    [InlineData(typeof(MeasureStatus?))]
+    // UpdateStatus が受ける形(保存を伴う経路)
+    [InlineData(typeof(MeasureStatus))]
+    public void AbsentValue_LeavesNoTraceInModelState(Type modelType)
+    {
+        // **値がそもそも送られてこない形。** 束縛は行われず、
+        // **ModelState にはキーすら積まれない**(= エラー 0 件)。
+        //
+        // ここを測っておく理由: この「痕跡が残らない」性質があるため、
+        // ModelState を見るガードでは値の欠落を捕まえられない。
+        // PreventiveMeasuresController.UpdateStatus が status を Nullable<T> で受けて
+        // null を弾いているのはこのため —— 非 null 許容で受けていた版では
+        // default(MeasureStatus) = Planned(0) へ黙って化け、完了済みの対策が
+        // 差し戻されたうえ「更新しました」と表示されていた(実測)。
+        var result = BindAsConfigured(modelType, rawValue: null);
+
+        // 値は入らない
+        Assert.False(result.IsModelSet);
+        // **エラーも積まれない**(ここが「読めない値」との決定的な違い)
+        Assert.Equal(0, result.ErrorCount);
+    }
+
+    [Fact]
+    public void EmptyValue_BindsAsNullForNullable_ButFailsForNonNullable()
+    {
+        // クラスの解説が「本番の 2 つの形は同じ挙動ではない」の根拠として挙げている実測を、
+        // 主張しっぱなしにせずここで固定する(空文字 = ?status= と書いた形)。
+
+        // Nullable<T> は「値なし」として**束縛に成功**する
+        var nullable = BindAsConfigured(typeof(MeasureStatus?), "");
+        Assert.True(nullable.IsModelSet);
+        Assert.Equal(0, nullable.ErrorCount);
+        Assert.Null(nullable.Model);
+
+        // 非 null 許容は入れる値が無いので**束縛に失敗**し、エラーが積まれる
+        var nonNullable = BindAsConfigured(typeof(MeasureStatus), "");
+        Assert.False(nonNullable.IsModelSet);
+        Assert.True(nonNullable.ErrorCount > 0);
+    }
+
     [Fact]
     public void ConfiguredBinderForEnums_IsStillTheEnumTypeModelBinder()
     {
-        // 本番と同じ MVC サービスを組み立てる
-        var services = new ServiceCollection();
-        services.AddLogging();
-        services.AddControllersWithViews();
-        using var provider = services.BuildServiceProvider();
-        var metadataProvider = provider.GetRequiredService<IModelMetadataProvider>();
-        var binderFactory = provider.GetRequiredService<IModelBinderFactory>();
-
-        // 絞り込みが実際に使う形でバインダを選ばせる
-        var binder = binderFactory.CreateBinder(new ModelBinderFactoryContext
-        {
-            Metadata = metadataProvider.GetMetadataForType(typeof(IncidentSeverity?)),
-        });
+        // 絞り込みが実際に使う形で、本番が選ぶバインダを作らせる
+        var (binder, _) = CreateConfiguredBinder(typeof(IncidentSeverity?), "99");
 
         // **enum 専用バインダが選ばれ続けていること。** ここが別のバインダに変わると、
         // 上の 2 つの検査は「新しいバインダの挙動」を測ることになり、

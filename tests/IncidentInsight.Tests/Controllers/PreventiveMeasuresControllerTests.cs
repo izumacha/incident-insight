@@ -279,19 +279,20 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
-    public async Task UpdateStatus_BindingFailure_DoesNotDemoteCompletedMeasure()
+    public async Task UpdateStatus_StatusDidNotArrive_DoesNotDemoteCompletedMeasure()
     {
-        // **束縛に失敗した status は default(MeasureStatus) = Planned(0) へ黙って化ける。**
-        // Planned は定義済みなので Enum.IsDefined のゲートは素通りしてしまい、
-        // 完了済みの対策が Planned へ差し戻されて完了日時・完了報告・効果評価 4 項目まで
-        // 巻き添えで消える —— 利用者には警告すら出ない。
-        // 失敗の事実は ModelState にしか残らないので、そこを見て弾けていることを確かめる。
+        // **status が届かなかったとき、完了済みの対策が黙って差し戻されないこと。**
         //
-        // **アクションを直接呼ぶ検査なので、モデルバインドそのものは再現できない。**
-        // 再現するのは「バインダが失敗を ModelState へ積み、非 null 許容の引数は
-        // default(T) のまま渡ってくる」という、束縛失敗後のアクションの入り口の状態
-        // (?status=99 / ?status=abc のどちらでもこの状態になることは
-        //  Models.UndefinedEnumModelBindingTests が実際のバインダで固定している)。
+        // 値が届かない形は 2 通りあり、どちらもアクションには null で入ってくる:
+        //   (1) 読めない値 (?status=99 / ?status=abc) … 束縛エラーが積まれる
+        //   (2) そもそも送られない (status を欠いたフォーム / 自作リクエスト)
+        //       … ModelState にキーごと存在せず **IsValid は true のまま**
+        // かつて status を非 null 許容で受けていたときは、どちらも
+        // default(MeasureStatus) = Planned(0) へ化け、Planned は定義済みなので
+        // Enum.IsDefined ゲートを素通りし、完了済みの対策が差し戻されて
+        // 完了後データが全部消えたうえ「ステータスを更新しました。」と表示された(実測)。
+        // ModelState を見るガードでは (2) を取りこぼすので、Nullable<T> で受けて
+        // null を弾く形にしてある —— この検査はその null を直接渡して再現する。
         var measure = await SeedMeasureAsync("内科病棟");
         // 完了 + 有効性評価済みの状態を作る(消えると困るデータを載せておく)
         measure.Status = MeasureStatus.Completed;
@@ -303,17 +304,16 @@ public class PreventiveMeasuresControllerTests : IDisposable
         measure.EffectivenessReviewedAt = TestFixtures.Today;
         await _db.SaveChangesAsync();
 
-        // バインダが積むのと同じ形で束縛エラーを載せる
-        _controller.ModelState.AddModelError("status", "The value '99' is invalid.");
-
-        // 束縛に失敗した引数は default(T) のまま渡ってくる
+        // 束縛されなかった status はアクションへ null で渡る
         var result = await _controller.UpdateStatus(
-            measure.Id, default, measure.ConcurrencyToken);
+            measure.Id, null, measure.ConcurrencyToken);
 
         // 警告付きで一覧へリダイレクトされること(他の失敗経路と同じ伝え方)
         var redirect = Assert.IsType<RedirectToActionResult>(result);
         Assert.Equal("Index", redirect.ActionName);
         Assert.Contains("不正なステータス値", _controller.TempData["Warning"] as string);
+        // **成功として報告しないこと**(かつては「更新しました」と出ていた)
+        Assert.Null(_controller.TempData["Success"]);
 
         // **完了状態と完了後データが 1 つも失われていないこと**(この検査の主眼)
         var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
