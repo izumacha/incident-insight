@@ -585,8 +585,31 @@ public class PreventiveMeasuresController : Controller
     // カンバン上のドラッグ等からステータスだけを変更するエンドポイント
     [HttpPost]
     [ValidateAntiForgeryToken]
-    public async Task<IActionResult> UpdateStatus(int id, MeasureStatus status, Guid concurrencyToken)
+    public async Task<IActionResult> UpdateStatus(int id, MeasureStatus? status, Guid concurrencyToken)
     {
+        // **status を Nullable<T> で受けるのが要点(fail-closed)。**
+        // 非 null 許容で受けると、値が届かなかったときに default(MeasureStatus) =
+        // Planned(0) へ**黙って化ける**。Planned は定義済みの値なので下の
+        // Enum.IsDefined ゲートは素通りし、「完了済みの対策が Planned へ差し戻され、
+        // 完了日時・完了報告・効果評価 4 項目まで巻き添えで消える」という、
+        // このエンドポイントでいちばん重い副作用が起きる —— しかも成功扱いなので
+        // 画面には「ステータスを更新しました。」と出る(実測)。
+        //
+        // **値が届かない形は 2 通りあり、片方は ModelState に痕跡を残さない。**
+        //   (1) 読めない値 (?status=99 / ?status=abc) … 束縛エラーが積まれる
+        //   (2) そもそも送られない (status を欠いたフォーム / 自作リクエスト)
+        //       … キーごと存在しないので **ModelState.IsValid は true のまま**(実測)
+        // したがって ModelState を見るガードでは (2) を取りこぼす。Nullable<T> なら
+        // どちらも null に落ちるので、**1 つの判定で両方**を塞げる。
+        if (status is null)
+        {
+            // 他の失敗経路と同じ伝え方にそろえる(カンバン画面の文脈を失わせない)
+            TempData["Warning"] = "不正なステータス値です。";
+            return RedirectToAction(nameof(Index));
+        }
+        // ここから先は値があることが確定しているので、素の enum として扱う
+        var requestedStatus = status.Value;
+
         // 対象対策を取得
         var measure = await _db.PreventiveMeasures
             .Include(m => m.Incident)
@@ -594,16 +617,20 @@ public class PreventiveMeasuresController : Controller
         if (measure == null) return NotFound();
         if (!await IsAuthorizedFor(measure.Incident, Policies.CanEditIncident)) return Forbid();
 
-        // 受け取った status が enum の定義値(Planned/InProgress/Completed)かを検証する。
+        // 受け取った値が enum の定義値(Planned/InProgress/Completed)かを検証する。
         // 未定義値をここで弾かないと DB に保存され、カンバンの振り分けやラベル表示が壊れる。
         // 既定のモデルバインドは未定義の enum 値に束縛エラーを積むので通常はここへ届かないが、
-        // その拒否は MvcOptions で無効にでき、無効にすると (MeasureStatus)99 がそのまま届く
-        // (「素通しで束縛される」と書いてあったのは誤り。issue #215)。保存を伴う経路なので
-        // 上流の設定に依存せず、ここでも必ず確かめる。
+        // その拒否を無効にする MvcOptions の設定は存在しない(「MvcOptions で無効にできる」と
+        // 書いてあったのは誤り。フラグは公式に "currently ignored"。issue #215 を実測)。
+        // ただし 1 段目は引数 1 つ単位で外せる(MvcOptions.ModelBinderProviders への
+        // 独自 binder provider の差し込みに加え、[ModelBinder] / [FromBody] が使う
+        // provider は既定の並びで EnumTypeModelBinderProvider より前にいる。実測)。
+        // アクションを他のコードから直接呼ぶ経路もモデルバインドを通らない。
+        // 保存を伴う経路なので、上流の構成に依存せずここでも必ず確かめる。
         // 「不明なら拒否」(fail-closed)の原則で拒否する。他の失敗経路と同じく
         // TempData["Warning"] + リダイレクトで通知する(生の BadRequest はカンバン画面の
         // コンテキストを失わせ、無装飾のプレーンテキストのみが表示されてしまうため)。
-        if (!Enum.IsDefined(typeof(MeasureStatus), status))
+        if (!Enum.IsDefined(typeof(MeasureStatus), requestedStatus))
         {
             TempData["Warning"] = "不正なステータス値です。";
             return RedirectToAction(nameof(Index));
@@ -614,7 +641,7 @@ public class PreventiveMeasuresController : Controller
         // (完了日時 CompletedAt <= 有効性評価日時 EffectivenessReviewedAt)を守っているが、
         // この経路だけ素通しにすると CompletedAt が現在時刻で黙って上書きされ、
         // 評価済みの対策で「評価日時が完了日時より前」という矛盾データが生まれてしまう。
-        if (measure.Status == MeasureStatus.Completed && status == MeasureStatus.Completed)
+        if (measure.Status == MeasureStatus.Completed && requestedStatus == MeasureStatus.Completed)
         {
             TempData["Warning"] = "この対策はすでに完了しています。完了日時を変更する場合は、一度ステータスを差し戻してから再度完了してください。";
             return RedirectToAction(nameof(Index));
@@ -622,8 +649,8 @@ public class PreventiveMeasuresController : Controller
 
         // ステータスを更新。完了に遷移した場合は完了日時を記録し、
         // 完了から差し戻した場合は完了日時をクリアする(古い完了日が残らないように)
-        measure.Status = status;
-        if (status == MeasureStatus.Completed)
+        measure.Status = requestedStatus;
+        if (requestedStatus == MeasureStatus.Completed)
         {
             // 完了へ遷移: 完了日時を記録する
             measure.CompletedAt = _clock.Now;

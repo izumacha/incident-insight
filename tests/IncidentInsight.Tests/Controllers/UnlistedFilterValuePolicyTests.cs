@@ -4519,6 +4519,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         //   - OwnGate … 保存を伴う POST。絞り込みと違って「採用しない」では済まず、
         //     未定義値を保存させないためアクション自身が Enum.IsDefined で弾く
         //     (通すとカンバンの振り分けもラベル表示も壊れる)。
+        //     <b>Enum.IsDefined だけでは足りない。</b> 引数を非 null 許容で受けると、
+        //     値が届かなかったとき default(T) へ黙って化け、**それは必ず定義済みの値**
+        //     なので Enum.IsDefined を素通りする。しかも「そもそも送られてこない」形は
+        //     ModelState にキーすら残さない(IsValid は true のまま)ので、
+        //     ModelState を見るガードでも捕まえられない —— どちらも実測で確認済み。
+        //     したがって OwnGate は **Nullable<T> で受けて null を弾く** ところまでを指す
+        //     (UpdateStatus がその形。非 null 許容のまま Enum.IsDefined だけを書くと、
+        //      完了済みの対策が黙って差し戻されるような「既定値への化け」が再発する)。
         //
         // 2 種類を 1 つの表にまとめてあるのは、<b>取りこぼしを数え落とさない</b>ため。
         // 表を Filter だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、

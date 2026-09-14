@@ -279,6 +279,54 @@ public class PreventiveMeasuresControllerTests : IDisposable
     }
 
     [Fact]
+    public async Task UpdateStatus_StatusDidNotArrive_DoesNotDemoteCompletedMeasure()
+    {
+        // **status が届かなかったとき、完了済みの対策が黙って差し戻されないこと。**
+        //
+        // 値が届かない形は 2 通りあり、どちらもアクションには null で入ってくる:
+        //   (1) 読めない値 (?status=99 / ?status=abc) … 束縛エラーが積まれる
+        //   (2) そもそも送られない (status を欠いたフォーム / 自作リクエスト)
+        //       … ModelState にキーごと存在せず **IsValid は true のまま**
+        // かつて status を非 null 許容で受けていたときは、どちらも
+        // default(MeasureStatus) = Planned(0) へ化け、Planned は定義済みなので
+        // Enum.IsDefined ゲートを素通りし、完了済みの対策が差し戻されて
+        // 完了後データが全部消えたうえ「ステータスを更新しました。」と表示された(実測)。
+        // ModelState を見るガードでは (2) を取りこぼすので、Nullable<T> で受けて
+        // null を弾く形にしてある —— この検査はその null を直接渡して再現する。
+        var measure = await SeedMeasureAsync("内科病棟");
+        // 完了 + 有効性評価済みの状態を作る(消えると困るデータを載せておく)
+        measure.Status = MeasureStatus.Completed;
+        measure.CompletedAt = TestFixtures.Today;
+        measure.CompletionNote = "対策を実施した";
+        measure.EffectivenessRating = 5;
+        measure.EffectivenessNote = "効果があった";
+        measure.RecurrenceObserved = false;
+        measure.EffectivenessReviewedAt = TestFixtures.Today;
+        await _db.SaveChangesAsync();
+
+        // 束縛されなかった status はアクションへ null で渡る
+        var result = await _controller.UpdateStatus(
+            measure.Id, null, measure.ConcurrencyToken);
+
+        // 警告付きで一覧へリダイレクトされること(他の失敗経路と同じ伝え方)
+        var redirect = Assert.IsType<RedirectToActionResult>(result);
+        Assert.Equal("Index", redirect.ActionName);
+        Assert.Contains("不正なステータス値", _controller.TempData["Warning"] as string);
+        // **成功として報告しないこと**(かつては「更新しました」と出ていた)
+        Assert.Null(_controller.TempData["Success"]);
+
+        // **完了状態と完了後データが 1 つも失われていないこと**(この検査の主眼)
+        var saved = await _db.PreventiveMeasures.AsNoTracking().FirstAsync(m => m.Id == measure.Id);
+        Assert.Equal(MeasureStatus.Completed, saved.Status);
+        Assert.NotNull(saved.CompletedAt);
+        Assert.Equal("対策を実施した", saved.CompletionNote);
+        Assert.Equal(5, saved.EffectivenessRating);
+        Assert.Equal("効果があった", saved.EffectivenessNote);
+        Assert.False(saved.RecurrenceObserved);
+        Assert.NotNull(saved.EffectivenessReviewedAt);
+    }
+
+    [Fact]
     public async Task UpdateStatus_UndefinedEnumValue_RedirectsWithWarning_AndDoesNotPersist()
     {
         // モデルバインドで未定義の整数(例: 99)が status に入っても、定義外なら拒否し
