@@ -4600,8 +4600,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 表を <c>Filter</c> だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、
     /// その瞬間に「守り方を何も決めていない enum 引数」が誰にも見えなくなる。</para>
     /// </remarks>
-    private static readonly Dictionary<string, EnumArgumentProtection> EnumArgumentProtections =
-        new(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, EnumArgumentProtection> EnumArgumentProtections =
+        new Dictionary<string, EnumArgumentProtection>(StringComparer.Ordinal)
         {
             // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
             [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "status")] = EnumArgumentProtection.Filter,

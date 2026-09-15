@@ -42,11 +42,20 @@ namespace IncidentInsight.Tests.Models;
 /// 「自前の <c>MvcOptions</c> を渡さないのが要点」としているのと同じ理由で、
 /// <c>MvcOptions</c> は既定のまま読む)。</para>
 ///
-/// <para><b>対象は本番の引数の形にそろえる。</b> 絞り込みの 3 画面は
+/// <para><b>Nullable&lt;T&gt; と非 null 許容の両方を並べる。</b> 本番のアクションは
 /// <c>IncidentSeverity?</c> / <c>IncidentTypeKind?</c> / <c>MeasureStatus?</c> と
-/// <b><c>Nullable&lt;T&gt;</c></b> で受け、<c>UpdateStatus</c> だけが非 null 許容の
-/// <c>MeasureStatus</c> で受ける。この 2 つは<b>同じ挙動ではない</b>(空文字を渡すと
-/// 前者は「値なしとして束縛成功」、後者は「束縛失敗」。実測)ので、両方を並べる。</para>
+/// <b>すべて <c>Nullable&lt;T&gt;</c></b> で受ける(<c>UpdateStatus</c> も issue #233 で
+/// <c>MeasureStatus?</c> へ直り、いまは
+/// <c>Controllers.UnlistedFilterValuePolicyTests.EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault</c>
+/// が非 null 許容の enum 引数そのものを禁じている)。</para>
+///
+/// <para><b>それでも非 null 許容のケースを残すのは、その禁止の根拠がここにあるから。</b>
+/// 2 つは<b>同じ挙動ではない</b> ——空文字を渡すと <c>Nullable&lt;T&gt;</c> は
+/// 「値なしとして束縛成功」(＝アクションには <c>null</c> が入り、そこで弾ける)、
+/// 非 null 許容は「束縛失敗」(＝アクションには <c>default(T)</c> が入り、
+/// <b>それは必ず定義済みの値</b>なので <c>Enum.IsDefined</c> を素通りする)。実測。
+/// <b>「本番にもう無い形だから」という理由でこのケースを消さないこと</b> ——
+/// 消すと、上の規則が何を防いでいるのかを示す唯一の対比が失われる。</para>
 ///
 /// <para><b>落ちたときの直し方。</b> 上流の挙動が変わったということなので、
 /// <b>テストを緩めるのではなく</b>
@@ -66,7 +75,7 @@ public class UndefinedEnumModelBindingTests
         { typeof(IncidentTypeKind?), "0" },
         // /PreventiveMeasures?status=99
         { typeof(MeasureStatus?), "99" },
-        // UpdateStatus が受ける非 null 許容の形(保存を伴う経路)
+        // 非 null 許容の形(本番には無いが、禁じている理由を示す対比として残す)
         { typeof(MeasureStatus), "99" },
     };
 
