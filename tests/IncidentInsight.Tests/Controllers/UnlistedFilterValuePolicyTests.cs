@@ -1920,6 +1920,28 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <c>"&lt;コントローラの完全修飾名&gt;.&lt;アクション名&gt;.&lt;引数名&gt;"</c> の形で拾う。
     /// </summary>
     /// <remarks>
+    /// <b>走査そのものは <see cref="MatchingActionParameters"/> が持つ</b>(キーの作り方・
+    /// 走査範囲・畳み方の根拠はすべてそちらの解説が正本)。ここはその結果から
+    /// <b>キーだけ</b>を取り出す写像で、キーで足りる網羅ガードが使う。
+    /// </remarks>
+    /// <param name="matches">拾いたい引数かどうかの判定。</param>
+    private static List<string> ActionParametersInTheApp(Func<ParameterInfo, bool> matches) =>
+        // 走査は 1 か所(MatchingActionParameters)。ここはその結果からキーだけを取り出す
+        MatchingActionParameters(matches).Select(match => match.Key).ToList();
+
+    /// <summary>
+    /// アプリ全体のコントローラのアクション引数のうち条件に当たるものを、
+    /// <b>キーと <see cref="ParameterInfo"/> の対</b>で拾う(走査の正本)。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>キーだけの形(<see cref="ActionParametersInTheApp"/>)と分けている理由。</b>
+    /// 網羅ガードは「どの引数が手当てされているか」を照合するだけなので文字列のキーで足りるが、
+    /// <b>引数の型そのもの</b>を見たい検査
+    /// (<see cref="EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault"/>)
+    /// は <see cref="ParameterInfo"/> が要る。走査を 2 か所へ書き写すと、拾い方を直したときに
+    /// 片方が黙って狭くなる ——下の「2 つの網羅ガードで共有する」と同じ理由(§6 DRY)。
+    /// そこで<b>走査はここ 1 か所だけ</b>に置き、キーだけの形はその写像として導く。</para>
+    ///
     /// <para><b>キーは完全修飾名で作る(<c>ActionParameterKey</c> ＝ <c>ScreenKeyOf</c>)。</b>
     /// 以前ここは単純名(<c>DeclaringType.Name</c>)でキーを作ったうえで <c>Distinct</c> して
     /// いたため、<c>Areas/Admin/Controllers/AuditLogsController.Index(DateTime? dateFrom, …)</c>
@@ -1955,7 +1977,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// その画面がテスト件数すら変えずに消える。代わりに<b>宣言元が自分たちのアセンブリか</b>で切る。</para>
     /// </remarks>
     /// <param name="matches">拾いたい引数かどうかの判定。</param>
-    private static List<string> ActionParametersInTheApp(Func<ParameterInfo, bool> matches)
+    private static List<(string Key, ParameterInfo Parameter)> MatchingActionParameters(
+        Func<ParameterInfo, bool> matches)
     {
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
         var ownAssembly = typeof(IncidentsController).Assembly;
@@ -1972,12 +1995,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     // 型の綴りは ActionParameterKey ＝ ScreenKeyOf(完全修飾名)に任せる。
                     // 引数名はリフレクション上 null になりうる型だが、アクションの引数では
                     // 常に付く(名前が無ければキーが欠けた形になり、表との照合が落ちる)
-                    .Select(p => ActionParameterKey(t, m.Name, p.Name!))))
+                    .Select(p => (Key: ActionParameterKey(t, m.Name, p.Name!), Parameter: p))))
             // 同じ画面に同じ (アクション名, 引数名) が複数回現れても 1 件に畳む
-            // (引数の数だけが違うオーバーロードがこの形。画面が違えばキーも違うので畳まれない)
-            .Distinct(StringComparer.Ordinal)
+            // (引数の数だけが違うオーバーロードがこの形。画面が違えばキーも違うので畳まれない)。
+            // <b>畳むのはキーだけで判断する</b> ——キーだけの形が Distinct(StringComparer.Ordinal)
+            // で畳んでいたのと同じ結果にするため(ParameterInfo まで含めて畳むと、
+            // 同じキーの引数が型違いで 2 件残り、照合が理由なく落ちる)
+            .GroupBy(match => match.Key, StringComparer.Ordinal)
+            .Select(group => group.First())
             // 実行ごとに順番が揺れないよう並びを固定する
-            .OrderBy(name => name, StringComparer.Ordinal)
+            .OrderBy(match => match.Key, StringComparer.Ordinal)
             .ToList();
     }
 
@@ -4511,42 +4538,195 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "導出を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、定義に無い enum 値の検査が対象ゼロで全件緑になる)。");
 
-        // 「どの引数を、どうやって守っているか」の表。
-        //
-        // <b>守り方は 2 種類あり、どちらでもよいが「どちらでもない」は許さない。</b>
-        //   - Filter …… 絞り込みの入力。UnlistedEnumFilterResolver を通し、
-        //     採用しなかったことを画面へ伝える(このクラスの behavioural な検査が確かめる)。
-        //   - OwnGate … 保存を伴う POST。絞り込みと違って「採用しない」では済まず、
-        //     未定義値を保存させないためアクション自身が Enum.IsDefined で弾く
-        //     (通すとカンバンの振り分けもラベル表示も壊れる)。
-        //     <b>Enum.IsDefined だけでは足りない。</b> 引数を非 null 許容で受けると、
-        //     値が届かなかったとき default(T) へ黙って化け、**それは必ず定義済みの値**
-        //     なので Enum.IsDefined を素通りする。しかも「そもそも送られてこない」形は
-        //     ModelState にキーすら残さない(IsValid は true のまま)ので、
-        //     ModelState を見るガードでも捕まえられない —— どちらも実測で確認済み。
-        //     したがって OwnGate は **Nullable<T> で受けて null を弾く** ところまでを指す
-        //     (UpdateStatus がその形。非 null 許容のまま Enum.IsDefined だけを書くと、
-        //      完了済みの対策が黙って差し戻されるような「既定値への化け」が再発する)。
-        //
-        // 2 種類を 1 つの表にまとめてあるのは、<b>取りこぼしを数え落とさない</b>ため。
-        // 表を Filter だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、
-        // その瞬間に「守り方を何も決めていない enum 引数」が誰にも見えなくなる
-        var guarded = new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "status")] = "Filter",
-            // 絞り込み: IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
-            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "incidentType")] = "Filter",
-            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "severity")] = "Filter",
-            // 保存: UpdateStatus 自身が Enum.IsDefined で弾く(未定義値を DB へ入れない)
-            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.UpdateStatus), "status")] = "OwnGate",
-        };
+        // 「どの引数を、どうやって守っているか」の表は EnumArgumentProtections が正本。
+        // ここはその<b>キー</b>だけを導出と突き合わせる(守り方の中身は下の
+        // EnumActionParameters_AreNullable… が読む)
 
         // 2 つの宣言箇所が一致していること。ずれていれば、守り方を決めていない enum 引数が
         // 増えたか、逆に無くなった引数が表に残っている
         Assert.Equal(
-            guarded.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
+            EnumArgumentProtections.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList(),
             actual);
+    }
+
+    /// <summary>
+    /// enum の引数の守り方。<see cref="EnumArgumentProtections"/> の値として使う。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>文字列ではなく型で持つ。</b> 以前この表の値は素の <c>string</c> で、しかも
+    /// <b>どの検査も読んでいなかった</b> ——"Filter" / "OwnGate" のどちらを書いても、
+    /// 綴りを間違えても、まったく無関係な文字列を書いても、何も落ちなかった。
+    /// 「値を誰も読んでいない表」は、登録するだけで検出網を黙らせられる口になる
+    /// (CLAUDE.md が <c>LengthGovernanceExclusions</c> の理由欄について
+    /// 「値を誰も読んでいなかったため、理由を <c>"   "</c> にすれば長さ関連の検査すべてを
+    /// 黙らせられた」と書いているのと同じ形)。enum にすれば綴り間違いはコンパイルで落ち、
+    /// 下の検査が値を実際に読む。</para>
+    /// </remarks>
+    private enum EnumArgumentProtection
+    {
+        /// <summary>
+        /// 絞り込みの入力。<c>UnlistedEnumFilterResolver</c> を通し、
+        /// 採用しなかったことを画面へ伝える(このクラスの behavioural な検査が確かめる)。
+        /// </summary>
+        Filter,
+
+        /// <summary>
+        /// 保存を伴う POST。絞り込みと違って「採用しない」では済まず、
+        /// 未定義値を保存させないためアクション自身が <c>Enum.IsDefined</c> で弾く。
+        /// </summary>
+        OwnGate,
+    }
+
+    /// <summary>
+    /// 「どの enum 引数を、どうやって守っているか」の表(手で書く唯一の一覧)。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>守り方は 2 種類あり、どちらでもよいが「どちらでもない」は許さない。</b>
+    /// <see cref="EnumArgumentProtection.Filter"/> は絞り込み、
+    /// <see cref="EnumArgumentProtection.OwnGate"/> は保存を伴う POST
+    /// (通すとカンバンの振り分けもラベル表示も壊れる)。</para>
+    ///
+    /// <para><b><c>Enum.IsDefined</c> だけでは足りない。</b> 引数を非 null 許容で受けると、
+    /// 値が届かなかったとき <c>default(T)</c> へ黙って化け、<b>それは必ず定義済みの値</b>
+    /// なので <c>Enum.IsDefined</c> を素通りする。しかも「そもそも送られてこない」形は
+    /// <c>ModelState</c> にキーすら残さない(<c>IsValid</c> は true のまま)ので、
+    /// <c>ModelState</c> を見るガードでも捕まえられない ——どちらも実測で確認済み
+    /// (issue #233)。したがって守り方の種類によらず
+    /// <b><c>Nullable&lt;T&gt;</c> で受ける</b>ところまでが要る。これは解説ではなく
+    /// <see cref="EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault"/>
+    /// が機械的に落とす。</para>
+    ///
+    /// <para><b>2 種類を 1 つの表にまとめてあるのは、取りこぼしを数え落とさないため。</b>
+    /// 表を <c>Filter</c> だけにすると、非 null 許容の enum 引数は導出からも外さざるを得ず、
+    /// その瞬間に「守り方を何も決めていない enum 引数」が誰にも見えなくなる。</para>
+    /// </remarks>
+    private static readonly Dictionary<string, EnumArgumentProtection> EnumArgumentProtections =
+        new(StringComparer.Ordinal)
+        {
+            // 絞り込み: MeasuresIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.Index), "status")] = EnumArgumentProtection.Filter,
+            // 絞り込み: IncidentsIndex_DropsAnEnumFilterValueOutsideItsDefinition が確かめる
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "incidentType")] = EnumArgumentProtection.Filter,
+            [ActionParameterKey(typeof(IncidentsController), nameof(IncidentsController.Index), "severity")] = EnumArgumentProtection.Filter,
+            // 保存: UpdateStatus 自身が Enum.IsDefined で弾く(未定義値を DB へ入れない)
+            [ActionParameterKey(typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.UpdateStatus), "status")] = EnumArgumentProtection.OwnGate,
+        };
+
+    // アクションが受ける enum の引数が、<b>1 つ残らず Nullable&lt;T&gt; である</b>こと。
+    //
+    // <b>なぜ要るのか(issue #233 の再発防止)。</b> 非 null 許容で受けた enum の引数は、
+    // 値が届かなかったときに <c>default(T)</c> —— <b>必ず定義済みの値</b> —— へ黙って化ける。
+    // 壊れ方は守り方によって違うが、どちらも「送っていない値で動く」点は同じ:
+    //   - OwnGate … 既存の <c>Enum.IsDefined</c> ゲートを素通りして保存される。
+    //     実際 <c>UpdateStatus</c> はこれで、完了済みの対策が <c>Planned</c> へ差し戻され、
+    //     完了日時・完了報告・効果評価 4 項目まで消えたうえ「更新しました」と表示された。
+    //   - Filter …… <c>UnlistedEnumFilterResolver</c> は <c>default(T)</c> を
+    //     「定義にある値」として<b>採用してしまう</b>ので、利用者が求めていない絞り込みが
+    //     黙って掛かる(<c>?status=99</c> が「Planned で絞った一覧」になる)。
+    //
+    // <b>この検査が無いと痕跡が残らない。</b> 実測: 非 null 許容の enum を受ける保存 POST を
+    // 1 つ足して上の表へ <c>OwnGate</c> として登録すると、<b>854 件が全件緑のまま通り</b>、
+    // テスト件数すら変わらなかった(854 → 854)。網羅ガードはキーしか見ておらず、
+    // 守り方の中身は当時どの検査も読んでいなかったため。
+    //
+    // <b>一覧は表からではなく導出から作る。</b> 表を基準にすると、表に載せ忘れた引数は
+    // この検査からも同時に外れる(載せ忘れ自体は網羅ガードが落とすが、2 つの検査が
+    // 同じ手書きの一覧に依存すると、1 行消すだけで両方が黙る)。表を読むのは
+    // <b>失敗文言でどちらの壊れ方かを名指しするため</b>だけにする。
+    //
+    // <b>除外表は置かない。</b> 現時点で非 null 許容が正当な enum 引数は 1 つも無く、
+    // 空の除外表が「登録するだけで黙らせられる口」になった実例がこのリポジトリにはある
+    // (§6「将来を見越した過度な抽象化を避ける」)。正当な形が実際に現れた時点で、
+    // その具体例に合わせて逃がし方を設計する。
+    [Fact]
+    public void EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault()
+    {
+        // 導出(表とは独立な手がかり)から enum の引数を型ごと拾う
+        var enumParameters = MatchingActionParameters(
+            p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum);
+
+        // 1 つも拾えないのは「enum の引数が無くなった」より「導出が壊れた」可能性が高い。
+        // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
+        Assert.True(enumParameters.Count > 0,
+            "enum の引数を受けるアクションが 1 つも見つからない。"
+            + "導出を変えたなら、この検査も同じ変更セットで直すこと"
+            + "(直さないと、既定値への化けの検査が対象ゼロで全件緑になる)。");
+
+        // 非 null 許容のまま受けている引数を集める(これが違反)。
+        // 判定そのものは純粋関数へ出してある(下の Theory が合成入力で挙動を固定する)
+        var nonNullable = NonNullableEnumArguments(
+            enumParameters.Select(match => (match.Key, match.Parameter.ParameterType)));
+
+        Assert.True(nonNullable.Count == 0,
+            "enum のアクション引数は Nullable<T> で受けること(値が届かなかったことを "
+            + "null として区別できるようにするため)。非 null 許容だと default(T) へ黙って化け、"
+            + "それは必ず定義済みの値なので Enum.IsDefined も ModelState を見るガードも"
+            + "素通りする(issue #233)。受けたあと null を弾くところまでが 1 組:"
+            + Environment.NewLine + string.Join(Environment.NewLine, nonNullable));
+    }
+
+    /// <summary>
+    /// enum の引数のうち<b>非 null 許容のもの</b>を、失敗文言の形にして返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>判定を純粋関数に出す理由。</b> 上の検査はアプリの実際の署名を読むので、
+    /// <b>実在する引数がたまたま全部 Nullable&lt;T&gt; である限り、判定を潰しても緑のまま</b>
+    /// になる(条件を反転させる・常に空を返す、のどちらでも通る)。実際の配線が準拠している
+    /// ことと、判定が機能していることは別なので、合成入力で後者を固定する
+    /// ——CLAUDE.md が Stripe の API 版ガードについて「静的な検査は呼び出しの配線を名前で
+    /// 照合するだけなので、中身を空にしても全テストが緑のまま通る」と書いているのと同じ形。</para>
+    /// </remarks>
+    /// <param name="enumArguments">キーと引数の型の組。</param>
+    /// <returns>違反している引数の説明(違反が無ければ空)。</returns>
+    private static List<string> NonNullableEnumArguments(
+        IEnumerable<(string Key, Type ParameterType)> enumArguments) =>
+        enumArguments
+            // Nullable<T> でないものが違反(Nullable.GetUnderlyingType は null を返す)
+            .Where(argument => Nullable.GetUnderlyingType(argument.ParameterType) is null)
+            // 失敗文言では「どちらの壊れ方か」まで名指しする(表の値をここで実際に読む)
+            .Select(argument => EnumArgumentProtections.TryGetValue(argument.Key, out var protection)
+                ? $"{argument.Key} ({protection}: " + (protection == EnumArgumentProtection.OwnGate
+                    ? "既定値が Enum.IsDefined を素通りして保存される"
+                    : "既定値が絞り込みとして採用され、求めていない絞り込みが黙って掛かる")
+                    + ")"
+                : $"{argument.Key} (守り方が未登録)")
+            .ToList();
+
+    // 上の判定が、通す側と落とす側の<b>両方</b>で意図どおりに働くこと。
+    // 表に載っている引数は壊れ方まで名指しし、載っていない引数は「未登録」と言う
+    // (未登録そのものは網羅ガードが落とすが、この検査が黙るとどちらの理由か分からなくなる)。
+    [Fact]
+    public void NonNullableEnumArguments_ReportsOnlyNonNullable_AndNamesHowItBreaks()
+    {
+        // 表に載っている実在のキーを使う(文言の分岐が実際に引かれることまで確かめる)
+        var ownGateKey = ActionParameterKey(
+            typeof(PreventiveMeasuresController), nameof(PreventiveMeasuresController.UpdateStatus), "status");
+        var filterKey = ActionParameterKey(
+            typeof(IncidentsController), nameof(IncidentsController.Index), "severity");
+
+        var reported = NonNullableEnumArguments(new[]
+        {
+            // 違反(保存を伴う POST): 既定値が保存される壊れ方を名指しすること
+            (ownGateKey, typeof(MeasureStatus)),
+            // 違反(絞り込み): 既定値で絞り込まれる壊れ方を名指しすること
+            (filterKey, typeof(IncidentSeverity)),
+            // 違反(表に無い): 守り方が未登録であることを言うこと
+            ("IncidentInsight.Web.Controllers.ProbeController.Probe.status", typeof(MeasureStatus)),
+            // 違反ではない: Nullable<T> で受けている引数は 1 つも報告しないこと
+            (ownGateKey, typeof(MeasureStatus?)),
+            (filterKey, typeof(IncidentSeverity?)),
+        });
+
+        // 報告されるのは非 null 許容の 3 件だけ(Nullable<T> の 2 件は通る)
+        Assert.Equal(3, reported.Count);
+        // 保存側は「Enum.IsDefined を素通りして保存される」と名指しする
+        Assert.Contains(reported, text => text.StartsWith(ownGateKey + " (OwnGate:", StringComparison.Ordinal)
+            && text.Contains("保存される", StringComparison.Ordinal));
+        // 絞り込み側は「求めていない絞り込みが黙って掛かる」と名指しする
+        Assert.Contains(reported, text => text.StartsWith(filterKey + " (Filter:", StringComparison.Ordinal)
+            && text.Contains("絞り込みが黙って掛かる", StringComparison.Ordinal));
+        // 表に無いキーは守り方が未登録であることを言う
+        Assert.Contains(reported, text => text.EndsWith("(守り方が未登録)", StringComparison.Ordinal));
     }
 
     // アプリ全体のコントローラから「enum のアクション引数」を
