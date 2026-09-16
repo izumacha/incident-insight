@@ -1926,8 +1926,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// </remarks>
     /// <param name="matches">拾いたい引数かどうかの判定。</param>
     private static List<string> ActionParametersInTheApp(Func<ParameterInfo, bool> matches) =>
-        // 走査は 1 か所(MatchingActionParameters)。ここはその結果からキーだけを取り出す
-        MatchingActionParameters(matches).Select(match => match.Key).ToList();
+        // 走査は 1 か所(MatchingActionParameters)。ここはその結果からキーだけを取り出す。
+        // <b>重複はここで畳む。</b> 走査は「キーと引数の型」の単位で残す(型を見る検査が
+        // オーバーロードを取りこぼさないため。理由は CollapseDuplicateActionParameters)ので、
+        // 同じキーが型違いで複数件現れうる。キーで足りる網羅ガードは手書きの表と
+        // リスト同士を突き合わせるため、重複が残ると理由なく落ちる
+        MatchingActionParameters(matches)
+            .Select(match => match.Key)
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
 
     /// <summary>
     /// アプリ全体のコントローラのアクション引数のうち条件に当たるものを、
@@ -1982,8 +1989,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     {
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
         var ownAssembly = typeof(IncidentsController).Assembly;
-        // そのアセンブリのコントローラをすべて見る
-        return ScannedControllers()
+        // そのアセンブリのコントローラをすべて見て、拾った対を畳み方の純粋関数へ渡す
+        return CollapseDuplicateActionParameters(ScannedControllers()
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
                 // プロパティのゲッターなど、アクションでないものを除く
                 .Where(m => !m.IsSpecialName)
@@ -1996,16 +2003,102 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     // 引数名はリフレクション上 null になりうる型だが、アクションの引数では
                     // 常に付く(名前が無ければキーが欠けた形になり、表との照合が落ちる)
                     .Select(p => (Key: ActionParameterKey(t, m.Name, p.Name!), Parameter: p))))
-            // 同じ画面に同じ (アクション名, 引数名) が複数回現れても 1 件に畳む
-            // (引数の数だけが違うオーバーロードがこの形。画面が違えばキーも違うので畳まれない)。
-            // <b>畳むのはキーだけで判断する</b> ——キーだけの形が Distinct(StringComparer.Ordinal)
-            // で畳んでいたのと同じ結果にするため(ParameterInfo まで含めて畳むと、
-            // 同じキーの引数が型違いで 2 件残り、照合が理由なく落ちる)
-            .GroupBy(match => match.Key, StringComparer.Ordinal)
+            // 畳み方そのものは純粋関数へ出してある(下の CollapseDuplicateActionParameters)
+            );
+    }
+
+    /// <summary>
+    /// 走査結果の重複を<b>「キーと引数の型」の単位で</b>畳み、並びを固定して返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>畳む単位は「キー」ではなく「キーと引数の型」</b>(レビュー指摘で修正)。
+    /// 以前はキーだけで畳んで <c>First()</c> を採っていたため、<b>同じキーで型だけが違う
+    /// オーバーロード</b>が 1 件に潰れ、残るのは <c>Type.GetMethods</c> が先に返したほう
+    /// ——つまり<b>宣言順</b>という、この検出網とは無関係な事情でどちらが見られるかが
+    /// 決まっていた。</para>
+    ///
+    /// <para><b>実測(この修正の前)。</b> <c>PreventiveMeasuresController</c> に
+    /// <c>[HttpPost] UpdateStatus(int id, MeasureStatus status)</c>(非 null 許容)を、
+    /// 既存の <c>UpdateStatus(int id, MeasureStatus? status, …)</c> の<b>後ろ</b>へ足すと、
+    /// <see cref="EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault"/>
+    /// は Nullable&lt;T&gt; のほうだけを見て違反 0 件と答え、<b>856 件すべて緑</b>のまま通った
+    /// (テスト件数も変わらない)。同じコードを既存メソッドの<b>前</b>へ置くと落ちる
+    /// ——結果が宣言順で反転する。issue #233 で塞いだ「送っていない既定値が保存される」形
+    /// そのものが、それを見張るはずの導出に残っていたことになる。</para>
+    ///
+    /// <para><b>型まで含めて畳むと、同じキーの引数が型違いで複数件残る。</b> キーだけで足りる
+    /// 網羅ガードはリスト同士を <c>Assert.Equal</c> で比べるので重複があると落ちるが、
+    /// それは<b>キーだけの形</b>(<see cref="ActionParametersInTheApp"/>)が
+    /// <c>Distinct(StringComparer.Ordinal)</c> で畳んで吸収する。
+    /// <b>型を見る検査の側で落とさないことが要点</b>で、逆向き(キーで畳んで型を捨てる)に
+    /// すると上の fail-open が戻る。</para>
+    ///
+    /// <para><b>純粋関数に出す理由。</b> 呼び出し側はアプリの実際の署名を読むので、
+    /// <b>実在するアクションにキー衝突するオーバーロードが 1 つも無いかぎり、畳み方を
+    /// キーだけへ戻しても全件緑のまま</b>になる。実際の配線が準拠していることと、
+    /// 畳み方が正しいことは別なので、合成入力で後者を固定する ——このクラスが
+    /// <see cref="NonNullableEnumArguments"/> について採っているのと同じ形。</para>
+    /// </remarks>
+    /// <param name="matches">走査が拾ったキーと引数の対。</param>
+    /// <returns>重複を畳み、キー順に並べた一覧。</returns>
+    private static List<(string Key, ParameterInfo Parameter)> CollapseDuplicateActionParameters(
+        IEnumerable<(string Key, ParameterInfo Parameter)> matches) =>
+        matches
+            // 同じキーでも<b>型が違えば別件として残す</b>(オーバーロードを取りこぼさない)
+            .GroupBy(match => (match.Key, match.Parameter.ParameterType))
+            // 型まで同じものだけを 1 件に畳む(引数の数だけが違うオーバーロードがこの形)
             .Select(group => group.First())
             // 実行ごとに順番が揺れないよう並びを固定する
             .OrderBy(match => match.Key, StringComparer.Ordinal)
             .ToList();
+
+    // 畳み方が、<b>残す側</b>と<b>畳む側</b>の両方で意図どおりに働くこと。
+    //
+    // <b>なぜ要るのか。</b> これを「キーだけ」で畳む形へ戻すと、同じ (アクション名, 引数名) で
+    // 型だけが違うオーバーロードが 1 件に潰れ、残るのは宣言順で決まる。実在の署名が
+    // 準拠しているかぎりその退行は全件緑のままなので、合成入力で固定する
+    // (実測: 型を捨てる変異を入れるとこの検査だけが落ちる)。
+    [Fact]
+    public void CollapseDuplicateActionParameters_KeepsOverloadsThatDifferOnlyByType()
+    {
+        // 同じ (アクション名, 引数名) で型だけが違う 2 つの引数を、実物の ParameterInfo で作る
+        var probeMethods = typeof(OverloadProbe)
+            .GetMethods(BindingFlags.Public | BindingFlags.Instance)
+            .Where(m => m.Name == nameof(OverloadProbe.Index))
+            .ToList();
+        // プローブは 2 つのオーバーロードを持つ(前提が崩れたら畳み方の検査にならない)
+        Assert.Equal(2, probeMethods.Count);
+
+        // どちらの引数も同じキーを名乗らせる(実アプリで衝突したときと同じ形)
+        const string key = "IncidentInsight.Web.Controllers.ProbeController.Index.status";
+        var pairs = probeMethods
+            .Select(m => (Key: key, Parameter: m.GetParameters().Single(p => p.Name == "status")))
+            .ToList();
+
+        // 型が違うので 2 件とも残ること(ここが潰れると非 null 許容の側が見えなくなる)
+        var kept = CollapseDuplicateActionParameters(pairs);
+        Assert.Equal(2, kept.Count);
+        Assert.Contains(kept, match => Nullable.GetUnderlyingType(match.Parameter.ParameterType) is null);
+        Assert.Contains(kept, match => Nullable.GetUnderlyingType(match.Parameter.ParameterType) is not null);
+
+        // 型まで同じものは 1 件に畳むこと(引数の数だけが違うオーバーロードがこの形)
+        Assert.Single(CollapseDuplicateActionParameters(new[] { pairs[0], pairs[0] }));
+    }
+
+    /// <summary>
+    /// 畳み方の検査に使う合成プローブ。<b>同じアクション名・同じ引数名で型だけが違う</b>
+    /// オーバーロードを持たせてある(実アプリの GET/POST 対がこの形になりうる)。
+    /// </summary>
+    private sealed class OverloadProbe
+    {
+        /// <summary>非 null 許容で受ける側(issue #233 で壊れた形)。</summary>
+        /// <param name="status">対策のステータス。</param>
+        public void Index(MeasureStatus status) => _ = status;
+
+        /// <summary>Nullable&lt;T&gt; で受ける側(規約どおりの形)。</summary>
+        /// <param name="status">対策のステータス。</param>
+        /// <param name="page">オーバーロードを成立させるための追加引数。</param>
+        public void Index(MeasureStatus? status, int page) => _ = (status, page);
     }
 
     /// <summary>
@@ -4641,9 +4734,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault()
     {
-        // 導出(表とは独立な手がかり)から enum の引数を型ごと拾う
-        var enumParameters = MatchingActionParameters(
-            p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum);
+        // 導出(表とは独立な手がかり)から enum の引数を型ごと拾う。
+        // 述語は網羅ガード側と共有する(書き写すと、拾い方を狭めたときに片方だけが黙る)
+        var enumParameters = MatchingActionParameters(IsEnumActionParameter);
 
         // 1 つも拾えないのは「enum の引数が無くなった」より「導出が壊れた」可能性が高い。
         // 「対象ゼロ＝緑」にせず落として、導出かアクションのどちらを直すか人に決めさせる
@@ -4653,7 +4746,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "(直さないと、既定値への化けの検査が対象ゼロで全件緑になる)。");
 
         // 非 null 許容のまま受けている引数を集める(これが違反)。
-        // 判定そのものは純粋関数へ出してある(下の Theory が合成入力で挙動を固定する)
+        // 判定そのものは純粋関数へ出してある(下の
+        // NonNullableEnumArguments_ReportsOnlyNonNullable_AndNamesHowItBreaks が
+        // 合成入力で挙動を固定する)
         var nonNullable = NonNullableEnumArguments(
             enumParameters.Select(match => (match.Key, match.Parameter.ParameterType)));
 
@@ -4685,12 +4780,45 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Where(argument => Nullable.GetUnderlyingType(argument.ParameterType) is null)
             // 失敗文言では「どちらの壊れ方か」まで名指しする(表の値をここで実際に読む)
             .Select(argument => EnumArgumentProtections.TryGetValue(argument.Key, out var protection)
-                ? $"{argument.Key} ({protection}: " + (protection == EnumArgumentProtection.OwnGate
-                    ? "既定値が Enum.IsDefined を素通りして保存される"
-                    : "既定値が絞り込みとして採用され、求めていない絞り込みが黙って掛かる")
-                    + ")"
+                ? $"{argument.Key} ({protection}: {HowANonNullableEnumBreaks(protection)})"
                 : $"{argument.Key} (守り方が未登録)")
             .ToList();
+
+    /// <summary>
+    /// 守り方ごとに、<b>非 null 許容で受けたときの壊れ方</b>を 1 文で述べる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>三項演算子で書かない。</b> 以前は <c>protection == OwnGate ? … : …</c>
+    /// だったため、<see cref="EnumArgumentProtection"/> に 3 つ目の守り方を足すと、それが
+    /// <b>黙って</b>「絞り込み」の壊れ方として説明された ——読み手は絞り込みですらない引数に
+    /// ついて <c>UnlistedEnumFilterResolver</c> を見に行かされる。この表の値を <c>string</c>
+    /// から enum へ変えたのは「値を誰も読んでいない表」を無くすためなので、<b>読む側も
+    /// 守り方ごとに書き分ける</b>ところまでが 1 組。</para>
+    ///
+    /// <para><b>既定の腕は「誤った案内」ではなく例外にする。</b> C# の switch 式は既定の腕を
+    /// 書かないと、enum へキャストしうる未定義の値 (<c>(EnumArgumentProtection)2</c>) について
+    /// CS8524 を出す ——網羅性の警告は「名前の付いた値を足し忘れた」ことだけを指してはくれない。
+    /// そこで既定の腕を置き、<b>何が未対応かを名指しして落とす</b>。守り方を足した人はこの例外で
+    /// 気付き、案内どおりここへ 1 行足せば直る。黙って別の壊れ方として説明されるより、
+    /// 落ちて名前を出すほうが安全側(§9 fail-closed)。</para>
+    /// </remarks>
+    /// <param name="protection">その引数の守り方。</param>
+    /// <returns>非 null 許容で受けたときに何が起きるかの 1 文。</returns>
+    private static string HowANonNullableEnumBreaks(EnumArgumentProtection protection) =>
+        protection switch
+        {
+            // 保存を伴う POST: 既定値は定義済みなので Enum.IsDefined のゲートを素通りする
+            EnumArgumentProtection.OwnGate => "既定値が Enum.IsDefined を素通りして保存される",
+            // 絞り込み: 既定値で絞り込まれ、<select> は「(全て)」を指したままになる
+            EnumArgumentProtection.Filter =>
+                "既定値が絞り込みとして採用され、求めていない絞り込みが黙って掛かる",
+            // 未対応の守り方: 別の壊れ方として黙って説明せず、何が未対応かを名指しして落とす
+            _ => throw new NotSupportedException(
+                $"守り方 {protection} に対応する壊れ方の説明が無い。"
+                + $"{nameof(EnumArgumentProtection)} に値を足したなら、"
+                + $"{nameof(HowANonNullableEnumBreaks)} にも同じ変更セットで 1 行足すこと"
+                + "(足さないと、失敗文言が読み手を別の直し方へ案内する)。"),
+        };
 
     // 上の判定が、通す側と落とす側の<b>両方</b>で意図どおりに働くこと。
     // 表に載っている引数は壊れ方まで名指しし、載っていない引数は「未登録」と言う
@@ -4741,7 +4869,26 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 走査そのものは期間の絞り込み側と共有する(ActionParametersInTheApp が正本)
     private static List<string> EnumActionParametersInTheApp() =>
-        // null 許容かどうかを問わず、enum の引数をすべて拾う
-        ActionParametersInTheApp(
-            p => (Nullable.GetUnderlyingType(p.ParameterType) ?? p.ParameterType).IsEnum);
+        // null 許容かどうかを問わず、enum の引数をすべて拾う(述語は共有。下記)
+        ActionParametersInTheApp(IsEnumActionParameter);
+
+    /// <summary>
+    /// アクションの引数が <b>enum(Nullable&lt;TEnum&gt; を含む)</b> かどうか。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>述語をここに 1 つだけ置く。</b> この判定は網羅ガード
+    /// (<see cref="EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter"/>)と、
+    /// 引数の型を見る検査
+    /// (<see cref="EnumActionParameters_AreNullable_SoAnUnboundValueCannotBecomeADefinedDefault"/>)
+    /// の両方が使う。書き写すと<b>片方だけを狭めたときにもう片方が黙って外れる</b> ——
+    /// 網羅ガードは手書きの表と一致し続けるので緑のまま、型を見る検査だけがその引数を
+    /// 見なくなり、痕跡はテスト件数にも差分にも出ない
+    /// (<see cref="MatchingActionParameters"/> が走査そのものを 1 か所に置いているのと
+    /// まったく同じ理由。§6 DRY)。</para>
+    /// </remarks>
+    /// <param name="parameter">アクションの引数。</param>
+    /// <returns>enum(Nullable&lt;TEnum&gt; を含む)なら true。</returns>
+    private static bool IsEnumActionParameter(ParameterInfo parameter) =>
+        // Nullable<T> なら中身の型を、そうでなければその型自身を見る
+        (Nullable.GetUnderlyingType(parameter.ParameterType) ?? parameter.ParameterType).IsEnum;
 }
