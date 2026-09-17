@@ -1,9 +1,7 @@
-// コントローラの型を名指しして「自分たちのアセンブリ」を特定するために使う
-using IncidentInsight.Web.Controllers;
+// 走査と判定の共通処理を使う
+using IncidentInsight.Tests.Helpers;
 // ResponseCacheAttribute / ResponseCacheLocation / ControllerBase を使う
 using Microsoft.AspNetCore.Mvc;
-// 属性とアクションをリフレクションで走査するために使う
-using System.Reflection;
 
 // 既存の Middleware 配下テストと同じ名前空間に置く
 namespace IncidentInsight.Tests.Middleware;
@@ -19,7 +17,7 @@ namespace IncidentInsight.Tests.Middleware;
 /// キャッシュ可能なまま残すための唯一の仕組みなので、この「譲る」挙動自体は正しい。
 /// ところが譲る相手は<b>指示の中身を問わない</b>ため、PHI を返すアクションへ
 /// <c>[ResponseCache(Duration = 300, Location = ResponseCacheLocation.Any)]</c> を
-/// 足すだけで、そのアクションの応答は <c>public,max-age=300</c> で返るようになる ——
+/// 足すだけで、そのアクションの応答は <c>public,max-age=300</c> で返る ——
 /// 社内リバースプロキシが保存し、ある職員の集計を別の職員へ配りうる状態になる。
 /// これは「遅い集計を速くする」ごく自然な最適化として書かれうるうえ、
 /// <b>実測でアプリ全体のテストが緑のまま通った</b>(<c>AnalyticsController.ByCause</c> に
@@ -31,27 +29,22 @@ namespace IncidentInsight.Tests.Middleware;
 /// 譲る挙動が消えた瞬間に css/js が毎回再取得になる(§8)。実際に危ないのは
 /// <b>MVC のアクションが名乗る指示</b>だけなので、そこだけを宣言の形で禁じる。</para>
 ///
+/// <para><b>この検査が見ない口(別の検査が担当する)。</b> 指示は属性の宣言以外からも来る ——
+/// <c>MvcOptions.Filters</c> へ登録したグローバルフィルタと <c>MvcOptions.CacheProfiles</c> が
+/// それで、どちらも属性のソースには現れない。そちらは起動したアプリの設定を読む
+/// <c>ResponseCacheHeaderIntegrationTests</c> が、<b>同じ判定関数</b>
+/// (<see cref="ResponseCachePolicy.Judge(ResponseCacheAttribute)"/>)で見る。</para>
+///
 /// <para><b>導出で作る(表を書かない)。</b> 「見るべきアクションの一覧」を手で持つと、
 /// 新しいコントローラを足した人が載せ忘れた時点でその画面だけ黙って検査から外れる。
-/// 対象はアセンブリ上の具象 <see cref="ControllerBase"/> すべてから導く
-/// (<see cref="UnlistedFilterValuePolicyTests"/> が採っているのと同じ形)。</para>
+/// 対象は <see cref="AppControllerScan.Controllers"/> から導く ——
+/// この導出が狭まっていないことは、独立な手がかり(ソースファイルの実在)で照合する
+/// <c>UnlistedFilterValuePolicyTests.ControllerScan_ReachesEveryControllerFile</c> が見張る。
+/// <b>ここで絞り込みを書き写さない</b>のは、写した瞬間にこのファイルだけが
+/// そのガードの射程から外れるため。</para>
 /// </remarks>
 public class ResponseCacheAttributePolicyTests
 {
-    /// <summary>
-    /// <c>[ResponseCache]</c> が名乗っている内容と、それが許されるかどうかの判定結果。
-    /// </summary>
-    /// <param name="IsSuppressing">キャッシュ保存を禁じている(＝このアプリで許される)なら true。</param>
-    /// <param name="Reason">許されない場合に、失敗文言へ載せる理由。許される場合は空文字。</param>
-    public readonly record struct CacheDirectiveVerdict(bool IsSuppressing, string Reason);
-
-    /// <summary>
-    /// 走査が見つけた 1 件の <c>[ResponseCache]</c> 宣言(どこに付いていたかを含む)。
-    /// </summary>
-    /// <param name="DeclaredOn">属性が付いていた場所の表示名(失敗文言で名指しするために持つ)。</param>
-    /// <param name="Attribute">宣言された属性そのもの。</param>
-    public readonly record struct ResponseCacheDeclaration(string DeclaredOn, ResponseCacheAttribute Attribute);
-
     // アプリ全体のアクションが名乗る [ResponseCache] は、すべてキャッシュ保存を禁じていること。
     //
     // これが落ちたときの直し方は 2 つだけ: (a) その属性へ NoStore = true を付ける、
@@ -62,12 +55,14 @@ public class ResponseCacheAttributePolicyTests
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
         // アプリ全体の宣言を集める
-        var declarations = ResponseCacheDeclarationsInTheApp().ToList();
+        var declarations = ResponseCachePolicy
+            .DeclarationsOn(AppControllerScan.Controllers(), AppControllerScan.WebAssembly)
+            .ToList();
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
             // 各宣言について、名乗っている内容が保存を禁じているかを判定する
-            .Select(declaration => (declaration, verdict: JudgeDirective(declaration.Attribute)))
+            .Select(declaration => (declaration, verdict: ResponseCachePolicy.Judge(declaration.Attribute)))
             // 禁じていないものだけを残す
             .Where(pair => !pair.verdict.IsSuppressing)
             // 「どこに付いた、どういう宣言が、なぜ駄目か」を 1 行にまとめる
@@ -82,22 +77,6 @@ public class ResponseCacheAttributePolicyTests
                 + "この宣言はそのまま共有キャッシュへの保存許可になります。"
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, violations));
-    }
-
-    // 走査が「見るべき対象ゼロ＝緑」で無力化されていないこと(fail-closed)。
-    //
-    // 上の検査は違反が 0 件なら緑になるので、走査がコントローラを 1 つも拾えなくなる変異
-    // (アセンブリの選び方を間違える・絞り込みを狭めすぎる)は、そのままでは気付けない。
-    [Fact]
-    public void ControllerScan_FindsControllers()
-    {
-        // 走査が実際に見ているコントローラを数える
-        var controllers = ScannedControllers().ToList();
-
-        // 1 つも拾えていないなら、走査そのものが壊れている
-        Assert.True(
-            controllers.Count > 0,
-            "コントローラを 1 つも走査できていません。アセンブリの選び方か絞り込みが壊れています。");
     }
 
     // 判定そのものが、許す側と落とす側の両方で意図どおりに働くこと。
@@ -119,7 +98,7 @@ public class ResponseCacheAttributePolicyTests
     [InlineData(false, 0, ResponseCacheLocation.None, null, false)]
     // キャッシュプロファイル名での指定は、属性自身のフィールドから中身を読めないので落とす
     [InlineData(true, 0, ResponseCacheLocation.None, "NoCache", false)]
-    public void JudgeDirective_AllowsOnlyStorageSuppressingDeclarations(
+    public void Judge_AllowsOnlyStorageSuppressingDeclarations(
         bool noStore,
         int duration,
         ResponseCacheLocation location,
@@ -140,7 +119,7 @@ public class ResponseCacheAttributePolicyTests
         };
 
         // 判定を実行する
-        var verdict = JudgeDirective(attribute);
+        var verdict = ResponseCachePolicy.Judge(attribute);
 
         // 期待どおりの可否になっていることを確認する
         Assert.Equal(expectedIsSuppressing, verdict.IsSuppressing);
@@ -162,7 +141,7 @@ public class ResponseCacheAttributePolicyTests
     public void DeclarationScan_ReadsBothClassAndActionAttributes()
     {
         // クラス側とアクション側の両方に属性を持つ合成コントローラを走査する
-        var declarations = ResponseCacheDeclarationsOn(new[] { typeof(BothLevelsProbeController) }).ToList();
+        var declarations = ScanProbes(typeof(BothLevelsProbeController));
 
         // クラス側の宣言(Duration = 11)が拾えていること
         Assert.Contains(declarations, d => d.Attribute.Duration == 11);
@@ -172,125 +151,64 @@ public class ResponseCacheAttributePolicyTests
         Assert.All(declarations, d => Assert.False(string.IsNullOrWhiteSpace(d.DeclaredOn)));
     }
 
-    /// <summary>
-    /// <c>[ResponseCache]</c> の宣言内容が「保存を禁じている」かどうかを判定する純粋関数。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>基準を <c>NoStore</c> だけに置く理由。</b> ASP.NET Core が
-    /// <c>Cache-Control: no-store</c> を書くのは <c>NoStore = true</c> のときだけで、
-    /// それ以外の組み合わせ(<c>no-cache</c> / <c>private</c> / <c>public</c>)は
-    /// いずれも「保存してよい」か「保存したうえで検証せよ」を意味する。
-    /// 共用端末のディスクに PHI を残さないことが目的なので、基準は保存の可否 1 本にする。</para>
-    ///
-    /// <para><b>プロファイル名を落とす理由。</b> <c>CacheProfileName</c> を使うと実際の指示は
-    /// <c>MvcOptions.CacheProfiles</c> 側にあり、属性のフィールドからは読めない。
-    /// 読めないものを「たぶん安全」と扱うと、このクラス全体が無言の fail-open になるので、
-    /// 不明なら拒否する(§9 fail-closed)。使いたくなったら、プロファイルの中身まで
-    /// 解決する形へこの判定を広げる。</para>
-    /// </remarks>
-    /// <param name="attribute">判定する属性。</param>
-    /// <returns>可否と、落とす場合の理由。</returns>
-    private static CacheDirectiveVerdict JudgeDirective(ResponseCacheAttribute attribute)
+    // 走査が、<b>抽象基底へ引き上げたアクション</b>に付いた属性も拾うこと。
+    //
+    // <b>なぜ要るのか(実測した fail-open)。</b> アクションの絞り込みを
+    // 「その型が宣言したメソッドか」(DeclaringType != controller で弾く)で書くと、
+    // 抽象基底に置いたアクションはどこからも見えなくなる ——
+    // 基底は抽象なので走査対象に入らず、具象の側では宣言元が基底なので弾かれるため。
+    // それでも URL としては具象コントローラ経由で<b>実際に到達できる</b>。
+    // 実測では、その形で [ResponseCache(Duration = 300, Location = Any)] を足すと
+    // 全件緑のまま、<b>テスト件数すら変わらずに</b>通った。
+    [Fact]
+    public void DeclarationScan_ReadsActionsPulledUpToAnAbstractBase()
     {
-        // プロファイル名が指定されていると、実際の指示が属性の外にあって読めない
-        if (!string.IsNullOrWhiteSpace(attribute.CacheProfileName))
-        {
-            // 読めない以上「安全だ」と言えないので落とす
-            return new CacheDirectiveVerdict(
-                false,
-                $"CacheProfileName=\"{attribute.CacheProfileName}\" は実際の指示が MvcOptions 側にあり、"
-                    + "属性からは読み取れません。プロファイルを使わず NoStore = true を直接宣言してください。");
-        }
+        // 抽象基底にアクションを持つ具象コントローラだけを走査する(基底は抽象なので対象外)
+        var declarations = ScanProbes(typeof(InheritedActionProbeController));
 
-        // NoStore が宣言されていれば、応答は保存されない
-        if (attribute.NoStore)
-        {
-            // 許可(理由は不要なので空文字)
-            return new CacheDirectiveVerdict(true, string.Empty);
-        }
+        // 基底に宣言されたアクションの属性(Duration = 33)が拾えていること
+        Assert.Contains(declarations, d => d.Attribute.Duration == 33);
+        // 「どこを直せばよいか」が分かるよう、宣言元の基底の名前で名指しされていること
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains(nameof(InheritedActionProbeControllerBase), StringComparison.Ordinal));
+    }
 
-        // ここへ来るのは「保存を許す」宣言なので、名乗っている内容を添えて落とす
-        return new CacheDirectiveVerdict(
-            false,
-            $"NoStore が宣言されていません(Duration={attribute.Duration}, Location={attribute.Location})。"
-                + "PHI を返しうる応答が保存されます。NoStore = true を付けるか、属性ごと外して"
-                + "SecurityHeadersMiddleware の既定(no-store)に任せてください。");
+    // 同じ基底のアクションを複数の具象が継承していても、宣言は 1 件に畳まれること。
+    //
+    // 畳まないと、基底のアクション 1 つに対して派生の数だけ同じ失敗文言が並び、
+    // 「何か所直せばよいのか」が読めなくなる(直す場所は基底の 1 か所だけ)。
+    [Fact]
+    public void DeclarationScan_ReportsAnInheritedActionOnlyOnce()
+    {
+        // 同じ基底を継承する 2 つの具象コントローラを走査する
+        var declarations = ScanProbes(
+            typeof(InheritedActionProbeController),
+            typeof(SecondInheritedActionProbeController));
+
+        // 基底のアクションに由来する宣言が 1 件だけであること
+        Assert.Single(declarations, d => d.Attribute.Duration == 33);
     }
 
     /// <summary>
-    /// アプリ全体のコントローラが名乗る <c>[ResponseCache]</c> をすべて集める。
-    /// </summary>
-    /// <returns>見つかった宣言の一覧。</returns>
-    private static IEnumerable<ResponseCacheDeclaration> ResponseCacheDeclarationsInTheApp() =>
-        // 走査対象のコントローラを、宣言を読む共通処理へ渡す
-        ResponseCacheDeclarationsOn(ScannedControllers());
-
-    /// <summary>
-    /// 渡されたコントローラ型から <c>[ResponseCache]</c> の宣言を集める。
+    /// 合成したコントローラに対して走査を実行する。
     /// </summary>
     /// <remarks>
-    /// 走査対象を引数で受け取るのは、合成したコントローラに対して
-    /// <b>走査そのもの</b>を検証できるようにするため(アプリの実際の宣言が 1 件しか
-    /// 無いあいだは、クラス側を読む行を消しても本番の検査は緑のまま通るため)。
+    /// プローブはテストアセンブリにあるので、<b>宣言元のアセンブリ</b>もテストアセンブリを渡す
+    /// (本番の走査は Web アセンブリを渡す)。走査そのものを検証するための入り口。
     /// </remarks>
-    /// <param name="controllers">走査するコントローラ型。</param>
+    /// <param name="probes">走査する合成コントローラ。</param>
     /// <returns>見つかった宣言の一覧。</returns>
-    private static IEnumerable<ResponseCacheDeclaration> ResponseCacheDeclarationsOn(
-        IEnumerable<Type> controllers)
-    {
-        // 渡されたコントローラを 1 つずつ見る
-        foreach (var controller in controllers)
-        {
-            // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
-            // inherit: true にするのは、基底コントローラで宣言して派生で継承する形を取りこぼさないため
-            foreach (var attribute in controller.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
-            {
-                // どのコントローラに付いていたかが分かる形で返す
-                yield return new ResponseCacheDeclaration(controller.FullName ?? controller.Name, attribute);
-            }
-
-            // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
-            foreach (var method in controller.GetMethods(BindingFlags.Public | BindingFlags.Instance))
-            {
-                // 基底クラス(ControllerBase 等)が持つメソッドは自分たちの宣言ではないので飛ばす
-                if (method.DeclaringType != controller)
-                {
-                    // 次のメソッドへ
-                    continue;
-                }
-
-                // そのメソッドに付いた属性を読む
-                foreach (var attribute in method.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
-                {
-                    // どのアクションに付いていたかが分かる形で返す
-                    yield return new ResponseCacheDeclaration(
-                        $"{controller.FullName ?? controller.Name}.{method.Name}",
-                        attribute);
-                }
-            }
-        }
-    }
-
-    /// <summary>
-    /// この検査が「アプリ全体」として見るコントローラ。
-    /// </summary>
-    /// <remarks>
-    /// 名前空間ではなく<b>所属アセンブリ</b>で絞る。名前空間の完全一致で切ると、
-    /// コントローラを Areas やサブフォルダへ移すだけで検査から外れる
-    /// (CLAUDE.md §3 が長さ管理の導出について同じ形の事故を記録している)。
-    /// </remarks>
-    /// <returns>自分たちのアセンブリにある具象コントローラ。</returns>
-    private static IEnumerable<Type> ScannedControllers() =>
-        // 自分たちのアセンブリの、具象のコントローラすべて(抽象基底はルートを持たないので除く)
-        typeof(IncidentsController).Assembly.GetTypes()
-            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+    private static List<ResponseCachePolicy.ResponseCacheDeclaration> ScanProbes(params Type[] probes) =>
+        // 宣言元の判定にはこのテストアセンブリを使う
+        ResponseCachePolicy.DeclarationsOn(probes, typeof(ResponseCacheAttributePolicyTests).Assembly).ToList();
 
     /// <summary>
     /// 走査がクラス側とアクション側の両方を読むことを確かめるための、合成コントローラ。
     /// </summary>
     /// <remarks>
-    /// テストアセンブリに置いてあるので、アプリ全体を見る検査(自アセンブリだけを走査する)
-    /// には拾われない。期間の値(11 / 22)は、どちらの経路で拾えたかを見分けるための目印。
+    /// テストアセンブリに置いてあるので、アプリ全体を見る検査(Web アセンブリだけを走査する)
+    /// には拾われない。期間の値(11 / 22 / 33)は、どちらの経路で拾えたかを見分けるための目印。
     /// </remarks>
     [ResponseCache(Duration = 11)]
     private sealed class BothLevelsProbeController : ControllerBase
@@ -300,4 +218,19 @@ public class ResponseCacheAttributePolicyTests
         [ResponseCache(Duration = 22)]
         public IActionResult Probe() => NoContent();
     }
+
+    /// <summary>アクションを引き上げた抽象基底(本物の repo でも起こりうる形)。</summary>
+    private abstract class InheritedActionProbeControllerBase : ControllerBase
+    {
+        /// <summary>基底に置かれ、派生経由で URL として到達できるアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 33)]
+        public IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションをそのまま継承する具象コントローラ。</summary>
+    private sealed class InheritedActionProbeController : InheritedActionProbeControllerBase;
+
+    /// <summary>同じ基底を継承する 2 つ目の具象コントローラ(畳み方の検証に使う)。</summary>
+    private sealed class SecondInheritedActionProbeController : InheritedActionProbeControllerBase;
 }

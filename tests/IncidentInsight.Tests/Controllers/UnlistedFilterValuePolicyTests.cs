@@ -2117,9 +2117,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 書き写すと、導出だけを狭めたときに検査も一緒に狭まって無力化される)。
     /// </remarks>
     private static IEnumerable<Type> ScannedControllers() =>
-        // 自分たちのアセンブリの、具象のコントローラすべて(抽象基底はルートを持たないので除く)
-        typeof(IncidentsController).Assembly.GetTypes()
-            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+        // 絞り込みは共有ヘルパーが唯一の源(ここで書き写すと、下の網羅ガードが
+        // この導出だけを見張る形になり、同じ絞り込みを使う他の検査が射程から外れる)
+        AppControllerScan.Controllers();
 
     // 走査が、Web プロジェクトに実在するコントローラを<b>1 つも取りこぼしていない</b>こと。
     //
