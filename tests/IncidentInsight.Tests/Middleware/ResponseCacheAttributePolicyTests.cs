@@ -227,7 +227,18 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
-    /// <c>Cache-Control</c> を<b>意図して</b>書いてよい行（ファイル × その行の内容の許可表）。
+    /// 意図して <c>Cache-Control</c> を書く 1 行ぶんの登録内容。
+    /// </summary>
+    /// <param name="ExpectedCount">
+    /// その行がそのファイルに現れてよい回数。<b>複製を「回数が合わない」として落とすためだけに持つ</b>
+    /// （内容の一致だけで許すと、共有定数を再利用したコピーが素通りする）。
+    /// </param>
+    /// <param name="Reason">なぜその行が書いてよいのかの説明（空文字・空白は別の検査が落とす）。</param>
+    private readonly record struct IntendedWrite(int ExpectedCount, string Reason);
+
+    /// <summary>
+    /// <c>Cache-Control</c> を<b>意図して</b>書いてよい行
+    /// （ファイル × その行の内容 × 期待する出現回数の許可表）。
     /// </summary>
     /// <remarks>
     /// <para><b>なぜ「書いてよい場所」を列挙する形にしたのか。</b> 最初は
@@ -263,16 +274,6 @@ public class ResponseCacheAttributePolicyTests
     /// そこで表は<b>期待する出現回数</b>（現状はすべて 1 回）まで持ち、
     /// 多くても少なくても落とす。複製は必ず「回数が合わない」として現れる。</para>
     /// </remarks>
-    /// <summary>
-    /// 意図して <c>Cache-Control</c> を書く 1 行ぶんの登録内容。
-    /// </summary>
-    /// <param name="ExpectedCount">
-    /// その行がそのファイルに現れてよい回数。<b>複製を「回数が合わない」として落とすためだけに持つ</b>
-    /// （内容の一致だけで許すと、共有定数を再利用したコピーが素通りする）。
-    /// </param>
-    /// <param name="Reason">なぜその行が書いてよいのかの説明（空文字・空白は別の検査が落とす）。</param>
-    private readonly record struct IntendedWrite(int ExpectedCount, string Reason);
-
     private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, IntendedWrite>>
         IntendedCacheControlWriters =
         new Dictionary<string, IReadOnlyDictionary<string, IntendedWrite>>(StringComparer.Ordinal)
@@ -529,6 +530,134 @@ public class ResponseCacheAttributePolicyTests
     // 出力キャッシュの配線を表す綴り。属性を書かずに有効化できる経路をすべて含める
     private static readonly string[] OutputCacheWiringTokens =
         ["AddOutputCache", "UseOutputCache", "CacheOutput("];
+
+    /// <summary>
+    /// 静的ファイル配信を組み立てる綴り（この 1 つ 1 つが「新しい配信ルート」になりうる）。
+    /// </summary>
+    private static readonly string[] StaticFileWiringTokens =
+        ["UseStaticFiles", "UseFileServer", "UseDirectoryBrowser", "PhysicalFileProvider"];
+
+    /// <summary>
+    /// 静的ファイル配信の配線を書いてよい場所（ファイル × 綴り × 期待する出現回数）。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ「行の内容 × 回数」の許可表だけでは足りなかったのか。</b>
+    /// <see cref="IntendedCacheControlWriters"/> は <c>Cache-Control</c> を<b>書いている行</b>を
+    /// 数えるので、2 つ目の <c>UseStaticFiles</c> が<b>その行を増やさずに</b>同じ指示を名乗ると
+    /// 素通りする。実測した形は 2 つある:</para>
+    /// <list type="number">
+    ///   <item><description><c>StaticFileOptions</c> を変数へ括り出して 2 回渡す。</description></item>
+    ///   <item><description>2 つ目の <c>OnPrepareResponse</c> に 1 つ目の
+    ///     <c>OnPrepareResponse</c> をそのまま代入する。</description></item>
+    /// </list>
+    /// <para>どちらも許可済みの行は 1 回しか現れないので回数の照合を通り、
+    /// <see cref="StaticFileRoots_AreOnlyKnownPublicAssets"/> は <c>wwwroot</c> 直下しか見ないため
+    /// <c>/attachments/&lt;id&gt;/report.pdf</c> が <c>public,max-age=3600</c> で返る差分が
+    /// <b>全件緑のまま通った</b>。しかも括り出しは §6 が要求する書き方そのもの。</para>
+    ///
+    /// <para><b>だから手がかりを「指示の綴り」から「配線の綴り」へ変える。</b>
+    /// 配信ルートを増やす以上 <see cref="StaticFileWiringTokens"/> のどれかは必ず増えるので、
+    /// 指示をどう書いても（あるいは 1 文字も書かなくても）差分がここに現れる。
+    /// 出力キャッシュに対して <see cref="OutputCacheWiringTokens"/> を置いたのと同じ形。</para>
+    ///
+    /// <para><b>残っている境界</b>: この表も人が判断するエスケープハッチ。
+    /// <b>エントリと回数が増える差分は、その配信ルートが PHI を配らないことを
+    /// レビューで必ず確認すること</b>（<c>LengthGovernanceExclusions</c> と同じ扱い）。</para>
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, IntendedWrite>>
+        IntendedStaticFileWiring =
+        new Dictionary<string, IReadOnlyDictionary<string, IntendedWrite>>(StringComparer.Ordinal)
+        {
+            // 静的ファイル配信を組み立てる唯一の場所
+            ["Program.cs"] = new Dictionary<string, IntendedWrite>(StringComparer.Ordinal)
+            {
+                // wwwroot を配る唯一の呼び出し
+                ["UseStaticFiles"] =
+                    new IntendedWrite(1, "wwwroot を配る唯一の呼び出し。指示は OnPrepareResponse が名乗る。"),
+            },
+        };
+
+    // 静的ファイル配信の配線が、確認済みの 1 か所だけであること。
+    //
+    // <b>なぜ Cache-Control の走査と別に要るのか。</b> あちらは「指示を書いている行」を
+    // 数えるので、2 つ目の配信ルートが指示を<b>共有</b>して名乗ると差分が現れない
+    // (実測: StaticFileOptions を変数へ括り出す形・OnPrepareResponse を代入する形の
+    //  どちらも 917 件すべて緑のまま通り、/attachments が public,max-age=3600 で返った)。
+    // 配線そのものを見れば、指示の書き方によらず新しい配信ルートが必ず現れる。
+    [Fact]
+    public void OnlyIntendedPlacesWireUpStaticFileServing()
+    {
+        // 想定と違う配線を集める
+        var violations = new List<string>();
+
+        // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
+        foreach (var sourcePath in ScannedSources())
+        {
+            // 許可表と突き合わせるためのキー(Web プロジェクトからの相対パス)
+            var tableKey = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
+            // そのファイルに許可された配線(無ければ null＝どの綴りも許可されない)
+            IntendedStaticFileWiring.TryGetValue(tableKey, out var allowed);
+            // リポジトリからの相対パス(名指し用)
+            var display = Path.GetRelativePath(RepositoryPaths.Root, sourcePath);
+
+            // 綴りごとに、その綴りを含む行が何本あるかを数える
+            foreach (var token in StaticFileWiringTokens)
+            {
+                // コメントを取り除いたうえで、その綴りを含む行を数える
+                var actual = CodeLinesContaining(sourcePath, [token]).Count();
+                // 許可された回数(表に無ければ 0 回＝1 つでもあれば違反)
+                var expected = allowed is not null && allowed.TryGetValue(token, out var intended)
+                    ? intended.ExpectedCount
+                    : 0;
+                // 期待どおりなら何もしない
+                if (actual == expected) continue;
+                // 多くても少なくても落とす(増えた配線も、消し忘れた許可も、表の更新が要る)
+                violations.Add($"{display}: {token} が {expected} 回ではなく {actual} 回現れています。");
+            }
+        }
+
+        // 違反が 1 件も無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "静的ファイル配信の配線が、確認済みの場所・回数と違います。"
+                + "新しい配信ルートは、SecurityHeadersMiddleware の既定(no-store)を"
+                + "自分のキャッシュ指示で上書きできる立場になります ——"
+                + "PHI を含みうるもの(添付・エクスポート)は静的配信に載せず、"
+                + "認可を通すアクションから返してください。"
+                + "公開して問題ない資産を配るなら、理由と回数を添えて"
+                + "IntendedStaticFileWiring へ登録します。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
+    }
+
+    // 静的ファイル配線の許可表が、実在するファイルを指し、理由を持っていること。
+    [Fact]
+    public void IntendedStaticFileWiring_IsAllRealAndExplained()
+    {
+        // 表のエントリを 1 つずつ確かめる
+        foreach (var (relativePath, allowed) in IntendedStaticFileWiring)
+        {
+            // Web プロジェクトからの相対パスとして実在すること
+            Assert.True(
+                File.Exists(Path.Combine(RepositoryPaths.WebProject, relativePath)),
+                $"静的ファイル配線の許可表が実在しないファイルを指しています: {relativePath}。");
+
+            // 綴りごとの登録を確かめる
+            foreach (var (token, intended) in allowed)
+            {
+                // 見張っている綴りであること(表にだけある綴りは誰にも照合されない)
+                Assert.Contains(token, StaticFileWiringTokens);
+                // 理由が空でも空白だけでもないこと
+                Assert.False(
+                    string.IsNullOrWhiteSpace(intended.Reason),
+                    $"静的ファイル配線の許可表に理由がありません: {relativePath} / {token}。");
+                // 回数が 1 以上であること(0 の登録は「許可したつもり」を作る)
+                Assert.True(
+                    intended.ExpectedCount >= 1,
+                    $"静的ファイル配線の許可表の ExpectedCount は 1 以上にしてください: {relativePath} / {token}。");
+            }
+        }
+    }
 
     // 判定(属性の型名の照合)が、拾う側と見逃さない側の両方で働くこと。
     //
@@ -906,22 +1035,14 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
-    /// C# の文字リテラルが書ける最大の中身の長さ（<c>'\uFFFF'</c> の 6 文字ぶん）に少し余裕を持たせた上限。
-    /// </summary>
-    /// <remarks>
-    /// これを超える「引用符から引用符まで」は文字リテラルではありえないので、
-    /// 地の文のアポストロフィ 2 つ（<c>It's Bob's</c>）をリテラルと読み違えないための歯止めになる。
-    /// </remarks>
-    private const int MaxCharLiteralInnerLength = 8;
-
-    /// <summary>
     /// その位置から<b>閉じている文字リテラル</b>が読めるかを試す。
     /// </summary>
     /// <remarks>
     /// <para><b>なぜ長さで縛るのか。</b> 判定に使えるのは「閉じているか」だけでは足りない ——
     /// 地の文に <c>It's Bob's</c> のようにアポストロフィが 2 つあると、
     /// その区間が「閉じた文字リテラル」に見えてしまう。C# の文字リテラルは中身が 1 文字
-    /// （エスケープでも <c>\uFFFF</c> の 6 文字）までなので、長さで縛れば地の文と区別できる。</para>
+    /// （エスケープでも <c>\uFFFF</c> の 6 文字）までなので、長さで縛れば地の文と区別できる
+    /// （上限の値は <see cref="CSharpLiteral.MaxCharLiteralInnerLength"/> が正本）。</para>
     ///
     /// <para><b>外し方は安全側。</b> リテラルでないと判断したアポストロフィは
     /// ただの 1 文字として実コードへ残すので、取りこぼす方向（＝見逃し）には倒れない。
@@ -938,38 +1059,25 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>閉じている文字リテラルとして読めれば true。</returns>
     private static bool TryReadCharLiteral(string line, int start, out int end)
     {
-        // 開きの次から読む
-        var i = start + 1;
+        // 共有の読み取りへ、地の文と区別するための長さの上限を渡す
+        var close = CSharpLiteral.FindCharLiteralEnd(
+            line,
+            start,
+            CSharpLiteral.MaxCharLiteralInnerLength);
 
-        // 上限までのあいだに閉じる引用符があるかを見る
-        while (i < line.Length && i - start - 1 <= MaxCharLiteralInnerLength)
+        // 閉じなかった(または長すぎた)ので、地の文のアポストロフィとして扱う
+        if (close < 0)
         {
-            // バックスラッシュの次の 1 文字はエスケープされている
-            if (line[i] == '\\')
-            {
-                // エスケープされた 1 文字を飛ばす
-                i += 2;
-                // 続きを見る
-                continue;
-            }
-
-            // 閉じる引用符に当たった
-            if (line[i] == '\'')
-            {
-                // リテラルの直後の位置を返す
-                end = i + 1;
-                // 文字リテラルとして読めた
-                return true;
-            }
-
-            // それ以外の文字は中身なので読み進める
-            i++;
+            // 呼び出し側が読み進める位置を変えないようにする
+            end = start;
+            // 文字リテラルではない
+            return false;
         }
 
-        // 閉じなかった(または長すぎた)ので、文字リテラルではない
-        end = start;
-        // 地の文のアポストロフィとして扱う
-        return false;
+        // リテラルの直後の位置を返す
+        end = close + 1;
+        // 文字リテラルとして読めた
+        return true;
     }
 
     /// <summary>
@@ -994,14 +1102,14 @@ public class ResponseCacheAttributePolicyTests
     /// どちらかにしかならない）。</para>
     /// </remarks>
     /// <param name="line">対象の行。</param>
-    /// <param name="start">開始の引用符の位置。</param>
+    /// <param name="start">開始の二重引用符の位置。</param>
     /// <returns>リテラルの直後の位置（閉じないまま行が終われば行末）。</returns>
     private static int SkipStringLiteral(string line, int start)
     {
-        // 開いた引用符の種類(" か ')
-        var quote = line[start];
+        // 呼び出し側が '"' のときだけここへ来る(アポストロフィは TryReadCharLiteral が扱う)
+        const char quote = '"';
         // 直前が @ なら逐語的文字列(エスケープが効かず、"" が 1 つの引用符)
-        var verbatim = quote == '"' && start > 0 && line[start - 1] == '@';
+        var verbatim = start > 0 && line[start - 1] == '@';
         // 開いた引用符の次から読む
         var i = start + 1;
 
@@ -1192,21 +1300,40 @@ public class ResponseCacheAttributePolicyTests
         Assert.Contains(nameof(NonControllerEndpointProbe), found.DeclaredOn, StringComparison.Ordinal);
     }
 
-    // 「走査対象の導出」そのものが ControllerBase で絞られていないこと。
+    // 「走査対象の導出」が、アセンブリ上の具象型を 1 つも取りこぼしていないこと。
     //
     // 上の検査は ScanProbes 経由で<b>型を直接渡す</b>ので、本番が使う導出
-    // (AppControllerScan.CacheDirectiveHosts)を ControllerBase へ狭める変異は拾えない。
-    // 手がかりを変えて、導出が実際に非コントローラの型を含むことを確かめる。
+    // (AppControllerScan.CacheDirectiveHosts)を狭める変異は拾えない。
+    //
+    // <b>「非コントローラの型が 1 つでもあれば緑」では足りない。</b> 実測で、
+    // 導出を `ControllerBase || Namespace.Contains("Models")` へ狭めると、
+    // Pages/ に置いた [ResponseCache(Duration = 300)] のページが再び見えなくなるのに
+    // ViewModel の型が条件を満たすため<b>全件緑のまま通った</b>。
+    // だから「1 つでも含む」ではなく<b>「1 つも欠けていない」</b>を条件にする ——
+    // 導出とは別に、このテスト自身がアセンブリを数え直して突き合わせる
+    // (狭める変異を通すには、このテストも同じ差分で書き換えるしかなくなる)。
     [Fact]
-    public void CacheDirectiveHosts_AreNotNarrowedToControllers()
+    public void CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly()
     {
         // 本番が使う導出をそのまま取り出す
-        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToHashSet();
 
-        // コントローラが含まれていること(狭めすぎ・広げ間違いの両方向を見る)
-        Assert.Contains(hosts, t => typeof(ControllerBase).IsAssignableFrom(t));
-        // <b>コントローラでない型も含まれていること。</b> ここが ControllerBase で
-        // 絞られると、PageModel に付けた [ResponseCache] が丸ごと見えなくなる
-        Assert.Contains(hosts, t => !typeof(ControllerBase).IsAssignableFrom(t));
+        // 導出とは独立に、アセンブリ上の具象型を数え直す
+        var everyConcreteType = AppControllerScan.WebAssembly.GetTypes()
+            .Where(t => !t.IsAbstract)
+            .ToList();
+
+        // 「見るべき対象ゼロ＝緑」を避ける(アセンブリが読めない形になったら落とす)
+        Assert.NotEmpty(everyConcreteType);
+
+        // 導出から抜け落ちている型が 1 つも無いこと
+        var missing = everyConcreteType.Where(t => !hosts.Contains(t)).Select(t => t.FullName).ToList();
+        Assert.True(
+            missing.Count == 0,
+            "キャッシュ指示の走査対象から、アセンブリ上の具象型が抜け落ちています。"
+                + "基底型・名前空間で絞ると、その条件に当たらない端点(Razor Pages の PageModel など)に"
+                + "付けた [ResponseCache] がどの検査からも見えなくなります。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, missing));
     }
 }

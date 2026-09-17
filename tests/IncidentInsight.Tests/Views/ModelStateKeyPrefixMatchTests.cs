@@ -858,21 +858,14 @@ public class ModelStateKeyPrefixMatchTests
     /// 単一引用符の位置から文字リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
     /// <c>'\''</c> のようなエスケープを考慮する。
     /// </summary>
-    private static int SkipCharLiteral(string source, int quoteIndex)
-    {
-        // 開き引用符の次の文字から探し始める
-        for (var i = quoteIndex + 1; i < source.Length; i++)
-        {
-            // エスケープなら次の 1 文字を読み飛ばす
-            if (source[i] == '\\') { i++; continue; }
-            // 単一引用符に出会ったらそこが閉じ位置
-            if (source[i] == '\'') return i;
-            // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
-            if (source[i] == '\n') return -1;
-        }
-        // 閉じ引用符が見つからなかった
-        return -1;
-    }
+    /// <remarks>
+    /// 本体は <see cref="CSharpLiteral.FindCharLiteralEnd"/> が持つ（同じ読み取りを必要とする
+    /// 検査が 2 つあり、書き写すとエスケープの扱いを直したときに片方だけが直るため）。
+    /// ここは C# のソースの引数リストを読むので、長さでは縛らない。
+    /// </remarks>
+    private static int SkipCharLiteral(string source, int quoteIndex) =>
+        // 長さの上限を置かずに閉じ引用符を探す
+        CSharpLiteral.FindCharLiteralEnd(source, quoteIndex, CSharpLiteral.NoInnerLengthLimit);
 
     /// <summary>指定位置が何行目かを返す(報告用。1 始まり)。</summary>
     private static int LineNumberAt(string source, int index) =>

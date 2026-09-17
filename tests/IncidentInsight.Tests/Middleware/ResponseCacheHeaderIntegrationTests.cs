@@ -372,16 +372,18 @@ public class HostFilteringShortCircuitTests
             ["AllowedHosts"] = AllowedHost,
         });
 
-    // 一致しない Host ヘッダーの応答が、本文を持たないこと。
+    // 一致しない Host ヘッダーの応答が、要求元のホスト名を映し返さないこと。
+    //
+    // <b>「本文を持たないこと」ではない。</b> 本文はある(フレームワークの定型ページ)。
+    // 名前とコメントをそちらに寄せると、この変更が直したばかりの誤った不変条件を
+    // テスト名として言い直すことになる。
     [Fact]
-    public async Task MismatchedHost_IsShortCircuitedWithoutABody()
+    public async Task MismatchedHost_IsShortCircuitedWithoutReflectingTheRequest()
     {
-        // リダイレクトを追わない素のクライアントを使う(短絡した応答そのものを見たい)
-        var client = _fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            // 追うと短絡した応答が観測できなくなる
-            AllowAutoRedirect = false,
-        });
+        // リダイレクトを追わないクライアントを共有ヘルパーから受け取る
+        // (組み立てを書き写すと、ヘッダーやタイムアウトの既定を足したときに
+        //  この 2 つのテストにだけ適用されない状態ができる)
+        var client = _fixture.CreateNonRedirectingClient();
         // 許可していないホスト名でリクエストを組み立てる
         var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
         // Host ヘッダーだけを許可リスト外の値にする
@@ -411,12 +413,8 @@ public class HostFilteringShortCircuitTests
     [Fact]
     public async Task MatchingHost_StillGetsTheNoStoreDefault()
     {
-        // 同じ条件のクライアントを使う
-        var client = _fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            // 比較条件をそろえる
-            AllowAutoRedirect = false,
-        });
+        // 上と同じ組み立てのクライアントを共有ヘルパーから受け取る
+        var client = _fixture.CreateNonRedirectingClient();
         // 許可したホスト名でリクエストを組み立てる
         var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
         // Host ヘッダーを許可リストの値にする
