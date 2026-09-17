@@ -225,8 +225,8 @@ public class ResponseCacheAttributePolicyTests
         // 直接書き込みが見つかったファイルと行を集める
         var violations = new List<string>();
 
-        // Web プロジェクト配下のソースのうち、コントローラとビューだけを見る
-        foreach (var sourcePath in RepositoryPaths.EnumerateWebSourceFiles().Where(IsControllerOrViewSource))
+        // Web プロジェクト配下のうち、コントローラとビューだけを見る
+        foreach (var sourcePath in ScannedSources())
         {
             // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
             var lines = File.ReadAllLines(sourcePath);
@@ -260,12 +260,15 @@ public class ResponseCacheAttributePolicyTests
     public void CacheControlSourceScan_SeesControllersAndViews()
     {
         // 走査が実際に見ているファイルを取り出す
-        var scanned = RepositoryPaths.EnumerateWebSourceFiles().Where(IsControllerOrViewSource).ToList();
+        var scanned = ScannedSources().ToList();
 
         // コントローラのソースが拾えていること
         Assert.Contains(scanned, p => Path.GetFileName(p).EndsWith("Controller.cs", StringComparison.Ordinal));
-        // 1 つも拾えていないなら、走査そのものが壊れている
-        Assert.True(scanned.Count > 0, "コントローラ・ビューのソースを 1 つも走査できていません。");
+        // <b>ビューのソースも拾えていること。</b> 以前は *.cs だけを列挙していたため、
+        // Views 配下に .cs が 1 つも無いこのリポジトリでは「ビューを見る」条件が
+        // 一度も成立せず、走査が死んでいた(実測: ビューへ直接書き込みを足しても全件緑)。
+        // 「件数が 0 でないこと」だけでは、コントローラが拾えている限り緑になるので気付けない
+        Assert.Contains(scanned, p => Path.GetExtension(p).Equals(".cshtml", StringComparison.OrdinalIgnoreCase));
     }
 
     // 「Cache-Control を名指ししている行か」の判定が、拾う側と見逃さない側の両方で働くこと。
@@ -285,11 +288,31 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("        var incidents = await _db.Incidents.ToListAsync();", false)]
     // 似ているが別物のヘッダー名も拾わない
     [InlineData("        Response.Headers.ContentType = \"application/json\";", false)]
+    // すべて小文字の綴りも拾う(HTTP のヘッダー名は大文字小文字を区別しない)
+    [InlineData("        Response.Headers[\"cache-control\"] = \"public\";", true)]
+    // すべて大文字の綴りも拾う
+    [InlineData("        Response.Headers[\"CACHE-CONTROL\"] = \"public\";", true)]
     public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
     {
         // 判定を実行して、期待どおりかを確認する
         Assert.Equal(expected, MentionsCacheControl(line));
     }
+
+    /// <summary>
+    /// 直接書き込みを禁じる範囲のソース(コントローラの <c>.cs</c> とビューの <c>.cshtml</c>)。
+    /// </summary>
+    /// <remarks>
+    /// <b>2 つの列挙を足すのが要点。</b> <c>EnumerateWebSourceFiles</c> は <c>*.cs</c> しか
+    /// 返さず、このリポジトリの <c>Views/</c> 配下に <c>.cs</c> は 1 つも無いので、
+    /// それだけではビューを 1 度も読めない(＝「ビューも見る」という条件が死ぬ)。
+    /// ビューは <c>EnumerateViewFiles</c> が返す。
+    /// </remarks>
+    /// <returns>走査対象のファイルパス。</returns>
+    private static IEnumerable<string> ScannedSources() =>
+        // コントローラの .cs と、ビューの .cshtml を両方たどる
+        RepositoryPaths.EnumerateWebSourceFiles()
+            .Concat(RepositoryPaths.EnumerateViewFiles())
+            .Where(IsControllerOrViewSource);
 
     /// <summary>
     /// そのソースファイルがコントローラかビューか(直接書き込みを禁じる範囲)を返す。
@@ -321,9 +344,14 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="line">判定するソースの 1 行。</param>
     /// <returns>名指ししていれば true。</returns>
     private static bool MentionsCacheControl(string line) =>
-        // 文字列キーでの指定(Cache-Control)か、型付きプロパティ(CacheControl)のどちらか
-        line.Contains("Cache-Control", StringComparison.Ordinal)
-            || line.Contains("CacheControl", StringComparison.Ordinal);
+        // 文字列キーでの指定(Cache-Control)か、型付きプロパティ(CacheControl)のどちらか。
+        // <b>大文字小文字を無視する</b>: HTTP のヘッダー名は大文字小文字を区別せず、
+        // IHeaderDictionary も OrdinalIgnoreCase の辞書なので
+        // Response.Headers["cache-control"] = ... は実際に効く。区別して照合すると、
+        // 綴りを小文字にするだけで素通りする(実測)——この検査が塞ごうとしている
+        // 「綴りを変えただけの抜け道」そのものになる
+        line.Contains("Cache-Control", StringComparison.OrdinalIgnoreCase)
+            || line.Contains("CacheControl", StringComparison.OrdinalIgnoreCase);
 
     // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
     //
