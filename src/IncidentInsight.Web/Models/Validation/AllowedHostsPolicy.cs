@@ -13,8 +13,16 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 残らない。境界値（区切り方・空白・大文字小文字・複数指定）を固定したいので、
 /// 判定だけを取り出してある。</para>
 ///
-/// <para><b>判定は「1 つでもワイルドカードがあるか」。</b> ここが要点で、
-/// <c>HostFiltering</c> は許可リストにワイルドカード（<see cref="Wildcards"/>）が<b>1 つでも</b>含まれていれば
+/// <para><b>判定は「フレームワークが任意の Host を受け付ける状態か」の 1 本</b>で、
+/// <c>HostFilteringMiddleware</c> の挙動を<b>そのまま写した</b>ものにしてある
+/// （既定設定の分割 → 0 件なら <c>["*"]</c> へフォールバック → ワイルドカード判定）。
+/// <b>独自に丸めない</b>のが要点 ——前後の空白を落とす・空白だけを全許可扱いする といった
+/// 「親切な」補正を入れると、フレームワークが実際には<b>全拒否</b>している設定
+/// （<c>" ; "</c> ・ <c>"  *  "</c> ・ <c>"   "</c> は 1 件以上残るのでフォールバックせず、
+/// 正規化しても綴りが一致しないため<b>すべて 400</b>＝実測）まで「全許可」と報告することになり、
+/// 規則の説明とケースが食い違う。全拒否はサイトが落ちるので運用者はすぐ気づく ——
+/// この判定が拾うべきなのは<b>黙って素通りする</b>形だけ。
+/// なお <c>HostFiltering</c> は許可リストにワイルドカード（<see cref="Wildcards"/>）が<b>1 つでも</b>含まれていれば
 /// 「空でない Host はすべて受け付ける」に切り替わる。つまり
 /// <c>"*;incident.example.com"</c> は「実ホスト名も足した」ように見えて
 /// <b>実際には全ホスト許可のまま</b>で、これは実ホスト名を「追加」しようとしたときに
@@ -55,11 +63,13 @@ public static class AllowedHostsPolicy
     /// この判定が直したはずの穴が、1 段深いところに残る形。</para>
     ///
     /// <para><b>正規化できない綴りは警告する側へ倒す。</b> <c>ToUriComponent()</c> は
-    /// <c>"0.0.0.0\t"</c> のような値で例外を投げる。判断できない以上「絞れている」とは
-    /// 言えないので、<c>true</c>（＝警告を出す）を返す（§9 fail-closed）。
-    /// 過剰に警告する側なので、見逃しにはならない。</para>
+    /// <c>"0.0.0.0\t"</c> のような値で例外を投げる。<b>実測では、そのときフレームワーク側も
+    /// 同じ正規化に失敗してリクエストごと例外になる</b>（200 でも 400 でもない）。
+    /// 「絞れている」とは言えないので <c>true</c>（＝警告を出す）を返す（§9 fail-closed）。
+    /// 過剰に警告する側なので、見逃しにはならない
+    /// （この実測は <c>HostFilteringShortCircuitTests</c> が固定している）。</para>
     /// </remarks>
-    /// <param name="entry">許可リストの 1 項目（前後の空白は除去済み）。</param>
+    /// <param name="entry">許可リストの 1 項目（<b>トリムしていない生の値</b>）。</param>
     /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
     private static bool IsWildcardEntry(string entry)
     {
@@ -85,30 +95,40 @@ public static class AllowedHostsPolicy
     /// <summary>
     /// その設定値が「実質すべてのホストを許可する」かを返す。
     /// </summary>
+    /// <remarks>
+    /// <para><b>写しているのは汎用ホストの既定設定。</b> 実装はこの 2 行で、
+    /// <b>この判定はこれを 1 行ずつ辿っただけ</b>のもの（他の場所へ書き写さず、ここを指すこと）:
+    /// <code>
+    /// var hosts = config["AllowedHosts"]?.Split(';', RemoveEmptyEntries);
+    /// options.AllowedHosts = hosts?.Length > 0 ? hosts : new[] { "*" };
+    /// </code>
+    /// つまり<b>「空の項目は無害」なのは、空でない項目が 1 つでも残る場合だけ</b>。
+    /// <c>";"</c> ・ <c>";;"</c> のように 1 件も残らない値は既定の <c>["*"]</c> へ落ちて全許可になる
+    /// （手で書くより <c>AllowedHosts=${PRIMARY};${SECONDARY}</c> のテンプレート展開で生まれやすい）。
+    /// <b>先にトリムしてはいけない</b> ——<c>" ; "</c> は項目が 2 件残るので既定へ落ちず、
+    /// 許可リストが <c>[" ", " "]</c> になって<b>すべて拒否</b>される（実測で 400）。
+    /// 丸めると、そこを「全許可」と読み違える。</para>
+    /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
-    /// <returns>未設定・空・ワイルドカードを 1 つでも含むなら <c>true</c>。</returns>
+    /// <returns>
+    /// フレームワークが任意の <c>Host</c> を受け付ける状態なら <c>true</c>。
+    /// 具体的には (a) 未設定、(b) 空の項目を落とすと<b>1 件も残らない</b>
+    /// （<c>""</c> ・ <c>";"</c> ・ <c>";;"</c>。既定の <c>["*"]</c> へ落ちるため）、
+    /// (c) ワイルドカードを 1 つでも含む、のいずれか。
+    /// </returns>
     public static bool IsPermissive(string? allowedHosts)
     {
-        // 未設定・空・空白だけなら、絞り込みが効いていない
-        if (string.IsNullOrWhiteSpace(allowedHosts)) return true;
+        // 未設定なら、フレームワークは分割すら行わず既定へ落ちる
+        if (allowedHosts is null) return true;
 
-        // <b>フレームワークとまったく同じ分割</b>で項目を取り出す(空の項目だけを落とし、
-        // <b>トリムはしない</b>)。ここで trim すると、次の「1 件も残らないか」の判定が
-        // フレームワークとずれる
+        // <b>フレームワークとまったく同じ分割</b>で項目を取り出す
+        // (空の項目だけを落とし、<b>トリムはしない</b>)
         var entries = allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
 
-        // <b>1 件も残らないなら全許可。</b> 汎用ホストの既定設定は
-        //   options.AllowedHosts = hosts?.Length > 0 ? hosts : new[] { "*" };
-        // なので、";" や ";;" のような値は既定の ["*"] へ落ちて全ホスト許可になる。
-        // つまり<b>「空の項目は無害」なのは、空でない項目が 1 つでも残る場合だけ</b>。
-        // 実測: AllowedHosts=";" は別ホストを 200 で受ける。この形は手で書くより
-        // テンプレート展開(AllowedHosts=${PRIMARY};${SECONDARY} の両方が未定義)で生まれる
+        // <b>1 件も残らないなら全許可。</b> 空文字や ";" ・ ";;" がここに落ちる
         if (entries.Length == 0) return true;
 
-        // 残った項目を 1 つずつ見る(前後の空白は照合の前に落とす)
-        return entries
-            .Select(entry => entry.Trim())
-            // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
-            .Any(IsWildcardEntry);
+        // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
+        return entries.Any(IsWildcardEntry);
     }
 }

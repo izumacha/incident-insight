@@ -406,28 +406,44 @@ public class HostFilteringShortCircuitTests
         Assert.Contains("Invalid Hostname", body, StringComparison.Ordinal);
     }
 
-    // ワイルドカードを 1 つでも残した設定は、実ホスト名を併記しても全ホスト許可のままであること。
+    // 設定値ごとに「許可リストに無いホストが通るか」を実測で固定する。
     //
-    // <b>なぜここで確かめるのか。</b> Program.cs の警告ログはこの前提の上に立っている
-    // (AllowedHostsPolicy.IsPermissive が「real と併記していても全許可」と判定する根拠)。
-    // 前提が実際の HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
+    // <b>なぜここで確かめるのか。</b> Program.cs の警告ログ(AllowedHostsPolicy.IsPermissive)は
+    // 「この設定はどのホストでも受け付ける」という前提の上に立っている。その前提が実際の
+    // HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
     //
-    // <b>3 綴りとも見る。</b> 1 つだけ固定していると、判定を狭める変異と
-    // 「フレームワーク側の前提が変わった」のを区別できない。文書 3 箇所が
-    // 「3 綴りとも固定している」と書いているので、実態もそろえる。
+    // <b>200 と 400 を同じ表で見る。</b> 「通ること」だけを並べると、判定を広げる変異
+    // (全拒否になる設定まで permissive と呼ぶ形)を 1 つも捕まえられない ——
+    // AllowedHostsPolicyTests の期待値はこの表と 1 対 1 で対応しているので、
+    // 片側だけを見ていると対応が崩れても緑のまま通る。
     //
-    // 0.0.0.0 は ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと自然に生まれる綴り。
+    // 本文が 1 行も違わない写しを設定値の数だけ作らないため、[Theory] に畳んである
+    // (CLAUDE.md §6 DRY)。
     [Theory]
+    // --- 全許可: ワイルドカード 3 綴り。実ホスト名を併記しても許可リスト全体が無効になる ---
     // HTTP.sys のワイルドカード
-    [InlineData("*")]
+    [InlineData("*;" + AllowedHost, 200, "* が 1 つでもあれば許可リスト全体が無効になる")]
     // Kestrel の IPv6 Any
-    [InlineData("[::]")]
-    // IPv4 Any
-    [InlineData("0.0.0.0")]
-    public async Task WildcardMixedWithARealHost_StillAcceptsAnyHost(string wildcard)
+    [InlineData("[::];" + AllowedHost, 200, "IPv6 Any も同じ扱い")]
+    // IPv4 Any。ASPNETCORE_URLS=http://0.0.0.0:8080 を写すと自然に生まれる綴り
+    [InlineData("0.0.0.0;" + AllowedHost, 200, "IPv4 Any も同じ扱い")]
+    // --- 全許可: ワイルドカードとは別の経路(既定値へのフォールバック) ---
+    // 空の項目を落とすと 1 件も残らず、フレームワークが既定の ["*"] を入れる
+    // (規則と根拠は AllowedHostsPolicy.IsPermissive の docstring が正本)。
+    // 手で書くよりテンプレート展開 AllowedHosts=${PRIMARY};${SECONDARY} で生まれやすい
+    [InlineData(";", 200, "項目が 1 件も残らないので既定の [\"*\"] へ落ちる")]
+    // --- 全拒否: 「空の項目は無害」なのは空でない項目が残る場合だけ ---
+    // " ; " は項目が 2 件残るので既定へ落ちず、許可リストが [" ", " "] になる
+    [InlineData(" ; ", 400, "空白は項目として残るので既定へ落ちない")]
+    // <b>トリムされない。</b> 空白付きのワイルドカードは正規化しても綴りが一致しない
+    [InlineData("  *  ", 400, "前後の空白は落とされず \"*\" と一致しない")]
+    // 実ホスト名と併記しても同じ(併記した側は一致しうるが、送るのは許可外のホスト)
+    [InlineData(AllowedHost + "; * ", 400, "空白付きのワイルドカードは一致しない")]
+    public async Task AllowedHostsValue_DecidesWhetherAnUnlistedHostGetsThrough(
+        string allowedHosts, int expectedStatus, string why)
     {
-        // その綴りと実ホスト名を併記した設定でアプリを起動する
-        using var fixture = new AllowedHostsFixture($"{wildcard};{AllowedHost}");
+        // その設定値でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
         // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
@@ -438,48 +454,42 @@ public class HostFilteringShortCircuitTests
         // 応答を受け取る
         var response = await client.SendAsync(request);
 
-        // <b>400 にならない</b> ——ワイルドカードが 1 つでもあれば絞り込みは効いていない。
-        // ここが 400 になる日が来たら、警告の判定(IsPermissive)を狭められる
-        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        // 期待した扱いになっていること(落ちたときに理由が読めるよう、根拠も出す)
+        Assert.True(
+            expectedStatus == (int)response.StatusCode,
+            $"AllowedHosts=\"{allowedHosts}\" は {expectedStatus} になるはず({why})。" +
+            $"実際は {(int)response.StatusCode}。" +
+            "ここが変わったなら AllowedHostsPolicy の判定も同じだけ動かす必要がある");
     }
 
-    // 区切り文字だけの設定も、全ホスト許可になること。
+    // 正規化できない綴りは、フレームワーク自身が例外を投げること。
     //
-    // <b>ワイルドカードの綴りとは別の経路。</b> 汎用ホストの既定設定は
-    //   var hosts = config["AllowedHosts"]?.Split(';', RemoveEmptyEntries);
-    //   options.AllowedHosts = hosts?.Length > 0 ? hosts : new[] { "*" };
-    // なので、";" のように<b>1 件も残らない</b>値は既定の ["*"] へ落ちる ——
-    // つまり「空の項目は無害」なのは<b>空でない項目が 1 つでも残る場合だけ</b>。
-    //
-    // この形は手で書くより<b>テンプレート展開</b>で生まれる:
-    //   AllowedHosts=${PRIMARY_HOST};${SECONDARY_HOST}  ← 両方未定義なら ";" になる
-    //
-    // <b>空白入りの " ; " は別物</b>(実測で 400)。あちらは項目が 2 件残るので既定へ落ちず、
-    // 許可リストが [" ", " "] になって<b>すべて拒否</b>される ——サイトは落ちるが
-    // 「素通り」ではないので、警告の判定としては permissive ではない。
+    // <b>AllowedHostsPolicy が fail-closed で警告する根拠がこれ。</b> 200 でも 400 でもない
+    // ——つまり「絞れている」とは言えないので、判定は警告する側へ倒してある。
+    // この実測を固定しておかないと、docstring の主張を支えるものが何も無くなる。
     [Fact]
-    public async Task SeparatorsOnlyAllowedHosts_StillAcceptsAnyHost()
+    public async Task AllowedHostsThatCannotBeNormalized_MakeTheFrameworkThrow()
     {
-        // 区切り文字だけの設定でアプリを起動する
-        using var fixture = new AllowedHostsFixture(";");
+        // ホスト名として正規化できない綴り(末尾にタブ)でアプリを起動する
+        using var fixture = new AllowedHostsFixture("0.0.0.0\t");
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
-        // どのホスト名も許可リストに「書かれていない」はずのリクエストを組み立てる
+        // どのホスト名でもよいのでリクエストを組み立てる
         var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
         // 一致しないはずの Host ヘッダーを乗せる
         request.Headers.Host = RejectedHost;
 
-        // 応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可リストの正規化そのものが失敗するので、応答に至らず例外になる
+        var error = await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(request));
 
-        // 400 にならない ——既定の ["*"] へ落ちているので絞り込みは効いていない
-        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        // 失敗の出どころがホスト名の正規化であること(別の理由で落ちても緑にしない)
+        Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
     }
 
     /// <summary>指定した `AllowedHosts` で起動するアプリ。</summary>
     /// <remarks>
     /// 値だけが違う同じ本文を綴りの数だけ書き写さないために、設定値を受け取る形にしてある
-    /// （CLAUDE.md §6 DRY。3 綴り目を足したときに 3 つ目の写しが生まれるのを防ぐ）。
+    /// （CLAUDE.md §6 DRY）。
     /// </remarks>
     /// <param name="allowedHosts">そのアプリへ渡す `AllowedHosts` の値。</param>
     private sealed class AllowedHostsFixture(string allowedHosts) : TempDatabaseAppFixture(
@@ -489,6 +499,7 @@ public class HostFilteringShortCircuitTests
             // 検証したい許可リストをそのまま渡す
             ["AllowedHosts"] = allowedHosts,
         });
+
 
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
     //
