@@ -221,7 +221,7 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
-    /// <c>Cache-Control</c> を<b>意図して</b>書いてよい唯一の 2 か所（理由付きの許可表）。
+    /// <c>Cache-Control</c> を<b>意図して</b>書いてよい行（ファイル × その行の内容の許可表）。
     /// </summary>
     /// <remarks>
     /// <para><b>なぜ「書いてよい場所」を列挙する形にしたのか。</b> 最初は
@@ -233,22 +233,55 @@ public class ResponseCacheAttributePolicyTests
     /// 「<c>Views/</c> 配下だけに絞ると <c>Pages/</c> が静かに外れる」事故を記録している。</para>
     ///
     /// <para><b>だから走査は Web プロジェクト全体にし、例外だけを表に置く。</b>
-    /// 表が小さく（2 件）、理由を持ち、増える差分が必ず 1 行として現れるなら、
+    /// 表が小さく、理由を持ち、増える差分が必ず 1 行として現れるなら、
     /// パスの形を当て続けるより安全側に倒れる。<b>この表にエントリが増える差分は、
     /// 理由の妥当性をレビューで必ず確認すること</b>（§6 のエスケープハッチと同じ扱い。
     /// 「絞り込みを狭める」変更は差分にもテスト件数にも現れないが、
     /// 表への 1 行は必ず現れる）。</para>
+    ///
+    /// <para><b>除外はファイル単位ではなく「その行の内容」まで見る。</b>
+    /// ファイルごと外すと、許可した 2 つの書き込み以外も同じファイルの中では自由になる ——
+    /// たとえば <c>Program.cs</c> へ 2 つ目の <c>UseStaticFiles</c>（<c>wwwroot</c> の外を
+    /// <c>/attachments</c> として配り、<c>public,max-age=86400</c> を名乗る）を足すと、
+    /// この検査も <see cref="StaticFileRoots_AreOnlyKnownPublicAssets"/>（<c>wwwroot</c> 直下しか
+    /// 見ない）も素通りする。行の内容まで表に持てば、その差分は必ずここで止まる。</para>
     /// </remarks>
-    private static readonly IReadOnlyDictionary<string, string> IntendedCacheControlWriters =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>
+        IntendedCacheControlWriters =
+        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
         {
-            // 既定値（誰も書かなかった応答へ no-store を入れる）を書く唯一の場所
+            // 既定値(誰も書かなかった応答へ no-store を入れる)を書く唯一の場所
             [Path.Combine("Middleware", "SecurityHeadersMiddleware.cs")] =
-                "キャッシュ抑止の既定値そのものを書く場所。ここが書かなければ既定は成立しない。",
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    // 既定値そのものの定数
+                    ["public const string NoStoreCacheControl = \"no-store\";"] =
+                        "キャッシュ抑止の既定値そのもの。",
+                    // 静的アセット用の指示の定数(値の正本)
+                    ["public const string StaticAssetCacheControl = \"public,max-age=3600\";"] =
+                        "静的アセット用の指示の値の正本。docs/security.md と突き合わせている。",
+                    // 既定値を入れるコールバック
+                    ["private static readonly Func<object, Task> ApplyDefaultCacheControl = state =>"] =
+                        "既定値を入れる OnStarting コールバックの宣言。",
+                    // 既に指示があるかの判定
+                    ["if (StringValues.IsNullOrEmpty(response.Headers.CacheControl))"] =
+                        "誰かが既に書いているかを見る判定(書き込みではない)。",
+                    // 既定値の書き込み
+                    ["response.Headers.CacheControl = NoStoreCacheControl;"] =
+                        "誰も書かなかった応答へ既定の no-store を入れる、唯一の書き込み。",
+                    // コールバックの登録
+                    ["context.Response.OnStarting(ApplyDefaultCacheControl, context.Response);"] =
+                        "上のコールバックを応答開始前に登録する。",
+                },
             // 静的アセットが既定の対象から外れるための自己申告を書く場所
             ["Program.cs"] =
-                "UseStaticFiles の OnPrepareResponse が静的アセット用の指示を名乗る。"
-                    + "これが無いと css/js が no-store になり毎回再取得になる（§8）。",
+                new Dictionary<string, string>(StringComparer.Ordinal)
+                {
+                    // 静的ファイル配信の自己申告
+                    ["ctx.Context.Response.Headers.CacheControl = SecurityHeadersMiddleware.StaticAssetCacheControl;"] =
+                        "UseStaticFiles の OnPrepareResponse が静的アセット用の指示を名乗る。"
+                            + "これが無いと css/js が no-store になり毎回再取得になる(§8)。",
+                },
         };
 
     // 意図した 2 か所以外が Cache-Control を直接書いていないこと。
@@ -271,11 +304,11 @@ public class ResponseCacheAttributePolicyTests
         // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
         foreach (var sourcePath in ScannedSources())
         {
-            // 意図して書く場所は対象外(理由は許可表が持つ)
-            if (IsIntendedWriter(sourcePath)) continue;
             // コメントを取り除いたうえで、ヘッダー名を含む行を探す
             foreach (var (lineNumber, text) in CodeLinesContaining(sourcePath, CacheControlTokens))
             {
+                // 意図して書く行は対象外(理由は許可表が持つ)
+                if (IsIntendedWrite(sourcePath, text)) continue;
                 // リポジトリからの相対パスと行番号で名指しする
                 violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{lineNumber}: {text}");
             }
@@ -322,18 +355,31 @@ public class ResponseCacheAttributePolicyTests
     public void IntendedCacheControlWriters_AreAllRealAndExplained()
     {
         // 表のエントリを 1 つずつ確かめる
-        foreach (var (relativePath, reason) in IntendedCacheControlWriters)
+        foreach (var (relativePath, allowedLines) in IntendedCacheControlWriters)
         {
             // Web プロジェクトからの相対パスとして実在すること
+            var fullPath = Path.Combine(RepositoryPaths.WebProject, relativePath);
             Assert.True(
-                File.Exists(Path.Combine(RepositoryPaths.WebProject, relativePath)),
+                File.Exists(fullPath),
                 $"許可表が実在しないファイルを指しています: {relativePath}。"
                     + "移動・改名したなら、この表も同じ変更セットで直してください"
                     + "(実在しないエントリは「除外したつもり」を作ります)。");
-            // 理由が空でも空白だけでもないこと
-            Assert.False(
-                string.IsNullOrWhiteSpace(reason),
-                $"許可表のエントリに理由がありません: {relativePath}。");
+
+            // そのファイルの中身を読んで、許可した行が実在するかを確かめる
+            var actualLines = File.ReadAllLines(fullPath).Select(l => l.Trim()).ToHashSet(StringComparer.Ordinal);
+            // 許可した行を 1 つずつ確かめる
+            foreach (var (allowedLine, reason) in allowedLines)
+            {
+                // その行が実在すること(実在しない許可は「除外したつもり」を作る)
+                Assert.True(
+                    actualLines.Contains(allowedLine),
+                    $"許可表の行が {relativePath} に実在しません: {allowedLine}。"
+                        + "書き換えたなら、この表も同じ変更セットで直してください。");
+                // 理由が空でも空白だけでもないこと
+                Assert.False(
+                    string.IsNullOrWhiteSpace(reason),
+                    $"許可表のエントリに理由がありません: {relativePath} / {allowedLine}。");
+            }
         }
     }
 
@@ -538,6 +584,12 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    /* メモ */ Response.Headers.CacheControl = \"public\";", true)]
     // 行コメントの<b>前</b>に実コードがある行も拾う
     [InlineData("        Response.Headers.CacheControl = \"public\"; // 速くするため", true)]
+    // 文字列の中の "/*" でコメントが始まったと読まない(実測でファイル全体が盲になった形)
+    [InlineData("        private const string GlobPattern = \"Models/*.cs\";", false)]
+    // URL の "//" を行コメントと読まない(その後ろの実コードを取りこぼさないため)
+    [InlineData("    <a href=\"https://example.com\">x</a> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
+    // 文字列の中の "@*" でもコメントが始まったと読まない
+    [InlineData("        private const string Odd = \"a@*b\";", false)]
     public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
     {
         // 判定を実行して、期待どおりかを確認する
@@ -622,10 +674,15 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <param name="sourcePath">Web プロジェクト配下のソースファイルの絶対パス。</param>
     /// <returns>許可表に載っていれば true。</returns>
-    private static bool IsIntendedWriter(string sourcePath) =>
+    private static bool IsIntendedWrite(string sourcePath, string lineText)
+    {
         // Web プロジェクトからの相対パスで表と突き合わせる(絶対パスは実行機ごとに違うため)
-        IntendedCacheControlWriters.ContainsKey(
-            Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath));
+        var relative = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
+        // そのファイルに許可された行が無ければ、どの行も許可されない
+        if (!IntendedCacheControlWriters.TryGetValue(relative, out var allowedLines)) return false;
+        // 前後の空白だけを落として、行の内容そのもので突き合わせる
+        return allowedLines.ContainsKey(lineText.Trim());
+    }
 
     // Cache-Control ヘッダーを名指ししている綴り(大文字小文字は無視して照合する)
     private static readonly string[] CacheControlTokens = ["Cache-Control", "CacheControl"];
@@ -711,6 +768,25 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
+            // 文字列リテラルの中は、コメントの開始として読まない。
+            // <b>実測した事故</b>: "Models/*.cs" のような値が 1 つあるだけで、
+            // そこから先のファイル全体が「コメントの途中」と見なされ、走査が丸ごと盲になった
+            // (この repo には実際にその綴りの定数がある)。URL の "https://" も同じ形で
+            // 行の途中から先を落としていた
+            if (line[i] == '"' || line[i] == '\'')
+            {
+                // リテラルの終わりの位置を求める(逐語的文字列 @"…" もここで扱う)
+                var end = SkipStringLiteral(line, i);
+                // <b>中身は実コードとして残す。</b> ヘッダー名は文字列キーとして書かれる
+                // (Response.Headers["Cache-Control"] = …)ので、読み飛ばすと本命を取り落とす。
+                // ここでやりたいのは「リテラルの中の記号をコメントの開始と読まない」ことだけ
+                code.Append(line, i, end - i);
+                // リテラルの直後から続きを見る
+                i = end;
+                // 続きを見る
+                continue;
+            }
+
             // 行コメントが始まったら、そこから先は読まない
             if (StartsWithAt(line, i, "//")) break;
             // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
@@ -726,6 +802,71 @@ public class ResponseCacheAttributePolicyTests
 
         // 実コードと、次の行へ持ち越す状態を返す
         return (code.ToString(), pendingCloser);
+    }
+
+    /// <summary>
+    /// 文字列（または文字）リテラルの終わりまで読み飛ばし、次に読む位置を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para>扱うのは 3 つ: 通常の <c>"…"</c>（<c>\"</c> のエスケープを踏まえる）、
+    /// 逐語的文字列 <c>@"…"</c>（エスケープが無く、<c>""</c> が 1 つの引用符）、
+    /// 文字リテラル <c>'…'</c>。</para>
+    ///
+    /// <para><b>ここは「言語を再実装しない」の境界線上にある。</b> 補間文字列の
+    /// <c>$"…{式}…"</c> の式の中にさらに文字列が入る形のような入れ子までは追わない。
+    /// この走査は<b>「増やしたことに気付く」ための網であって証明ではない</b> ——
+    /// これ以上の穴が出たら、綴りを 1 つずつ塞ぐのではなく本物のパーサへ移すこと
+    /// （この repo が YAML で <c>YamlDotNet</c> を入れたのと同じ判断。
+    /// 自前の走査で同義な書き方を網羅しようとすると、見落とすか誤検知するかの
+    /// どちらかにしかならない）。</para>
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="start">開始の引用符の位置。</param>
+    /// <returns>リテラルの直後の位置（閉じないまま行が終われば行末）。</returns>
+    /// <remarks>中身を捨てるためではなく、<b>中の記号をコメントの開始と読まない</b>ために使う。</remarks>
+    private static int SkipStringLiteral(string line, int start)
+    {
+        // 開いた引用符の種類(" か ')
+        var quote = line[start];
+        // 直前が @ なら逐語的文字列(エスケープが効かず、"" が 1 つの引用符)
+        var verbatim = quote == '"' && start > 0 && line[start - 1] == '@';
+        // 開いた引用符の次から読む
+        var i = start + 1;
+
+        // 閉じる引用符を探す
+        while (i < line.Length)
+        {
+            // 逐語的でなければ、バックスラッシュの次の 1 文字はエスケープされている
+            if (!verbatim && line[i] == '\\')
+            {
+                // エスケープされた 1 文字を飛ばす
+                i += 2;
+                // 続きを見る
+                continue;
+            }
+
+            // 引用符に当たった
+            if (line[i] == quote)
+            {
+                // 逐語的文字列で "" が続くなら、それは 1 つの引用符を表すので閉じない
+                if (verbatim && i + 1 < line.Length && line[i + 1] == quote)
+                {
+                    // 2 文字分飛ばして続きを見る
+                    i += 2;
+                    // 続きを見る
+                    continue;
+                }
+
+                // ここで閉じたので、その次の位置を返す
+                return i + 1;
+            }
+
+            // それ以外の文字はリテラルの中身なので読み進める
+            i++;
+        }
+
+        // 閉じないまま行が終わった(行末を返す)
+        return line.Length;
     }
 
     /// <summary>指定位置がその綴りで始まるかを返す(範囲外でも例外にしない)。</summary>
