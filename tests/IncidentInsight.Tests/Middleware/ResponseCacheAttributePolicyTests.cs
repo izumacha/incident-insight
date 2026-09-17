@@ -208,7 +208,38 @@ public class ResponseCacheAttributePolicyTests
         Assert.Single(declarations, d => d.Attribute.Duration == 33);
     }
 
-    // コントローラとビューが Cache-Control を直接書いていないこと。
+    /// <summary>
+    /// <c>Cache-Control</c> を<b>意図して</b>書いてよい唯一の 2 か所（理由付きの許可表）。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ「書いてよい場所」を列挙する形にしたのか。</b> 最初は
+    /// 「コントローラとビューだけを走査する」形にしていたが、走査対象をパスの形
+    /// （<c>Controllers/</c> ・ <c>Views/</c>）で当てる限り、その外に置いた同じコードが
+    /// 素通りする ——<c>Pages/</c> のビューも、別フォルダに置いた
+    /// <c>partial class AnalyticsController</c> も落ちなかった（実測）。
+    /// <see cref="RepositoryPaths.EnumerateViewFiles"/> の docstring が、まさに同じ
+    /// 「<c>Views/</c> 配下だけに絞ると <c>Pages/</c> が静かに外れる」事故を記録している。</para>
+    ///
+    /// <para><b>だから走査は Web プロジェクト全体にし、例外だけを表に置く。</b>
+    /// 表が小さく（2 件）、理由を持ち、増える差分が必ず 1 行として現れるなら、
+    /// パスの形を当て続けるより安全側に倒れる。<b>この表にエントリが増える差分は、
+    /// 理由の妥当性をレビューで必ず確認すること</b>（§6 のエスケープハッチと同じ扱い。
+    /// 「絞り込みを狭める」変更は差分にもテスト件数にも現れないが、
+    /// 表への 1 行は必ず現れる）。</para>
+    /// </remarks>
+    private static readonly IReadOnlyDictionary<string, string> IntendedCacheControlWriters =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 既定値（誰も書かなかった応答へ no-store を入れる）を書く唯一の場所
+            [Path.Combine("Middleware", "SecurityHeadersMiddleware.cs")] =
+                "キャッシュ抑止の既定値そのものを書く場所。ここが書かなければ既定は成立しない。",
+            // 静的アセットが既定の対象から外れるための自己申告を書く場所
+            ["Program.cs"] =
+                "UseStaticFiles の OnPrepareResponse が静的アセット用の指示を名乗る。"
+                    + "これが無いと css/js が no-store になり毎回再取得になる（§8）。",
+        };
+
+    // 意図した 2 か所以外が Cache-Control を直接書いていないこと。
     //
     // <b>なぜ属性と MvcOptions だけでは足りないのか。</b> 応答ヘッダーは素直に書ける:
     //   Response.Headers.CacheControl = "public,max-age=300";
@@ -220,14 +251,16 @@ public class ResponseCacheAttributePolicyTests
     // <b>手がかりはソースの実在</b>(型の走査ではない)。書き込みは実行時の 1 文なので、
     // リフレクションでは原理的に見えない。
     [Fact]
-    public void ControllersAndViews_DoNotWriteCacheControlDirectly()
+    public void OnlyIntendedWriters_SetCacheControlDirectly()
     {
         // 直接書き込みが見つかったファイルと行を集める
         var violations = new List<string>();
 
-        // Web プロジェクト配下のうち、コントローラとビューだけを見る
+        // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
         foreach (var sourcePath in ScannedSources())
         {
+            // 意図して書く場所は対象外(理由は許可表が持つ)
+            if (IsIntendedWriter(sourcePath)) continue;
             // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
             var lines = File.ReadAllLines(sourcePath);
             // 各行を順に見る
@@ -243,7 +276,7 @@ public class ResponseCacheAttributePolicyTests
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
             violations.Count == 0,
-            "コントローラまたはビューが Cache-Control を直接書いています。"
+            "意図した 2 か所以外が Cache-Control を直接書いています。"
                 + "SecurityHeadersMiddleware は既に指示がある応答へは触れないため、"
                 + "この 1 行がそのままキャッシュ保存の許可になります。"
                 + "キャッシュを抑止したいだけなら何も書かずに既定(no-store)へ任せ、"
@@ -255,20 +288,45 @@ public class ResponseCacheAttributePolicyTests
     // 走査が「見るべき対象ゼロ＝緑」で無力化されていないこと(fail-closed)。
     //
     // 上の検査は違反が 0 件なら緑になるので、絞り込みが 1 ファイルも拾えなくなる変異
-    // (拡張子の条件を間違える・パスの判定を狭めすぎる)は、そのままでは気付けない。
+    // (拡張子の条件を間違える・列挙の根を狭めすぎる)は、そのままでは気付けない。
     [Fact]
-    public void CacheControlSourceScan_SeesControllersAndViews()
+    public void CacheControlSourceScan_SeesBothCodeAndViews()
     {
         // 走査が実際に見ているファイルを取り出す
         var scanned = ScannedSources().ToList();
 
-        // コントローラのソースが拾えていること
-        Assert.Contains(scanned, p => Path.GetFileName(p).EndsWith("Controller.cs", StringComparison.Ordinal));
+        // C# のソースが拾えていること
+        Assert.Contains(scanned, p => Path.GetExtension(p).Equals(".cs", StringComparison.OrdinalIgnoreCase));
         // <b>ビューのソースも拾えていること。</b> 以前は *.cs だけを列挙していたため、
         // Views 配下に .cs が 1 つも無いこのリポジトリでは「ビューを見る」条件が
         // 一度も成立せず、走査が死んでいた(実測: ビューへ直接書き込みを足しても全件緑)。
-        // 「件数が 0 でないこと」だけでは、コントローラが拾えている限り緑になるので気付けない
+        // 「件数が 0 でないこと」だけでは、C# が拾えている限り緑になるので気付けない
         Assert.Contains(scanned, p => Path.GetExtension(p).Equals(".cshtml", StringComparison.OrdinalIgnoreCase));
+    }
+
+    // 許可表のエントリが、実在するファイルを指し、理由を持っていること。
+    //
+    // 表そのものは人が判断するエスケープハッチなので、せめて (a) 綴りが実在すること
+    // (実在しないパスは「除外したつもり」を作り、その場所を黙って検査対象へ戻す)、
+    // (b) 理由が空でないこと(値を誰も読んでいないと、空白を入れるだけで黙らせられる)
+    // は機械的に固定する。
+    [Fact]
+    public void IntendedCacheControlWriters_AreAllRealAndExplained()
+    {
+        // 表のエントリを 1 つずつ確かめる
+        foreach (var (relativePath, reason) in IntendedCacheControlWriters)
+        {
+            // Web プロジェクトからの相対パスとして実在すること
+            Assert.True(
+                File.Exists(Path.Combine(RepositoryPaths.WebProject, relativePath)),
+                $"許可表が実在しないファイルを指しています: {relativePath}。"
+                    + "移動・改名したなら、この表も同じ変更セットで直してください"
+                    + "(実在しないエントリは「除外したつもり」を作ります)。");
+            // 理由が空でも空白だけでもないこと
+            Assert.False(
+                string.IsNullOrWhiteSpace(reason),
+                $"許可表のエントリに理由がありません: {relativePath}。");
+        }
     }
 
     // 「Cache-Control を名指ししている行か」の判定が、拾う側と見逃さない側の両方で働くこと。
@@ -298,6 +356,14 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    /// <c>Cache-Control</c> をここでは書かない。", false)]
     // Razor のコメントも同じ扱い
     [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
+    // ブロックコメントの継続行(閉じていない)も同じ扱い
+    [InlineData("     * Cache-Control の既定はミドルウェアが入れる", false)]
+    // <b>同じ行で閉じたコメントの後ろの実コードは拾う</b>(綴りを変えただけの抜け道にしない)
+    [InlineData("    @* メモ *@ @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
+    // C# のブロックコメントを閉じた後ろの実コードも同じく拾う
+    [InlineData("    /* メモ */ Response.Headers.CacheControl = \"public\";", true)]
+    // 行コメントの<b>前</b>に実コードがある行も拾う
+    [InlineData("        Response.Headers.CacheControl = \"public\"; // 速くするため", true)]
     public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
     {
         // 判定を実行して、期待どおりかを確認する
@@ -305,109 +371,82 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
-    /// 直接書き込みを禁じる範囲のソース(コントローラの <c>.cs</c> とビューの <c>.cshtml</c>)。
+    /// 走査対象(Web プロジェクト配下の <c>.cs</c> と <c>.cshtml</c> すべて)。
     /// </summary>
     /// <remarks>
-    /// <b>2 つの列挙を足すのが要点。</b> <c>EnumerateWebSourceFiles</c> は <c>*.cs</c> しか
-    /// 返さず、このリポジトリの <c>Views/</c> 配下に <c>.cs</c> は 1 つも無いので、
-    /// それだけではビューを 1 度も読めない(＝「ビューも見る」という条件が死ぬ)。
-    /// ビューは <c>EnumerateViewFiles</c> が返す。
+    /// <b>パスの形で絞らない。</b> <c>Controllers/</c> ・ <c>Views/</c> のような形で当てると、
+    /// その外に置いた同じコード(<c>Pages/</c> のビュー、別フォルダの <c>partial class</c>)が
+    /// 静かに外れる(実測)。除外は理由付きの
+    /// <see cref="IntendedCacheControlWriters"/> だけにする。
     /// </remarks>
     /// <returns>走査対象のファイルパス。</returns>
     private static IEnumerable<string> ScannedSources() =>
-        // コントローラの .cs と、ビューの .cshtml を両方たどる
-        RepositoryPaths.EnumerateWebSourceFiles()
-            .Concat(RepositoryPaths.EnumerateViewFiles())
-            .Where(IsControllerOrViewSource);
+        // C# のソースと Razor ビューを両方たどる(どちらの列挙も生成物を除いている)
+        RepositoryPaths.EnumerateWebSourceFiles().Concat(RepositoryPaths.EnumerateViewFiles());
 
     /// <summary>
-    /// そのソースファイルがコントローラかビューか(直接書き込みを禁じる範囲)を返す。
+    /// そのファイルが、<c>Cache-Control</c> を意図して書いてよい場所かを返す。
     /// </summary>
     /// <param name="sourcePath">Web プロジェクト配下のソースファイルの絶対パス。</param>
-    /// <returns>コントローラまたはビューなら true。</returns>
-    private static bool IsControllerOrViewSource(string sourcePath)
-    {
-        // ファイル名がコントローラの命名(このリポジトリは 1 ファイル 1 コントローラ)
-        if (Path.GetFileName(sourcePath).EndsWith("Controller.cs", StringComparison.Ordinal)) return true;
-        // パスに Controllers / Views ディレクトリを含むもの(部分クラスや Areas も拾う)
-        var relative = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
-        // ディレクトリ区切りを OS 非依存に正規化してから判定する
-        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
-        // どこかに Controllers / Views が現れれば対象
-        return segments.Any(s =>
-            s.Equals("Controllers", StringComparison.Ordinal) || s.Equals("Views", StringComparison.Ordinal));
-    }
+    /// <returns>許可表に載っていれば true。</returns>
+    private static bool IsIntendedWriter(string sourcePath) =>
+        // Web プロジェクトからの相対パスで表と突き合わせる(絶対パスは実行機ごとに違うため)
+        IntendedCacheControlWriters.ContainsKey(
+            Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath));
 
     /// <summary>
-    /// その 1 行が <c>Cache-Control</c> ヘッダーを名指ししているかを返す。
+    /// その 1 行が、コメントを取り除いたうえで <c>Cache-Control</c> ヘッダーを名指ししているかを返す。
     /// </summary>
     /// <remarks>
-    /// 代入・インデクサ・<c>Append</c> と綴りが分かれるので、書き方ではなく
-    /// <b>ヘッダー名の出現</b>で拾う。読み取りだけの行も拾うが、コントローラ・ビューに
-    /// <c>Cache-Control</c> を読む理由は無いので、拾いすぎで困らない
-    /// (誤検知が出るなら、そのとき具体例に合わせて絞る)。
+    /// <para><b>行頭だけを見て「コメント行」と決めない。</b> <c>@*…*@</c> も <c>/*…*/</c> も
+    /// 同じ行で閉じられるので、行頭の記号だけで丸ごと捨てると
+    /// <c>@* メモ *@ @{ … CacheControl = "public" … }</c> が素通りする(実測)。
+    /// これはこの検査が大文字小文字について塞いだのと同じ「綴りを変えただけの抜け道」。
+    /// <b>閉じたコメントは取り除き、残りを判定する。</b></para>
+    ///
+    /// <para>逆に、コメントで赤くする検査は作らない —— CLAUDE.md §5 は
+    /// 「1 行ごとに日本語のコメントを書く」ことを求めており、この規則を説明する
+    /// コメントは <c>[ResponseCache]</c> のすぐ上(いちばん書かれやすい場所)に来る。
+    /// 規約どおりに書くと CI が赤くなる検査は、いずれ検査ごと緩められる。</para>
     /// </remarks>
     /// <param name="line">判定するソースの 1 行。</param>
-    /// <returns>名指ししていれば true。</returns>
+    /// <returns>コメントを除いた部分がヘッダー名を含んでいれば true。</returns>
     private static bool MentionsCacheControl(string line)
     {
-        // 前後の空白を落として、行頭の記号を見られるようにする
-        var trimmed = line.TrimStart();
-        // <b>コメント行は対象外にする。</b> CLAUDE.md §5 は「1 行ごとに日本語のコメントを書く」
-        // ことを求めており、この規則を説明するコメントは [ResponseCache] のすぐ上
-        // (＝いちばん書かれやすい場所)に来る。コメントで赤くする検査は
-        // 「規約どおりに書くと CI が落ちる」状態を作り、いずれ検査ごと緩められる
-        // (実測: HomeController のコメントに Cache-Control と書くだけで落ちた)
-        if (trimmed.StartsWith("//", StringComparison.Ordinal)
-            || trimmed.StartsWith("@*", StringComparison.Ordinal)
-            || trimmed.StartsWith("*", StringComparison.Ordinal))
-        {
-            // コメントは書き込みではないので拾わない
-            return false;
-        }
+        // 同じ行で閉じているコメント(Razor と C# のブロック)を取り除く
+        var code = ClosedCommentPattern.Replace(line, " ");
+        // 閉じていないブロックコメントの開始より後ろは、次の行以降もコメントなので落とす
+        var openBlock = code.IndexOf("@*", StringComparison.Ordinal);
+        // C# のブロックコメントの開始位置も探す
+        var openCSharpBlock = code.IndexOf("/*", StringComparison.Ordinal);
+        // 先に現れるほうを開始位置とする(両方無ければ -1 のまま)
+        var cut = openBlock >= 0 && openCSharpBlock >= 0
+            ? Math.Min(openBlock, openCSharpBlock)
+            : Math.Max(openBlock, openCSharpBlock);
+        // 開始が見つかったら、そこから先を落とす
+        if (cut >= 0) code = code[..cut];
+        // 行コメント(// 以降)も落とす
+        var lineComment = code.IndexOf("//", StringComparison.Ordinal);
+        // 見つかったら、そこから先を落とす
+        if (lineComment >= 0) code = code[..lineComment];
+        // 前後の空白を落として、ブロックコメントの継続行を見分けられるようにする
+        var trimmed = code.TrimStart();
+        // 「*」で始まる行は、閉じていないブロックコメントの途中(上で */ は除去済み)
+        if (trimmed.StartsWith("*", StringComparison.Ordinal)) return false;
 
-        // 実コードの行だけを判定する
-        return MentionsCacheControlHeader(trimmed);
+        // 残った実コードの部分だけを判定する。
+        // 大文字小文字を無視するのは、HTTP のヘッダー名が大文字小文字を区別せず、
+        // IHeaderDictionary も OrdinalIgnoreCase の辞書で、
+        // Response.Headers["cache-control"] = ... が実際に効くため(実測で素通りしていた)
+        return trimmed.Contains("Cache-Control", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("CacheControl", StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>
-    /// その 1 行が <c>Cache-Control</c> ヘッダーの名前を含むかを返す(コメント判定の前後で使う)。
-    /// </summary>
-    /// <param name="line">判定するソースの 1 行。</param>
-    /// <returns>ヘッダー名を含んでいれば true。</returns>
-    private static bool MentionsCacheControlHeader(string line) =>
-        // 文字列キーでの指定(Cache-Control)か、型付きプロパティ(CacheControl)のどちらか。
-        // <b>大文字小文字を無視する</b>: HTTP のヘッダー名は大文字小文字を区別せず、
-        // IHeaderDictionary も OrdinalIgnoreCase の辞書なので
-        // Response.Headers["cache-control"] = ... は実際に効く。区別して照合すると、
-        // 綴りを小文字にするだけで素通りする(実測)——この検査が塞ごうとしている
-        // 「綴りを変えただけの抜け道」そのものになる
-        line.Contains("Cache-Control", StringComparison.OrdinalIgnoreCase)
-            || line.Contains("CacheControl", StringComparison.OrdinalIgnoreCase);
-
-
-    // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
-    //
-    // <b>なぜ要るのか。</b> 継承した属性は派生型からも見えるので、具象の名前で報告すると
-    // (a) 同じ 1 つの宣言が派生の数だけ並び、(b) 名指しされたファイルを開いても属性が無く、
-    // 直すべき 1 か所(基底)がどこにも出てこない。アクション側には同じ内容の検査
-    // (DeclarationScan_ReportsAnInheritedActionOnlyOnce)があるが、クラス側には無かった。
-    [Fact]
-    public void DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase()
-    {
-        // 同じ抽象基底を継承する 2 つの具象コントローラを走査する
-        var declarations = ScanProbes(
-            typeof(ClassLevelInheritedProbeController),
-            typeof(SecondClassLevelInheritedProbeController));
-
-        // 基底のクラス属性(Duration = 77)に由来する宣言が 1 件だけであること
-        var inherited = Assert.Single(declarations, d => d.Attribute.Duration == 77);
-        // 名指しが、属性を実際に宣言している基底であること(派生の名前ではない)
-        Assert.Contains(
-            nameof(ClassLevelInheritedProbeControllerBase),
-            inherited.DeclaredOn,
-            StringComparison.Ordinal);
-    }
+    // 同じ行の中で閉じているコメント(Razor の @*…*@ と C# の /*…*/)を表す。
+    // 入力は自分たちのリポジトリのソースなので外部入力ではない(§9 の ReDoS 対象外)。
+    // 量指定子は最短一致にして、1 行に 2 つ以上あるときも個別に取り除く
+    private static readonly System.Text.RegularExpressions.Regex ClosedCommentPattern =
+        new(@"@\*.*?\*@|/\*.*?\*/", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     /// <summary>
     /// 合成したコントローラに対して走査を実行する。
