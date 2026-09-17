@@ -342,20 +342,24 @@ public class ResponseCacheAttributePolicyTests
             var seenCounts = new Dictionary<string, int>(StringComparer.Ordinal);
 
             // コメントを取り除いたうえで、ヘッダー名を含む行を探す
-            foreach (var (lineNumber, text) in CodeLinesContaining(sourcePath, CacheControlTokens))
+            foreach (var (lineNumber, text, code) in CodeLines(sourcePath))
             {
-                // 行の内容そのもので突き合わせる(前後の空白だけを落とす)
-                var trimmed = text.Trim();
-                // 意図して書く行なら、違反にはせず出現回数だけを数える(理由は許可表が持つ)
-                if (allowedLines is not null && allowedLines.ContainsKey(trimmed))
+                // 実コードがヘッダー名を含まない行は関係ない
+                if (!CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase))) continue;
+
+                // <b>突き合わせるのは「コメントを取り除いた実コード」。</b>
+                // 元の行で照合すると、§5 が明示的に許している行末コメントを
+                // 許可済みの行へ足しただけで「表に無い行」と「回数が 0 回」と
+                // 「許可表の行が実在しない」が同時に出て、原因が読み取れなくなる
+                if (allowedLines is not null && allowedLines.ContainsKey(code))
                 {
                     // その行の出現回数を 1 つ増やす
-                    seenCounts[trimmed] = seenCounts.GetValueOrDefault(trimmed) + 1;
+                    seenCounts[code] = seenCounts.GetValueOrDefault(code) + 1;
                     // 数えたので、この行は違反として記録しない
                     continue;
                 }
 
-                // リポジトリからの相対パスと行番号で名指しする
+                // リポジトリからの相対パスと行番号で名指しする(見せるのは元の行)
                 violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{lineNumber}: {text}");
             }
 
@@ -431,8 +435,11 @@ public class ResponseCacheAttributePolicyTests
                     + "移動・改名したなら、この表も同じ変更セットで直してください"
                     + "(実在しないエントリは「除外したつもり」を作ります)。");
 
-            // そのファイルの中身を読んで、許可した行が実在するかを確かめる
-            var actualLines = File.ReadAllLines(fullPath).Select(l => l.Trim()).ToHashSet(StringComparer.Ordinal);
+            // そのファイルの中身を読んで、許可した行が実在するかを確かめる。
+            // <b>本体の照合と同じ「コメントを取り除いた実コード」で見る</b> ——
+            // ここだけ元の行で見ると、行末コメントを足したときにこのテストだけが
+            // 別の理由（「許可表の行が実在しません」）で落ち、原因の切り分けを妨げる
+            var actualLines = CodeLines(fullPath).Select(l => l.Code).ToHashSet(StringComparer.Ordinal);
             // 許可した行を 1 つずつ確かめる
             foreach (var (allowedLine, intended) in allowedLines)
             {
@@ -599,12 +606,16 @@ public class ResponseCacheAttributePolicyTests
             IntendedStaticFileWiring.TryGetValue(tableKey, out var allowed);
             // リポジトリからの相対パス(名指し用)
             var display = Path.GetRelativePath(RepositoryPaths.Root, sourcePath);
+            // ファイルは 1 度だけ読み、全綴りの数え上げで使い回す(§8)
+            var codeLines = CodeLines(sourcePath);
 
-            // 綴りごとに、その綴りを含む行が何本あるかを数える
+            // 綴りごとに、その綴りが何回現れるかを数える
             foreach (var token in StaticFileWiringTokens)
             {
-                // コメントを取り除いたうえで、その綴りを含む行を数える
-                var actual = CodeLinesContaining(sourcePath, [token]).Count();
+                // <b>行の本数ではなく出現回数</b>を数える ——
+                // 同じ行に 2 つ書く形(app.UseStaticFiles(a); app.UseStaticFiles(b);)は
+                // 本数だと 1 のままで、配線が増えたことが差分に現れない(実測)
+                var actual = codeLines.Sum(l => CountOccurrences(l.Code, token));
                 // 許可された回数(表に無ければ 0 回＝1 つでもあれば違反)
                 var expected = allowed is not null && allowed.TryGetValue(token, out var intended)
                     ? intended.ExpectedCount
@@ -911,14 +922,34 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>該当した行の番号(1 始まり)と、その行の内容。</returns>
     private static IEnumerable<(int LineNumber, string Text)> CodeLinesContaining(
         string sourcePath,
-        IReadOnlyList<string> tokens)
+        IReadOnlyList<string> tokens) =>
+        // 実コードだけを見て絞り込み、読み手には元の行を見せる
+        CodeLines(sourcePath)
+            .Where(l => tokens.Any(t => l.Code.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            .Select(l => (l.LineNumber, l.Text));
+
+    /// <summary>
+    /// ソースを 1 行ずつ、<b>元の行</b>と<b>コメントを取り除いた実コード</b>の対で返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>両方を返すのが要点。</b> 判定に使うのは実コード（コメントで検査を満たしたり
+    /// 破ったりできないようにするため）だが、失敗文言に出すのは元の行でなければ
+    /// 読み手が自分のファイルの中でその行を見つけられない。</para>
+    ///
+    /// <para><b>ファイルの読み取りは 1 回だけ。</b> 綴りごとに呼び直すと、
+    /// 読み取りとコメント除去の状態機械を綴りの数だけ繰り返すことになる
+    /// （CLAUDE.md §8「同じ計算・取得を繰り返さない」）。</para>
+    /// </remarks>
+    /// <param name="sourcePath">読み取るソースファイル。</param>
+    /// <returns>行番号(1 始まり)・元の行(前後の空白を落としたもの)・実コードの組。</returns>
+    private static List<(int LineNumber, string Text, string Code)> CodeLines(string sourcePath)
     {
         // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
         var lines = File.ReadAllLines(sourcePath);
         // ブロックコメントの途中なら、閉じるまでの綴りを持つ(外なら null)
         string? pendingCloser = null;
-        // 該当した行を貯める
-        var hits = new List<(int, string)>();
+        // 結果を貯める
+        var result = new List<(int, string, string)>(lines.Length);
 
         // 先頭から順に、コメントの内外を持ち越しながら見る
         for (var i = 0; i < lines.Length; i++)
@@ -927,16 +958,42 @@ public class ResponseCacheAttributePolicyTests
             var (code, nextCloser) = StripComments(lines[i], pendingCloser);
             // 次の行の判定に使う状態を更新する
             pendingCloser = nextCloser;
-            // 残った実コードが、探している綴りのいずれかを含むかを見る
-            if (tokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase)))
-            {
-                // 行番号(1 始まり)と、読み手に見せる元の行を記録する
-                hits.Add((i + 1, lines[i].Trim()));
-            }
+            // 行番号(1 始まり)・元の行・実コードを記録する
+            result.Add((i + 1, lines[i].Trim(), code.Trim()));
         }
 
-        // 見つかった行を返す
-        return hits;
+        // 全行を返す
+        return result;
+    }
+
+    /// <summary>
+    /// 文字列の中に綴りが<b>何回</b>現れるかを、大文字小文字を無視して数える。
+    /// </summary>
+    /// <remarks>
+    /// <b>「含む行の本数」では足りない。</b> 同じ行に 2 つ書けば
+    /// （<c>app.UseStaticFiles(a); app.UseStaticFiles(b);</c>）本数は 1 のままで、
+    /// 配線が増えたことが差分に現れない（実測でこの形が素通りした）。
+    /// </remarks>
+    /// <param name="text">走査する文字列。</param>
+    /// <param name="token">数える綴り。</param>
+    /// <returns>現れた回数。</returns>
+    private static int CountOccurrences(string text, string token)
+    {
+        // 見つかった回数
+        var count = 0;
+        // 先頭から順に、見つかるたびにその綴りのぶんだけ進める
+        for (var i = text.IndexOf(token, StringComparison.OrdinalIgnoreCase);
+             i >= 0;
+             i = i + token.Length <= text.Length
+                 ? text.IndexOf(token, i + token.Length, StringComparison.OrdinalIgnoreCase)
+                 : -1)
+        {
+            // 1 件数える
+            count++;
+        }
+
+        // 数えた回数を返す
+        return count;
     }
 
     /// <summary>
