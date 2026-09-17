@@ -72,15 +72,37 @@ public abstract class TempDatabaseAppFixture : IDisposable
     public WebApplicationFactory<Program> Factory { get; }
 
     /// <summary>アプリを停止し、生成した一時 DB のファイルを消す。</summary>
+    /// <remarks>
+    /// <b>後始末は必ず finally で行う。</b> 素直に 4 手順を並べると、ホストの停止が
+    /// 例外を投げた時点(ホステッドサービスや DbContext の破棄が失敗する・SQLite の
+    /// ファイルがまだ開いている等)で残りが実行されず、<b>このクラスが存在する理由である
+    /// 一時ファイルの削除がまるごと飛ぶ</b>。停止で落ちたときこそファイルが残るので、
+    /// 順序ではなく到達を保証する。
+    /// </remarks>
     public void Dispose()
     {
-        // 先に派生ファクトリを止めて、SQLite のファイルハンドルを解放させる
-        Factory.Dispose();
-        // 派生元のファクトリも明示的に止める
-        _baseFactory.Dispose();
-        // 本体と補助ファイルをまとめて消す(対象の一覧は共通ヘルパーが持つ)
-        SqliteTestFiles.Cleanup(_databasePath);
-        // 派生クラスがファイナライザを持たないことを明示する(CA1816)
-        GC.SuppressFinalize(this);
+        // 後始末に必ず到達させる(停止が失敗しても削除は行う)
+        try
+        {
+            // 先に派生ファクトリを止めて、SQLite のファイルハンドルを解放させる。
+            // ここが投げても、派生元の停止と削除は下の finally で必ず行われる
+            try
+            {
+                // 派生ファクトリ(テスト用設定を適用したほう)を止める
+                Factory.Dispose();
+            }
+            finally
+            {
+                // 派生元のファクトリも明示的に止める
+                _baseFactory.Dispose();
+            }
+        }
+        finally
+        {
+            // 本体と補助ファイルをまとめて消す(対象の一覧は共通ヘルパーが持つ)
+            SqliteTestFiles.Cleanup(_databasePath);
+            // 派生クラスがファイナライザを持たないことを明示する(CA1816)
+            GC.SuppressFinalize(this);
+        }
     }
 }

@@ -9,6 +9,8 @@ using Microsoft.Extensions.Configuration;
 using System.Text.RegularExpressions;
 // 共有のフィクスチャとキャッシュ指示の判定を使う
 using IncidentInsight.Tests.Helpers;
+// ログインのレート制限の設定キー定数を使う
+using IncidentInsight.Web.Models.RateLimiting;
 // MvcOptions(グローバルフィルタ・キャッシュプロファイル)を読むために使う
 using Microsoft.AspNetCore.Mvc;
 // 起動済みアプリから設定を解決するために使う
@@ -94,6 +96,15 @@ public class ResponseCacheHeaderIntegrationTests
     /// 起動を 1 回に保つ仕掛けと一時ファイルの後始末は
     /// <see cref="TempDatabaseAppFixture"/> が持つ(理由もそちらに書いてある)。
     /// ここはこのテストに固有の設定 ——認証が要る JSON を叩くためのデモ管理者—— だけを渡す。
+    ///
+    /// <para><b>ログインのレート制限も、このホストを使うテスト全体で共有される。</b>
+    /// 制限の単位は <c>HttpContext.Connection.RemoteIpAddress</c> だが、<c>TestServer</c>
+    /// 経由では <c>null</c> になり、fail-closed の設計どおり全員が共通の 1 バケツへ入る
+    /// ——つまりテストごとに分けられない。既定は 60 秒あたり 10 回なので、
+    /// <c>CreateSignedInClientAsync</c>(ログインを 1 回行う)を使うテストが増えると、
+    /// あとに走ったものが 429 を受けて「ログインが失敗した」ように見える失敗をする。
+    /// このクラスはレート制限を検証していないので、<b>枠を十分大きくして無関係にする</b>
+    /// (レート制限そのものの検証は <c>LoginRateLimitIntegrationTests</c> が担当する)。</para>
     /// </remarks>
     public sealed class AppFixture() : TempDatabaseAppFixture(
         "ii-cacheheader",
@@ -103,6 +114,8 @@ public class ResponseCacheHeaderIntegrationTests
             ["SeedAccounts:AdminEmail"] = AdminEmail,
             // シードするデモ管理者のパスワード
             ["SeedAccounts:AdminPassword"] = AdminPassword,
+            // ログインの枠を十分大きくして、このクラスの検証がレート制限に左右されないようにする
+            [$"{LoginRateLimitOptions.SectionName}:PermitLimit"] = "1000",
         });
 
     // アプリの設定(MvcOptions)側からキャッシュ許可が入り込んでいないこと。
