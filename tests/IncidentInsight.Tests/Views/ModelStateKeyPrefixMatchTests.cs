@@ -861,11 +861,10 @@ public class ModelStateKeyPrefixMatchTests
     /// <remarks>
     /// 本体は <see cref="CSharpLiteral.FindCharLiteralEnd"/> が持つ（同じ読み取りを必要とする
     /// 検査が 2 つあり、書き写すとエスケープの扱いを直したときに片方だけが直るため）。
-    /// ここは C# のソースの引数リストを読むので、長さでは縛らない。
     /// </remarks>
     private static int SkipCharLiteral(string source, int quoteIndex) =>
-        // 長さの上限を置かずに閉じ引用符を探す
-        CSharpLiteral.FindCharLiteralEnd(source, quoteIndex, CSharpLiteral.NoInnerLengthLimit);
+        // 閉じ引用符を探す(開きかどうかの判断は利用側が持つ)
+        CSharpLiteral.FindCharLiteralEnd(source, quoteIndex);
 
     /// <summary>指定位置が何行目かを返す(報告用。1 始まり)。</summary>
     private static int LineNumberAt(string source, int index) =>

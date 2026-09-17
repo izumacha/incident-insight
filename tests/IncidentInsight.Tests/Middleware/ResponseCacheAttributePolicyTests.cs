@@ -567,8 +567,13 @@ public class ResponseCacheAttributePolicyTests
     [
         // 配信そのものを組み立てる呼び出し
         "UseStaticFiles", "UseFileServer", "UseDirectoryBrowser",
-        // 配信の根(どのディレクトリを配るか)を差し替える綴り
+        // 配信の根(どのディレクトリを配るか)を差し替える綴り。
+        // パイプラインの組み立てだけでなく、ビルダの生成時にも差し替えられる
+        // (WebApplicationOptions.WebRootPath / builder.UseWebRoot)——実測で、
+        // WebRootPath = "." にすると呼び出しも指示も 1 つも変わらないまま
+        // /appsettings.json ・ /incident_insight.db が public,max-age=3600 で配られた
         "FileProvider", "PhysicalFileProvider", "CompositeFileProvider",
+        "WebRootPath", "UseWebRoot",
     ];
 
     /// <summary>
@@ -842,6 +847,11 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    <script src='https://cdn.example.com/x.js'></script> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // 同じ形でも、書き込みではなくコメントなら拾わない(誤検知側にも倒れないこと)
     [InlineData("    <script src='https://cdn.example.com/x.js'></script> @* Cache-Control は書かない *@", false)]
+    // <b>地の文のアポストロフィと属性の引用符が同じ行にある形。</b> 「閉じているか」だけで
+    // 判断すると Bob's の ' が href=' の ' で閉じ、あいだのコメントが読まれず赤くなった(実測)
+    [InlineData("    <p>Bob's report</p> @* Cache-Control は書かない *@ <a href='x'>x</a>", false)]
+    // 同じ形でも、コメントではなく実際の書き込みなら拾う(見逃し側にも倒れないこと)
+    [InlineData("    <p>Bob's</p> @{ Context.Response.Headers.CacheControl = \"public\"; } <a href='x'>x</a>", true)]
     // 本物の文字リテラルは今までどおりリテラルとして扱う(中の @* をコメント開始と読まない)
     [InlineData("        var marker = '@'; Response.Headers.CacheControl = \"public\";", true)]
     // アポストロフィの後ろに実コードがあれば、今までどおり拾う(見逃す方向へ倒れない)
@@ -1078,7 +1088,7 @@ public class ResponseCacheAttributePolicyTests
                 // 後ろに置かれた <c>@* Cache-Control … *@</c> がコメントとして落ちず、
                 // <b>規約どおりの日本語コメントで CI が赤くなる</b>(誤検知で赤くなる検査は、
                 // いずれ検査ごと緩められる ——この repo が繰り返し避けている形)
-                if (TryReadCharLiteral(line, i, out var charLiteralEnd))
+                if (TryReadQuotedRun(line, i, out var charLiteralEnd))
                 {
                     // 閉じている文字リテラルなので、中身は実コードとして残したまま読み飛ばす
                     code.Append(line, i, charLiteralEnd - i);
@@ -1128,21 +1138,31 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
-    /// その位置から<b>閉じている文字リテラル</b>が読めるかを試す。
+    /// その位置の単一引用符が<b>リテラル（文字リテラル・属性値）の開き</b>かを判定し、
+    /// そうなら閉じ引用符の直後の位置を返す。
     /// </summary>
     /// <remarks>
-    /// <para><b>判定は「その行の中で閉じているか」だけ。</b> 閉じていなければ地の文の
-    /// アポストロフィなので、ただの 1 文字として実コードへ残す ——
-    /// <c>&lt;p&gt;It's fine&lt;/p&gt; @* Cache-Control … *@</c> の <c>@*…*@</c> が
-    /// コメントとして落ちるのはこれによる。</para>
+    /// <para><b>判定は 2 つ: 「開きに見えるか」と「その行の中で閉じているか」。</b>
+    /// 開きに見えるかは<b>直前の非空白文字</b>で決める ——
+    /// <c>=</c> <c>(</c> <c>,</c> <c>[</c> <c>{</c> <c>:</c> <c>?</c> のいずれかなら
+    /// 属性値（<c>src='…'</c>）か文字リテラル（<c>= 'x'</c> ・ <c>f('x')</c>）で、
+    /// 英数字なら地の文のアポストロフィ（<c>Bob's</c>）。</para>
     ///
-    /// <para><b>閉じている場合は、中身が長くてもリテラルとして読み飛ばす。</b>
-    /// 一度「中身が 8 文字まで」で縛ったが、Razor では <c>'</c> が属性の引用符にもなるため
-    /// <c>src='https://…'</c> がリテラルとして読めなくなり、中の <c>//</c> で行の残りが
-    /// 走査から落ちた（実測の fail-open。<b>誤検知を消すつもりで見逃しを作っていた</b>）。
-    /// <c>It's Bob's</c> のように地の文のアポストロフィが 2 つある行は、あいだが
-    /// リテラル扱いになるものの<b>中身は実コードとして残す</b>ので、
-    /// その後ろのコメントも実コードもこれまでどおり読める。</para>
+    /// <para><b>なぜ「閉じているか」だけでは足りないのか（実測）。</b>
+    /// <c>&lt;p&gt;Bob's report&lt;/p&gt; @* Cache-Control … *@ &lt;a href='x'&gt;</c> は
+    /// <c>Bob's</c> の <c>'</c> が <c>href='</c> の <c>'</c> で閉じてしまい、
+    /// あいだの <c>@*…*@</c> がコメントとして読まれず、§5 どおりの日本語コメントで
+    /// CI が赤くなった。直前の文字を見れば <c>Bob's</c> は開きではないと分かる。</para>
+    ///
+    /// <para><b>なぜ「長さ」で縛らないのか（実測）。</b> 一度「中身が 8 文字まで」で
+    /// 縛ったが、Razor では <c>'</c> が属性の引用符にもなるため <c>src='https://…'</c> が
+    /// リテラルとして読めなくなり、中の <c>//</c> で行の残りが走査から落ちた ——
+    /// <b>誤検知を消すつもりで見逃しを作っていた</b>（向きを間違えた手当ての実例）。</para>
+    ///
+    /// <para><b>残っている境界。</b> これは「増やしたことに気付く」ための網であって
+    /// 証明ではない（<see cref="SkipStringLiteral"/> の解説と同じ立場）。
+    /// 開きの判定は綴りの前後を見るだけなので、補間文字列の入れ子のような形は追わない。
+    /// <b>次に穴が出たら、綴りを 1 つずつ足すのではなく本物のパーサへ移すこと。</b></para>
     ///
     /// <para><b>外し方は安全側。</b> リテラルでないと判断したアポストロフィは
     /// ただの 1 文字として実コードへ残すので、取りこぼす方向（＝見逃し）には倒れない。
@@ -1153,17 +1173,35 @@ public class ResponseCacheAttributePolicyTests
     /// 閉じない <c>"</c> がマークアップの地の文に現れることは実質無い
     /// （属性値は必ず閉じる）ので、単純な走査のままにしてある。</para>
     /// </remarks>
+    /// <summary>単一引用符が「リテラルの開き」だと見なせる直前の文字。</summary>
+    /// <remarks>
+    /// 属性値（<c>src=</c>）と文字リテラル（<c>= 'x'</c> ・ <c>f('x')</c> ・ <c>[ 'x' ]</c>）を
+    /// 覆い、地の文（直前が英数字の <c>Bob's</c>）を外すための最小の集合。
+    /// </remarks>
+    private const string QuoteOpenerPredecessors = "=(,[{:?";
+
     /// <param name="line">対象の行。</param>
-    /// <param name="start">開きのアポストロフィの位置。</param>
+    /// <param name="start">アポストロフィの位置。</param>
     /// <param name="end">読めた場合、リテラルの直後の位置。</param>
-    /// <returns>閉じている文字リテラルとして読めれば true。</returns>
-    private static bool TryReadCharLiteral(string line, int start, out int end)
+    /// <returns>リテラルの開きで、かつその行の中で閉じていれば true。</returns>
+    private static bool TryReadQuotedRun(string line, int start, out int end)
     {
-        // 共有の読み取りで、その行の中で閉じているかだけを見る。
-        // <b>長さでは縛らない</b> ——Razor では ' が属性の引用符にもなるので、
-        // src='https://…' のような長い値を「リテラルではない」と判断すると、
-        // 中の // が行コメントの開始と読まれて行の残りが走査から落ちる(実測の fail-open)
-        var close = CSharpLiteral.FindCharLiteralEnd(line, start, CSharpLiteral.NoInnerLengthLimit);
+        // 直前の非空白文字を探す(空白は読み飛ばす)
+        var previous = start - 1;
+        // 空白のあいだは戻り続ける
+        while (previous >= 0 && char.IsWhiteSpace(line[previous])) previous--;
+
+        // 直前が「開きに見える文字」でなければ、地の文のアポストロフィとして扱う
+        if (previous < 0 || !QuoteOpenerPredecessors.Contains(line[previous]))
+        {
+            // 呼び出し側が読み進める位置を変えないようにする
+            end = start;
+            // リテラルではない
+            return false;
+        }
+
+        // 開きに見えるので、その行の中で閉じているかを見る(長さでは縛らない)
+        var close = CSharpLiteral.FindCharLiteralEnd(line, start);
 
         // 閉じなかった(または長すぎた)ので、地の文のアポストロフィとして扱う
         if (close < 0)
@@ -1190,8 +1228,8 @@ public class ResponseCacheAttributePolicyTests
     ///
     /// <para>扱うのは 2 つ: 通常の <c>"…"</c>（<c>\"</c> のエスケープを踏まえる）と、
     /// 逐語的文字列 <c>@"…"</c>（エスケープが無く、<c>""</c> が 1 つの引用符）。
-    /// 文字リテラル <c>'…'</c> は <see cref="TryReadCharLiteral"/> が長さの歯止め付きで扱う
-    /// （地の文のアポストロフィと区別する必要があるため）。</para>
+    /// 単一引用符 <c>'…'</c> は <see cref="TryReadQuotedRun"/> が扱う
+    /// （地の文のアポストロフィと区別する必要があるため、直前の文字で開きかどうかを見る）。</para>
     ///
     /// <para><b>ここは「言語を再実装しない」の境界線上にある。</b> 補間文字列の
     /// <c>$"…{式}…"</c> の式の中にさらに文字列が入る形のような入れ子までは追わない。

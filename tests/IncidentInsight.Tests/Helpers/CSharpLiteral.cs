@@ -15,22 +15,17 @@ namespace IncidentInsight.Tests.Helpers;
 /// この repo が <c>RepositoryPaths</c> ・ <c>AuditedEntities</c> で繰り返し記録している形
 /// （CLAUDE.md §6 DRY）。</para>
 ///
-/// <para><b>長さの上限は引数で受けるが、いまはどちらの利用側も
-/// <see cref="NoInnerLengthLimit"/> を渡す。</b> 一度「中身が 8 文字まで」で縛る形にしたが、
-/// <b>それは誤りだった</b>: Razor のビューでは <c>'</c> が属性の引用符にもなるので、
+/// <para><b>「中身の長さで縛る」引数は置かない。</b> 一度そうしかけたが誤りだった:
+/// Razor のビューでは <c>'</c> が属性の引用符にもなるので、
 /// <c>src='https://cdn.example.com/x.js'</c> のような長い値がリテラルとして読めなくなり、
 /// 中の <c>//</c> が行コメントの開始と解釈されて<b>その行の残りが走査から丸ごと落ちた</b>
 /// （実測。キャッシュ指示の書き込みが同じ行にあると見逃す＝fail-open）。
-/// 地の文のアポストロフィを別扱いするのに必要だったのは長さではなく
-/// <b>「その行の中で閉じているか」</b>だけで、そちらは上限と無関係に効く。
-/// 引数自体を残してあるのは、将来ほんとうに上限が要る利用側が出たときに
-/// 判定を書き写さずに済ませるため。</para>
+/// 地の文のアポストロフィを別扱いするのに必要なのは長さではなく
+/// <b>直前の文字と「その行の中で閉じているか」</b>で、それは利用側が判断する。
+/// どちらの利用側も使わない引数を「将来のために」残さない（§6）。</para>
 /// </remarks>
 public static class CSharpLiteral
 {
-    /// <summary>長さで縛らないことを表す上限（C# のソースを読む側が使う）。</summary>
-    public const int NoInnerLengthLimit = int.MaxValue;
-
     /// <summary>
     /// 単一引用符の位置から、<b>閉じ引用符の位置</b>を返す（見つからなければ <c>-1</c>）。
     /// </summary>
@@ -40,18 +35,12 @@ public static class CSharpLiteral
     /// </remarks>
     /// <param name="source">走査するソース。</param>
     /// <param name="quoteIndex">開きの単一引用符の位置。</param>
-    /// <param name="maxInnerLength">
-    /// 中身として許す最大の長さ。これを超えたら「文字リテラルではない」として <c>-1</c> を返す。
-    /// 縛らない場合は <see cref="NoInnerLengthLimit"/> を渡す。
-    /// </param>
     /// <returns>閉じ引用符の位置。読めなければ <c>-1</c>。</returns>
-    public static int FindCharLiteralEnd(string source, int quoteIndex, int maxInnerLength)
+    public static int FindCharLiteralEnd(string source, int quoteIndex)
     {
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
-            // 中身がここまでに何文字あったか（開きの次から数えた長さ）
-            if (i - quoteIndex - 1 > maxInnerLength) return -1;
             // エスケープなら次の 1 文字を読み飛ばす
             if (source[i] == '\\') { i++; continue; }
             // 単一引用符に出会ったらそこが閉じ位置
