@@ -10,8 +10,8 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 残らない。境界値（区切り方・空白・大文字小文字・複数指定）を固定したいので、
 /// 判定だけを取り出してある。</para>
 ///
-/// <para><b>判定は「1 つでも <c>*</c> があるか」。</b> ここが要点で、
-/// <c>HostFiltering</c> は許可リストに <c>*</c> が<b>1 つでも</b>含まれていれば
+/// <para><b>判定は「1 つでもワイルドカードがあるか」。</b> ここが要点で、
+/// <c>HostFiltering</c> は許可リストにワイルドカード（<see cref="Wildcards"/>）が<b>1 つでも</b>含まれていれば
 /// 「空でない Host はすべて受け付ける」に切り替わる。つまり
 /// <c>"*;incident.example.com"</c> は「実ホスト名も足した」ように見えて
 /// <b>実際には全ホスト許可のまま</b>で、これは実ホスト名を「追加」しようとしたときに
@@ -24,14 +24,26 @@ public static class AllowedHostsPolicy
     /// <summary>設定値の区切り文字（ASP.NET Core が <c>AllowedHosts</c> に使うもの）。</summary>
     private const char Separator = ';';
 
-    /// <summary>どのホスト名でも受け付ける状態を表す綴り。</summary>
-    private const string Wildcard = "*";
+    /// <summary>どのホスト名でも受け付ける状態を表す綴り（3 つとも同じ意味）。</summary>
+    /// <remarks>
+    /// <para><b><c>*</c> だけではない。</b> <c>HostFilteringMiddleware.IsTopLevelWildcard</c> は
+    /// <c>*</c>（HTTP.sys）・<c>[::]</c>（Kestrel の IPv6 Any）・<c>0.0.0.0</c>（IPv4 Any）の
+    /// いずれかが<b>1 つでも</b>含まれていれば、許可リスト全体を無効にして
+    /// 「空でない Host はすべて受け付ける」へ切り替える。</para>
+    ///
+    /// <para><b>ここを <c>*</c> だけにすると、直したはずのバグがそのまま残る。</b>
+    /// <c>"incident.example.test;0.0.0.0"</c> は <c>"*;incident.example.com"</c> と
+    /// <b>構造がまったく同じ</b>（実ホスト名の隣にワイルドカードがある）で、
+    /// <c>ASPNETCORE_URLS=http://0.0.0.0:8080</c> を写して書くと自然に生まれる。
+    /// 実測でも、この綴りは別ホストを 200 で受けるのに警告が出なかった。</para>
+    /// </remarks>
+    private static readonly string[] Wildcards = ["*", "[::]", "0.0.0.0"];
 
     /// <summary>
     /// その設定値が「実質すべてのホストを許可する」かを返す。
     /// </summary>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
-    /// <returns>未設定・空・<c>*</c> を 1 つでも含むなら <c>true</c>。</returns>
+    /// <returns>未設定・空・ワイルドカードを 1 つでも含むなら <c>true</c>。</returns>
     public static bool IsPermissive(string? allowedHosts)
     {
         // 未設定・空・空白だけなら、絞り込みが効いていない
@@ -41,6 +53,6 @@ public static class AllowedHostsPolicy
         return allowedHosts
             .Split(Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
-            .Any(host => host == Wildcard);
+            .Any(host => Wildcards.Contains(host, StringComparer.Ordinal));
     }
 }

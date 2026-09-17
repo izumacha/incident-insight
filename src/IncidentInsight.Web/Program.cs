@@ -354,9 +354,14 @@ if (!app.Environment.IsDevelopment())
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
-            "AllowedHosts is '*' in Production. Set it to the real hostname(s) via the " +
-            "AllowedHosts setting or environment variable (semicolon-separated) to prevent " +
-            "Host-header spoofing, especially behind a reverse proxy (issue #64).");
+            "AllowedHosts is permissive in Production (current value: {AllowedHosts}). " +
+            "A list containing '*', '[::]' or '0.0.0.0' disables host filtering entirely. " +
+            "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
+            "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
+            "behind a reverse proxy (issue #64).",
+            // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
+            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
+            allowedHosts);
     }
 }
 

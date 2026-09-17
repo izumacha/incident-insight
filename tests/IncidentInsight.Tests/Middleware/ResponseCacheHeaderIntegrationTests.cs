@@ -440,6 +440,43 @@ public class HostFilteringShortCircuitTests
             ["AllowedHosts"] = $"*;{AllowedHost}",
         });
 
+    // IPv4 Any(0.0.0.0)を併記した設定も、同じく全ホスト許可のままであること。
+    //
+    // <b>なぜ 2 つ目が要るのか。</b> AllowedHostsPolicy は 3 つの綴り(* / [::] / 0.0.0.0)を
+    // 全許可として扱うが、「本当にフレームワークがそう振る舞うか」を固定しているのは
+    // この統合テストだけ。* だけを固定していると、判定を * だけへ戻す変異が
+    // 「フレームワーク側の前提が違っていた」のか「判定が狭まった」のか区別できない。
+    //
+    // 0.0.0.0 を選ぶのは、ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと
+    // 自然に生まれる綴りで、実際に踏みやすいため。
+    [Fact]
+    public async Task IPv4AnyMixedWithARealHost_StillAcceptsAnyHost()
+    {
+        // 0.0.0.0 と実ホスト名を併記した設定でアプリを起動する
+        using var fixture = new IPv4AnyMixedFixture();
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+        // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // 一致しないはずの Host ヘッダーを乗せる
+        request.Headers.Host = RejectedHost;
+
+        // 応答を受け取る
+        var response = await client.SendAsync(request);
+
+        // 400 にならない ——0.0.0.0 が 1 つでもあれば絞り込みは効いていない
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary>`"0.0.0.0"` と実ホスト名を併記した設定のアプリ。</summary>
+    private sealed class IPv4AnyMixedFixture() : TempDatabaseAppFixture(
+        "ii-hostfilter-anyv4",
+        new Dictionary<string, string?>
+        {
+            // ASPNETCORE_URLS の綴りを写して書いてしまう形
+            ["AllowedHosts"] = $"0.0.0.0;{AllowedHost}",
+        });
+
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
     //
     // 上の検査は「弾かれること」しか見ないので、絞り込みが強すぎて全リクエストが 400 に

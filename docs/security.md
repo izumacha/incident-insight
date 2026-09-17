@@ -38,8 +38,13 @@
      **本番では必ず実ホスト名へ絞ってください。**
      なお `appsettings.json` に入っているのは既定の `"*"` で、**これは配備時の設定事項です**
      (実ホスト名をリポジトリ側で決められないため)。絞り忘れは機械的には検出できないので、
-     `Program.cs` が Production 起動時に警告ログ(`AllowedHosts is '*' in Production. …`)を
-     出します —— **配備後にこのログが出ていないことを確認してください。**
+     `Program.cs` が Production 起動時に警告ログ(`AllowedHosts is permissive in Production …`、
+     設定値そのものも出ます)を出します —— **配備後にこのログが出ていないことを確認してください。**
+     **全許可になる綴りは `*` だけではありません**: `[::]`(IPv6 Any)と `0.0.0.0`(IPv4 Any)も
+     同じで、**1 つでも混ざっていれば実ホスト名を併記しても許可リスト全体が無効**になります
+     (`ASPNETCORE_URLS=http://0.0.0.0:8080` を写して `AllowedHosts` に書くと自然に起きます)。
+     判定の正本は `Models/Validation/AllowedHostsPolicy`、実際の挙動は
+     `HostFilteringShortCircuitTests` が固定しています。
   2. ホスト名の絞り込み(`AllowedHosts` を実ホスト名へ絞ったとき。issue #64。
      既定の `"*"` のままなら短絡しません)。一致しない `Host` ヘッダーには 400 が返ります。
      これは汎用ホストが `IStartupFilter` として登録するミドルウェアなので、`Program.cs` の
