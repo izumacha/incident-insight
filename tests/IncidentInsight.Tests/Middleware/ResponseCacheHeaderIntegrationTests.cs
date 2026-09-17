@@ -38,8 +38,9 @@ namespace IncidentInsight.Tests.Middleware;
 ///     アンチフォージェリを一切通らないため、共有キャッシュにも残りうる状態だった。</description></item>
 /// </list>
 ///
-/// <para><b>静的アセット側も同じファイルで見る。</b> 「PHI に付く」だけを検証すると、
-/// 判定を「常に付ける」へ単純化する変異が通ってしまい、版付きの css/js が毎回再取得される
+/// <para><b>静的アセット側も同じファイルで見る。</b> 既定値が静的ファイルへ及ばないのは
+/// 「静的ファイル配信が自分でキャッシュ指示を名乗る」からで、その配線
+/// (<c>Program.cs</c> の <c>OnPrepareResponse</c>)が消えると css/js が毎回再取得される
 /// (§8 配信の最適化)。付く側と付かない側を対で固定する。</para>
 /// </remarks>
 public class ResponseCacheHeaderIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
@@ -131,10 +132,15 @@ public class ResponseCacheHeaderIntegrationTests : IClassFixture<WebApplicationF
 
         // 静的ファイルが実際に配信されていることを確認する(パスが変わったらここで気付ける)
         Assert.True(response.IsSuccessStatusCode);
-        // 版付き URL でキャッシュを効かせたいので、キャッシュ抑止が付いていないことを確認する
-        Assert.DoesNotContain(
-            SecurityHeadersMiddleware.NoStoreCacheControl,
-            response.Headers.CacheControl?.ToString() ?? "");
+        // 静的アセット用の指示がそのまま返ることを確認する。
+        // これが「誰も指示していなければ no-store」の既定値を静的ファイルへ及ばせない唯一の仕組みで、
+        // 指示が消えるとキャッシュが効かなくなる(§8)ことにこの検証で気付ける。
+        // 比較は NonValidated(回線に載った生の値)で行う ——
+        // 型付きの CacheControl は "public,max-age=3600" を "public, max-age=3600" へ
+        // 正規化するため、定数とそのまま比べると空白の有無だけで落ちる
+        Assert.Equal(
+            SecurityHeadersMiddleware.StaticAssetCacheControl,
+            response.Headers.NonValidated["Cache-Control"].ToString());
     }
 
     [Fact]

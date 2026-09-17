@@ -68,90 +68,16 @@ public class SecurityHeadersMiddlewareTests
         Assert.Equal("DENY", headerValueSeenByNext);
     }
 
-    // ── キャッシュ抑止の判定(ShouldPreventCaching) ────────────────────────
+    // ── キャッシュ抑止の既定値 ────────────────────────────────────────────
     //
-    // 判定を純粋関数として切り出している理由はミドルウェア側の docstring が正本
-    // (実際の呼び出し口である OnStarting は DefaultHttpContext では発火しないため、
-    //  境界をここで固定しないと統合テスト 1 本だけが頼りになる)。
-
-    [Theory]
-    // 画面(HTML)はインシデント本文・報告者氏名を含むため抑止する
-    [InlineData("text/html")]
-    // charset 付きの実際の応答も同じく抑止する(前方一致で拾えることの確認)
-    [InlineData("text/html; charset=utf-8")]
-    // 種別名の大文字小文字は問わない(HTTP ヘッダーの種別は case-insensitive)
-    [InlineData("TEXT/HTML; charset=utf-8")]
-    // 集計 JSON(/Analytics/...)も部署別件数などを含むため抑止する
-    [InlineData("application/json; charset=utf-8")]
-    // 将来のエクスポート(CSV)は除外表に載っていないので自動的に抑止される側へ入る
-    [InlineData("text/csv")]
-    // ファイルダウンロードが名乗る汎用の種別も抑止される(いちばん守りたい応答)
-    [InlineData("application/octet-stream")]
-    public void ShouldPreventCaching_ReturnsTrue_ForDynamicResponses(string contentType)
-    {
-        // 誰もキャッシュ指示を書いていない状態で判定する(既定値を入れる場面)
-        var result = SecurityHeadersMiddleware.ShouldPreventCaching(contentType, existingCacheControl: null);
-
-        // 動的な応答と判断され、キャッシュ抑止が付くことを確認する
-        Assert.True(result);
-    }
-
-    [Theory]
-    // スタイルシートは版付き URL で配信される静的アセットなので抑止しない
-    [InlineData("text/css")]
-    // スクリプトも同様(wwwroot/js は Scripts/*.ts のコンパイル結果)
-    [InlineData("text/javascript; charset=utf-8")]
-    // 実行環境によってはスクリプトが application/javascript を名乗る
-    [InlineData("application/javascript")]
-    // 画像(favicon・ドキュメント用スクリーンショット)
-    [InlineData("image/png")]
-    // 自己ホストする Web フォント
-    [InlineData("font/woff2")]
-    // 除外の比較も大文字小文字を問わない(片方だけ case-sensitive だと答えが割れる)
-    [InlineData("Text/CSS")]
-    public void ShouldPreventCaching_ReturnsFalse_ForStaticAssets(string contentType)
-    {
-        // 静的アセットの応答として判定する
-        var result = SecurityHeadersMiddleware.ShouldPreventCaching(contentType, existingCacheControl: null);
-
-        // キャッシュを効かせたままにする(§8 配信の最適化)ことを確認する
-        Assert.False(result);
-    }
-
-    [Theory]
-    // Content-Type が未設定(302 リダイレクト・204 など本文を持たない応答)
-    [InlineData(null)]
-    // 空文字も同じ扱い
-    [InlineData("")]
-    // 空白のみも「未設定」として扱う
-    [InlineData("   ")]
-    public void ShouldPreventCaching_ReturnsFalse_WhenContentTypeIsMissing(string? contentType)
-    {
-        // 本文の種別が分からない応答として判定する
-        var result = SecurityHeadersMiddleware.ShouldPreventCaching(contentType, existingCacheControl: null);
-
-        // 保存される中身が無いので何もしないことを確認する
-        Assert.False(result);
-    }
-
-    [Theory]
-    // HomeController.Error の [ResponseCache(NoStore = true, Location = None)] が書く値
-    [InlineData("no-store,no-cache")]
-    // MapHealthChecks が自分で書く値
-    [InlineData("no-store, no-cache")]
-    // 明示的にキャッシュを許可している応答(将来そういう画面を作った場合)も尊重する
-    [InlineData("public, max-age=3600")]
-    public void ShouldPreventCaching_ReturnsFalse_WhenCacheControlAlreadySet(string existing)
-    {
-        // 動的な応答(HTML)でも、すでにキャッシュ指示があれば触らないことを確認する
-        var result = SecurityHeadersMiddleware.ShouldPreventCaching("text/html; charset=utf-8", existing);
-
-        // アクション側で明示した意図が既定値に上書きされないことを確認する
-        Assert.False(result);
-    }
+    // 規則は「誰もキャッシュ指示を書かなかった応答にだけ no-store を入れる」の 1 つだけ
+    // (応答の種類で振り分けない理由はミドルウェア側の docstring が正本)。
+    // 判定は応答開始直前の OnStarting コールバックで走るが、そのコールバックは
+    // DefaultHttpContext の既定の応答フィーチャーでは発火しない(既定実装が空)ため、
+    // 発火させられるテスト用フィーチャーへ差し替えて観測する。
 
     [Fact]
-    public async Task InvokeAsync_RegistersOnStarting_ThatAddsNoStoreToHtmlResponses()
+    public async Task InvokeAsync_OnStarting_AddsNoStore_WhenNobodyDeclaredCaching()
     {
         // OnStarting に登録されたコールバックを取り出せるテスト用の応答フィーチャーを用意する
         var responseFeature = new CapturingResponseFeature();
@@ -160,7 +86,7 @@ public class SecurityHeadersMiddlewareTests
         // 「次の処理」役として、画面(HTML)を返すアクションを模して Content-Type だけ設定する
         RequestDelegate next = ctx =>
         {
-            // MVC がビューを描画したときと同じ種別を設定する
+            // MVC がビューを描画したときと同じ種別を設定する(キャッシュ指示は書かない)
             ctx.Response.ContentType = "text/html; charset=utf-8";
             return Task.CompletedTask;
         };
@@ -172,54 +98,35 @@ public class SecurityHeadersMiddlewareTests
         // 応答開始のタイミングを模して、登録済みコールバックを実行する
         await responseFeature.FireOnStartingAsync();
 
-        // 動的な応答(HTML)にキャッシュ抑止が入っていることを確認する
+        // 誰も指示していない応答にキャッシュ抑止が入っていることを確認する
         Assert.Equal(
             SecurityHeadersMiddleware.NoStoreCacheControl,
             context.Response.Headers.CacheControl.ToString());
     }
 
-    [Fact]
-    public async Task InvokeAsync_OnStarting_LeavesStaticAssetResponsesCacheable()
+    [Theory]
+    // 静的ファイル配信(Program.cs の OnPrepareResponse)が名乗る指示。
+    // これを尊重することが「静的アセットを no-store にしない」唯一の仕組み
+    [InlineData(SecurityHeadersMiddleware.StaticAssetCacheControl)]
+    // HomeController.Error の [ResponseCache(NoStore = true, Location = None)] が書く値
+    [InlineData("no-store,no-cache")]
+    // MapHealthChecks が自分で書く値
+    [InlineData("no-store, no-cache")]
+    // 明示的にキャッシュを許可している応答(将来そういう画面を作った場合)も尊重する
+    [InlineData("public, max-age=600")]
+    public async Task InvokeAsync_OnStarting_LeavesDeclaredCacheControlUntouched(string declared)
     {
         // OnStarting のコールバックを捕まえるテスト用フィーチャーを用意する
         var responseFeature = new CapturingResponseFeature();
         // 最小構成の HttpContext を組み立てる
         var context = BuildContextWith(responseFeature);
-        // 「次の処理」役として、静的ファイル配信を模して css の種別を設定する
+        // 「次の処理」役として、自分でキャッシュ指示を書く応答を模す
         RequestDelegate next = ctx =>
         {
-            // StaticFileMiddleware が site.css を返したときと同じ種別を設定する
-            ctx.Response.ContentType = "text/css";
-            return Task.CompletedTask;
-        };
-        // テスト対象を構築する
-        var middleware = new SecurityHeadersMiddleware(next);
-
-        // ミドルウェアを実行する
-        await middleware.InvokeAsync(context);
-        // 応答開始のタイミングを模してコールバックを実行する
-        await responseFeature.FireOnStartingAsync();
-
-        // 静的アセットにはキャッシュ抑止が入らない(版付き URL のキャッシュが効き続ける)
-        Assert.True(string.IsNullOrEmpty(context.Response.Headers.CacheControl.ToString()));
-    }
-
-    [Fact]
-    public async Task InvokeAsync_OnStarting_DoesNotOverwriteCacheControlSetByTheAction()
-    {
-        // OnStarting のコールバックを捕まえるテスト用フィーチャーを用意する
-        var responseFeature = new CapturingResponseFeature();
-        // 最小構成の HttpContext を組み立てる
-        var context = BuildContextWith(responseFeature);
-        // アクション側が明示したキャッシュ指示(HomeController.Error の [ResponseCache] 相当)
-        const string explicitDirective = "no-store,no-cache";
-        // 「次の処理」役として、種別と明示的な Cache-Control の両方を設定する
-        RequestDelegate next = ctx =>
-        {
-            // エラーページも HTML を返す
+            // 応答の種別を設定する(種別では振り分けないので、ここは何でもよい)
             ctx.Response.ContentType = "text/html; charset=utf-8";
-            // アクション側の意図を書き込む
-            ctx.Response.Headers.CacheControl = explicitDirective;
+            // 書き手(静的ファイル配信・[ResponseCache]・ヘルスチェック等)の意図を書き込む
+            ctx.Response.Headers.CacheControl = declared;
             return Task.CompletedTask;
         };
         // テスト対象を構築する
@@ -230,8 +137,8 @@ public class SecurityHeadersMiddlewareTests
         // 応答開始のタイミングを模してコールバックを実行する
         await responseFeature.FireOnStartingAsync();
 
-        // アクション側が書いた値がそのまま残っていることを確認する
-        Assert.Equal(explicitDirective, context.Response.Headers.CacheControl.ToString());
+        // 書き手が明示した値がそのまま残っていることを確認する
+        Assert.Equal(declared, context.Response.Headers.CacheControl.ToString());
     }
 
     /// <summary>
