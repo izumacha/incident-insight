@@ -360,11 +360,27 @@ if (!app.Environment.IsDevelopment())
 // 認証・ルーティングより前に置き、例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする
 // (例外時は ExceptionHandlerMiddleware がこれより後ろを再実行するので、ここは必ず通る)。
 //
-// 唯一これより手前で応答が完結するのが本番の UseHttpsRedirection で、http:// への
-// リクエストに 307 + Location を返して短絡する。その応答にはこのヘッダー群が付かない。
-// 本文を持たず、307 は明示的な指示が無ければキャッシュされないので実害は無いと判断して
-// この並びにしている(付けたくなったら、UseExceptionHandler の直後・UseHsts の手前へ
-// この行を移す ——例外ハンドラの内側であることは保ったまま、リダイレクトも覆える)。
+// これより手前で応答が完結する経路が 2 つあり、どちらもこのヘッダー群が付かない。
+// どちらも<b>このアプリのデータを 1 文字も載せない</b>ので実害は無いと判断している。
+//   1. 本番の UseHttpsRedirection …… http:// へのリクエストに 307 + Location を返して
+//      短絡する。本文を持たず、307 は明示的な指示が無ければキャッシュされない。
+//   2. HostFiltering …… AllowedHosts を実ホスト名へ絞ると(docs/security.md が
+//      運用者にそう指示している)、Host ヘッダーが一致しないリクエストへ 400 を返して
+//      短絡する。これは汎用ホストが IStartupFilter として登録するミドルウェアなので、
+//      Program.cs のどこに何を書いても<b>必ずこれより手前</b>にいる。
+//      実測: 400 が返り Cache-Control は付かないが、<b>本文は空ではない</b> ——
+//      フレームワークの定型ページ("Bad Request - Invalid Hostname")が返る。
+//      安全な理由は「空だから」ではなく「定型文で、要求元のホスト名も業務データも
+//      含まないから」で、その 2 点は HostFilteringShortCircuitTests が固定している。
+//
+// <b>覆いたくなったときに「この行を移す」で済ませないこと。</b> UseExceptionHandler /
+// UseHsts / UseHttpsRedirection は上の if (!IsDevelopment()) の中にあるので、
+// この行をそこへ<b>移す</b>と Development ではミドルウェアが 1 度も登録されず、
+// セキュリティヘッダーもキャッシュ抑止の既定値も丸ごと消える。
+// 1 を覆うなら、ここの無条件登録は残したまま本番ブロックの UseHsts の手前へ
+// <b>もう 1 度</b>登録する(二重登録でも、既に指示がある応答へは触れない設計なので安全)か、
+// リダイレクトをこの行より後ろへ出す。2 は上記のとおり順序では覆えないため、
+// 覆うには IStartupFilter で HostFiltering より前へ差し込む必要がある。
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
 // 静的ファイル(wwwroot)配信を有効化。

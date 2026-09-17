@@ -41,4 +41,31 @@ public static class AppControllerScan
         // 自分たちのアセンブリの、具象のコントローラすべて
         WebAssembly.GetTypes()
             .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+
+    /// <summary>
+    /// キャッシュ指示の属性(<c>[ResponseCache]</c> / <c>[OutputCache]</c>)を宣言しうる型を、
+    /// <b>基底型で絞らずに</b>すべて返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ <see cref="Controllers"/> を使い回さないのか。</b>
+    /// <c>[ResponseCache]</c> は MVC のコントローラ専用ではない ——
+    /// <c>PageModel</c>(Razor Pages)に付けても <c>IFilterFactory</c> として同じように効く。
+    /// <c>ControllerBase</c> で絞ると、<c>Pages/Export.cshtml.cs</c> に
+    /// <c>[ResponseCache(Duration = 300, Location = Any)]</c> を付けた PHI のページが
+    /// <b>どの検査からも見えないまま</b>公開される。
+    /// ソースを見る側の走査(<c>OnlyIntendedWriters_SetCacheControlDirectly</c>)は
+    /// まさにこの <c>Pages/</c> の死角を理由に「パスの形で絞らない」形へ広げてあるのに、
+    /// リフレクション側だけが基底型で狭いままだった ——
+    /// <b>属性名にはヘッダー名の綴りが無い</b>ので、ソース側の走査でも拾えない。</para>
+    ///
+    /// <para><b>絞らないことの代償が無い。</b> 拾うのは「その属性が付いている宣言」だけなので、
+    /// 端点でない型をいくら含めても誤検知は 1 件も増えない。逆に基底型で絞ると、
+    /// 端点の形が増えるたびに<b>黙って</b>射程から外れる(この repo が長さ管理の導出と
+    /// コントローラの走査で 2 度踏んだ形)。だから「絞らない」を既定にする。</para>
+    /// </remarks>
+    /// <returns>自分たちのアセンブリにある具象型すべて。</returns>
+    public static IEnumerable<Type> CacheDirectiveHosts() =>
+        // 抽象型は宣言を持てるが実体化されないので除く(基底へ引き上げた宣言は
+        // ResponseCachePolicy 側が具象からたどるので、ここで拾わなくても取りこぼさない)
+        WebAssembly.GetTypes().Where(t => !t.IsAbstract);
 }

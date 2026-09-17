@@ -67,11 +67,17 @@ namespace IncidentInsight.Tests.Middleware;
 ///
 /// <para><b>導出で作る(表を書かない)。</b> 「見るべきアクションの一覧」を手で持つと、
 /// 新しいコントローラを足した人が載せ忘れた時点でその画面だけ黙って検査から外れる。
-/// 対象は <see cref="AppControllerScan.Controllers"/> から導く ——
-/// この導出が狭まっていないことは、独立な手がかり(ソースファイルの実在)で照合する
-/// <c>UnlistedFilterValuePolicyTests.ControllerScan_ReachesEveryControllerFile</c> が見張る。
+/// 対象は <see cref="AppControllerScan.CacheDirectiveHosts"/> から導く ——
+/// <b>基底型で絞らない</b>のが要点で、<c>[ResponseCache]</c> は <c>ControllerBase</c> 専用では
+/// なく <c>PageModel</c>(Razor Pages)でも同じように効く。<c>ControllerBase</c> で絞っていた頃は
+/// <c>Pages/Export.cshtml.cs</c> に <c>[ResponseCache(Duration = 300, Location = Any)]</c> を
+/// 付けた PHI のページが<b>どの検査からも見えなかった</b> ——属性名にはヘッダー名の綴りが
+/// 無いので、ソースを見る側の走査でも拾えない。
 /// <b>ここで絞り込みを書き写さない</b>のは、写した瞬間にこのファイルだけが
-/// そのガードの射程から外れるため。</para>
+/// 導出のガードの射程から外れるため(コントローラ側の導出
+/// <see cref="AppControllerScan.Controllers"/> が狭まっていないことは、独立な手がかり
+/// (ソースファイルの実在)で照合する
+/// <c>UnlistedFilterValuePolicyTests.ControllerScan_ReachesEveryControllerFile</c> が見張る)。</para>
 /// </remarks>
 public class ResponseCacheAttributePolicyTests
 {
@@ -86,7 +92,7 @@ public class ResponseCacheAttributePolicyTests
     {
         // アプリ全体の宣言を集める
         var declarations = ResponseCachePolicy
-            .DeclarationsOn(AppControllerScan.Controllers(), AppControllerScan.WebAssembly)
+            .DeclarationsOn(AppControllerScan.CacheDirectiveHosts(), AppControllerScan.WebAssembly)
             .ToList();
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
@@ -239,48 +245,71 @@ public class ResponseCacheAttributePolicyTests
     /// 「絞り込みを狭める」変更は差分にもテスト件数にも現れないが、
     /// 表への 1 行は必ず現れる）。</para>
     ///
-    /// <para><b>除外はファイル単位ではなく「その行の内容」まで見る。</b>
+    /// <para><b>除外はファイル単位ではなく「その行の内容」と「出現回数」まで見る。</b>
     /// ファイルごと外すと、許可した 2 つの書き込み以外も同じファイルの中では自由になる ——
     /// たとえば <c>Program.cs</c> へ 2 つ目の <c>UseStaticFiles</c>（<c>wwwroot</c> の外を
     /// <c>/attachments</c> として配り、<c>public,max-age=86400</c> を名乗る）を足すと、
     /// この検査も <see cref="StaticFileRoots_AreOnlyKnownPublicAssets"/>（<c>wwwroot</c> 直下しか
-    /// 見ない）も素通りする。行の内容まで表に持てば、その差分は必ずここで止まる。</para>
+    /// 見ない）も素通りする。</para>
+    ///
+    /// <para><b>行の内容だけでは足りない（ここが要点）。</b> 以前この解説は「行の内容まで表に
+    /// 持てば必ず止まる」と書いていたが、<b>成り立つのは 2 つ目が別の綴りを使った場合だけ</b>
+    /// だった。2 つ目の <c>UseStaticFiles</c> が共有定数
+    /// （<c>SecurityHeadersMiddleware.StaticAssetCacheControl</c>）を再利用すると行が一字一句
+    /// 同じになり、<c>ContainsKey</c> での照合はそのまま通る ——しかも定数の再利用は §6 が
+    /// 積極的に要求している書き方で、既存ブロックのコピーでも自然にそうなる。
+    /// 結果として <c>/attachments/&lt;id&gt;/report.pdf</c> が <c>public,max-age=3600</c> で返り、
+    /// 共有プロキシと共用端末のディスクに PHI が 1 時間残る差分が<b>全件緑で通っていた</b>。
+    /// そこで表は<b>期待する出現回数</b>（現状はすべて 1 回）まで持ち、
+    /// 多くても少なくても落とす。複製は必ず「回数が合わない」として現れる。</para>
     /// </remarks>
-    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>
+    /// <summary>
+    /// 意図して <c>Cache-Control</c> を書く 1 行ぶんの登録内容。
+    /// </summary>
+    /// <param name="ExpectedCount">
+    /// その行がそのファイルに現れてよい回数。<b>複製を「回数が合わない」として落とすためだけに持つ</b>
+    /// （内容の一致だけで許すと、共有定数を再利用したコピーが素通りする）。
+    /// </param>
+    /// <param name="Reason">なぜその行が書いてよいのかの説明（空文字・空白は別の検査が落とす）。</param>
+    private readonly record struct IntendedWrite(int ExpectedCount, string Reason);
+
+    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, IntendedWrite>>
         IntendedCacheControlWriters =
-        new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
+        new Dictionary<string, IReadOnlyDictionary<string, IntendedWrite>>(StringComparer.Ordinal)
         {
             // 既定値(誰も書かなかった応答へ no-store を入れる)を書く唯一の場所
             [Path.Combine("Middleware", "SecurityHeadersMiddleware.cs")] =
-                new Dictionary<string, string>(StringComparer.Ordinal)
+                new Dictionary<string, IntendedWrite>(StringComparer.Ordinal)
                 {
                     // 既定値そのものの定数
                     ["public const string NoStoreCacheControl = \"no-store\";"] =
-                        "キャッシュ抑止の既定値そのもの。",
+                        new IntendedWrite(1, "キャッシュ抑止の既定値そのもの。"),
                     // 静的アセット用の指示の定数(値の正本)
                     ["public const string StaticAssetCacheControl = \"public,max-age=3600\";"] =
-                        "静的アセット用の指示の値の正本。docs/security.md と突き合わせている。",
+                        new IntendedWrite(1, "静的アセット用の指示の値の正本。docs/security.md と突き合わせている。"),
                     // 既定値を入れるコールバック
                     ["private static readonly Func<object, Task> ApplyDefaultCacheControl = state =>"] =
-                        "既定値を入れる OnStarting コールバックの宣言。",
+                        new IntendedWrite(1, "既定値を入れる OnStarting コールバックの宣言。"),
                     // 既に指示があるかの判定
                     ["if (StringValues.IsNullOrEmpty(response.Headers.CacheControl))"] =
-                        "誰かが既に書いているかを見る判定(書き込みではない)。",
+                        new IntendedWrite(1, "誰かが既に書いているかを見る判定(書き込みではない)。"),
                     // 既定値の書き込み
                     ["response.Headers.CacheControl = NoStoreCacheControl;"] =
-                        "誰も書かなかった応答へ既定の no-store を入れる、唯一の書き込み。",
+                        new IntendedWrite(1, "誰も書かなかった応答へ既定の no-store を入れる、唯一の書き込み。"),
                     // コールバックの登録
                     ["context.Response.OnStarting(ApplyDefaultCacheControl, context.Response);"] =
-                        "上のコールバックを応答開始前に登録する。",
+                        new IntendedWrite(1, "上のコールバックを応答開始前に登録する。"),
                 },
             // 静的アセットが既定の対象から外れるための自己申告を書く場所
             ["Program.cs"] =
-                new Dictionary<string, string>(StringComparer.Ordinal)
+                new Dictionary<string, IntendedWrite>(StringComparer.Ordinal)
                 {
                     // 静的ファイル配信の自己申告
                     ["ctx.Context.Response.Headers.CacheControl = SecurityHeadersMiddleware.StaticAssetCacheControl;"] =
-                        "UseStaticFiles の OnPrepareResponse が静的アセット用の指示を名乗る。"
-                            + "これが無いと css/js が no-store になり毎回再取得になる(§8)。",
+                        new IntendedWrite(
+                            1,
+                            "UseStaticFiles の OnPrepareResponse が静的アセット用の指示を名乗る。"
+                                + "これが無いと css/js が no-store になり毎回再取得になる(§8)。"),
                 },
         };
 
@@ -304,13 +333,46 @@ public class ResponseCacheAttributePolicyTests
         // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
         foreach (var sourcePath in ScannedSources())
         {
+            // 許可表と突き合わせるためのキー(Web プロジェクトからの相対パス)
+            var tableKey = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
+            // そのファイルに許可された行(無ければ null＝どの行も許可されない)
+            IntendedCacheControlWriters.TryGetValue(tableKey, out var allowedLines);
+            // 許可した行が実際に何回現れたかを数える(複製を「回数が合わない」として落とすため)
+            var seenCounts = new Dictionary<string, int>(StringComparer.Ordinal);
+
             // コメントを取り除いたうえで、ヘッダー名を含む行を探す
             foreach (var (lineNumber, text) in CodeLinesContaining(sourcePath, CacheControlTokens))
             {
-                // 意図して書く行は対象外(理由は許可表が持つ)
-                if (IsIntendedWrite(sourcePath, text)) continue;
+                // 行の内容そのもので突き合わせる(前後の空白だけを落とす)
+                var trimmed = text.Trim();
+                // 意図して書く行なら、違反にはせず出現回数だけを数える(理由は許可表が持つ)
+                if (allowedLines is not null && allowedLines.ContainsKey(trimmed))
+                {
+                    // その行の出現回数を 1 つ増やす
+                    seenCounts[trimmed] = seenCounts.GetValueOrDefault(trimmed) + 1;
+                    // 数えたので、この行は違反として記録しない
+                    continue;
+                }
+
                 // リポジトリからの相対パスと行番号で名指しする
                 violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{lineNumber}: {text}");
+            }
+
+            // 許可表を持たないファイルは、ここで数え合わせるものが無い
+            if (allowedLines is null) continue;
+
+            // <b>回数まで突き合わせる。</b> 内容の一致だけで許すと、共有定数を再利用した
+            // 2 つ目の UseStaticFiles が一字一句同じ行になって素通りする(解説を参照)
+            foreach (var (allowedLine, intended) in allowedLines)
+            {
+                // 実際に現れた回数(1 度も現れなければ 0)
+                var actual = seenCounts.GetValueOrDefault(allowedLine);
+                // 期待どおりなら何もしない
+                if (actual == intended.ExpectedCount) continue;
+                // 多くても少なくても落とす(複製も、消し忘れた許可も、どちらも表の更新が要る)
+                violations.Add(
+                    $"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}: "
+                        + $"許可した行の出現回数が {intended.ExpectedCount} 回ではなく {actual} 回です: {allowedLine}");
             }
         }
 
@@ -322,6 +384,9 @@ public class ResponseCacheAttributePolicyTests
                 + "この 1 行がそのままキャッシュ保存の許可になります。"
                 + "キャッシュを抑止したいだけなら何も書かずに既定(no-store)へ任せ、"
                 + "本当に許可したいなら PHI を含まないことを確かめたうえでこの規則を更新してください。"
+                + "「出現回数が … 回ではなく … 回です」と出ている場合は、許可済みの行が複製されています"
+                + "(2 つ目の静的ファイル配信など)。複製先が PHI を配らないことを確かめたうえで、"
+                + "許可表の ExpectedCount を実際の回数へ直してください。"
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, violations));
     }
@@ -368,7 +433,7 @@ public class ResponseCacheAttributePolicyTests
             // そのファイルの中身を読んで、許可した行が実在するかを確かめる
             var actualLines = File.ReadAllLines(fullPath).Select(l => l.Trim()).ToHashSet(StringComparer.Ordinal);
             // 許可した行を 1 つずつ確かめる
-            foreach (var (allowedLine, reason) in allowedLines)
+            foreach (var (allowedLine, intended) in allowedLines)
             {
                 // その行が実在すること(実在しない許可は「除外したつもり」を作る)
                 Assert.True(
@@ -377,8 +442,14 @@ public class ResponseCacheAttributePolicyTests
                         + "書き換えたなら、この表も同じ変更セットで直してください。");
                 // 理由が空でも空白だけでもないこと
                 Assert.False(
-                    string.IsNullOrWhiteSpace(reason),
+                    string.IsNullOrWhiteSpace(intended.Reason),
                     $"許可表のエントリに理由がありません: {relativePath} / {allowedLine}。");
+                // <b>回数が 1 以上であること。</b> 0 を登録できると「実在するのに 1 度も許可されない」
+                // 表になり、負の値は本体の数え合わせが決して満たせない要求になる
+                Assert.True(
+                    intended.ExpectedCount >= 1,
+                    $"許可表の ExpectedCount は 1 以上にしてください: {relativePath} / {allowedLine} "
+                        + $"(いまは {intended.ExpectedCount})。書かなくてよい行なら表から削ってください。");
             }
         }
     }
@@ -402,7 +473,7 @@ public class ResponseCacheAttributePolicyTests
         //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
         var violations = ResponseCachePolicy
             .AttributeDeclarationsOn(
-                AppControllerScan.Controllers(),
+                AppControllerScan.CacheDirectiveHosts(),
                 AppControllerScan.WebAssembly,
                 IsOutputCacheAttribute)
             .Select(d => d.DeclaredOn)
@@ -590,6 +661,15 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    <a href=\"https://example.com\">x</a> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // 文字列の中の "@*" でもコメントが始まったと読まない
     [InlineData("        private const string Odd = \"a@*b\";", false)]
+    // 地の文のアポストロフィ(1 つ)があっても、後ろの Razor コメントはコメントとして落ちる。
+    // 実測: 縛りを入れる前は、この行が「違反」として報告されていた
+    [InlineData("    <p>It's fine</p> @* Cache-Control はミドルウェアの既定に任せる *@", false)]
+    // アポストロフィが 2 つでも、間が長すぎるので文字リテラルとは読まない
+    [InlineData("    <p>It's Bob's report</p> @* Cache-Control は書かない *@", false)]
+    // 本物の文字リテラルは今までどおりリテラルとして扱う(中の @* をコメント開始と読まない)
+    [InlineData("        var marker = '@'; Response.Headers.CacheControl = \"public\";", true)]
+    // アポストロフィの後ろに実コードがあれば、今までどおり拾う(見逃す方向へ倒れない)
+    [InlineData("    <p>It's</p> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
     {
         // 判定を実行して、期待どおりかを確認する
@@ -669,21 +749,6 @@ public class ResponseCacheAttributePolicyTests
         // C# のソースと Razor ビューを両方たどる(どちらの列挙も生成物を除いている)
         RepositoryPaths.EnumerateWebSourceFiles().Concat(RepositoryPaths.EnumerateViewFiles());
 
-    /// <summary>
-    /// そのファイルが、<c>Cache-Control</c> を意図して書いてよい場所かを返す。
-    /// </summary>
-    /// <param name="sourcePath">Web プロジェクト配下のソースファイルの絶対パス。</param>
-    /// <returns>許可表に載っていれば true。</returns>
-    private static bool IsIntendedWrite(string sourcePath, string lineText)
-    {
-        // Web プロジェクトからの相対パスで表と突き合わせる(絶対パスは実行機ごとに違うため)
-        var relative = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
-        // そのファイルに許可された行が無ければ、どの行も許可されない
-        if (!IntendedCacheControlWriters.TryGetValue(relative, out var allowedLines)) return false;
-        // 前後の空白だけを落として、行の内容そのもので突き合わせる
-        return allowedLines.ContainsKey(lineText.Trim());
-    }
-
     // Cache-Control ヘッダーを名指ししている綴り(大文字小文字は無視して照合する)
     private static readonly string[] CacheControlTokens = ["Cache-Control", "CacheControl"];
 
@@ -701,6 +766,16 @@ public class ResponseCacheAttributePolicyTests
     /// <para>逆に、閉じたコメントの<b>後ろ</b>にある実コードは拾う ——
     /// <c>@* メモ *@ @{ … CacheControl = "public" … }</c> を見逃すと、
     /// この検査が塞ごうとしている「綴りを変えただけの抜け道」そのものになる。</para>
+    ///
+    /// <para><b><see cref="Helpers.RazorSource"/> の正規表現と統合しないのは意図的。</b>
+    /// あちらが持つのは「ファイル全体の文字列から <c>@*…*@</c> を落とす」正規表現で、
+    /// 入力の形（1 本の文字列 対 行ごと＋持ち越し状態）も守備範囲（Razor コメントだけ 対
+    /// <c>//</c> ・ <c>/*…*/</c> ・文字列リテラル）も違う。片方へ寄せると、
+    /// 既に 3 つの検査が依存しているあちらの挙動を変えることになる。
+    /// §6 の「2〜3 箇所目で共通化」に照らしても、この形の利用側はまだ 1 つなので
+    /// <b>ここに private のまま置く</b>。2 つ目が同じものを必要としたときに
+    /// <c>Helpers/</c> へ移すこと（Razor コメントの綴り自体は言語仕様で固定なので、
+    /// 2 つあることによる食い違いは起きない）。</para>
     /// </remarks>
     /// <param name="sourcePath">読み取るソースファイル。</param>
     /// <param name="tokens">探す綴り(いずれかを含めば該当)。</param>
@@ -773,7 +848,33 @@ public class ResponseCacheAttributePolicyTests
             // そこから先のファイル全体が「コメントの途中」と見なされ、走査が丸ごと盲になった
             // (この repo には実際にその綴りの定数がある)。URL の "https://" も同じ形で
             // 行の途中から先を落としていた
-            if (line[i] == '"' || line[i] == '\'')
+            if (line[i] == '\'')
+            {
+                // <b>アポストロフィは「文字リテラルとして閉じている」ときだけリテラル扱いにする。</b>
+                // Razor のビューには地の文のアポストロフィ(<c>It's</c>)が普通に現れ、
+                // それを開き引用符と読むと行末まで文字リテラルの中になる ——
+                // 後ろに置かれた <c>@* Cache-Control … *@</c> がコメントとして落ちず、
+                // <b>規約どおりの日本語コメントで CI が赤くなる</b>(誤検知で赤くなる検査は、
+                // いずれ検査ごと緩められる ——この repo が繰り返し避けている形)
+                if (TryReadCharLiteral(line, i, out var charLiteralEnd))
+                {
+                    // 閉じている文字リテラルなので、中身は実コードとして残したまま読み飛ばす
+                    code.Append(line, i, charLiteralEnd - i);
+                    // リテラルの直後から続きを見る
+                    i = charLiteralEnd;
+                    // 続きを見る
+                    continue;
+                }
+
+                // 閉じていなければ地の文のアポストロフィなので、ただの 1 文字として読む
+                code.Append(line[i]);
+                // 次の文字へ
+                i++;
+                // 続きを見る
+                continue;
+            }
+
+            if (line[i] == '"')
             {
                 // リテラルの終わりの位置を求める(逐語的文字列 @"…" もここで扱う)
                 var end = SkipStringLiteral(line, i);
@@ -805,12 +906,84 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
+    /// C# の文字リテラルが書ける最大の中身の長さ（<c>'\uFFFF'</c> の 6 文字ぶん）に少し余裕を持たせた上限。
+    /// </summary>
+    /// <remarks>
+    /// これを超える「引用符から引用符まで」は文字リテラルではありえないので、
+    /// 地の文のアポストロフィ 2 つ（<c>It's Bob's</c>）をリテラルと読み違えないための歯止めになる。
+    /// </remarks>
+    private const int MaxCharLiteralInnerLength = 8;
+
+    /// <summary>
+    /// その位置から<b>閉じている文字リテラル</b>が読めるかを試す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ長さで縛るのか。</b> 判定に使えるのは「閉じているか」だけでは足りない ——
+    /// 地の文に <c>It's Bob's</c> のようにアポストロフィが 2 つあると、
+    /// その区間が「閉じた文字リテラル」に見えてしまう。C# の文字リテラルは中身が 1 文字
+    /// （エスケープでも <c>\uFFFF</c> の 6 文字）までなので、長さで縛れば地の文と区別できる。</para>
+    ///
+    /// <para><b>外し方は安全側。</b> リテラルでないと判断したアポストロフィは
+    /// ただの 1 文字として実コードへ残すので、取りこぼす方向（＝見逃し）には倒れない。
+    /// 倒れるとしても「コメントの開始をコメントとして正しく読む」方向だけ。</para>
+    ///
+    /// <para><b><c>"</c> 側に同じ歯止めを置かない理由。</b> C# の文字列リテラルは長さに上限が無く、
+    /// 上限を決めると本物のリテラルを取りこぼす。閉じないアポストロフィと違って、
+    /// 閉じない <c>"</c> がマークアップの地の文に現れることは実質無い
+    /// （属性値は必ず閉じる）ので、単純な走査のままにしてある。</para>
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="start">開きのアポストロフィの位置。</param>
+    /// <param name="end">読めた場合、リテラルの直後の位置。</param>
+    /// <returns>閉じている文字リテラルとして読めれば true。</returns>
+    private static bool TryReadCharLiteral(string line, int start, out int end)
+    {
+        // 開きの次から読む
+        var i = start + 1;
+
+        // 上限までのあいだに閉じる引用符があるかを見る
+        while (i < line.Length && i - start - 1 <= MaxCharLiteralInnerLength)
+        {
+            // バックスラッシュの次の 1 文字はエスケープされている
+            if (line[i] == '\\')
+            {
+                // エスケープされた 1 文字を飛ばす
+                i += 2;
+                // 続きを見る
+                continue;
+            }
+
+            // 閉じる引用符に当たった
+            if (line[i] == '\'')
+            {
+                // リテラルの直後の位置を返す
+                end = i + 1;
+                // 文字リテラルとして読めた
+                return true;
+            }
+
+            // それ以外の文字は中身なので読み進める
+            i++;
+        }
+
+        // 閉じなかった(または長すぎた)ので、文字リテラルではない
+        end = start;
+        // 地の文のアポストロフィとして扱う
+        return false;
+    }
+
+    /// <summary>
     /// 文字列（または文字）リテラルの終わりまで読み飛ばし、次に読む位置を返す。
     /// </summary>
     /// <remarks>
-    /// <para>扱うのは 3 つ: 通常の <c>"…"</c>（<c>\"</c> のエスケープを踏まえる）、
-    /// 逐語的文字列 <c>@"…"</c>（エスケープが無く、<c>""</c> が 1 つの引用符）、
-    /// 文字リテラル <c>'…'</c>。</para>
+    /// <para><b>中身を捨てるためではなく、中の記号をコメントの開始と読まないために使う。</b>
+    /// （この一文はもともと 2 つ目の <c>&lt;remarks&gt;</c> に書かれていたが、XML ドキュメントの
+    /// <c>&lt;remarks&gt;</c> は 1 つしか許されず、2 つ目はツールに捨てられていた。）</para>
+    ///
+    /// <para>扱うのは 2 つ: 通常の <c>"…"</c>（<c>\"</c> のエスケープを踏まえる）と、
+    /// 逐語的文字列 <c>@"…"</c>（エスケープが無く、<c>""</c> が 1 つの引用符）。
+    /// 文字リテラル <c>'…'</c> は <see cref="TryReadCharLiteral"/> が長さの歯止め付きで扱う
+    /// （地の文のアポストロフィと区別する必要があるため）。</para>
     ///
     /// <para><b>ここは「言語を再実装しない」の境界線上にある。</b> 補間文字列の
     /// <c>$"…{式}…"</c> の式の中にさらに文字列が入る形のような入れ子までは追わない。
@@ -823,7 +996,6 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="line">対象の行。</param>
     /// <param name="start">開始の引用符の位置。</param>
     /// <returns>リテラルの直後の位置（閉じないまま行が終われば行末）。</returns>
-    /// <remarks>中身を捨てるためではなく、<b>中の記号をコメントの開始と読まない</b>ために使う。</remarks>
     private static int SkipStringLiteral(string line, int start)
     {
         // 開いた引用符の種類(" か ')
@@ -978,4 +1150,63 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>同じ基底を継承する 2 つ目の具象コントローラ。</summary>
     private sealed class SecondClassLevelInheritedProbeController : ClassLevelInheritedProbeControllerBase;
+
+    /// <summary>
+    /// <c>ControllerBase</c> を継承しない端点(Razor Pages の <c>PageModel</c> がこの形)の代わり。
+    /// </summary>
+    /// <remarks>
+    /// <b>本物の <c>PageModel</c> を継承しないのはなぜか。</b> ここで見たいのは
+    /// 「走査が <c>ControllerBase</c> で絞っていないか」だけで、Razor Pages の基底型そのものは
+    /// 関係がない。素の型にしておけば、テストプロジェクトが Razor Pages の参照を持つかどうかに
+    /// 左右されず、<b>絞り込みが戻った瞬間だけ</b>落ちる。
+    /// 期間の値(44)は、この経路で拾えたことを見分けるための目印。
+    /// </remarks>
+    [ResponseCache(Duration = 44)]
+    private sealed class NonControllerEndpointProbe
+    {
+        /// <summary>端点として公開されうる、何もしないメソッド。</summary>
+        public void Probe() { }
+    }
+
+    // 走査が <c>ControllerBase</c> 以外の型に付いた宣言も拾うこと。
+    //
+    // <b>なぜ要るのか。</b> [ResponseCache] は MVC のコントローラ専用ではなく、
+    // Razor Pages の PageModel に付けても IFilterFactory として同じように効く。
+    // 走査を ControllerBase で絞っていた頃は、Pages/Export.cshtml.cs に
+    // [ResponseCache(Duration = 300, Location = Any)] を付けた PHI のページが
+    // <b>どの検査からも見えなかった</b> ——属性名にはヘッダー名の綴りが無いので、
+    // ソースを見る側の走査(OnlyIntendedWriters_SetCacheControlDirectly)でも拾えない。
+    //
+    // アプリに実際の PageModel が 1 つも無い間は、導出を ControllerBase へ狭めても
+    // 本番の検査は全件緑のままになる(痕跡はテスト件数にも出ない)ので、
+    // 合成した型で「絞っていないこと」自体を固定する。
+    [Fact]
+    public void DeclarationScan_ReadsAttributesOnTypesThatAreNotControllers()
+    {
+        // ControllerBase を継承しない合成の端点を走査する
+        var declarations = ScanProbes(typeof(NonControllerEndpointProbe));
+
+        // クラス側の宣言(Duration = 44)が拾えていること
+        var found = Assert.Single(declarations, d => d.Attribute.Duration == 44);
+        // 名指しが、属性を実際に宣言している型であること
+        Assert.Contains(nameof(NonControllerEndpointProbe), found.DeclaredOn, StringComparison.Ordinal);
+    }
+
+    // 「走査対象の導出」そのものが ControllerBase で絞られていないこと。
+    //
+    // 上の検査は ScanProbes 経由で<b>型を直接渡す</b>ので、本番が使う導出
+    // (AppControllerScan.CacheDirectiveHosts)を ControllerBase へ狭める変異は拾えない。
+    // 手がかりを変えて、導出が実際に非コントローラの型を含むことを確かめる。
+    [Fact]
+    public void CacheDirectiveHosts_AreNotNarrowedToControllers()
+    {
+        // 本番が使う導出をそのまま取り出す
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // コントローラが含まれていること(狭めすぎ・広げ間違いの両方向を見る)
+        Assert.Contains(hosts, t => typeof(ControllerBase).IsAssignableFrom(t));
+        // <b>コントローラでない型も含まれていること。</b> ここが ControllerBase で
+        // 絞られると、PageModel に付けた [ResponseCache] が丸ごと見えなくなる
+        Assert.Contains(hosts, t => !typeof(ControllerBase).IsAssignableFrom(t));
+    }
 }

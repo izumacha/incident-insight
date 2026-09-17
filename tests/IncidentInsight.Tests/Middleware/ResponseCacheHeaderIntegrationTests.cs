@@ -314,3 +314,122 @@ public class ResponseCacheHeaderIntegrationTests
         return client;
     }
 }
+
+/// <summary>
+/// ホスト名の絞り込みで短絡した応答が<b>リクエスト由来の値を映し返さない</b>ことを固定する検査。
+/// </summary>
+/// <remarks>
+/// <para><b>なぜ要るのか。</b> <c>docs/security.md</c> と <c>Program.cs</c> は
+/// 「<c>SecurityHeadersMiddleware</c> より手前で応答が完結する経路があり、そこには
+/// <c>no-store</c> が付かないが実害は無い」と判断の根拠を書いている。その根拠を
+/// 機械で確かめられる形にしたのがこの検査（文書に書いた理由を誰も検証していないと、
+/// 静かに前提が崩れる）。</para>
+///
+/// <para><b>「本文が空」ではない。</b> 最初はそう書きかけたが、実測すると本文はある ——
+/// フレームワークの定型ページ（<c>Bad Request - Invalid Hostname</c>、334 バイト）が返る。
+/// <b>実害が無い理由は「空だから」ではなく「固定の定型文で、リクエスト由来の値も
+/// このアプリのデータも 1 文字も含まないから」</b>。だからここで固定するのはその 2 点にする
+/// （空であることを条件にすると、事実に合わない前提を検査として固めてしまう）。</para>
+///
+/// <para><b>この経路は並べ替えでは覆えない。</b> ホスト名を見るミドルウェアは汎用ホストが
+/// <c>IStartupFilter</c> として登録するため、<c>Program.cs</c> のどこに何を書いても
+/// 必ず手前にいる。実測では 400 が返り、<c>Cache-Control</c> は付かない。
+/// <b>映し返しが無いことが要点</b>で、ここで要求元のホスト名が本文へ出ると、
+/// キャッシュ抑止の効かない応答に攻撃者の入力が載る（共有キャッシュへの毒として使える）。</para>
+///
+/// <para><b>ヘッダーが付かないこと自体は固定しない。</b> それはフレームワークの実装の詳細で、
+/// 将来付くようになったとしても安全側への変化でしかない。ここで守りたいのは
+/// 「本文が空だから実害が無い」という<b>判断の前提</b>だけ。</para>
+/// </remarks>
+public class HostFilteringShortCircuitTests
+    : IClassFixture<HostFilteringShortCircuitTests.NarrowedHostFixture>
+{
+    // ホスト名を絞ったアプリ(このクラスのためだけに 1 度だけ起動する)
+    private readonly NarrowedHostFixture _fixture;
+
+    /// <summary>xUnit が共有フィクスチャを渡してくる。</summary>
+    /// <param name="fixture">ホスト名を絞って起動したアプリ。</param>
+    public HostFilteringShortCircuitTests(NarrowedHostFixture fixture) => _fixture = fixture;
+
+    // docs/security.md が運用者に指示している「実ホスト名へ絞った」状態を再現するホスト名
+    private const string AllowedHost = "incident.example.test";
+
+    // 許可リストに無いホスト名（本文へ映し返されていないことを確かめるために名前で持つ）
+    private const string RejectedHost = "evil.example.test";
+
+    /// <summary>
+    /// <c>AllowedHosts</c> を実ホスト名へ絞ったアプリ。
+    /// </summary>
+    /// <remarks>
+    /// 既定の <c>"*"</c> のままでは短絡そのものが起きないので、
+    /// 文書が運用者に求めている設定を再現する必要がある。
+    /// </remarks>
+    public sealed class NarrowedHostFixture() : TempDatabaseAppFixture(
+        "ii-hostfilter",
+        new Dictionary<string, string?>
+        {
+            // 文書が指示するとおり、実ホスト名へ絞る(issue #64)
+            ["AllowedHosts"] = AllowedHost,
+        });
+
+    // 一致しない Host ヘッダーの応答が、本文を持たないこと。
+    [Fact]
+    public async Task MismatchedHost_IsShortCircuitedWithoutABody()
+    {
+        // リダイレクトを追わない素のクライアントを使う(短絡した応答そのものを見たい)
+        var client = _fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            // 追うと短絡した応答が観測できなくなる
+            AllowAutoRedirect = false,
+        });
+        // 許可していないホスト名でリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // Host ヘッダーだけを許可リスト外の値にする
+        request.Headers.Host = RejectedHost;
+
+        // 短絡した応答を受け取る
+        var response = await client.SendAsync(request);
+
+        // 手前で弾かれていること(通ってしまうと、そもそも絞り込みが効いていない)
+        Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
+        // 短絡した応答の本文を読む
+        var body = await response.Content.ReadAsStringAsync();
+
+        // <b>要求してきたホスト名を映し返していないこと（ここが本命）。</b>
+        // 本文はフレームワークの定型文で、キャッシュ抑止が効かないこの経路で
+        // リクエスト由来の値を反射すると、共有キャッシュへ毒を仕込む足がかりになる
+        Assert.DoesNotContain(RejectedHost, body, StringComparison.OrdinalIgnoreCase);
+        // アプリの画面ではなく、フレームワークの定型文であること
+        // （アプリの画面なら PHI を載せうるので、前提そのものが変わる）
+        Assert.Contains("Invalid Hostname", body, StringComparison.Ordinal);
+    }
+
+    // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
+    //
+    // 上の検査は「弾かれること」しか見ないので、絞り込みが強すぎて全リクエストが 400 に
+    // なる設定ミスでも緑になる。対にしておけば、短絡が「一致しないときだけ」だと分かる。
+    [Fact]
+    public async Task MatchingHost_StillGetsTheNoStoreDefault()
+    {
+        // 同じ条件のクライアントを使う
+        var client = _fixture.Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            // 比較条件をそろえる
+            AllowAutoRedirect = false,
+        });
+        // 許可したホスト名でリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // Host ヘッダーを許可リストの値にする
+        request.Headers.Host = AllowedHost;
+
+        // 通常どおり処理された応答を受け取る
+        var response = await client.SendAsync(request);
+
+        // 手前で弾かれていないこと
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        // ミドルウェアの既定(no-store)が入っていること
+        Assert.Equal(
+            SecurityHeadersMiddleware.NoStoreCacheControl,
+            response.Headers.CacheControl?.ToString());
+    }
+}
