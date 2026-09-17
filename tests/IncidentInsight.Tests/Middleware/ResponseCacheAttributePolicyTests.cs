@@ -44,6 +44,15 @@ namespace IncidentInsight.Tests.Middleware;
 ///     <b>実測</b>: この 1 行を <c>AnalyticsController.ByCause</c> の先頭へ足すと、
 ///     PHI の集計 JSON が <c>public,max-age=300</c> で返るのに 878 件すべて緑のまま通った。
 ///     </description></item>
+///   <item><description><b>サーバー側の出力キャッシュ</b>(<c>[OutputCache]</c> ＋
+///     <c>UseOutputCache</c>)——これは上の 3 つと<b>性質が違う</b>。
+///     応答を<b>サーバーのメモリに溜めて別の利用者へ配る</b>仕組みで、既定のポリシーは
+///     パスとクエリだけをキーにし、認証は <c>Authorization</c> ヘッダーしか見ない
+///     (クッキー認証のこのアプリでは「認証済みだから除外」が効かない)。しかも
+///     <b>応答側の <c>no-store</c> を尊重しない</b>ので、ミドルウェアの既定では止められない。
+///     職員 A の集計が職員 B へそのまま返るため、このアプリでは<b>使用そのものを禁じる</b>
+///     (<see cref="NoActionEnablesServerSideOutputCaching"/>)。
+///     </description></item>
 /// </list>
 ///
 /// <para><b>直接の書き込みは Web プロジェクト全体を見る</b>(<c>.cs</c> と <c>.cshtml</c>)。
@@ -331,6 +340,155 @@ public class ResponseCacheAttributePolicyTests
                 $"許可表のエントリに理由がありません: {relativePath}。");
         }
     }
+
+    // サーバー側の出力キャッシュ([OutputCache])を、どのアクションも使っていないこと。
+    //
+    // <b>なぜ Cache-Control の検査では止まらないのか。</b> 出力キャッシュは応答を
+    // サーバーのメモリに溜めて別の利用者へ配る仕組みで、応答ヘッダーの no-store を
+    // 尊重しない。既定のポリシーはパスとクエリだけをキーにし、認証は Authorization
+    // ヘッダーしか見ないので、クッキー認証のこのアプリでは「認証済みだから除外」も効かない。
+    // 結果として職員 A の PHI 集計が職員 B へそのまま返る。
+    //
+    // <b>属性は型名で照合する</b>(型を直接参照しない)。参照すると、この検査を通すために
+    // テストプロジェクトが出力キャッシュのパッケージへ依存することになり、
+    // 「禁じたい機能を自分で引き込む」形になる。
+    [Fact]
+    public void NoActionEnablesServerSideOutputCaching()
+    {
+        // アプリ全体のコントローラと、そのアクションに付いた属性をすべて見る
+        var violations = new List<string>();
+
+        // 走査対象のコントローラを 1 つずつ確かめる
+        foreach (var controller in AppControllerScan.Controllers())
+        {
+            // クラス側に付いた属性を調べる
+            foreach (var attribute in controller.GetCustomAttributes(inherit: true))
+            {
+                // 出力キャッシュの属性なら違反として記録する
+                if (IsOutputCacheAttribute(attribute)) violations.Add(controller.FullName ?? controller.Name);
+            }
+
+            // アクション側に付いた属性を調べる
+            foreach (var method in controller.GetMethods(
+                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
+            {
+                // 自分たちが宣言したメソッドだけを見る(フレームワークの基底は対象外)
+                if (method.DeclaringType?.Assembly != AppControllerScan.WebAssembly) continue;
+                // そのメソッドに付いた属性を調べる
+                foreach (var attribute in method.GetCustomAttributes(inherit: true))
+                {
+                    // 出力キャッシュの属性なら、どこに付いていたかを添えて記録する
+                    if (IsOutputCacheAttribute(attribute))
+                    {
+                        // 宣言元の型とメソッド名で名指しする
+                        violations.Add($"{method.DeclaringType!.FullName}.{method.Name}");
+                    }
+                }
+            }
+        }
+
+        // 違反が 1 件も無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "サーバー側の出力キャッシュ([OutputCache])が使われています。"
+                + "出力キャッシュは応答をサーバーに溜めて別の利用者へ配る仕組みで、"
+                + "応答側の no-store を尊重せず、既定のポリシーはクッキー認証を見ません。"
+                + "PHI を返すアプリでは職員間の取り違えに直結するため、このアプリでは使いません。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
+    }
+
+    // 判定(属性の型名の照合)が、拾う側と見逃さない側の両方で働くこと。
+    //
+    // 実在の宣言が 0 件なので、判定を「常に false」へ潰しても上の検査は緑のまま通る。
+    [Theory]
+    // 出力キャッシュの属性(名前空間ごと一致)
+    [InlineData("Microsoft.AspNetCore.OutputCaching.OutputCacheAttribute", true)]
+    // 名前空間が違っても、型名が OutputCacheAttribute なら拾う(自前のラッパー等)
+    [InlineData("Acme.Web.OutputCacheAttribute", true)]
+    // 応答キャッシュの属性は別物(こちらは JudgeDirective が担当する)
+    [InlineData("Microsoft.AspNetCore.Mvc.ResponseCacheAttribute", false)]
+    // 無関係な属性は拾わない
+    [InlineData("Microsoft.AspNetCore.Authorization.AuthorizeAttribute", false)]
+    public void IsOutputCacheAttribute_MatchesOnlyOutputCaching(string typeFullName, bool expected)
+    {
+        // 型名の末尾だけで判定していることを、合成した名前で確かめる
+        Assert.Equal(expected, IsOutputCacheAttributeTypeName(typeFullName));
+    }
+
+    // wwwroot の直下が、キャッシュ可能にしてよいと確認済みの入れ物だけであること。
+    //
+    // <b>なぜ要るのか。</b> 静的ファイル配信の OnPrepareResponse は wwwroot 配下の
+    // <b>すべて</b>に public,max-age=3600 を名乗らせる。つまり wwwroot に新しい入れ物を
+    // 足すと、その中身は<b>1 行のコードも書かずに</b>キャッシュ可能側へ入る ——
+    // 添付画像やエクスポートした CSV を wwwroot/attachments や wwwroot/exports へ置くと、
+    // 共有キャッシュと共用端末のディスクにログアウト後 1 時間残る。
+    // 属性・MvcOptions・直接書き込みのどの検査にも現れない(Program.cs は許可表に載っている)。
+    [Fact]
+    public void StaticFileRoots_AreOnlyKnownPublicAssets()
+    {
+        // wwwroot の直下にある入れ物(ファイル・ディレクトリ)の名前を集める
+        var entries = Directory
+            .EnumerateFileSystemEntries(Path.Combine(RepositoryPaths.WebProject, "wwwroot"))
+            .Select(Path.GetFileName)
+            .Where(name => !string.IsNullOrEmpty(name))
+            .Select(name => name!)
+            .ToList();
+
+        // 1 つも読めないなら走査が壊れている(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.NotEmpty(entries);
+
+        // 確認済みの入れ物に含まれないものを集める
+        var unexpected = entries
+            .Where(name => !PubliclyCacheableStaticRoots.ContainsKey(name))
+            .ToList();
+
+        // 想定外の入れ物が無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            unexpected.Count == 0,
+            "wwwroot に、キャッシュ可能にしてよいと確認していない入れ物があります: "
+                + string.Join(", ", unexpected)
+                + "。静的ファイル配信は wwwroot 配下のすべてに "
+                + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
+                + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
+                + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
+                + "認可を通すアクションから返してください。"
+                + "公開して問題ない資産なら、理由を添えて PubliclyCacheableStaticRoots へ登録します。");
+    }
+
+    /// <summary>
+    /// <c>wwwroot</c> 直下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> PubliclyCacheableStaticRoots =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // アプリ自身のスタイルシート
+            ["css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
+            // アプリ自身のスクリプト
+            ["js"] = "アプリのスクリプト(TypeScript の出力)。利用者ごとの内容を持たない。",
+            // 第三者ライブラリ
+            ["lib"] = "第三者ライブラリ(jQuery 等)。版付き URL でないため期間を短く保つ。",
+            // ブラウザのタブに出るアイコン
+            ["favicon.ico"] = "ブラウザのアイコン。公開情報。",
+        };
+
+    /// <summary>
+    /// その属性インスタンスが出力キャッシュの属性かを返す。
+    /// </summary>
+    /// <param name="attribute">調べる属性。</param>
+    /// <returns>出力キャッシュの属性なら true。</returns>
+    private static bool IsOutputCacheAttribute(object attribute) =>
+        // 型の完全修飾名で判定する(型を直接参照しないのは docstring の理由による)
+        IsOutputCacheAttributeTypeName(attribute.GetType().FullName ?? attribute.GetType().Name);
+
+    /// <summary>
+    /// 型の完全修飾名が出力キャッシュの属性を指すかを返す(判定の純粋関数)。
+    /// </summary>
+    /// <param name="typeFullName">属性の型の完全修飾名。</param>
+    /// <returns>出力キャッシュの属性なら true。</returns>
+    private static bool IsOutputCacheAttributeTypeName(string typeFullName) =>
+        // 名前空間を問わず、型名が OutputCacheAttribute のものを拾う
+        typeFullName.Split('.').Last().Equals("OutputCacheAttribute", StringComparison.Ordinal);
 
     // 「Cache-Control を名指ししている行か」の判定が、拾う側と見逃さない側の両方で働くこと。
     //
