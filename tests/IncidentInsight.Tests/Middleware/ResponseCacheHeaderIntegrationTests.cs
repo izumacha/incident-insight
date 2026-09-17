@@ -43,7 +43,8 @@ namespace IncidentInsight.Tests.Middleware;
 /// (<c>Program.cs</c> の <c>OnPrepareResponse</c>)が消えると css/js が毎回再取得される
 /// (§8 配信の最適化)。付く側と付かない側を対で固定する。</para>
 /// </remarks>
-public class ResponseCacheHeaderIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
+public class ResponseCacheHeaderIntegrationTests
+    : IClassFixture<ResponseCacheHeaderIntegrationTests.AppFixture>
 {
     // 認証が要る経路(/Analytics の JSON)を叩くためにシードするデモ管理者のメールアドレス。
     // appsettings.Development.json の既定値と同じ値を設定で上書きして使う
@@ -59,31 +60,92 @@ public class ResponseCacheHeaderIntegrationTests : IClassFixture<WebApplicationF
         "name=\"__RequestVerificationToken\"[^>]*value=\"(?<token>[^\"]+)\"",
         RegexOptions.Compiled);
 
-    // アプリ全体を起動するテスト用ファクトリ
+    // アプリ全体を起動するテスト用ファクトリ(フィクスチャが 1 度だけ組み立てたものを借りる)
     private readonly WebApplicationFactory<Program> _factory;
 
-    public ResponseCacheHeaderIntegrationTests(WebApplicationFactory<Program> factory)
+    public ResponseCacheHeaderIntegrationTests(AppFixture fixture)
     {
-        // 実運用設定を汚さないよう、テスト専用の設定でアプリを起動する
-        _factory = factory.WithWebHostBuilder(builder =>
+        // フィクスチャが保持している起動済みのファクトリを受け取る
+        _factory = fixture.Factory;
+    }
+
+    /// <summary>
+    /// テスト専用設定でアプリを 1 度だけ起動し、使い終わった一時 DB を確実に消すフィクスチャ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜクラス外(コンストラクタ)で組み立ててはいけないのか。</b>
+    /// xUnit はテストメソッドごとにテストクラスを作り直すので、コンストラクタで
+    /// <c>WithWebHostBuilder</c> を呼ぶと<b>派生ファクトリがテストの数だけ生まれる</b> ——
+    /// <c>IClassFixture</c> でファクトリ自体を共有していても、アプリの起動・マイグレーション・
+    /// シードがテストごとに走り、そのたびに別名の一時 DB ができる。
+    /// 生成した <c>.db</c>(および SQLite が並べて作る <c>-wal</c> / <c>-shm</c>)は
+    /// 誰も消さないので、CI ランナーや開発機に上限なく溜まる(§8「リソースを確実に解放する」)。</para>
+    ///
+    /// <para><b>だから組み立てをここへ 1 か所に寄せ、<c>IDisposable</c> で後始末する。</b>
+    /// DB のパスをフィールドに持つのは、消す対象を<b>推測ではなく生成時の値</b>から決めるため。</para>
+    /// </remarks>
+    public sealed class AppFixture : IDisposable
+    {
+        // 生成した一時 DB のパス(後始末で消す対象を推測しないよう、作った値をそのまま持つ)
+        private readonly string _databasePath =
+            Path.Combine(Path.GetTempPath(), $"ii-cacheheader-{Guid.NewGuid():N}.db");
+
+        // アプリ全体を起動する素のファクトリ(Dispose の対象として保持する)
+        private readonly WebApplicationFactory<Program> _baseFactory = new();
+
+        public AppFixture()
         {
-            // シード・パスワードポリシーが緩い Development 環境として起動する
-            builder.UseEnvironment("Development");
-            // 設定値をテスト用に上書きする
-            builder.ConfigureAppConfiguration((_, config) =>
+            // 実運用設定を汚さないよう、テスト専用の設定でアプリを起動する
+            Factory = _baseFactory.WithWebHostBuilder(builder =>
             {
-                // メモリ上の設定ソースを最後に追加して既存設定を上書きする
-                config.AddInMemoryCollection(new Dictionary<string, string?>
+                // シード・パスワードポリシーが緩い Development 環境として起動する
+                builder.UseEnvironment("Development");
+                // 設定値をテスト用に上書きする
+                builder.ConfigureAppConfiguration((_, config) =>
                 {
-                    // DB はテスト専用の一時ファイルへ向ける(リポジトリ内に DB を作らない)
-                    ["ConnectionStrings:DefaultConnection"] =
-                        $"Data Source={Path.Combine(Path.GetTempPath(), $"ii-cacheheader-{Guid.NewGuid():N}.db")}",
-                    // 認証が要る JSON を叩くため、デモ管理者のシードを有効にする
-                    ["SeedAccounts:AdminEmail"] = AdminEmail,
-                    ["SeedAccounts:AdminPassword"] = AdminPassword,
+                    // メモリ上の設定ソースを最後に追加して既存設定を上書きする
+                    config.AddInMemoryCollection(new Dictionary<string, string?>
+                    {
+                        // DB はテスト専用の一時ファイルへ向ける(リポジトリ内に DB を作らない)
+                        ["ConnectionStrings:DefaultConnection"] = $"Data Source={_databasePath}",
+                        // 認証が要る JSON を叩くため、デモ管理者のシードを有効にする
+                        ["SeedAccounts:AdminEmail"] = AdminEmail,
+                        ["SeedAccounts:AdminPassword"] = AdminPassword,
+                    });
                 });
             });
-        });
+        }
+
+        /// <summary>テストが共有する、起動済みのアプリのファクトリ。</summary>
+        public WebApplicationFactory<Program> Factory { get; }
+
+        /// <summary>アプリを停止し、生成した一時 DB のファイルを消す。</summary>
+        public void Dispose()
+        {
+            // 先にアプリを止めて、SQLite のファイルハンドルを解放させる
+            Factory.Dispose();
+            // 派生元のファクトリも明示的に止める(派生側の Dispose では解放されない)
+            _baseFactory.Dispose();
+            // SQLite は本体のほかに WAL とシェアドメモリのファイルを並べて作るので、3 つとも消す
+            foreach (var suffix in new[] { "", "-wal", "-shm" })
+            {
+                // 消せない場合(別プロセスが掴んでいる等)でもテストは失敗させない ——
+                // 後始末の失敗で検証結果を赤くすると、本物の不具合と見分けが付かなくなる
+                try
+                {
+                    // 存在すれば消す(File.Delete は存在しないパスでは何もしない)
+                    File.Delete(_databasePath + suffix);
+                }
+                catch (IOException)
+                {
+                    // 掴まれていて消せなかった場合は次のプロセス終了に委ねる(握り潰す理由はこの 1 行)
+                }
+                catch (UnauthorizedAccessException)
+                {
+                    // 権限が無くて消せなかった場合も同じ扱いにする
+                }
+            }
+        }
     }
 
     [Fact]
@@ -98,6 +160,17 @@ public class ResponseCacheHeaderIntegrationTests : IClassFixture<WebApplicationF
 
         // 画面が実際に HTML として返っていることを確認する(前提が崩れたら以降の検証が無意味になる)
         Assert.Equal("text/html", response.Content.Headers.ContentType?.MediaType);
+
+        // 応答本文を読み出す(下の前提確認に使う)
+        var body = await response.Content.ReadAsStringAsync();
+        // <b>この画面がアンチフォージェリを通っていない</b>ことを機械的に確かめる。
+        // クラスのコメントが説明しているとおり、トークンを描画した応答には
+        // アンチフォージェリ自身が no-cache, no-store を書くので、フォームのある画面では
+        // ミドルウェアを丸ごと外しても下の検証が緑のまま通る。その前提を<b>コメントではなく
+        // 検証</b>で持たせておかないと、共通レイアウトに常時表示のフォームが 1 つ増えただけで
+        // この検査は「緑だが何も見ていない」状態へ静かに変わる(差分にもテスト件数にも現れない)
+        Assert.DoesNotContain("__RequestVerificationToken", body);
+
         // キャッシュ抑止が付いていることを確認する(共用端末の戻るボタン・ディスクキャッシュ対策)
         Assert.Contains(
             SecurityHeadersMiddleware.NoStoreCacheControl,
