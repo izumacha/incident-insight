@@ -292,6 +292,12 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("        Response.Headers[\"cache-control\"] = \"public\";", true)]
     // すべて大文字の綴りも拾う
     [InlineData("        Response.Headers[\"CACHE-CONTROL\"] = \"public\";", true)]
+    // 日本語コメントで規則を説明する行は拾わない(§5 が求める書き方で赤くしない)
+    [InlineData("    // エラーページ。Cache-Control は属性側で no-store を宣言する", false)]
+    // XML ドキュメントコメントも同じ扱い
+    [InlineData("    /// <c>Cache-Control</c> をここでは書かない。", false)]
+    // Razor のコメントも同じ扱い
+    [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
     public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
     {
         // 判定を実行して、期待どおりかを確認する
@@ -343,7 +349,33 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="line">判定するソースの 1 行。</param>
     /// <returns>名指ししていれば true。</returns>
-    private static bool MentionsCacheControl(string line) =>
+    private static bool MentionsCacheControl(string line)
+    {
+        // 前後の空白を落として、行頭の記号を見られるようにする
+        var trimmed = line.TrimStart();
+        // <b>コメント行は対象外にする。</b> CLAUDE.md §5 は「1 行ごとに日本語のコメントを書く」
+        // ことを求めており、この規則を説明するコメントは [ResponseCache] のすぐ上
+        // (＝いちばん書かれやすい場所)に来る。コメントで赤くする検査は
+        // 「規約どおりに書くと CI が落ちる」状態を作り、いずれ検査ごと緩められる
+        // (実測: HomeController のコメントに Cache-Control と書くだけで落ちた)
+        if (trimmed.StartsWith("//", StringComparison.Ordinal)
+            || trimmed.StartsWith("@*", StringComparison.Ordinal)
+            || trimmed.StartsWith("*", StringComparison.Ordinal))
+        {
+            // コメントは書き込みではないので拾わない
+            return false;
+        }
+
+        // 実コードの行だけを判定する
+        return MentionsCacheControlHeader(trimmed);
+    }
+
+    /// <summary>
+    /// その 1 行が <c>Cache-Control</c> ヘッダーの名前を含むかを返す(コメント判定の前後で使う)。
+    /// </summary>
+    /// <param name="line">判定するソースの 1 行。</param>
+    /// <returns>ヘッダー名を含んでいれば true。</returns>
+    private static bool MentionsCacheControlHeader(string line) =>
         // 文字列キーでの指定(Cache-Control)か、型付きプロパティ(CacheControl)のどちらか。
         // <b>大文字小文字を無視する</b>: HTTP のヘッダー名は大文字小文字を区別せず、
         // IHeaderDictionary も OrdinalIgnoreCase の辞書なので
@@ -352,6 +384,7 @@ public class ResponseCacheAttributePolicyTests
         // 「綴りを変えただけの抜け道」そのものになる
         line.Contains("Cache-Control", StringComparison.OrdinalIgnoreCase)
             || line.Contains("CacheControl", StringComparison.OrdinalIgnoreCase);
+
 
     // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
     //
