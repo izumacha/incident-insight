@@ -355,9 +355,16 @@ if (!app.Environment.IsDevelopment())
     }
 }
 
-// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)を
-// 静的ファイルを含む全レスポンスに付与する。認証・ルーティングより前に置き、
-// 例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする。
+// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と
+// キャッシュ抑止の既定値を、静的ファイルを含む「ここより後ろへ届いた」全レスポンスに付与する。
+// 認証・ルーティングより前に置き、例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする
+// (例外時は ExceptionHandlerMiddleware がこれより後ろを再実行するので、ここは必ず通る)。
+//
+// 唯一これより手前で応答が完結するのが本番の UseHttpsRedirection で、http:// への
+// リクエストに 307 + Location を返して短絡する。その応答にはこのヘッダー群が付かない。
+// 本文を持たず、307 は明示的な指示が無ければキャッシュされないので実害は無いと判断して
+// この並びにしている(付けたくなったら、UseExceptionHandler の直後・UseHsts の手前へ
+// この行を移す ——例外ハンドラの内側であることは保ったまま、リダイレクトも覆える)。
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
 // 静的ファイル(wwwroot)配信を有効化。
