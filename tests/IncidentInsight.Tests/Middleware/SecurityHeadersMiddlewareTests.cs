@@ -145,6 +145,51 @@ public class SecurityHeadersMiddlewareTests
         Assert.Equal(declared, context.Response.Headers.CacheControl.ToString());
     }
 
+    // 静的アセット用の指示が、docstring が述べている不変条件を実際に満たしていること。
+    //
+    // <b>なぜ要るのか。</b> 統合テストは「配信された値が定数と一致するか」しか見ないので、
+    // <b>定数の値そのものに対しては恒真</b>になる ——実測でも、定数を
+    // "public,max-age=31536000,immutable" に書き換えると 878 件すべて緑のまま通った。
+    // ところが StaticAssetCacheControl の docstring は「期間を短く保ち immutable を付けない」
+    // ことを明確な理由付きで要求している: _Layout.cshtml と _ValidationScriptsPartial.cshtml が
+    // wwwroot/lib 配下(jQuery 等)を asp-append-version なしで参照しているため、長期・immutable に
+    // すると脆弱性修正後も古いファイルが利用者のキャッシュに残り、消す手段が無くなる。
+    // 文章だけの不変条件は破っても誰も気付かないので、ここで機械的に固定する。
+    [Fact]
+    public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
+    {
+        // 定数を解析して、指示ごとの値を取り出す
+        var directives = SecurityHeadersMiddleware.StaticAssetCacheControl
+            // カンマ区切りの各指示へ分ける
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        // immutable を付けていないこと(付けると再取得の手段が無くなる)
+        Assert.DoesNotContain(
+            directives,
+            d => d.Equals("immutable", StringComparison.OrdinalIgnoreCase));
+
+        // max-age の指示を取り出す(無ければキャッシュ期間の意図が読めないので落とす)
+        var maxAge = directives
+            .FirstOrDefault(d => d.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase));
+        Assert.True(
+            maxAge is not null,
+            $"静的アセットの指示に max-age がありません: {SecurityHeadersMiddleware.StaticAssetCacheControl}");
+
+        // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
+        Assert.True(
+            int.TryParse(maxAge!["max-age=".Length..], out var seconds),
+            $"max-age の値を秒数として読み取れません: {maxAge}");
+
+        // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
+        // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
+        Assert.True(
+            seconds <= 24 * 60 * 60,
+            $"静的アセットの max-age が長すぎます({seconds} 秒)。"
+                + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
+                + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。");
+    }
+
     /// <summary>
     /// 指定した応答フィーチャーだけを持つ最小構成の <see cref="HttpContext"/> を作る。
     /// </summary>
