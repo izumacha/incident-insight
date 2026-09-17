@@ -294,7 +294,7 @@ public class ModelStateKeyPrefixMatchTests
     [Fact]
     public void Neutralize_InViews_KeepsRealCallsThatFollowApostrophes()
     {
-        // **アポストロフィで挟む**のが要点。1 つしか置かないと SkipCharLiteral が
+        // **アポストロフィで挟む**のが要点。1 つしか置かないと CSharpLiteral.FindCharLiteralEnd が
         // 閉じ記号を見つけられず -1 を返し、Neutralize は end < 0 の枝で読み進めるだけになる。
         // つまり文字リテラルの経路に一度も入らないので、この検査は**どう変異させても
         // 落ちない**(実測: 挟まない書き方では、ビューでも ' を追い中身を潰す変異を
@@ -379,7 +379,7 @@ public class ModelStateKeyPrefixMatchTests
             if (c == '"' || c == '\'')
             {
                 // 閉じ記号の位置を求める（補間文字列は穴を数えて末尾まで進む）
-                var end = c != '"' ? SkipCharLiteral(arguments, i)
+                var end = c != '"' ? CSharpLiteral.FindCharLiteralEnd(arguments, i)
                     : IsInterpolatedStart(arguments, i) ? SkipInterpolatedString(arguments, i)
                     : SkipStringLiteral(arguments, i);
                 // 閉じていなければこれ以上は解釈できないので打ち切る
@@ -548,7 +548,7 @@ public class ModelStateKeyPrefixMatchTests
                     continue;
                 }
                 var isString = chars[i] == '"';
-                var end = isString ? SkipStringLiteral(source, i) : SkipCharLiteral(source, i);
+                var end = isString ? SkipStringLiteral(source, i) : CSharpLiteral.FindCharLiteralEnd(source, i);
                 // 閉じ記号が無ければ、その 1 文字はリテラルの開始ではなかったと解釈して読み進める。
                 // ここでファイル全体を打ち切ってはいけない: Razor の本文にある素のアポストロフィ
                 // (英文の don't など。Create.cshtml だけで 56 個ある)で以降のコメントが一切
@@ -647,7 +647,7 @@ public class ModelStateKeyPrefixMatchTests
             if (c == '"' || c == '\'')
             {
                 // 閉じ記号を探して位置を進める（補間文字列は穴を数えて末尾まで進む）
-                i = c != '"' ? SkipCharLiteral(source, i)
+                i = c != '"' ? CSharpLiteral.FindCharLiteralEnd(source, i)
                     : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i)
                     : SkipStringLiteral(source, i);
                 // 閉じ記号が見つからなければ読み取り不能
@@ -811,7 +811,7 @@ public class ModelStateKeyPrefixMatchTests
                 // 入れ子のリテラルの末尾を求める（補間文字列の入れ子にも対応する）。
                 // 穴の中の文字列も外側と同じ規則で中身を潰す——潰さないと
                 // $"{Fmt("… StartsWith(x) …")}" のような文言が違反として報告される
-                var nested = c != '"' ? SkipCharLiteral(source, i)
+                var nested = c != '"' ? CSharpLiteral.FindCharLiteralEnd(source, i)
                     : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i, blankInto)
                     : SkipStringLiteral(source, i);
                 // 末尾が求まらなければ読み取り不能
@@ -854,17 +854,6 @@ public class ModelStateKeyPrefixMatchTests
         }
     }
 
-    /// <summary>
-    /// 単一引用符の位置から文字リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
-    /// <c>'\''</c> のようなエスケープを考慮する。
-    /// </summary>
-    /// <remarks>
-    /// 本体は <see cref="CSharpLiteral.FindCharLiteralEnd"/> が持つ（同じ読み取りを必要とする
-    /// 検査が 2 つあり、書き写すとエスケープの扱いを直したときに片方だけが直るため）。
-    /// </remarks>
-    private static int SkipCharLiteral(string source, int quoteIndex) =>
-        // 閉じ引用符を探す(開きかどうかの判断は利用側が持つ)
-        CSharpLiteral.FindCharLiteralEnd(source, quoteIndex);
 
     /// <summary>指定位置が何行目かを返す(報告用。1 始まり)。</summary>
     private static int LineNumberAt(string source, int index) =>

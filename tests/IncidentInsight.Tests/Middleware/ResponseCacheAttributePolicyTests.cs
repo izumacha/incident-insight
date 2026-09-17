@@ -558,10 +558,17 @@ public class ResponseCacheAttributePolicyTests
     /// <c>public,max-age=3600</c> で配られ、<b>919 件すべて緑のまま通った</b>。
     /// だから配信の<b>根を差し替える綴り</b>も見張る。</para>
     ///
-    /// <para>この 3 つ（<c>FileProvider</c> ・ <c>PhysicalFileProvider</c> ・
-    /// <c>CompositeFileProvider</c>）は Web プロジェクトに<b>現時点で 1 つも無い</b>ので、
-    /// 許可表に載せていない＝1 つでも現れたら落ちる。配信の根を本当に変えたくなったときに、
-    /// 理由を添えて表へ登録する差分が必ず 1 行として現れる。</para>
+    /// <para>配信の根を差し替える綴りと、配る対象を広げる綴りは Web プロジェクトに
+    /// <b>現時点で 1 つも無い</b>ので、許可表に載せていない＝1 つでも現れたら落ちる。
+    /// 本当に変えたくなったときに、理由を添えて表へ登録する差分が必ず 1 行として現れる。</para>
+    ///
+    /// <para><b>残っている境界（過大評価しないこと）。</b> これは綴りの走査なので、
+    /// <b>「見張っている綴りを使わずに配信を広げる書き方」までは覆えない</b>。
+    /// 実際 <c>ServeUnknownFileTypes</c> は、この表を作ったあとのレビューで見つかって
+    /// 足したもの（それまで 923 件すべて緑のまま通った）。
+    /// <b>「配信ルートを増やせば必ずここに現れる」とは言えない</b> ——
+    /// この検査は増やしたことに<b>気付きやすくする</b>ための網であって証明ではなく、
+    /// 静的ファイル配信の設定を触る差分はレビューで必ず見ること。</para>
     /// </remarks>
     private static readonly string[] StaticFileWiringTokens =
     [
@@ -572,8 +579,14 @@ public class ResponseCacheAttributePolicyTests
         // (WebApplicationOptions.WebRootPath / builder.UseWebRoot)——実測で、
         // WebRootPath = "." にすると呼び出しも指示も 1 つも変わらないまま
         // /appsettings.json ・ /incident_insight.db が public,max-age=3600 で配られた
-        "FileProvider", "PhysicalFileProvider", "CompositeFileProvider",
+        // ("FileProvider" は PhysicalFileProvider / CompositeFileProvider /
+        //  WebRootFileProvider / ContentRootFileProvider をすべて部分一致で覆うので、
+        //  長い綴りを並べない ——並べると 1 行が 2 つの counter に引っかかり、
+        //  許可表へ登録する側が同じ行を 2 回登録する羽目になる)
+        "FileProvider",
         "WebRootPath", "UseWebRoot",
+        // 配る「根」は同じでも、配る「対象」を広げる綴り
+        "ServeUnknownFileTypes",
     ];
 
     /// <summary>
@@ -852,6 +865,10 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    <p>Bob's report</p> @* Cache-Control は書かない *@ <a href='x'>x</a>", false)]
     // 同じ形でも、コメントではなく実際の書き込みなら拾う(見逃し側にも倒れないこと)
     [InlineData("    <p>Bob's</p> @{ Context.Response.Headers.CacheControl = \"public\"; } <a href='x'>x</a>", true)]
+    // <b>地の文の二重引用符。</b> ' と同じ手当てが要る(片方だけだと同じ誤検知が残る)
+    [InlineData("    <p>重症度は \"レベル3 以上が対象</p> @* Cache-Control は既定に任せる *@", false)]
+    // 同じ形でも、実際の書き込みなら拾う
+    [InlineData("    <p>重症度は \"レベル3</p> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // 本物の文字リテラルは今までどおりリテラルとして扱う(中の @* をコメント開始と読まない)
     [InlineData("        var marker = '@'; Response.Headers.CacheControl = \"public\";", true)]
     // アポストロフィの後ろに実コードがあれば、今までどおり拾う(見逃す方向へ倒れない)
@@ -1108,6 +1125,20 @@ public class ResponseCacheAttributePolicyTests
 
             if (line[i] == '"')
             {
+                // <b>地の文の二重引用符は開きとして読まない。</b> アポストロフィと同じ理由で、
+                // 閉じない " が地の文にあると行末までリテラル扱いになり、後ろの
+                // @*…*@ がコメントとして落ちず §5 どおりのコメントで赤くなる
+                // (例: <p>重症度は "レベル3 以上が対象</p> @* Cache-Control は既定に任せる *@)
+                if (!IsQuoteOpener(line, i))
+                {
+                    // 地の文の 1 文字として実コードへ残す
+                    code.Append(line[i]);
+                    // 次の文字へ
+                    i++;
+                    // 続きを見る
+                    continue;
+                }
+
                 // リテラルの終わりの位置を求める(逐語的文字列 @"…" もここで扱う)
                 var end = SkipStringLiteral(line, i);
                 // <b>中身は実コードとして残す。</b> ヘッダー名は文字列キーとして書かれる
@@ -1135,6 +1166,41 @@ public class ResponseCacheAttributePolicyTests
 
         // 実コードと、次の行へ持ち越す状態を返す
         return (code.ToString(), pendingCloser);
+    }
+
+    /// <summary>単一引用符が「リテラルの開き」だと見なせる直前の文字。</summary>
+    /// <remarks>
+    /// 属性値（<c>src=</c>）と、文字列・文字リテラル（<c>= "x"</c> ・ <c>f('x')</c> ・
+    /// <c>[ 'x' ]</c> ・ 連結の <c>+ "x"</c> ・ 逐語的の <c>@"x"</c> ・ 補間の <c>$"x"</c>）を
+    /// 覆い、地の文（直前が英数字の <c>Bob's</c> ・ <c>重症度は "レベル3</c>）を外すための集合。
+    /// <b><c>'</c> と <c>"</c> の両方に同じ規則を当てる</b> ——片方だけ手当てすると、
+    /// もう片方の綴りで同じ誤検知が残る。
+    /// </remarks>
+    private const string QuoteOpenerPredecessors = "=(,[{:?+@$";
+
+    /// <summary>
+    /// その位置の引用符が、リテラルの<b>開き</b>に見えるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// 直前の非空白文字が <see cref="QuoteOpenerPredecessors"/> のいずれかなら開き。
+    /// 行頭（直前に文字が無い）も開きとして扱う ——継続行の先頭に置かれたリテラル
+    /// （<c>"https://…".Length</c> のような形）を地の文と誤判定しないため。
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="index">引用符の位置。</param>
+    /// <returns>リテラルの開きに見えれば true。</returns>
+    private static bool IsQuoteOpener(string line, int index)
+    {
+        // 直前の非空白文字を探す(空白は読み飛ばす)
+        var previous = index - 1;
+        // 空白のあいだは戻り続ける
+        while (previous >= 0 && char.IsWhiteSpace(line[previous])) previous--;
+
+        // 行頭なら開きとして扱う
+        if (previous < 0) return true;
+
+        // 直前が「開きに見える文字」かどうかで決める
+        return QuoteOpenerPredecessors.Contains(line[previous]);
     }
 
     /// <summary>
@@ -1173,26 +1239,14 @@ public class ResponseCacheAttributePolicyTests
     /// 閉じない <c>"</c> がマークアップの地の文に現れることは実質無い
     /// （属性値は必ず閉じる）ので、単純な走査のままにしてある。</para>
     /// </remarks>
-    /// <summary>単一引用符が「リテラルの開き」だと見なせる直前の文字。</summary>
-    /// <remarks>
-    /// 属性値（<c>src=</c>）と文字リテラル（<c>= 'x'</c> ・ <c>f('x')</c> ・ <c>[ 'x' ]</c>）を
-    /// 覆い、地の文（直前が英数字の <c>Bob's</c>）を外すための最小の集合。
-    /// </remarks>
-    private const string QuoteOpenerPredecessors = "=(,[{:?";
-
     /// <param name="line">対象の行。</param>
     /// <param name="start">アポストロフィの位置。</param>
     /// <param name="end">読めた場合、リテラルの直後の位置。</param>
     /// <returns>リテラルの開きで、かつその行の中で閉じていれば true。</returns>
     private static bool TryReadQuotedRun(string line, int start, out int end)
     {
-        // 直前の非空白文字を探す(空白は読み飛ばす)
-        var previous = start - 1;
-        // 空白のあいだは戻り続ける
-        while (previous >= 0 && char.IsWhiteSpace(line[previous])) previous--;
-
-        // 直前が「開きに見える文字」でなければ、地の文のアポストロフィとして扱う
-        if (previous < 0 || !QuoteOpenerPredecessors.Contains(line[previous]))
+        // 直前の文字から、リテラルの開きに見えるかを判定する
+        if (!IsQuoteOpener(line, start))
         {
             // 呼び出し側が読み進める位置を変えないようにする
             end = start;

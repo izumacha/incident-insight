@@ -406,6 +406,40 @@ public class HostFilteringShortCircuitTests
         Assert.Contains("Invalid Hostname", body, StringComparison.Ordinal);
     }
 
+    // ワイルドカードを 1 つでも残した設定は、実ホスト名を併記しても全ホスト許可のままであること。
+    //
+    // <b>なぜここで確かめるのか。</b> Program.cs の警告ログはこの前提の上に立っている
+    // (AllowedHostsPolicy.IsPermissive が "*;real" を「絞れていない」と判定する根拠)。
+    // 前提が実際の HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
+    [Fact]
+    public async Task WildcardMixedWithARealHost_StillAcceptsAnyHost()
+    {
+        // "*" と実ホスト名を併記した設定でアプリを起動する
+        using var fixture = new WildcardMixedFixture();
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+        // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // 一致しないはずの Host ヘッダーを乗せる
+        request.Headers.Host = RejectedHost;
+
+        // 応答を受け取る
+        var response = await client.SendAsync(request);
+
+        // <b>400 にならない</b> ——つまり "*" が 1 つでもあれば絞り込みは効いていない。
+        // ここが 400 になる日が来たら、警告の判定(IsPermissive)を狭められる
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
+    /// <summary>`"*"` と実ホスト名を併記した設定のアプリ（全許可のままであることの確認用）。</summary>
+    private sealed class WildcardMixedFixture() : TempDatabaseAppFixture(
+        "ii-hostfilter-mixed",
+        new Dictionary<string, string?>
+        {
+            // 実ホスト名を「追加」したつもりの、よくある綴り
+            ["AllowedHosts"] = $"*;{AllowedHost}",
+        });
+
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
     //
     // 上の検査は「弾かれること」しか見ないので、絞り込みが強すぎて全リクエストが 400 に

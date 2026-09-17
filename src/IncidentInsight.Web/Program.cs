@@ -3,6 +3,8 @@ using IncidentInsight.Web.Authorization;
 // DbContext / 監査インターセプタ / Seeder を使う
 using IncidentInsight.Web.Data;
 // ApplicationUser / AppRoles を使う
+// AllowedHosts が実質全許可かの判定を使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models;
 // AuditOptions(監査ログ用設定)を使う
 using IncidentInsight.Web.Models.Auditing;
@@ -344,8 +346,11 @@ if (!app.Environment.IsDevelopment())
     // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
     // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
     var allowedHosts = app.Configuration["AllowedHosts"];
-    // 未設定・空・ワイルドカードのいずれかなら警告ログを出す
-    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Trim() == "*")
+    // 未設定・空・ワイルドカードを 1 つでも含むなら警告ログを出す。
+    // 判定を AllowedHostsPolicy に置いているのは、"*;incident.example.com" のように
+    // 「実ホスト名を足したつもりで全ホスト許可のまま」という綴りを取りこぼさないため
+    // (HostFiltering は * が 1 つでもあれば全許可へ切り替わる)。境界は同名のテストが固定する
+    if (AllowedHostsPolicy.IsPermissive(allowedHosts))
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
