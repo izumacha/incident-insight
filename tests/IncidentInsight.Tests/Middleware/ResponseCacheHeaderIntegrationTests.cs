@@ -2,9 +2,6 @@
 using IncidentInsight.Web.Middleware;
 // WebApplicationFactory(実 HTTP パイプラインでの統合テスト)を使う
 using Microsoft.AspNetCore.Mvc.Testing;
-// テスト用の設定上書きに使う
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 // 正規表現でアンチフォージェリトークンを取り出すために使う
 using System.Text.RegularExpressions;
 // 共有のフィクスチャとキャッシュ指示の判定を使う

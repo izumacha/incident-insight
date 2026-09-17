@@ -118,8 +118,29 @@ public abstract class TempDatabaseAppFixture : IDisposable
         }
         finally
         {
-            // 本体と補助ファイルをまとめて消す(対象の一覧は共通ヘルパーが持つ)
-            SqliteTestFiles.Cleanup(_databasePath);
+            // 本体と補助ファイルをまとめて消す(対象の一覧は共通ヘルパーが持つ)。
+            //
+            // <b>ここで投げさせない。</b> SQLite は接続をプールするので、停止直後は
+            // まだファイルが開いていることがあり、プラットフォームによっては削除が
+            // IOException になる。この finally は「必ず後始末へ到達する」ために置いたのに、
+            // その 1 手順が投げると (a) 本来の停止時の例外を置き換えて原因が読めなくなり、
+            // (b) GC.SuppressFinalize にも到達しない。消せなかったファイルは
+            // プロセス終了後に OS の一時領域の掃除へ委ねる ——後始末の失敗で
+            // 検証結果を赤くすると、本物の不具合と見分けが付かなくなる
+            try
+            {
+                // 生成した一時 DB と補助ファイルを消す
+                SqliteTestFiles.Cleanup(_databasePath);
+            }
+            catch (IOException)
+            {
+                // 別プロセス・別ハンドルが掴んでいて消せなかった場合(握り潰す理由は上のとおり)
+            }
+            catch (UnauthorizedAccessException)
+            {
+                // 権限が無くて消せなかった場合も同じ扱いにする
+            }
+
             // 派生クラスがファイナライザを持たないことを明示する(CA1816)
             GC.SuppressFinalize(this);
         }
