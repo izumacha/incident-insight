@@ -58,6 +58,16 @@ public class AllowedHostsPolicyTests
     // 似ているが全許可ではない綴り(実ホストとして扱われる)
     [InlineData("0.0.0.1", false)]
     [InlineData("[::1]", false)]
+    // <b>フレームワークは正規化してから判定する。</b> 全角数字・全角読点で書いた 0.0.0.0 は
+    // IDNA/NFKC で 0.0.0.0 になり、許可リスト全体が無効になる(実測)
+    [InlineData("０.０.０.０", true)]
+    [InlineData("0。0。0。0", true)]
+    // 1 文字だけ全角でも同じ
+    [InlineData("０.0.0.0", true)]
+    // 実ホスト名と併記しても同じ
+    [InlineData("incident.example.com;０.０.０.０", true)]
+    // 正規化できない綴りは判断できないので、警告する側へ倒す(過剰に警告する＝安全側)
+    [InlineData("0.0.0.0\t", true)]
     public void IsPermissive_TreatsAnyWildcardEntryAsAllowAll(string? allowedHosts, bool expected)
     {
         // 判定を実行して、期待どおりかを確かめる

@@ -43,6 +43,8 @@
      **全許可になる綴りは `*` だけではありません**: `[::]`(IPv6 Any)と `0.0.0.0`(IPv4 Any)も
      同じで、**1 つでも混ざっていれば実ホスト名を併記しても許可リスト全体が無効**になります
      (`ASPNETCORE_URLS=http://0.0.0.0:8080` を写して `AllowedHosts` に書くと自然に起きます)。
+     **判定はホスト名の正規化(IDNA / NFKC)の後に行われます** —— 全角数字の `０.０.０.０` や
+     日本語 IME の読点で書いた `0。0。0。0` も `0.0.0.0` に正規化されるため同じく全許可です。
      判定の正本は `Models/Validation/AllowedHostsPolicy`、実際の挙動は
      `HostFilteringShortCircuitTests` が固定しています。
   2. ホスト名の絞り込み(`AllowedHosts` を実ホスト名へ絞ったとき。issue #64。

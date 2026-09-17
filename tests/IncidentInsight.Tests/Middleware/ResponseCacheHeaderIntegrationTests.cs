@@ -409,13 +409,25 @@ public class HostFilteringShortCircuitTests
     // ワイルドカードを 1 つでも残した設定は、実ホスト名を併記しても全ホスト許可のままであること。
     //
     // <b>なぜここで確かめるのか。</b> Program.cs の警告ログはこの前提の上に立っている
-    // (AllowedHostsPolicy.IsPermissive が "*;real" を「絞れていない」と判定する根拠)。
+    // (AllowedHostsPolicy.IsPermissive が「real と併記していても全許可」と判定する根拠)。
     // 前提が実際の HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
-    [Fact]
-    public async Task WildcardMixedWithARealHost_StillAcceptsAnyHost()
+    //
+    // <b>3 綴りとも見る。</b> 1 つだけ固定していると、判定を狭める変異と
+    // 「フレームワーク側の前提が変わった」のを区別できない。文書 3 箇所が
+    // 「3 綴りとも固定している」と書いているので、実態もそろえる。
+    //
+    // 0.0.0.0 は ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと自然に生まれる綴り。
+    [Theory]
+    // HTTP.sys のワイルドカード
+    [InlineData("*")]
+    // Kestrel の IPv6 Any
+    [InlineData("[::]")]
+    // IPv4 Any
+    [InlineData("0.0.0.0")]
+    public async Task WildcardMixedWithARealHost_StillAcceptsAnyHost(string wildcard)
     {
-        // "*" と実ホスト名を併記した設定でアプリを起動する
-        using var fixture = new WildcardMixedFixture();
+        // その綴りと実ホスト名を併記した設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture($"{wildcard};{AllowedHost}");
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
         // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
@@ -426,55 +438,23 @@ public class HostFilteringShortCircuitTests
         // 応答を受け取る
         var response = await client.SendAsync(request);
 
-        // <b>400 にならない</b> ——つまり "*" が 1 つでもあれば絞り込みは効いていない。
+        // <b>400 にならない</b> ——ワイルドカードが 1 つでもあれば絞り込みは効いていない。
         // ここが 400 になる日が来たら、警告の判定(IsPermissive)を狭められる
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
     }
 
-    /// <summary>`"*"` と実ホスト名を併記した設定のアプリ（全許可のままであることの確認用）。</summary>
-    private sealed class WildcardMixedFixture() : TempDatabaseAppFixture(
-        "ii-hostfilter-mixed",
+    /// <summary>指定した `AllowedHosts` で起動するアプリ。</summary>
+    /// <remarks>
+    /// 値だけが違う同じ本文を綴りの数だけ書き写さないために、設定値を受け取る形にしてある
+    /// （CLAUDE.md §6 DRY。3 綴り目を足したときに 3 つ目の写しが生まれるのを防ぐ）。
+    /// </remarks>
+    /// <param name="allowedHosts">そのアプリへ渡す `AllowedHosts` の値。</param>
+    private sealed class AllowedHostsFixture(string allowedHosts) : TempDatabaseAppFixture(
+        "ii-hostfilter-cfg",
         new Dictionary<string, string?>
         {
-            // 実ホスト名を「追加」したつもりの、よくある綴り
-            ["AllowedHosts"] = $"*;{AllowedHost}",
-        });
-
-    // IPv4 Any(0.0.0.0)を併記した設定も、同じく全ホスト許可のままであること。
-    //
-    // <b>なぜ 2 つ目が要るのか。</b> AllowedHostsPolicy は 3 つの綴り(* / [::] / 0.0.0.0)を
-    // 全許可として扱うが、「本当にフレームワークがそう振る舞うか」を固定しているのは
-    // この統合テストだけ。* だけを固定していると、判定を * だけへ戻す変異が
-    // 「フレームワーク側の前提が違っていた」のか「判定が狭まった」のか区別できない。
-    //
-    // 0.0.0.0 を選ぶのは、ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと
-    // 自然に生まれる綴りで、実際に踏みやすいため。
-    [Fact]
-    public async Task IPv4AnyMixedWithARealHost_StillAcceptsAnyHost()
-    {
-        // 0.0.0.0 と実ホスト名を併記した設定でアプリを起動する
-        using var fixture = new IPv4AnyMixedFixture();
-        // リダイレクトを追わないクライアントを受け取る
-        var client = fixture.CreateNonRedirectingClient();
-        // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // 一致しないはずの Host ヘッダーを乗せる
-        request.Headers.Host = RejectedHost;
-
-        // 応答を受け取る
-        var response = await client.SendAsync(request);
-
-        // 400 にならない ——0.0.0.0 が 1 つでもあれば絞り込みは効いていない
-        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
-    }
-
-    /// <summary>`"0.0.0.0"` と実ホスト名を併記した設定のアプリ。</summary>
-    private sealed class IPv4AnyMixedFixture() : TempDatabaseAppFixture(
-        "ii-hostfilter-anyv4",
-        new Dictionary<string, string?>
-        {
-            // ASPNETCORE_URLS の綴りを写して書いてしまう形
-            ["AllowedHosts"] = $"0.0.0.0;{AllowedHost}",
+            // 検証したい許可リストをそのまま渡す
+            ["AllowedHosts"] = allowedHosts,
         });
 
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。

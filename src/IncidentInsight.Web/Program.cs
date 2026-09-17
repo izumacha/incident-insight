@@ -342,23 +342,31 @@ if (!app.Environment.IsDevelopment())
     // HTTP → HTTPS リダイレクト
     app.UseHttpsRedirection();
 
-    // 本番で AllowedHosts が "*"(全ホスト許可)のままだと、Host ヘッダ偽装
+    // 本番で AllowedHosts が全許可のままだと、Host ヘッダ偽装
     // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
     // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
     var allowedHosts = app.Configuration["AllowedHosts"];
     // 未設定・空・ワイルドカードを 1 つでも含むなら警告ログを出す。
     // 判定を AllowedHostsPolicy に置いているのは、"*;incident.example.com" のように
-    // 「実ホスト名を足したつもりで全ホスト許可のまま」という綴りを取りこぼさないため
-    // (HostFiltering は * が 1 つでもあれば全許可へ切り替わる)。境界は同名のテストが固定する
+    // 「実ホスト名を足したつもりで全ホスト許可のまま」という綴りを取りこぼさないため。
+    // <b>見るべきは "*" だけではない</b> ——HostFiltering は "*" / "[::]" / "0.0.0.0" の
+    // いずれかが 1 つでもあれば全許可へ切り替わり、しかも判定は IDNA/NFKC 正規化の後で行う
+    // (全角の "０.０.０.０" も同じ)。ここを狭める変更は、直したばかりの穴を戻すことになる。
+    // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
+    // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
     if (AllowedHostsPolicy.IsPermissive(allowedHosts))
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
-            "AllowedHosts is permissive in Production (current value: {AllowedHosts}). " +
+            "AllowedHosts is permissive in the {Environment} environment " +
+            "(current value: {AllowedHosts}). " +
             "A list containing '*', '[::]' or '0.0.0.0' disables host filtering entirely. " +
             "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
             "behind a reverse proxy (issue #64).",
+            // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
+            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える
+            app.Environment.EnvironmentName,
             // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
             // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
             allowedHosts);

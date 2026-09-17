@@ -1,3 +1,6 @@
+// フレームワークと同じホスト名の正規化を通すために使う
+using Microsoft.AspNetCore.Http;
+
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
 
@@ -40,6 +43,46 @@ public static class AllowedHostsPolicy
     private static readonly string[] Wildcards = ["*", "[::]", "0.0.0.0"];
 
     /// <summary>
+    /// 許可リストの 1 項目が、フレームワークから見てワイルドカードかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>生の文字列で比べてはいけない。</b> <c>HostFilteringMiddleware</c> は各項目を
+    /// <c>new HostString(entry).ToUriComponent()</c>（IDNA / NFKC の正規化）に通して<b>から</b>
+    /// 3 綴りと突き合わせる。そのため全角数字の <c>０.０.０.０</c> や、日本語 IME の読点で
+    /// 書いた <c>0。0。0。0</c> は正規化で <c>0.0.0.0</c> になり、
+    /// <b>許可リスト全体が無効になる</b>（実測: この 2 つと、1 文字だけ全角の <c>０.0.0.0</c> も同じ）。
+    /// 生の <c>Ordinal</c> 比較のままだと、そこがそのまま「警告の出ない全許可」になる ——
+    /// この判定が直したはずの穴が、1 段深いところに残る形。</para>
+    ///
+    /// <para><b>正規化できない綴りは警告する側へ倒す。</b> <c>ToUriComponent()</c> は
+    /// <c>"0.0.0.0\t"</c> のような値で例外を投げる。判断できない以上「絞れている」とは
+    /// 言えないので、<c>true</c>（＝警告を出す）を返す（§9 fail-closed）。
+    /// 過剰に警告する側なので、見逃しにはならない。</para>
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（前後の空白は除去済み）。</param>
+    /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
+    private static bool IsWildcardEntry(string entry)
+    {
+        // フレームワークと同じ正規化を通した綴りを入れる
+        string normalized;
+
+        // 正規化そのものが失敗しうるので捕まえる
+        try
+        {
+            // HostFiltering と同じ手順でホスト名を正規化する
+            normalized = new HostString(entry).ToUriComponent();
+        }
+        catch (ArgumentException)
+        {
+            // 判断できない綴りは「絞れている」と言えないので、警告する側へ倒す
+            return true;
+        }
+
+        // 正規化後の綴りが 3 つのワイルドカードのいずれかかを見る
+        return Wildcards.Contains(normalized, StringComparer.Ordinal);
+    }
+
+    /// <summary>
     /// その設定値が「実質すべてのホストを許可する」かを返す。
     /// </summary>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
@@ -53,6 +96,6 @@ public static class AllowedHostsPolicy
         return allowedHosts
             .Split(Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
             // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
-            .Any(host => Wildcards.Contains(host, StringComparer.Ordinal));
+            .Any(IsWildcardEntry);
     }
 }
