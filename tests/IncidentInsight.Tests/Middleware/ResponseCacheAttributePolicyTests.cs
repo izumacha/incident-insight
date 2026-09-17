@@ -273,15 +273,11 @@ public class ResponseCacheAttributePolicyTests
         {
             // 意図して書く場所は対象外(理由は許可表が持つ)
             if (IsIntendedWriter(sourcePath)) continue;
-            // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
-            var lines = File.ReadAllLines(sourcePath);
-            // 各行を順に見る
-            for (var i = 0; i < lines.Length; i++)
+            // コメントを取り除いたうえで、ヘッダー名を含む行を探す
+            foreach (var (lineNumber, text) in CodeLinesContaining(sourcePath, CacheControlTokens))
             {
-                // Cache-Control を名指ししていない行は対象外
-                if (!MentionsCacheControl(lines[i])) continue;
                 // リポジトリからの相対パスと行番号で名指しする
-                violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{i + 1}: {lines[i].Trim()}");
+                violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{lineNumber}: {text}");
             }
         }
 
@@ -355,37 +351,16 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
-        // アプリ全体のコントローラと、そのアクションに付いた属性をすべて見る
-        var violations = new List<string>();
-
-        // 走査対象のコントローラを 1 つずつ確かめる
-        foreach (var controller in AppControllerScan.Controllers())
-        {
-            // クラス側に付いた属性を調べる
-            foreach (var attribute in controller.GetCustomAttributes(inherit: true))
-            {
-                // 出力キャッシュの属性なら違反として記録する
-                if (IsOutputCacheAttribute(attribute)) violations.Add(controller.FullName ?? controller.Name);
-            }
-
-            // アクション側に付いた属性を調べる
-            foreach (var method in controller.GetMethods(
-                System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance))
-            {
-                // 自分たちが宣言したメソッドだけを見る(フレームワークの基底は対象外)
-                if (method.DeclaringType?.Assembly != AppControllerScan.WebAssembly) continue;
-                // そのメソッドに付いた属性を調べる
-                foreach (var attribute in method.GetCustomAttributes(inherit: true))
-                {
-                    // 出力キャッシュの属性なら、どこに付いていたかを添えて記録する
-                    if (IsOutputCacheAttribute(attribute))
-                    {
-                        // 宣言元の型とメソッド名で名指しする
-                        violations.Add($"{method.DeclaringType!.FullName}.{method.Name}");
-                    }
-                }
-            }
-        }
+        // 共有の走査へ「出力キャッシュの属性であること」を渡して宣言を集める
+        // (クラス側とアクション側の両方を読む・宣言元で名指しする・派生の数だけ並べない、
+        //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
+        var violations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                AppControllerScan.Controllers(),
+                AppControllerScan.WebAssembly,
+                IsOutputCacheAttribute)
+            .Select(d => d.DeclaredOn)
+            .ToList();
 
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
@@ -397,6 +372,46 @@ public class ResponseCacheAttributePolicyTests
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, violations));
     }
+
+    // 出力キャッシュが<b>全体の配線</b>としても入っていないこと。
+    //
+    // <b>なぜ属性の走査だけでは足りないのか。</b> 出力キャッシュは属性を 1 つも書かずに
+    // 有効化できる: AddOutputCache(o => o.AddBasePolicy(...)) と UseOutputCache() を足せば
+    // 既定ポリシーが全エンドポイントへ効き、エンドポイント単位の CacheOutput() でも入る。
+    // どちらも属性として現れないので上の検査には映らず、Cache-Control の走査にも
+    // 引っかからない(その文字列を含まないうえ、Program.cs は許可表に載っている)。
+    // <b>この検査には許可表を置かない</b> ——このアプリに「ここでなら使ってよい」場所は無い。
+    [Fact]
+    public void NoSourceWiresUpServerSideOutputCaching()
+    {
+        // 配線が見つかったファイルと行を集める
+        var violations = new List<string>();
+
+        // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
+        foreach (var sourcePath in ScannedSources())
+        {
+            // コメントを取り除いたうえで、配線を表す綴りを含む行を探す
+            foreach (var (lineNumber, text) in CodeLinesContaining(sourcePath, OutputCacheWiringTokens))
+            {
+                // リポジトリからの相対パスと行番号で名指しする
+                violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{lineNumber}: {text}");
+            }
+        }
+
+        // 違反が 1 件も無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "サーバー側の出力キャッシュの配線が見つかりました。"
+                + "出力キャッシュは応答をサーバーに溜めて別の利用者へ配る仕組みで、"
+                + "応答側の no-store を尊重せず、既定のポリシーはクッキー認証を見ないため、"
+                + "職員 A の PHI が職員 B へ返ります。このアプリでは使いません。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
+    }
+
+    // 出力キャッシュの配線を表す綴り。属性を書かずに有効化できる経路をすべて含める
+    private static readonly string[] OutputCacheWiringTokens =
+        ["AddOutputCache", "UseOutputCache", "CacheOutput("];
 
     // 判定(属性の型名の照合)が、拾う側と見逃さない側の両方で働くこと。
     //
@@ -517,8 +532,6 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    /// <c>Cache-Control</c> をここでは書かない。", false)]
     // Razor のコメントも同じ扱い
     [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
-    // ブロックコメントの継続行(閉じていない)も同じ扱い
-    [InlineData("     * Cache-Control の既定はミドルウェアが入れる", false)]
     // <b>同じ行で閉じたコメントの後ろの実コードは拾う</b>(綴りを変えただけの抜け道にしない)
     [InlineData("    @* メモ *@ @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // C# のブロックコメントを閉じた後ろの実コードも同じく拾う
@@ -529,6 +542,65 @@ public class ResponseCacheAttributePolicyTests
     {
         // 判定を実行して、期待どおりかを確認する
         Assert.Equal(expected, MentionsCacheControl(line));
+    }
+
+    // 複数行にまたがるコメントの中身を、実コードと取り違えないこと。
+    //
+    // <b>なぜ行単位の検査では足りないのか。</b> @*…*@ も /*…*/ も複数行にまたがれる。
+    // 「行頭が * ならコメントの続き」という当て方は、このリポジトリで実際に使われている
+    // 書き方(@* だけの行で始めて次の行から本文を書く形。Views/Incidents/Create.cshtml の
+    // 大半がこれ)を拾えず、規約どおりの日本語コメントで CI が赤くなる(実測)。
+    [Fact]
+    public void CodeScan_CarriesBlockCommentStateAcrossLines()
+    {
+        // Razor の複数行コメント(本文の行頭に記号が無い形)は、すべてコメントとして扱う
+        Assert.Empty(ScanLines(
+            "@*",
+            "  この画面は Cache-Control をミドルウェアの既定に任せる",
+            "*@"));
+
+        // C# の複数行コメントも同じ
+        Assert.Empty(ScanLines(
+            "/*",
+            "  Cache-Control はここでは書かない",
+            "*/"));
+
+        // コメントが閉じたあとの実コードは、行をまたいでいても拾う
+        Assert.Equal(
+            new[] { 3 },
+            ScanLines(
+                "@*",
+                "  メモ",
+                "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // 閉じていないコメントの中で終わっても、実コードを拾わない
+        Assert.Empty(ScanLines(
+            "/*",
+            "  Response.Headers.CacheControl = \"public\";"));
+    }
+
+    /// <summary>
+    /// 合成した複数行のソースを走査し、該当した行番号を返す(検査用の入り口)。
+    /// </summary>
+    /// <param name="lines">合成したソースの各行。</param>
+    /// <returns>該当した行番号(1 始まり)。</returns>
+    private static int[] ScanLines(params string[] lines)
+    {
+        // 使い捨ての作業場へ書き出して、本物と同じ経路で走査する
+        var path = Path.Combine(Path.GetTempPath(), $"ii-scan-{Guid.NewGuid():N}.cshtml");
+        // 後始末を必ず行う
+        try
+        {
+            // 合成したソースを書き出す
+            File.WriteAllLines(path, lines);
+            // 本物の走査を通して、該当した行番号だけを取り出す
+            return CodeLinesContaining(path, CacheControlTokens).Select(h => h.LineNumber).ToArray();
+        }
+        finally
+        {
+            // 使い捨てのファイルを消す
+            File.Delete(path);
+        }
     }
 
     /// <summary>
@@ -555,59 +627,134 @@ public class ResponseCacheAttributePolicyTests
         IntendedCacheControlWriters.ContainsKey(
             Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath));
 
+    // Cache-Control ヘッダーを名指ししている綴り(大文字小文字は無視して照合する)
+    private static readonly string[] CacheControlTokens = ["Cache-Control", "CacheControl"];
+
+    /// <summary>
+    /// ソースからコメントを取り除いたうえで、指定した綴りを含む行を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>行を独立に見てはいけない。</b> <c>@*…*@</c> も <c>/*…*/</c> も複数行にまたがれる。
+    /// 「行頭が <c>*</c> ならコメントの続き」といった行単位の当て方をすると、
+    /// <b>このリポジトリで実際に使われている</b>書き方 ——<c>@*</c> だけの行で始めて
+    /// 次の行から本文を書く形(<c>Views/Incidents/Create.cshtml</c> の大半がこれ)—— が
+    /// コメントと見なされず、規約どおりの日本語コメントで CI が赤くなる(実測)。
+    /// だからファイル全体を <b>1 本の流れ</b>として読み、ブロックコメントの内外を持ち越す。</para>
+    ///
+    /// <para>逆に、閉じたコメントの<b>後ろ</b>にある実コードは拾う ——
+    /// <c>@* メモ *@ @{ … CacheControl = "public" … }</c> を見逃すと、
+    /// この検査が塞ごうとしている「綴りを変えただけの抜け道」そのものになる。</para>
+    /// </remarks>
+    /// <param name="sourcePath">読み取るソースファイル。</param>
+    /// <param name="tokens">探す綴り(いずれかを含めば該当)。</param>
+    /// <returns>該当した行の番号(1 始まり)と、その行の内容。</returns>
+    private static IEnumerable<(int LineNumber, string Text)> CodeLinesContaining(
+        string sourcePath,
+        IReadOnlyList<string> tokens)
+    {
+        // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
+        var lines = File.ReadAllLines(sourcePath);
+        // ブロックコメントの途中なら、閉じるまでの綴りを持つ(外なら null)
+        string? pendingCloser = null;
+        // 該当した行を貯める
+        var hits = new List<(int, string)>();
+
+        // 先頭から順に、コメントの内外を持ち越しながら見る
+        for (var i = 0; i < lines.Length; i++)
+        {
+            // この行からコメントを取り除き、次の行へ持ち越す状態を受け取る
+            var (code, nextCloser) = StripComments(lines[i], pendingCloser);
+            // 次の行の判定に使う状態を更新する
+            pendingCloser = nextCloser;
+            // 残った実コードが、探している綴りのいずれかを含むかを見る
+            if (tokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase)))
+            {
+                // 行番号(1 始まり)と、読み手に見せる元の行を記録する
+                hits.Add((i + 1, lines[i].Trim()));
+            }
+        }
+
+        // 見つかった行を返す
+        return hits;
+    }
+
+    /// <summary>
+    /// 1 行からコメントを取り除き、次の行へ持ち越す状態を返す。
+    /// </summary>
+    /// <param name="line">対象の 1 行。</param>
+    /// <param name="pendingCloser">
+    /// 直前の行から持ち越したブロックコメントの閉じ綴り(コメントの外なら <c>null</c>)。
+    /// </param>
+    /// <returns>コメントを除いた実コードと、次の行へ持ち越す閉じ綴り。</returns>
+    private static (string Code, string? PendingCloser) StripComments(string line, string? pendingCloser)
+    {
+        // 実コードだけを貯める入れ物
+        var code = new System.Text.StringBuilder();
+        // 読み取り位置
+        var i = 0;
+
+        // 行の終わりまで 1 文字ずつ進む
+        while (i < line.Length)
+        {
+            // ブロックコメントの途中なら、閉じ綴りを探す
+            if (pendingCloser is not null)
+            {
+                // この行に閉じ綴りがあるかを見る
+                var close = line.IndexOf(pendingCloser, i, StringComparison.Ordinal);
+                // 無ければ、この行はすべてコメント(状態は持ち越す)
+                if (close < 0) return (code.ToString(), pendingCloser);
+                // あれば、その直後から実コードとして読み直す
+                i = close + pendingCloser.Length;
+                // コメントの外へ戻る
+                pendingCloser = null;
+                // 続きを見る
+                continue;
+            }
+
+            // 行コメントが始まったら、そこから先は読まない
+            if (StartsWithAt(line, i, "//")) break;
+            // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
+            if (StartsWithAt(line, i, "@*")) { pendingCloser = "*@"; i += 2; continue; }
+            // C# のブロックコメントも同様
+            if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
+
+            // ここまで来た文字は実コードなので貯める
+            code.Append(line[i]);
+            // 次の文字へ
+            i++;
+        }
+
+        // 実コードと、次の行へ持ち越す状態を返す
+        return (code.ToString(), pendingCloser);
+    }
+
+    /// <summary>指定位置がその綴りで始まるかを返す(範囲外でも例外にしない)。</summary>
+    /// <param name="line">対象の行。</param>
+    /// <param name="index">調べる位置。</param>
+    /// <param name="token">綴り。</param>
+    /// <returns>その位置が綴りで始まれば true。</returns>
+    private static bool StartsWithAt(string line, int index, string token) =>
+        // 残りの長さが足りていて、かつその綴りで始まるか
+        index + token.Length <= line.Length
+            && string.CompareOrdinal(line, index, token, 0, token.Length) == 0;
+
     /// <summary>
     /// その 1 行が、コメントを取り除いたうえで <c>Cache-Control</c> ヘッダーを名指ししているかを返す。
     /// </summary>
     /// <remarks>
-    /// <para><b>行頭だけを見て「コメント行」と決めない。</b> <c>@*…*@</c> も <c>/*…*/</c> も
-    /// 同じ行で閉じられるので、行頭の記号だけで丸ごと捨てると
-    /// <c>@* メモ *@ @{ … CacheControl = "public" … }</c> が素通りする(実測)。
-    /// これはこの検査が大文字小文字について塞いだのと同じ「綴りを変えただけの抜け道」。
-    /// <b>閉じたコメントは取り除き、残りを判定する。</b></para>
-    ///
-    /// <para>逆に、コメントで赤くする検査は作らない —— CLAUDE.md §5 は
-    /// 「1 行ごとに日本語のコメントを書く」ことを求めており、この規則を説明する
-    /// コメントは <c>[ResponseCache]</c> のすぐ上(いちばん書かれやすい場所)に来る。
-    /// 規約どおりに書くと CI が赤くなる検査は、いずれ検査ごと緩められる。</para>
+    /// 単独の行として判定する入り口(合成入力の検査が使う)。ファイル全体を読むときは
+    /// <see cref="CodeLinesContaining"/> がブロックコメントの内外を持ち越す。
     /// </remarks>
     /// <param name="line">判定するソースの 1 行。</param>
     /// <returns>コメントを除いた部分がヘッダー名を含んでいれば true。</returns>
     private static bool MentionsCacheControl(string line)
     {
-        // 同じ行で閉じているコメント(Razor と C# のブロック)を取り除く
-        var code = ClosedCommentPattern.Replace(line, " ");
-        // 閉じていないブロックコメントの開始より後ろは、次の行以降もコメントなので落とす
-        var openBlock = code.IndexOf("@*", StringComparison.Ordinal);
-        // C# のブロックコメントの開始位置も探す
-        var openCSharpBlock = code.IndexOf("/*", StringComparison.Ordinal);
-        // 先に現れるほうを開始位置とする(両方無ければ -1 のまま)
-        var cut = openBlock >= 0 && openCSharpBlock >= 0
-            ? Math.Min(openBlock, openCSharpBlock)
-            : Math.Max(openBlock, openCSharpBlock);
-        // 開始が見つかったら、そこから先を落とす
-        if (cut >= 0) code = code[..cut];
-        // 行コメント(// 以降)も落とす
-        var lineComment = code.IndexOf("//", StringComparison.Ordinal);
-        // 見つかったら、そこから先を落とす
-        if (lineComment >= 0) code = code[..lineComment];
-        // 前後の空白を落として、ブロックコメントの継続行を見分けられるようにする
-        var trimmed = code.TrimStart();
-        // 「*」で始まる行は、閉じていないブロックコメントの途中(上で */ は除去済み)
-        if (trimmed.StartsWith("*", StringComparison.Ordinal)) return false;
-
-        // 残った実コードの部分だけを判定する。
-        // 大文字小文字を無視するのは、HTTP のヘッダー名が大文字小文字を区別せず、
-        // IHeaderDictionary も OrdinalIgnoreCase の辞書で、
-        // Response.Headers["cache-control"] = ... が実際に効くため(実測で素通りしていた)
-        return trimmed.Contains("Cache-Control", StringComparison.OrdinalIgnoreCase)
-            || trimmed.Contains("CacheControl", StringComparison.OrdinalIgnoreCase);
+        // コメントの外から読み始めて、この行の実コードを取り出す
+        var (code, _) = StripComments(line, null);
+        // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
+        return CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
 
-    // 同じ行の中で閉じているコメント(Razor の @*…*@ と C# の /*…*/)を表す。
-    // 入力は自分たちのリポジトリのソースなので外部入力ではない(§9 の ReDoS 対象外)。
-    // 量指定子は最短一致にして、1 行に 2 つ以上あるときも個別に取り除く
-    private static readonly System.Text.RegularExpressions.Regex ClosedCommentPattern =
-        new(@"@\*.*?\*@|/\*.*?\*/", System.Text.RegularExpressions.RegexOptions.Compiled);
 
     // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
     //

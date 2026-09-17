@@ -34,6 +34,13 @@ public static class ResponseCachePolicy
     public readonly record struct ResponseCacheDeclaration(string DeclaredOn, ResponseCacheAttribute Attribute);
 
     /// <summary>
+    /// 走査が見つけた 1 件の属性の宣言(属性の種類を問わない形)。
+    /// </summary>
+    /// <param name="DeclaredOn">属性が付いていた場所の表示名。</param>
+    /// <param name="Attribute">宣言された属性そのもの。</param>
+    public readonly record struct AttributeDeclaration(string DeclaredOn, object Attribute);
+
+    /// <summary>
     /// <c>[ResponseCache]</c> の宣言内容が「保存を禁じている」かどうかを判定する純粋関数。
     /// </summary>
     /// <remarks>
@@ -124,7 +131,30 @@ public static class ResponseCachePolicy
     /// <returns>見つかった宣言の一覧(同じ宣言が複数の具象から見えても 1 件に畳む)。</returns>
     public static IEnumerable<ResponseCacheDeclaration> DeclarationsOn(
         IEnumerable<Type> controllers,
-        Assembly ownAssembly)
+        Assembly ownAssembly) =>
+        // 種類を問わない走査へ「ResponseCacheAttribute であること」を渡し、結果を型付きにする
+        AttributeDeclarationsOn(controllers, ownAssembly, a => a is ResponseCacheAttribute)
+            .Select(d => new ResponseCacheDeclaration(d.DeclaredOn, (ResponseCacheAttribute)d.Attribute));
+
+    /// <summary>
+    /// 渡されたコントローラから、条件に合う属性の宣言を集める(属性の種類を問わない走査)。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>走査を 1 つにしておく理由。</b> 「クラス側とアクション側の両方を読む」
+    /// 「宣言元の型で名指しする」「基底の 1 つの宣言を派生の数だけ並べない」は、
+    /// どの属性を探すときも同じように要る。属性ごとに走査を書き写すと、
+    /// <b>片方だけにこれらの手当てが入っている</b>状態が生まれる ——実際、出力キャッシュの
+    /// 検査を別に書いた時点で、基底に付けた属性が派生の数だけ並び、名指しされた
+    /// ファイルには属性が無い、という既に直したはずの形が復活していた。</para>
+    /// </remarks>
+    /// <param name="controllers">走査するコントローラ型。</param>
+    /// <param name="ownAssembly">「自分たちが宣言したアクション」と見なすアセンブリ。</param>
+    /// <param name="matches">拾う属性かどうかを判定する条件。</param>
+    /// <returns>見つかった宣言の一覧(同じ宣言が複数の具象から見えても 1 件に畳む)。</returns>
+    public static IEnumerable<AttributeDeclaration> AttributeDeclarationsOn(
+        IEnumerable<Type> controllers,
+        Assembly ownAssembly,
+        Func<object, bool> matches)
     {
         // 同じ宣言を二重に数えないための記録(基底の 1 つのアクションは派生の数だけ見える)
         var seen = new HashSet<string>(StringComparer.Ordinal);
@@ -134,20 +164,20 @@ public static class ResponseCachePolicy
         {
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
-            foreach (var attribute in controller.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
+            foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
             {
                 // <b>名指しは「継承して見えた型」ではなく「実際に宣言している型」で行う。</b>
                 // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-                var declaringType = DeclaringTypeOf(controller);
+                var declaringType = DeclaringTypeOf(controller, matches);
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
                 // 同じ宣言元で既に返していなければ返す(派生の数だけ並べない)
                 if (seen.Add($"type:{declaredOn}"))
                 {
                     // クラス側の宣言として返す
-                    yield return new ResponseCacheDeclaration(declaredOn, attribute);
+                    yield return new AttributeDeclaration(declaredOn, attribute);
                 }
             }
 
@@ -163,19 +193,19 @@ public static class ResponseCachePolicy
                 }
 
                 // そのメソッドに付いた属性を読む
-                foreach (var attribute in method.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
+                foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
                 {
                     // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
-                    var declaringType = DeclaringTypeOf(method);
+                    var declaringType = DeclaringTypeOf(method, matches);
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
                     // 同じ宣言を派生の数だけ返さないよう、シグネチャまで含めて記録する
                     if (seen.Add($"method:{declaredOn}({method.ToString()})"))
                     {
                         // アクション側の宣言として返す
-                        yield return new ResponseCacheDeclaration(declaredOn, attribute);
+                        yield return new AttributeDeclaration(declaredOn, attribute);
                     }
                 }
             }
@@ -194,10 +224,10 @@ public static class ResponseCachePolicy
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
     /// <returns>属性を宣言している型。</returns>
-    private static Type DeclaringTypeOf(MethodInfo method)
+    private static Type DeclaringTypeOf(MethodInfo method, Func<object, bool> matches)
     {
         // そのメソッド自身が宣言しているなら、そこが直すべき場所
-        if (method.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any())
+        if (method.GetCustomAttributes(inherit: false).Any(matches))
         {
             // 宣言しているメソッドの型を返す
             return method.DeclaringType!;
@@ -206,7 +236,7 @@ public static class ResponseCachePolicy
         // override なら、最初に宣言された(仮想メソッドの根の)定義までさかのぼる
         var baseDefinition = method.GetBaseDefinition();
         // 根の定義が属性を宣言しているなら、その型が直すべき場所
-        if (baseDefinition.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any())
+        if (baseDefinition.GetCustomAttributes(inherit: false).Any(matches))
         {
             // 根の定義を持つ型を返す
             return baseDefinition.DeclaringType!;
@@ -226,13 +256,13 @@ public static class ResponseCachePolicy
     /// </remarks>
     /// <param name="controller">属性が見えているコントローラ型。</param>
     /// <returns>属性を宣言している型。</returns>
-    private static Type DeclaringTypeOf(Type controller)
+    private static Type DeclaringTypeOf(Type controller, Func<object, bool> matches)
     {
         // 自分自身から基底へ順にたどる
         for (var type = controller; type is not null; type = type.BaseType)
         {
             // その型自身が宣言しているなら、そこが直すべき場所
-            if (type.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any()) return type;
+            if (type.GetCustomAttributes(inherit: false).Any(matches)) return type;
         }
 
         // 見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
