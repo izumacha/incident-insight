@@ -64,8 +64,13 @@ public class ResponseCacheHeaderIntegrationTests
     // 使い捨ての一時 SQLite に限られていても、リポジトリへ綴りを置けば
     // 「統合テストではこう書く」という前例になり、次にログインが要るテストを書く人が
     // より広い場所を指すフィクスチャへ同じ形を写す。生成しておけば写しようがない。
-    // 先頭の "A" が大文字、末尾の "1" が数字の条件を満たし、間は毎回変わる
-    private static readonly string AdminPassword = $"A{Guid.NewGuid():N}"[..9] + "1";
+    // 先頭の "A" が大文字、末尾の "a1" が小文字と数字の条件を満たし、間は毎回変わる。
+    // <b>小文字を固定で足すのが要点</b>: Guid の "N" 書式は 16 進なので、8 文字がすべて
+    // 数字になる確率が (10/16)^8 ≒ 2.3% ある。その回だけ RequireLowercase を満たさず、
+    // IdentitySeeder は警告を出して管理者の作成を<b>黙ってスキップ</b>するため、
+    // ログインが 302 ではなく 200 を返して認証が要るテストだけが落ちる
+    // (実測: 小文字を含まない値を固定で与えると PasswordRequiresLower で再現する)
+    private static readonly string AdminPassword = $"A{Guid.NewGuid():N}"[..9] + "a1";
 
     // ログインフォームからアンチフォージェリトークンを取り出す正規表現。
     // 入力は自分のアプリが返した HTML なので外部入力ではない(§9 の ReDoS 対象外)

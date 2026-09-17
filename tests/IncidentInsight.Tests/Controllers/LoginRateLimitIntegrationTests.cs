@@ -42,6 +42,30 @@ public class LoginRateLimitIntegrationTests : IClassFixture<LoginRateLimitIntegr
     /// そのたびに別名の一時 DB が残っていた(誰も消さないので溜まり続ける)。
     /// 起動を 1 回に保つ仕掛けと後始末は <see cref="TempDatabaseAppFixture"/> が持つ。
     /// ここはこのテストに固有の設定 ——レート制限の枠—— だけを渡す。
+    ///
+    /// <para><b>このクラスにテストを足すときの注意(共有される状態がある)。</b>
+    /// ホストを 1 つに共有した結果、<b>レート制限の枠もクラス全体で共有される</b>。
+    /// しかもウィンドウを 3600 秒にしてあるので、実行中に枠が回復することはない。
+    /// つまり <c>POST /Account/Login</c> を叩くテストを 2 つ目に足すと、
+    /// <b>後に走ったほうは 1 回目のリクエストから 429 を受ける</b>。
+    /// 失敗文言はレート制限を指すので、原因がテスト間の汚染だと気付きにくい。</para>
+    ///
+    /// <para><b>なぜテストごとに分けないのか。</b> 分ける方法が無い。制限の単位は
+    /// <c>ClientIpPartition.GetPartitionKey(HttpContext.Connection.RemoteIpAddress)</c> で、
+    /// <c>TestServer</c> 経由のリクエストでは <c>RemoteIpAddress</c> が <c>null</c> になり、
+    /// fail-closed の設計どおり全員が共通の 1 バケツへ入る。ヘッダー
+    /// (<c>X-Forwarded-For</c>)で変えるには転送ヘッダーの信頼設定が要るが、
+    /// それも <c>KnownProxies</c> が接続元 IP と一致することを前提にしており
+    /// <c>null</c> では成立しない。テスト専用のミドルウェアを差し込んで
+    /// <c>RemoteIpAddress</c> を作る手もあるが、<b>検証したい当の経路</b>に
+    /// テスト専用の分岐を入れることになるので採らない。</para>
+    ///
+    /// <para><b>したがって、追加するときは枠を共有する前提で書く</b>: 許可される回と
+    /// 拒否される回を<b>1 つのテストの中で</b>順に確かめる(いまの
+    /// <c>LoginPost_OverLimit_Returns429WithSafeMessage</c> がその形)。
+    /// どうしても別テストに分けたいなら、そのときはテストごとにホストを分ける代わりに
+    /// 一時 DB の後始末も一緒に持たせること(<see cref="TempDatabaseAppFixture"/> を
+    /// テストごとに使う形にする)。</para>
     /// </remarks>
     public sealed class AppFixture() : TempDatabaseAppFixture(
         "ii-ratelimit",
