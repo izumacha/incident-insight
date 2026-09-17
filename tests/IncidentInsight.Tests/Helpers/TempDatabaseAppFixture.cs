@@ -71,6 +71,25 @@ public abstract class TempDatabaseAppFixture : IDisposable
     /// <summary>テストが共有する、起動済みのアプリのファクトリ。</summary>
     public WebApplicationFactory<Program> Factory { get; }
 
+    /// <summary>
+    /// リダイレクトを追わない素の HTTP クライアントを作る。
+    /// </summary>
+    /// <remarks>
+    /// 自動追跡を切るのは、302 を追った先の応答ヘッダを見てしまうと
+    /// 「どの応答を検証しているか」が分からなくなるため。
+    /// <b>ここに置くのは、同じ組み立てが 3 箇所目になったから</b>(§6「2〜3 箇所目で共通化」)。
+    /// クライアントの既定(ヘッダー・タイムアウト等)を足すときに、一部の呼び出し側にだけ
+    /// 適用される状態を作らない。
+    /// </remarks>
+    /// <returns>組み立てた HttpClient。</returns>
+    public HttpClient CreateNonRedirectingClient() =>
+        // 共有しているファクトリから、302 等を自動で追跡しないクライアントを作る
+        Factory.CreateClient(new WebApplicationFactoryClientOptions
+        {
+            // 302 等を自動で追跡しない
+            AllowAutoRedirect = false,
+        });
+
     /// <summary>アプリを停止し、生成した一時 DB のファイルを消す。</summary>
     /// <remarks>
     /// <b>後始末は必ず finally で行う。</b> 素直に 4 手順を並べると、ホストの停止が

@@ -1,10 +1,5 @@
 // レート制限の設定キー定数を使う
 using IncidentInsight.Web.Models.RateLimiting;
-// WebApplicationFactory(実 HTTP パイプラインでの統合テスト)を使う
-using Microsoft.AspNetCore.Mvc.Testing;
-// テスト用の設定上書きに使う
-using Microsoft.AspNetCore.Hosting;
-using Microsoft.Extensions.Configuration;
 // HTTP ステータスコード列挙を使う
 using System.Net;
 // 共有のフィクスチャを使う
@@ -24,13 +19,13 @@ public class LoginRateLimitIntegrationTests : IClassFixture<LoginRateLimitIntegr
     // テスト用に緩和した許可回数(この回数を超えた POST が 429 になる)
     private const int TestPermitLimit = 2;
 
-    // アプリ全体を起動するテスト用ファクトリ(フィクスチャが 1 度だけ組み立てたものを借りる)
-    private readonly WebApplicationFactory<Program> _factory;
+    // クライアントの組み立て規則を持つフィクスチャ(アプリは 1 度だけ起動されている)
+    private readonly AppFixture _fixture;
 
     public LoginRateLimitIntegrationTests(AppFixture fixture)
     {
-        // フィクスチャが保持している起動済みのファクトリを受け取る
-        _factory = fixture.Factory;
+        // クライアントの組み立てを任せるためフィクスチャ自体を保持する
+        _fixture = fixture;
     }
 
     /// <summary>
@@ -81,11 +76,7 @@ public class LoginRateLimitIntegrationTests : IClassFixture<LoginRateLimitIntegr
     public async Task LoginPost_OverLimit_Returns429WithSafeMessage()
     {
         // リダイレクトを追わない素の HTTP クライアントを作る(429 をそのまま観測するため)
-        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            // 302 等を自動で追跡しない
-            AllowAutoRedirect = false,
-        });
+        var client = _fixture.CreateNonRedirectingClient();
         // アンチフォージェリトークンを付けない空のフォームを用意する
         // (レート制限はアンチフォージェリ検証より手前のミドルウェアで数えるため、
         //  トークン無しの 400 応答でも試行としてカウントされる)
@@ -115,11 +106,7 @@ public class LoginRateLimitIntegrationTests : IClassFixture<LoginRateLimitIntegr
     public async Task LoginGet_IsNotRateLimited()
     {
         // リダイレクトを追わないクライアントを作る
-        var client = _factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            // 302 等を自動で追跡しない
-            AllowAutoRedirect = false,
-        });
+        var client = _fixture.CreateNonRedirectingClient();
 
         // 許可回数を大きく超える回数だけログイン画面(GET)を開く
         for (var i = 0; i < TestPermitLimit + 3; i++)

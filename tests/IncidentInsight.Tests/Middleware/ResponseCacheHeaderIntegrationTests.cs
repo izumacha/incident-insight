@@ -83,8 +83,13 @@ public class ResponseCacheHeaderIntegrationTests
     // アプリ全体を起動するテスト用ファクトリ(フィクスチャが 1 度だけ組み立てたものを借りる)
     private readonly WebApplicationFactory<Program> _factory;
 
+    // クライアントの組み立て規則を持つフィクスチャ
+    private readonly AppFixture _fixture;
+
     public ResponseCacheHeaderIntegrationTests(AppFixture fixture)
     {
+        // クライアントの組み立てを任せるためフィクスチャ自体を保持する
+        _fixture = fixture;
         // フィクスチャが保持している起動済みのファクトリを受け取る
         _factory = fixture.Factory;
     }
@@ -270,16 +275,11 @@ public class ResponseCacheHeaderIntegrationTests
     /// リダイレクトを追わない素の HTTP クライアントを作る。
     /// </summary>
     /// <remarks>
-    /// 自動追跡を切るのは、302 を追った先の応答ヘッダを見てしまうと
-    /// 「どの応答を検証しているか」が分からなくなるため。
+    /// 組み立ての規則そのものは <see cref="TempDatabaseAppFixture.CreateNonRedirectingClient"/> が持つ
+    /// (同じ組み立てが 3 箇所目になったので共通化した。§6)。
     /// </remarks>
     /// <returns>組み立てた HttpClient。</returns>
-    private HttpClient CreateClient() =>
-        _factory.CreateClient(new WebApplicationFactoryClientOptions
-        {
-            // 302 等を自動で追跡しない
-            AllowAutoRedirect = false,
-        });
+    private HttpClient CreateClient() => _fixture.CreateNonRedirectingClient();
 
     /// <summary>
     /// デモ管理者としてログインを済ませた HTTP クライアントを作る。
