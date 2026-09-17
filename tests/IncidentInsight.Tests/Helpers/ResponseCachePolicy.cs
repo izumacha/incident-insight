@@ -220,9 +220,10 @@ public static class ResponseCachePolicy
     /// 見つける一方、<c>DeclaringType</c> は<b>派生</b>を指す。そのまま名指しすると、
     /// 1 つの宣言が派生の数だけ違反として並び、しかも名指しされたファイルを開いても
     /// 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-    /// (クラス側で同じ理由から <see cref="DeclaringTypeOf(Type)"/> を入れたのと同じ手当て)。
+    /// (クラス側の同名のオーバーロードも、同じ理由から同じ手当てをしている)。
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
+    /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
     /// <returns>属性を宣言している型。</returns>
     private static Type DeclaringTypeOf(MethodInfo method, Func<object, bool> matches)
     {
@@ -255,6 +256,7 @@ public static class ResponseCachePolicy
     /// (継承の形が想定と違う場合)は、渡された型をそのまま返して名指しを失わせない。
     /// </remarks>
     /// <param name="controller">属性が見えているコントローラ型。</param>
+    /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
     /// <returns>属性を宣言している型。</returns>
     private static Type DeclaringTypeOf(Type controller, Func<object, bool> matches)
     {

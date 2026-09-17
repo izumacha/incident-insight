@@ -192,6 +192,11 @@ public class SecurityHeadersMiddlewareTests
     // 上の照合は「定数と文書が一致すること」しか見ないので、<b>両方を同時に</b>
     // 長期・immutable へ書き換える差分は通ってしまう。ここは文書と独立に、
     // 値そのものの性質を見る(手がかりを変えるのが要点)。
+    // 保存できる時間を延ばす向きに効く指示の接頭辞。
+    // max-age だけを見ると、共有キャッシュへは s-maxage が優先されるため素通りする
+    private static readonly string[] MaxAgeFamilyPrefixes =
+        ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
+
     [Fact]
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
     {
@@ -206,27 +211,38 @@ public class SecurityHeadersMiddlewareTests
             directives,
             d => d.Equals("immutable", StringComparison.OrdinalIgnoreCase));
 
-        // max-age の指示を取り出す(無ければキャッシュ期間の意図が読めないので落とす)
-        var maxAge = directives
-            .FirstOrDefault(d => d.StartsWith("max-age=", StringComparison.OrdinalIgnoreCase));
-        Assert.True(
-            maxAge is not null,
-            $"静的アセットの指示に max-age がありません: {SecurityHeadersMiddleware.StaticAssetCacheControl}");
+        // 保存できる時間を表す指示を<b>すべて</b>取り出す。
+        // <b>max-age だけを見てはいけない</b>: s-maxage は共有キャッシュに対して max-age を
+        // 上書きするので、"public,s-maxage=31536000,max-age=3600" と書けば
+        // プロキシは 1 年保存するのに max-age だけを見る検査は 3600 しか見ない
+        // (実測でこの形が全件緑のまま通った)。stale-* も配信を延ばす向きに効く
+        var lifetimeDirectives = directives
+            .Where(d => MaxAgeFamilyPrefixes.Any(p => d.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
 
-        // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
-        Assert.True(
-            int.TryParse(maxAge!["max-age=".Length..], out var seconds),
-            $"max-age の値を秒数として読み取れません: {maxAge}");
+        // 期間の指示が 1 つも無ければ、キャッシュ期間の意図が読めないので落とす
+        Assert.NotEmpty(lifetimeDirectives);
 
-        // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
-        // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
-        Assert.True(
-            seconds <= 24 * 60 * 60,
-            $"静的アセットの max-age が長すぎます({seconds} 秒)。"
-                + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
-                + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
-                + "どうしても延ばすなら、lib/ を版付き URL で参照する形へ変えたうえで、"
-                + "docs/security.md の記載も同じ変更セットで直してください。");
+        // 取り出した指示を 1 つずつ確かめる
+        foreach (var directive in lifetimeDirectives)
+        {
+            // 値の部分(= の後ろ)を取り出す
+            var value = directive[(directive.IndexOf('=') + 1)..];
+            // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
+            Assert.True(
+                int.TryParse(value, out var seconds),
+                $"キャッシュ期間の値を秒数として読み取れません: {directive}");
+
+            // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
+            // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
+            Assert.True(
+                seconds <= 24 * 60 * 60,
+                $"静的アセットのキャッシュ期間が長すぎます({directive})。"
+                    + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
+                    + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
+                    + "どうしても延ばすなら、lib/ を版付き URL で参照する形へ変えたうえで、"
+                    + "docs/security.md の記載も同じ変更セットで直してください。");
+        }
     }
 
     /// <summary>

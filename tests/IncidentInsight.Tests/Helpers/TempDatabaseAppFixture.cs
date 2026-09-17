@@ -129,6 +129,13 @@ public abstract class TempDatabaseAppFixture : IDisposable
             // 検証結果を赤くすると、本物の不具合と見分けが付かなくなる
             try
             {
+                // <b>先に接続プールを解放する</b>。Microsoft.Data.Sqlite は接続をプールするので、
+                // ホストを止めただけではファイルハンドルが残る。Linux は開いたままでも
+                // unlink できてしまうため CI では気付けないが、Windows では削除が
+                // IOException になり、下の catch が黙って飲み込む ——
+                // つまり「このクラスが防ぐはずの溜まり続ける状態」が、
+                // 検査がすべて緑のまま特定の環境でだけ起き続ける
+                Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
                 // 生成した一時 DB と補助ファイルを消す
                 SqliteTestFiles.Cleanup(_databasePath);
             }
