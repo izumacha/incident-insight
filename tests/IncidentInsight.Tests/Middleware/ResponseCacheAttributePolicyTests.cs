@@ -29,11 +29,29 @@ namespace IncidentInsight.Tests.Middleware;
 /// 譲る挙動が消えた瞬間に css/js が毎回再取得になる(§8)。実際に危ないのは
 /// <b>MVC のアクションが名乗る指示</b>だけなので、そこだけを宣言の形で禁じる。</para>
 ///
-/// <para><b>この検査が見ない口(別の検査が担当する)。</b> 指示は属性の宣言以外からも来る ——
-/// <c>MvcOptions.Filters</c> へ登録したグローバルフィルタと <c>MvcOptions.CacheProfiles</c> が
-/// それで、どちらも属性のソースには現れない。そちらは起動したアプリの設定を読む
-/// <c>ResponseCacheHeaderIntegrationTests</c> が、<b>同じ判定関数</b>
-/// (<see cref="ResponseCachePolicy.Judge(ResponseCacheAttribute)"/>)で見る。</para>
+/// <para><b>指示は属性の宣言以外からも来る。</b> 口は 3 つあり、担当が分かれている:</para>
+/// <list type="number">
+///   <item><description><b>属性の宣言</b>(このクラス)。</description></item>
+///   <item><description><b><c>MvcOptions.Filters</c> のグローバルフィルタと
+///     <c>MvcOptions.CacheProfiles</c></b> ——どちらも属性のソースには現れない。
+///     起動したアプリの設定を読む <c>ResponseCacheHeaderIntegrationTests</c> が、
+///     <b>同じ判定関数</b>(<see cref="ResponseCachePolicy.Judge(ResponseCacheAttribute)"/>)で見る。
+///     </description></item>
+///   <item><description><b>応答ヘッダーへの直接の書き込み</b>
+///     (<c>Response.Headers.CacheControl = "public,max-age=300";</c>)——
+///     属性も設定も通らないので上の 2 つには映らない。
+///     <see cref="ControllersAndViews_DoNotWriteCacheControlDirectly"/> が落とす。
+///     <b>実測</b>: この 1 行を <c>AnalyticsController.ByCause</c> の先頭へ足すと、
+///     PHI の集計 JSON が <c>public,max-age=300</c> で返るのに 878 件すべて緑のまま通った。
+///     </description></item>
+/// </list>
+///
+/// <para><b>残っている境界。</b> 直接の書き込みを見るのはコントローラとビューのソースまで。
+/// フィルタ・ミドルウェア・タグヘルパーから書く形は見ない ——
+/// <c>Cache-Control</c> を<b>意図して</b>書く場所が実際にその層にあり
+/// (<c>SecurityHeadersMiddleware</c> の既定値と <c>Program.cs</c> の静的ファイル配信)、
+/// 一律に禁じると理由付きの除外表が要る。空でない除外表は「登録するだけで黙らせられる口」
+/// になるので、その層はレビューで見る(§6 のエスケープハッチと同じ扱い)。</para>
 ///
 /// <para><b>導出で作る(表を書かない)。</b> 「見るべきアクションの一覧」を手で持つと、
 /// 新しいコントローラを足した人が載せ忘れた時点でその画面だけ黙って検査から外れる。
@@ -190,6 +208,146 @@ public class ResponseCacheAttributePolicyTests
         Assert.Single(declarations, d => d.Attribute.Duration == 33);
     }
 
+    // コントローラとビューが Cache-Control を直接書いていないこと。
+    //
+    // <b>なぜ属性と MvcOptions だけでは足りないのか。</b> 応答ヘッダーは素直に書ける:
+    //   Response.Headers.CacheControl = "public,max-age=300";
+    // これは属性のソースにも MvcOptions にも現れないので、上の 2 つの検査には映らない。
+    // 一方 SecurityHeadersMiddleware は「既に指示がある」ので触れず、PHI がそのまま
+    // 共有キャッシュへ保存可能になる。実測でも、この 1 行を AnalyticsController.ByCause の
+    // 先頭へ足すと 878 件すべて緑のまま通った。
+    //
+    // <b>手がかりはソースの実在</b>(型の走査ではない)。書き込みは実行時の 1 文なので、
+    // リフレクションでは原理的に見えない。
+    [Fact]
+    public void ControllersAndViews_DoNotWriteCacheControlDirectly()
+    {
+        // 直接書き込みが見つかったファイルと行を集める
+        var violations = new List<string>();
+
+        // Web プロジェクト配下のソースのうち、コントローラとビューだけを見る
+        foreach (var sourcePath in RepositoryPaths.EnumerateWebSourceFiles().Where(IsControllerOrViewSource))
+        {
+            // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
+            var lines = File.ReadAllLines(sourcePath);
+            // 各行を順に見る
+            for (var i = 0; i < lines.Length; i++)
+            {
+                // Cache-Control を名指ししていない行は対象外
+                if (!MentionsCacheControl(lines[i])) continue;
+                // リポジトリからの相対パスと行番号で名指しする
+                violations.Add($"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}:{i + 1}: {lines[i].Trim()}");
+            }
+        }
+
+        // 違反が 1 件も無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "コントローラまたはビューが Cache-Control を直接書いています。"
+                + "SecurityHeadersMiddleware は既に指示がある応答へは触れないため、"
+                + "この 1 行がそのままキャッシュ保存の許可になります。"
+                + "キャッシュを抑止したいだけなら何も書かずに既定(no-store)へ任せ、"
+                + "本当に許可したいなら PHI を含まないことを確かめたうえでこの規則を更新してください。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
+    }
+
+    // 走査が「見るべき対象ゼロ＝緑」で無力化されていないこと(fail-closed)。
+    //
+    // 上の検査は違反が 0 件なら緑になるので、絞り込みが 1 ファイルも拾えなくなる変異
+    // (拡張子の条件を間違える・パスの判定を狭めすぎる)は、そのままでは気付けない。
+    [Fact]
+    public void CacheControlSourceScan_SeesControllersAndViews()
+    {
+        // 走査が実際に見ているファイルを取り出す
+        var scanned = RepositoryPaths.EnumerateWebSourceFiles().Where(IsControllerOrViewSource).ToList();
+
+        // コントローラのソースが拾えていること
+        Assert.Contains(scanned, p => Path.GetFileName(p).EndsWith("Controller.cs", StringComparison.Ordinal));
+        // 1 つも拾えていないなら、走査そのものが壊れている
+        Assert.True(scanned.Count > 0, "コントローラ・ビューのソースを 1 つも走査できていません。");
+    }
+
+    // 「Cache-Control を名指ししている行か」の判定が、拾う側と見逃さない側の両方で働くこと。
+    //
+    // 実在のソースには違反が 1 件も無いので、判定を「常に false」へ潰しても上の検査は
+    // 全件緑のまま通る。合成入力で判定そのものを固定する。
+    [Theory]
+    // 型付きのプロパティ経由の代入(いちばん素直な書き方)
+    [InlineData("        Response.Headers.CacheControl = \"public,max-age=300\";", true)]
+    // 文字列キーでの代入(綴りを変えただけの抜け道)
+    [InlineData("        Response.Headers[\"Cache-Control\"] = \"public\";", true)]
+    // Append での追加も同じく書き込み
+    [InlineData("        Response.Headers.Append(\"Cache-Control\", \"public\");", true)]
+    // ビューから書く形(Razor でも到達できる)
+    [InlineData("    @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
+    // 無関係な行は拾わない(誤検知すると、いずれ検査ごと緩められる)
+    [InlineData("        var incidents = await _db.Incidents.ToListAsync();", false)]
+    // 似ているが別物のヘッダー名も拾わない
+    [InlineData("        Response.Headers.ContentType = \"application/json\";", false)]
+    public void MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
+    {
+        // 判定を実行して、期待どおりかを確認する
+        Assert.Equal(expected, MentionsCacheControl(line));
+    }
+
+    /// <summary>
+    /// そのソースファイルがコントローラかビューか(直接書き込みを禁じる範囲)を返す。
+    /// </summary>
+    /// <param name="sourcePath">Web プロジェクト配下のソースファイルの絶対パス。</param>
+    /// <returns>コントローラまたはビューなら true。</returns>
+    private static bool IsControllerOrViewSource(string sourcePath)
+    {
+        // ファイル名がコントローラの命名(このリポジトリは 1 ファイル 1 コントローラ)
+        if (Path.GetFileName(sourcePath).EndsWith("Controller.cs", StringComparison.Ordinal)) return true;
+        // パスに Controllers / Views ディレクトリを含むもの(部分クラスや Areas も拾う)
+        var relative = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
+        // ディレクトリ区切りを OS 非依存に正規化してから判定する
+        var segments = relative.Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        // どこかに Controllers / Views が現れれば対象
+        return segments.Any(s =>
+            s.Equals("Controllers", StringComparison.Ordinal) || s.Equals("Views", StringComparison.Ordinal));
+    }
+
+    /// <summary>
+    /// その 1 行が <c>Cache-Control</c> ヘッダーを名指ししているかを返す。
+    /// </summary>
+    /// <remarks>
+    /// 代入・インデクサ・<c>Append</c> と綴りが分かれるので、書き方ではなく
+    /// <b>ヘッダー名の出現</b>で拾う。読み取りだけの行も拾うが、コントローラ・ビューに
+    /// <c>Cache-Control</c> を読む理由は無いので、拾いすぎで困らない
+    /// (誤検知が出るなら、そのとき具体例に合わせて絞る)。
+    /// </remarks>
+    /// <param name="line">判定するソースの 1 行。</param>
+    /// <returns>名指ししていれば true。</returns>
+    private static bool MentionsCacheControl(string line) =>
+        // 文字列キーでの指定(Cache-Control)か、型付きプロパティ(CacheControl)のどちらか
+        line.Contains("Cache-Control", StringComparison.Ordinal)
+            || line.Contains("CacheControl", StringComparison.Ordinal);
+
+    // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
+    //
+    // <b>なぜ要るのか。</b> 継承した属性は派生型からも見えるので、具象の名前で報告すると
+    // (a) 同じ 1 つの宣言が派生の数だけ並び、(b) 名指しされたファイルを開いても属性が無く、
+    // 直すべき 1 か所(基底)がどこにも出てこない。アクション側には同じ内容の検査
+    // (DeclarationScan_ReportsAnInheritedActionOnlyOnce)があるが、クラス側には無かった。
+    [Fact]
+    public void DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase()
+    {
+        // 同じ抽象基底を継承する 2 つの具象コントローラを走査する
+        var declarations = ScanProbes(
+            typeof(ClassLevelInheritedProbeController),
+            typeof(SecondClassLevelInheritedProbeController));
+
+        // 基底のクラス属性(Duration = 77)に由来する宣言が 1 件だけであること
+        var inherited = Assert.Single(declarations, d => d.Attribute.Duration == 77);
+        // 名指しが、属性を実際に宣言している基底であること(派生の名前ではない)
+        Assert.Contains(
+            nameof(ClassLevelInheritedProbeControllerBase),
+            inherited.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
     /// <summary>
     /// 合成したコントローラに対して走査を実行する。
     /// </summary>
@@ -233,4 +391,14 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>同じ基底を継承する 2 つ目の具象コントローラ(畳み方の検証に使う)。</summary>
     private sealed class SecondInheritedActionProbeController : InheritedActionProbeControllerBase;
+
+    /// <summary>クラス側に属性を持つ抽象基底(派生の数だけ見えてしまう形)。</summary>
+    [ResponseCache(Duration = 77)]
+    private abstract class ClassLevelInheritedProbeControllerBase : ControllerBase;
+
+    /// <summary>基底のクラス属性を継承する具象コントローラ。</summary>
+    private sealed class ClassLevelInheritedProbeController : ClassLevelInheritedProbeControllerBase;
+
+    /// <summary>同じ基底を継承する 2 つ目の具象コントローラ。</summary>
+    private sealed class SecondClassLevelInheritedProbeController : ClassLevelInheritedProbeControllerBase;
 }

@@ -136,9 +136,14 @@ public static class ResponseCachePolicy
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
             foreach (var attribute in controller.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
             {
-                // どのコントローラに付いていたかが分かる表示名を作る
-                var declaredOn = controller.FullName ?? controller.Name;
-                // 同じ表示名で既に返していなければ返す
+                // <b>名指しは「継承して見えた型」ではなく「実際に宣言している型」で行う。</b>
+                // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
+                // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
+                // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
+                var declaringType = DeclaringTypeOf(controller);
+                // どこに付いていたかが分かる表示名を作る
+                var declaredOn = declaringType.FullName ?? declaringType.Name;
+                // 同じ宣言元で既に返していなければ返す(派生の数だけ並べない)
                 if (seen.Add($"type:{declaredOn}"))
                 {
                     // クラス側の宣言として返す
@@ -173,5 +178,28 @@ public static class ResponseCachePolicy
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// クラス側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
+    /// </summary>
+    /// <remarks>
+    /// 継承した属性は派生型からも見えるので、<c>inherit: false</c> で「自分自身が
+    /// 宣言しているか」を確かめながら基底へさかのぼる。どこにも見つからない場合
+    /// (継承の形が想定と違う場合)は、渡された型をそのまま返して名指しを失わせない。
+    /// </remarks>
+    /// <param name="controller">属性が見えているコントローラ型。</param>
+    /// <returns>属性を宣言している型。</returns>
+    private static Type DeclaringTypeOf(Type controller)
+    {
+        // 自分自身から基底へ順にたどる
+        for (var type = controller; type is not null; type = type.BaseType)
+        {
+            // その型自身が宣言しているなら、そこが直すべき場所
+            if (type.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any()) return type;
+        }
+
+        // 見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
+        return controller;
     }
 }
