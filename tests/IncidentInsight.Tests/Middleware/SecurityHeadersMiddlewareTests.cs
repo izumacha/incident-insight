@@ -4,6 +4,10 @@ using IncidentInsight.Web.Middleware;
 using Microsoft.AspNetCore.Http;
 // 応答フィーチャー(IHttpResponseFeature / HttpResponseFeature)を差し替えるために使う
 using Microsoft.AspNetCore.Http.Features;
+// リポジトリのパス(docs/security.md を読むため)を使う
+using IncidentInsight.Tests.Helpers;
+// ドキュメントから指示を取り出すために使う
+using System.Text.RegularExpressions;
 
 // このテストクラスの名前空間(置き場所)を宣言している
 namespace IncidentInsight.Tests.Middleware;
@@ -145,16 +149,46 @@ public class SecurityHeadersMiddlewareTests
         Assert.Equal(declared, context.Response.Headers.CacheControl.ToString());
     }
 
-    // 静的アセット用の指示が、docstring が述べている不変条件を実際に満たしていること。
+    // 静的アセット用の指示が、docstring と docs/security.md が述べている内容と実際に一致すること。
     //
     // <b>なぜ要るのか。</b> 統合テストは「配信された値が定数と一致するか」しか見ないので、
     // <b>定数の値そのものに対しては恒真</b>になる ——実測でも、定数を
-    // "public,max-age=31536000,immutable" に書き換えると 878 件すべて緑のまま通った。
-    // ところが StaticAssetCacheControl の docstring は「期間を短く保ち immutable を付けない」
-    // ことを明確な理由付きで要求している: _Layout.cshtml と _ValidationScriptsPartial.cshtml が
-    // wwwroot/lib 配下(jQuery 等)を asp-append-version なしで参照しているため、長期・immutable に
-    // すると脆弱性修正後も古いファイルが利用者のキャッシュに残り、消す手段が無くなる。
-    // 文章だけの不変条件は破っても誰も気付かないので、ここで機械的に固定する。
+    // "public,max-age=31536000,immutable" や "private,max-age=1800" に書き換えると
+    // 897 件すべて緑のまま通った。ところが定数には文章で約束した内容がある:
+    //   (a) SecurityHeadersMiddleware の docstring —— 期間を短く保ち immutable を付けない。
+    //       _Layout.cshtml と _ValidationScriptsPartial.cshtml が wwwroot/lib 配下を
+    //       asp-append-version なしで参照しているため、長期・immutable にすると
+    //       脆弱性修正後も古いファイルが利用者のキャッシュに残り、消す手段が無くなる。
+    //   (b) docs/security.md —— 運用者へ「この指示を名乗る」と具体的な値で説明している。
+    //
+    // <b>上限を手で書き写さない。</b> 「1 時間以下」とテストに書く形も試したが、それは
+    // docs/security.md の値の写しでしかなく、private へ狭める・public を落とすといった
+    // 変更を 1 つも捕まえられなかった(実測)。<b>文書から読み取って突き合わせる</b>ことで、
+    // 定数か文書のどちらかだけを動かす差分が必ず落ちる。
+    [Fact]
+    public void StaticAssetCacheControl_MatchesTheDocumentedDirective()
+    {
+        // 運用者向けドキュメントを読む
+        var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+
+        // ドキュメントが名乗ると説明している指示を取り出す(`Cache-Control: <値>` の形)
+        var documented = Regex.Match(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`\s*を名乗");
+        // 取り出せなければ落とす ——読めないものを「一致している」と扱わない(fail-closed)
+        Assert.True(
+            documented.Success,
+            "docs/security.md から静的アセットの Cache-Control を読み取れませんでした。"
+                + "書き方を変えたなら、この照合も同じ変更セットで直してください"
+                + "(読めないまま緑にすると、文書と実装のずれが誰にも見えなくなります)。");
+
+        // ドキュメントの値と定数が一字一句一致すること
+        Assert.Equal(documented.Groups["value"].Value.Trim(), SecurityHeadersMiddleware.StaticAssetCacheControl);
+    }
+
+    // 定数が、docstring の述べている不変条件(短い期間・immutable なし)を満たしていること。
+    //
+    // 上の照合は「定数と文書が一致すること」しか見ないので、<b>両方を同時に</b>
+    // 長期・immutable へ書き換える差分は通ってしまう。ここは文書と独立に、
+    // 値そのものの性質を見る(手がかりを変えるのが要点)。
     [Fact]
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
     {
@@ -181,17 +215,10 @@ public class SecurityHeadersMiddlewareTests
             int.TryParse(maxAge!["max-age=".Length..], out var seconds),
             $"max-age の値を秒数として読み取れません: {maxAge}");
 
-        // 上限は 1 時間。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
-        //
-        // <b>docs/security.md が読者へ約束している値と同じにする。</b> 同ドキュメントは
-        // 「public,max-age=3600 を名乗る」と書いており、上限をそれより緩くしておくと
-        // 定数を 86400 へ広げても全件緑のまま通り、ドキュメントだけが古くなる
-        // (統合テストは配信された値を定数と突き合わせるので、定数の値には恒真)。
-        // 上限をドキュメントの値に合わせておけば、広げる変更は必ずこの検査で止まり、
-        // ドキュメントを同じ変更セットで直すことになる。
+        // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
         // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
         Assert.True(
-            seconds <= 60 * 60,
+            seconds <= 24 * 60 * 60,
             $"静的アセットの max-age が長すぎます({seconds} 秒)。"
                 + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
                 + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
