@@ -2048,8 +2048,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .GroupBy(match => (match.Key, match.Parameter.ParameterType))
             // 型まで同じものだけを 1 件に畳む(引数の数だけが違うオーバーロードがこの形)
             .Select(group => group.First())
-            // 実行ごとに順番が揺れないよう並びを固定する
+            // 実行ごとに順番が揺れないよう並びを固定する。
+            // <b>キーだけでは足りない</b>: 畳んだあとも同じキーの要素が(型違いで)複数残りうるので、
+            // キーだけで並べると同順位の 2 件は OrderBy の安定性により GroupBy が見た順
+            // ＝ Type.GetMethods の返す順(.NET が「規定しない」と明記している宣言順)のまま残る。
+            // それはこの畳み方がまさに取り除こうとしている依存なので、型名まで見て全順序にする
             .OrderBy(match => match.Key, StringComparer.Ordinal)
+            .ThenBy(
+                match => match.Parameter.ParameterType.FullName ?? match.Parameter.ParameterType.Name,
+                StringComparer.Ordinal)
             .ToList();
 
     // 畳み方が、<b>残す側</b>と<b>畳む側</b>の両方で意図どおりに働くこと。
