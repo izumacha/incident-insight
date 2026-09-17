@@ -360,8 +360,22 @@ if (!app.Environment.IsDevelopment())
 // 例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする。
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
-// 静的ファイル(wwwroot)配信を有効化
-app.UseStaticFiles();
+// 静的ファイル(wwwroot)配信を有効化。
+// 併せて静的アセットが「自分のキャッシュ指示を自分で名乗る」ようにする ——
+// SecurityHeadersMiddleware が「誰も指示していない応答」へ no-store を入れるため、
+// ここで指示を書かないと css/js/画像までキャッシュ禁止になる。
+// 応答の Content-Type で振り分けない理由(拡張子→種別の対応表を写す必要が出る・
+// 広い前置詞は将来の添付画像まで巻き込む)と、期間を短く留める理由は
+// SecurityHeadersMiddleware.StaticAssetCacheControl の解説が正本
+app.UseStaticFiles(new StaticFileOptions
+{
+    // 静的ファイルが見つかって応答を返す直前に呼ばれるフック
+    OnPrepareResponse = ctx =>
+    {
+        // 静的アセット共通のキャッシュ指示を書き込む(値の正本は上記の定数)
+        ctx.Context.Response.Headers.CacheControl = SecurityHeadersMiddleware.StaticAssetCacheControl;
+    }
+});
 // ルーティング機能を有効化
 app.UseRouting();
 // レート制限を有効化。[EnableRateLimiting] が付いたエンドポイントを判定できるよう
