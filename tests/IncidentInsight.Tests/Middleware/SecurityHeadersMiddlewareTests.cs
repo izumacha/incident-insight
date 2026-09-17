@@ -112,7 +112,11 @@ public class SecurityHeadersMiddlewareTests
     [InlineData("no-store,no-cache")]
     // MapHealthChecks が自分で書く値
     [InlineData("no-store, no-cache")]
-    // 明示的にキャッシュを許可している応答(将来そういう画面を作った場合)も尊重する
+    // 制限の緩い指示であっても上書きしないこと。これは<b>静的アセットのため</b>にある挙動で
+    // (上の StaticAssetCacheControl と同じ形)、MVC のアクションがこの形を名乗ってよいという
+    // 意味ではない —— PHI を返すアクションへキャッシュ可能な [ResponseCache] を足す道は
+    // ResponseCacheAttributePolicyTests が宣言の形で塞いでいる。
+    // ここで見ているのは「ミドルウェアは他人の指示を書き換えない」という 1 点だけ
     [InlineData("public, max-age=600")]
     public async Task InvokeAsync_OnStarting_LeavesDeclaredCacheControlUntouched(string declared)
     {
