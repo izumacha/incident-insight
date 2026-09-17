@@ -3497,10 +3497,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 片方だけ拾い方を直したときにもう片方が古い基準のまま緑になる(§6 DRY)。
     /// </remarks>
     private static List<Type> WebControllers() =>
-        typeof(IncidentsController).Assembly
-            .GetTypes()
-            .Where(t => t.IsClass && !t.IsAbstract && typeof(Controller).IsAssignableFrom(t))
-            .ToList();
+        // 絞り込みは共有ヘルパーが唯一の源。以前はここに 2 つ目の写しがあり、しかも
+        // ControllerBase ではなく Controller で狭めていたため、ビューを返さない
+        // (ControllerBase 派生の)コントローラが department 絞り込みの網羅ガードから
+        // 丸ごと外れていた ——実測でも、その形の画面を足すと全件緑のまま
+        // テスト件数すら変わらずに通った。写しを消せば ControllerScan_ReachesEveryControllerFile
+        // の射程に入る
+        AppControllerScan.Controllers().ToList();
 
     /// <summary>
     /// 指定したコントローラが<b>自分で宣言している</b>アクションメソッドを返す。

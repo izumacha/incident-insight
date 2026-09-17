@@ -165,8 +165,10 @@ public static class ResponseCachePolicy
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes<ResponseCacheAttribute>(inherit: true))
                 {
-                    // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)
-                    var declaringType = method.DeclaringType!;
+                    // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
+                    // override の場合は method.DeclaringType が派生になるので、
+                    // 属性を実際に宣言しているメソッドまでさかのぼる
+                    var declaringType = DeclaringTypeOf(method);
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
                     // 同じ宣言を派生の数だけ返さないよう、シグネチャまで含めて記録する
@@ -178,6 +180,40 @@ public static class ResponseCachePolicy
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
+    /// </summary>
+    /// <remarks>
+    /// <c>override</c> したメソッドでは <c>GetCustomAttributes(inherit: true)</c> が基底の属性を
+    /// 見つける一方、<c>DeclaringType</c> は<b>派生</b>を指す。そのまま名指しすると、
+    /// 1 つの宣言が派生の数だけ違反として並び、しかも名指しされたファイルを開いても
+    /// 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
+    /// (クラス側で同じ理由から <see cref="DeclaringTypeOf(Type)"/> を入れたのと同じ手当て)。
+    /// </remarks>
+    /// <param name="method">属性が見えているアクションメソッド。</param>
+    /// <returns>属性を宣言している型。</returns>
+    private static Type DeclaringTypeOf(MethodInfo method)
+    {
+        // そのメソッド自身が宣言しているなら、そこが直すべき場所
+        if (method.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any())
+        {
+            // 宣言しているメソッドの型を返す
+            return method.DeclaringType!;
+        }
+
+        // override なら、最初に宣言された(仮想メソッドの根の)定義までさかのぼる
+        var baseDefinition = method.GetBaseDefinition();
+        // 根の定義が属性を宣言しているなら、その型が直すべき場所
+        if (baseDefinition.GetCustomAttributes<ResponseCacheAttribute>(inherit: false).Any())
+        {
+            // 根の定義を持つ型を返す
+            return baseDefinition.DeclaringType!;
+        }
+
+        // どちらでもなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
+        return method.DeclaringType!;
     }
 
     /// <summary>
