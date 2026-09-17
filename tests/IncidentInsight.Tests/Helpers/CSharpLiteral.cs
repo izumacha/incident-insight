@@ -7,33 +7,29 @@ namespace IncidentInsight.Tests.Helpers;
 /// <remarks>
 /// <para><b>なぜ共有するのか。</b> 「アポストロフィから閉じのアポストロフィまでを、
 /// <c>\</c> のエスケープを踏まえて読む」処理を必要とする検査が 2 つある
-/// （ビューの引数を解析する <c>Views.ModelStateKeyPrefixMatchTests</c> と、
-/// キャッシュ指示の直接書き込みを探す <c>Middleware.ResponseCacheAttributePolicyTests</c>）。
+/// （ビューの中の呼び出しの引数を解析する <c>Views.ModelStateKeyPrefixMatchTests</c> と、
+/// キャッシュ指示の直接書き込みを探す <c>Middleware.ResponseCacheAttributePolicyTests</c>。
+/// <b>どちらも <c>.cshtml</c> を読む</b> ——「片方は C# のソースだけを読むので
+/// 地の文のアポストロフィの心配が無い」というのは誤りなので、そう書かないこと）。
 /// 書き写すと、<b>エスケープの扱いを直したときに片方だけが直る</b> ——
 /// この repo が <c>RepositoryPaths</c> ・ <c>AuditedEntities</c> で繰り返し記録している形
 /// （CLAUDE.md §6 DRY）。</para>
 ///
-/// <para><b>2 つの利用側で違うのは「長さの上限」だけ</b>なので、そこを引数にして
-/// 本体を 1 つにしてある。上限が要るのは Razor のビューを読む側で、
-/// 地の文のアポストロフィ（<c>It's</c> ・ <c>It's Bob's</c>）を文字リテラルと
-/// 読み違えないための歯止めになる。C# のソースの引数リストを読む側にその心配は無いので
-/// <see cref="NoInnerLengthLimit"/> を渡す。</para>
+/// <para><b>長さの上限は引数で受けるが、いまはどちらの利用側も
+/// <see cref="NoInnerLengthLimit"/> を渡す。</b> 一度「中身が 8 文字まで」で縛る形にしたが、
+/// <b>それは誤りだった</b>: Razor のビューでは <c>'</c> が属性の引用符にもなるので、
+/// <c>src='https://cdn.example.com/x.js'</c> のような長い値がリテラルとして読めなくなり、
+/// 中の <c>//</c> が行コメントの開始と解釈されて<b>その行の残りが走査から丸ごと落ちた</b>
+/// （実測。キャッシュ指示の書き込みが同じ行にあると見逃す＝fail-open）。
+/// 地の文のアポストロフィを別扱いするのに必要だったのは長さではなく
+/// <b>「その行の中で閉じているか」</b>だけで、そちらは上限と無関係に効く。
+/// 引数自体を残してあるのは、将来ほんとうに上限が要る利用側が出たときに
+/// 判定を書き写さずに済ませるため。</para>
 /// </remarks>
 public static class CSharpLiteral
 {
     /// <summary>長さで縛らないことを表す上限（C# のソースを読む側が使う）。</summary>
     public const int NoInnerLengthLimit = int.MaxValue;
-
-    /// <summary>
-    /// C# の文字リテラルが書ける最大の中身の長さ（<c>'\uFFFF'</c> の 6 文字ぶん）に
-    /// 少し余裕を持たせた上限。
-    /// </summary>
-    /// <remarks>
-    /// これを超える「引用符から引用符まで」は文字リテラルではありえないので、
-    /// マークアップの地の文にアポストロフィが 2 つある形（<c>It's Bob's</c>）を
-    /// リテラルと読み違えないための歯止めになる。
-    /// </remarks>
-    public const int MaxCharLiteralInnerLength = 8;
 
     /// <summary>
     /// 単一引用符の位置から、<b>閉じ引用符の位置</b>を返す（見つからなければ <c>-1</c>）。

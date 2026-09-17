@@ -458,6 +458,14 @@ public class ResponseCacheAttributePolicyTests
                     intended.ExpectedCount >= 1,
                     $"許可表の ExpectedCount は 1 以上にしてください: {relativePath} / {allowedLine} "
                         + $"(いまは {intended.ExpectedCount})。書かなくてよい行なら表から削ってください。");
+                // <b>その行自体がヘッダー名を含んでいること。</b> 含まない行を登録すると、
+                // 本体の走査はその行に辿り着けないまま「0 回」と報告する一方、
+                // この検査は「実在する」と言う —— 原因が読み取れない矛盾した組になる
+                Assert.True(
+                    CacheControlTokens.Any(t => allowedLine.Contains(t, StringComparison.OrdinalIgnoreCase)),
+                    $"許可表の行がヘッダー名を含んでいません: {relativePath} / {allowedLine}。"
+                        + "この走査が拾うのはヘッダー名を含む行だけなので、"
+                        + "含まない行を登録しても「0 回」としか報告されません。");
             }
         }
     }
@@ -541,8 +549,27 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>
     /// 静的ファイル配信を組み立てる綴り（この 1 つ 1 つが「新しい配信ルート」になりうる）。
     /// </summary>
+    /// <remarks>
+    /// <para><b>配信ルートは「呼び出しを増やす」以外に「既存の呼び出しを広げる」形でも増える。</b>
+    /// 実測した形: 既存の <c>UseStaticFiles</c> に
+    /// <c>FileProvider = new CompositeFileProvider(WebRootFileProvider, ContentRootFileProvider)</c>
+    /// を足すと、呼び出しの回数も指示の行も 1 つも変わらないまま
+    /// <c>/appsettings.json</c> ・ <c>/incident_insight.db</c> ・ <c>/Views/**/*.cshtml</c> が
+    /// <c>public,max-age=3600</c> で配られ、<b>919 件すべて緑のまま通った</b>。
+    /// だから配信の<b>根を差し替える綴り</b>も見張る。</para>
+    ///
+    /// <para>この 3 つ（<c>FileProvider</c> ・ <c>PhysicalFileProvider</c> ・
+    /// <c>CompositeFileProvider</c>）は Web プロジェクトに<b>現時点で 1 つも無い</b>ので、
+    /// 許可表に載せていない＝1 つでも現れたら落ちる。配信の根を本当に変えたくなったときに、
+    /// 理由を添えて表へ登録する差分が必ず 1 行として現れる。</para>
+    /// </remarks>
     private static readonly string[] StaticFileWiringTokens =
-        ["UseStaticFiles", "UseFileServer", "UseDirectoryBrowser", "PhysicalFileProvider"];
+    [
+        // 配信そのものを組み立てる呼び出し
+        "UseStaticFiles", "UseFileServer", "UseDirectoryBrowser",
+        // 配信の根(どのディレクトリを配るか)を差し替える綴り
+        "FileProvider", "PhysicalFileProvider", "CompositeFileProvider",
+    ];
 
     /// <summary>
     /// 静的ファイル配信の配線を書いてよい場所（ファイル × 綴り × 期待する出現回数）。
@@ -596,9 +623,12 @@ public class ResponseCacheAttributePolicyTests
     {
         // 想定と違う配線を集める
         var violations = new List<string>();
+        // 走査対象(1 本も読めないなら「違反ゼロ＝緑」になるので先に落とす)
+        var sources = ScannedSources().ToList();
+        Assert.NotEmpty(sources);
 
         // Web プロジェクト配下のソース(.cs と .cshtml)をすべて見る
-        foreach (var sourcePath in ScannedSources())
+        foreach (var sourcePath in sources)
         {
             // 許可表と突き合わせるためのキー(Web プロジェクトからの相対パス)
             var tableKey = Path.GetRelativePath(RepositoryPaths.WebProject, sourcePath);
@@ -804,8 +834,14 @@ public class ResponseCacheAttributePolicyTests
     // 地の文のアポストロフィ(1 つ)があっても、後ろの Razor コメントはコメントとして落ちる。
     // 実測: 縛りを入れる前は、この行が「違反」として報告されていた
     [InlineData("    <p>It's fine</p> @* Cache-Control はミドルウェアの既定に任せる *@", false)]
-    // アポストロフィが 2 つでも、間が長すぎるので文字リテラルとは読まない
+    // アポストロフィが 2 つある行。あいだはリテラル扱いになるが中身は実コードとして残るので、
+    // 後ろの Razor コメントはこれまでどおりコメントとして落ちる
     [InlineData("    <p>It's Bob's report</p> @* Cache-Control は書かない *@", false)]
+    // <b>単一引用符の属性値に URL がある行。</b> 中の // を行コメントと読むと、
+    // 同じ行にある書き込みが走査から丸ごと落ちる(実測した fail-open の再発防止)
+    [InlineData("    <script src='https://cdn.example.com/x.js'></script> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
+    // 同じ形でも、書き込みではなくコメントなら拾わない(誤検知側にも倒れないこと)
+    [InlineData("    <script src='https://cdn.example.com/x.js'></script> @* Cache-Control は書かない *@", false)]
     // 本物の文字リテラルは今までどおりリテラルとして扱う(中の @* をコメント開始と読まない)
     [InlineData("        var marker = '@'; Response.Headers.CacheControl = \"public\";", true)]
     // アポストロフィの後ろに実コードがあれば、今までどおり拾う(見逃す方向へ倒れない)
@@ -1095,11 +1131,18 @@ public class ResponseCacheAttributePolicyTests
     /// その位置から<b>閉じている文字リテラル</b>が読めるかを試す。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜ長さで縛るのか。</b> 判定に使えるのは「閉じているか」だけでは足りない ——
-    /// 地の文に <c>It's Bob's</c> のようにアポストロフィが 2 つあると、
-    /// その区間が「閉じた文字リテラル」に見えてしまう。C# の文字リテラルは中身が 1 文字
-    /// （エスケープでも <c>\uFFFF</c> の 6 文字）までなので、長さで縛れば地の文と区別できる
-    /// （上限の値は <see cref="CSharpLiteral.MaxCharLiteralInnerLength"/> が正本）。</para>
+    /// <para><b>判定は「その行の中で閉じているか」だけ。</b> 閉じていなければ地の文の
+    /// アポストロフィなので、ただの 1 文字として実コードへ残す ——
+    /// <c>&lt;p&gt;It's fine&lt;/p&gt; @* Cache-Control … *@</c> の <c>@*…*@</c> が
+    /// コメントとして落ちるのはこれによる。</para>
+    ///
+    /// <para><b>閉じている場合は、中身が長くてもリテラルとして読み飛ばす。</b>
+    /// 一度「中身が 8 文字まで」で縛ったが、Razor では <c>'</c> が属性の引用符にもなるため
+    /// <c>src='https://…'</c> がリテラルとして読めなくなり、中の <c>//</c> で行の残りが
+    /// 走査から落ちた（実測の fail-open。<b>誤検知を消すつもりで見逃しを作っていた</b>）。
+    /// <c>It's Bob's</c> のように地の文のアポストロフィが 2 つある行は、あいだが
+    /// リテラル扱いになるものの<b>中身は実コードとして残す</b>ので、
+    /// その後ろのコメントも実コードもこれまでどおり読める。</para>
     ///
     /// <para><b>外し方は安全側。</b> リテラルでないと判断したアポストロフィは
     /// ただの 1 文字として実コードへ残すので、取りこぼす方向（＝見逃し）には倒れない。
@@ -1116,11 +1159,11 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>閉じている文字リテラルとして読めれば true。</returns>
     private static bool TryReadCharLiteral(string line, int start, out int end)
     {
-        // 共有の読み取りへ、地の文と区別するための長さの上限を渡す
-        var close = CSharpLiteral.FindCharLiteralEnd(
-            line,
-            start,
-            CSharpLiteral.MaxCharLiteralInnerLength);
+        // 共有の読み取りで、その行の中で閉じているかだけを見る。
+        // <b>長さでは縛らない</b> ——Razor では ' が属性の引用符にもなるので、
+        // src='https://…' のような長い値を「リテラルではない」と判断すると、
+        // 中の // が行コメントの開始と読まれて行の残りが走査から落ちる(実測の fail-open)
+        var close = CSharpLiteral.FindCharLiteralEnd(line, start, CSharpLiteral.NoInnerLengthLimit);
 
         // 閉じなかった(または長すぎた)ので、地の文のアポストロフィとして扱う
         if (close < 0)
@@ -1366,9 +1409,14 @@ public class ResponseCacheAttributePolicyTests
     // 導出を `ControllerBase || Namespace.Contains("Models")` へ狭めると、
     // Pages/ に置いた [ResponseCache(Duration = 300)] のページが再び見えなくなるのに
     // ViewModel の型が条件を満たすため<b>全件緑のまま通った</b>。
-    // だから「1 つでも含む」ではなく<b>「1 つも欠けていない」</b>を条件にする ——
-    // 導出とは別に、このテスト自身がアセンブリを数え直して突き合わせる
-    // (狭める変異を通すには、このテストも同じ差分で書き換えるしかなくなる)。
+    // だから「1 つでも含む」ではなく<b>「1 つも欠けていない」</b>を条件にする。
+    //
+    // <b>これは「独立な手がかり」ではない</b>(同じ式をこのテストが書き直しているだけ)。
+    // 買えているのは「導出を狭めるには<b>2 か所を同じ差分で</b>書き換えるしかなくなる」
+    // ことだけで、両方を一度に狭める差分は緑のまま通る ——そこはレビューで見る。
+    // ソースファイルから具象型の一覧を組み立てる形にすれば本当に独立にできるが、
+    // 生成された型・入れ子・partial を取りこぼすと逆に直しようの無い要求になるので、
+    // ここは「気付ける」ところまでに留めている。
     [Fact]
     public void CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly()
     {
