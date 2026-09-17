@@ -57,9 +57,15 @@ public class ResponseCacheHeaderIntegrationTests
     // appsettings.Development.json の既定値と同じ値を設定で上書きして使う
     private const string AdminEmail = "admin@hospital.local";
 
-    // デモ管理者のパスワード。Development のポリシー(8 文字以上・大文字・数字)を満たす値。
-    // テスト専用の値で、リポジトリの実行時設定には入らない(下の ConfigureAppConfiguration 参照)
-    private const string AdminPassword = "AdminPass1";
+    // デモ管理者のパスワード。Development のポリシー(8 文字以上・大文字・数字)を満たす。
+    //
+    // <b>実行ごとに生成する(リテラルを置かない)。</b> CLAUDE.md §2 は
+    // 「デモアカウントのパスワードはコミットしない」と定めている。使い道が
+    // 使い捨ての一時 SQLite に限られていても、リポジトリへ綴りを置けば
+    // 「統合テストではこう書く」という前例になり、次にログインが要るテストを書く人が
+    // より広い場所を指すフィクスチャへ同じ形を写す。生成しておけば写しようがない。
+    // 先頭の "A" が大文字、末尾の "1" が数字の条件を満たし、間は毎回変わる
+    private static readonly string AdminPassword = $"A{Guid.NewGuid():N}"[..9] + "1";
 
     // ログインフォームからアンチフォージェリトークンを取り出す正規表現。
     // 入力は自分のアプリが返した HTML なので外部入力ではない(§9 の ReDoS 対象外)

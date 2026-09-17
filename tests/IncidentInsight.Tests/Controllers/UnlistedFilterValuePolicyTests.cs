@@ -1988,7 +1988,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Func<ParameterInfo, bool> matches)
     {
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
-        var ownAssembly = typeof(IncidentsController).Assembly;
+        // 走査の基準となるアセンブリは共有ヘルパーが唯一の源(ここで書き写すと、基準を変えたときにコントローラの列挙とアクションの絞り込みが食い違う)
+        var ownAssembly = AppControllerScan.WebAssembly;
         // そのアセンブリのコントローラをすべて見て、拾った対を畳み方の純粋関数へ渡す
         return CollapseDuplicateActionParameters(ScannedControllers()
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
