@@ -7,6 +7,8 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 // HTTP ステータスコード列挙を使う
 using System.Net;
+// 共有のフィクスチャを使う
+using IncidentInsight.Tests.Helpers;
 
 // テストクラスの名前空間(既存の Controllers 配下テストと同じ場所)
 namespace IncidentInsight.Tests.Controllers;
@@ -17,38 +19,39 @@ namespace IncidentInsight.Tests.Controllers;
 /// 配線を丸ごと削除しても検知できない(属性は登録が無ければ黙って無視される)ため、
 /// 実 HTTP パイプラインで 429 が返る回帰テストを 1 本持つ。
 /// </summary>
-public class LoginRateLimitIntegrationTests : IClassFixture<WebApplicationFactory<Program>>
+public class LoginRateLimitIntegrationTests : IClassFixture<LoginRateLimitIntegrationTests.AppFixture>
 {
     // テスト用に緩和した許可回数(この回数を超えた POST が 429 になる)
     private const int TestPermitLimit = 2;
 
-    // アプリ全体を起動するテスト用ファクトリ
+    // アプリ全体を起動するテスト用ファクトリ(フィクスチャが 1 度だけ組み立てたものを借りる)
     private readonly WebApplicationFactory<Program> _factory;
 
-    public LoginRateLimitIntegrationTests(WebApplicationFactory<Program> factory)
+    public LoginRateLimitIntegrationTests(AppFixture fixture)
     {
-        // 実運用設定を汚さないよう、テスト専用の設定でアプリを起動する
-        _factory = factory.WithWebHostBuilder(builder =>
-        {
-            // シード・パスワードポリシーが緩い Development 環境として起動する
-            builder.UseEnvironment("Development");
-            // 設定値をテスト用に上書きする
-            builder.ConfigureAppConfiguration((_, config) =>
-            {
-                // メモリ上の設定ソースを最後に追加して既存設定を上書きする
-                config.AddInMemoryCollection(new Dictionary<string, string?>
-                {
-                    // DB はテスト専用の一時ファイルへ向ける(リポジトリ内に DB を作らない)
-                    ["ConnectionStrings:DefaultConnection"] =
-                        $"Data Source={Path.Combine(Path.GetTempPath(), $"ii-ratelimit-{Guid.NewGuid():N}.db")}",
-                    // 許可回数を小さくしてテストを速くする
-                    [$"{LoginRateLimitOptions.SectionName}:PermitLimit"] = TestPermitLimit.ToString(),
-                    // ウィンドウを長くしてテスト中に枠がリセットされないようにする
-                    [$"{LoginRateLimitOptions.SectionName}:WindowSeconds"] = "3600",
-                });
-            });
-        });
+        // フィクスチャが保持している起動済みのファクトリを受け取る
+        _factory = fixture.Factory;
     }
+
+    /// <summary>
+    /// このテストクラスが共有する、一時 DB を指して 1 度だけ起動したアプリ。
+    /// </summary>
+    /// <remarks>
+    /// 以前はコンストラクタで <c>WithWebHostBuilder</c> を呼んでいたため、xUnit が
+    /// テストメソッドごとにテストクラスを作り直すのに合わせてアプリが起動し直され、
+    /// そのたびに別名の一時 DB が残っていた(誰も消さないので溜まり続ける)。
+    /// 起動を 1 回に保つ仕掛けと後始末は <see cref="TempDatabaseAppFixture"/> が持つ。
+    /// ここはこのテストに固有の設定 ——レート制限の枠—— だけを渡す。
+    /// </remarks>
+    public sealed class AppFixture() : TempDatabaseAppFixture(
+        "ii-ratelimit",
+        new Dictionary<string, string?>
+        {
+            // 許可回数を小さくしてテストを速くする
+            [$"{LoginRateLimitOptions.SectionName}:PermitLimit"] = TestPermitLimit.ToString(),
+            // ウィンドウを長くしてテスト中に枠がリセットされないようにする
+            [$"{LoginRateLimitOptions.SectionName}:WindowSeconds"] = "3600",
+        });
 
     [Fact]
     public async Task LoginPost_OverLimit_Returns429WithSafeMessage()

@@ -7,6 +7,13 @@ using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 // 正規表現でアンチフォージェリトークンを取り出すために使う
 using System.Text.RegularExpressions;
+// 共有のフィクスチャとキャッシュ指示の判定を使う
+using IncidentInsight.Tests.Helpers;
+// MvcOptions(グローバルフィルタ・キャッシュプロファイル)を読むために使う
+using Microsoft.AspNetCore.Mvc;
+// 起動済みアプリから設定を解決するために使う
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Options;
 
 // テストクラスの名前空間(既存の Middleware 配下テストと同じ場所)
 namespace IncidentInsight.Tests.Middleware;
@@ -70,82 +77,87 @@ public class ResponseCacheHeaderIntegrationTests
     }
 
     /// <summary>
-    /// テスト専用設定でアプリを 1 度だけ起動し、使い終わった一時 DB を確実に消すフィクスチャ。
+    /// このテストクラスが共有する、一時 DB を指して 1 度だけ起動したアプリ。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜクラス外(コンストラクタ)で組み立ててはいけないのか。</b>
-    /// xUnit はテストメソッドごとにテストクラスを作り直すので、コンストラクタで
-    /// <c>WithWebHostBuilder</c> を呼ぶと<b>派生ファクトリがテストの数だけ生まれる</b> ——
-    /// <c>IClassFixture</c> でファクトリ自体を共有していても、アプリの起動・マイグレーション・
-    /// シードがテストごとに走り、そのたびに別名の一時 DB ができる。
-    /// 生成した <c>.db</c>(および SQLite が並べて作る <c>-wal</c> / <c>-shm</c>)は
-    /// 誰も消さないので、CI ランナーや開発機に上限なく溜まる(§8「リソースを確実に解放する」)。</para>
-    ///
-    /// <para><b>だから組み立てをここへ 1 か所に寄せ、<c>IDisposable</c> で後始末する。</b>
-    /// DB のパスをフィールドに持つのは、消す対象を<b>推測ではなく生成時の値</b>から決めるため。</para>
+    /// 起動を 1 回に保つ仕掛けと一時ファイルの後始末は
+    /// <see cref="TempDatabaseAppFixture"/> が持つ(理由もそちらに書いてある)。
+    /// ここはこのテストに固有の設定 ——認証が要る JSON を叩くためのデモ管理者—— だけを渡す。
     /// </remarks>
-    public sealed class AppFixture : IDisposable
+    public sealed class AppFixture() : TempDatabaseAppFixture(
+        "ii-cacheheader",
+        new Dictionary<string, string?>
+        {
+            // 認証が要る JSON を叩くため、デモ管理者のシードを有効にする
+            ["SeedAccounts:AdminEmail"] = AdminEmail,
+            // シードするデモ管理者のパスワード
+            ["SeedAccounts:AdminPassword"] = AdminPassword,
+        });
+
+    // アプリの設定(MvcOptions)側からキャッシュ許可が入り込んでいないこと。
+    //
+    // <b>なぜ属性の走査だけでは足りないのか。</b> 指示は宣言した属性以外からも来る:
+    // Program.cs で o.Filters.Add(new ResponseCacheAttribute { Duration = 300, Location = Any })
+    // と書くと<b>全アクション</b>が public,max-age=300 を名乗り、SecurityHeadersMiddleware は
+    // 「既に指示がある」ので触れない ——アプリ全体の PHI が共有キャッシュへ保存可能になる。
+    // 属性のソースには 1 文字も現れないので ResponseCacheAttributePolicyTests は緑のまま通る。
+    // 起動したアプリの設定を読むこの検査が、その口を塞ぐ(判定は同じ関数を使う)。
+    [Fact]
+    public void GlobalMvcFilters_DoNotPermitCaching()
     {
-        // 生成した一時 DB のパス(後始末で消す対象を推測しないよう、作った値をそのまま持つ)
-        private readonly string _databasePath =
-            Path.Combine(Path.GetTempPath(), $"ii-cacheheader-{Guid.NewGuid():N}.db");
+        // 起動済みのアプリから MVC の設定を取り出す
+        var options = _factory.Services.GetRequiredService<IOptions<MvcOptions>>().Value;
 
-        // アプリ全体を起動する素のファクトリ(Dispose の対象として保持する)
-        private readonly WebApplicationFactory<Program> _baseFactory = new();
+        // グローバルに登録された [ResponseCache] のうち、保存を許しているものを集める
+        var violations = options.Filters
+            .OfType<ResponseCacheAttribute>()
+            // 属性の走査と同じ基準で判定する(規則を 2 つ書かない)
+            .Select(filter => ResponseCachePolicy.Judge(filter))
+            // 保存を禁じていないものだけを残す
+            .Where(verdict => !verdict.IsSuppressing)
+            // 失敗文言に載せる理由を取り出す
+            .Select(verdict => verdict.Reason)
+            .ToList();
 
-        public AppFixture()
-        {
-            // 実運用設定を汚さないよう、テスト専用の設定でアプリを起動する
-            Factory = _baseFactory.WithWebHostBuilder(builder =>
-            {
-                // シード・パスワードポリシーが緩い Development 環境として起動する
-                builder.UseEnvironment("Development");
-                // 設定値をテスト用に上書きする
-                builder.ConfigureAppConfiguration((_, config) =>
-                {
-                    // メモリ上の設定ソースを最後に追加して既存設定を上書きする
-                    config.AddInMemoryCollection(new Dictionary<string, string?>
-                    {
-                        // DB はテスト専用の一時ファイルへ向ける(リポジトリ内に DB を作らない)
-                        ["ConnectionStrings:DefaultConnection"] = $"Data Source={_databasePath}",
-                        // 認証が要る JSON を叩くため、デモ管理者のシードを有効にする
-                        ["SeedAccounts:AdminEmail"] = AdminEmail,
-                        ["SeedAccounts:AdminPassword"] = AdminPassword,
-                    });
-                });
-            });
-        }
+        // 違反が 1 件も無いことを、理由付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "グローバルフィルタとして登録された [ResponseCache] が保存を許しています。"
+                + "これはアプリの全アクションに効くため、PHI がまるごと共有キャッシュへ保存されます。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
+    }
 
-        /// <summary>テストが共有する、起動済みのアプリのファクトリ。</summary>
-        public WebApplicationFactory<Program> Factory { get; }
+    // 設定として持つキャッシュプロファイルが、どれも保存を許していないこと。
+    //
+    // [ResponseCache(CacheProfileName = "...")] は実際の指示を MvcOptions 側に持つ。
+    // 属性のフィールドからは読めないので、属性側の判定はプロファイル名の使用を
+    // fail-closed で落としている。そのうえで<b>プロファイルの中身</b>もここで見る ——
+    // 片方だけだと「プロファイルを定義したが誰も使っていない」状態を素通りさせ、
+    // 使い始めた瞬間に穴になる。
+    [Fact]
+    public void CacheProfiles_DoNotPermitCaching()
+    {
+        // 起動済みのアプリから MVC の設定を取り出す
+        var options = _factory.Services.GetRequiredService<IOptions<MvcOptions>>().Value;
 
-        /// <summary>アプリを停止し、生成した一時 DB のファイルを消す。</summary>
-        public void Dispose()
-        {
-            // 先にアプリを止めて、SQLite のファイルハンドルを解放させる
-            Factory.Dispose();
-            // 派生元のファクトリも明示的に止める(派生側の Dispose では解放されない)
-            _baseFactory.Dispose();
-            // SQLite は本体のほかに WAL とシェアドメモリのファイルを並べて作るので、3 つとも消す
-            foreach (var suffix in new[] { "", "-wal", "-shm" })
-            {
-                // 消せない場合(別プロセスが掴んでいる等)でもテストは失敗させない ——
-                // 後始末の失敗で検証結果を赤くすると、本物の不具合と見分けが付かなくなる
-                try
-                {
-                    // 存在すれば消す(File.Delete は存在しないパスでは何もしない)
-                    File.Delete(_databasePath + suffix);
-                }
-                catch (IOException)
-                {
-                    // 掴まれていて消せなかった場合は次のプロセス終了に委ねる(握り潰す理由はこの 1 行)
-                }
-                catch (UnauthorizedAccessException)
-                {
-                    // 権限が無くて消せなかった場合も同じ扱いにする
-                }
-            }
-        }
+        // 保存を許しているプロファイルを、名前付きで集める
+        var violations = options.CacheProfiles
+            // 各プロファイルを属性の走査と同じ基準で判定する
+            .Select(entry => (entry.Key, verdict: ResponseCachePolicy.Judge(entry.Value)))
+            // 保存を禁じていないものだけを残す
+            .Where(pair => !pair.verdict.IsSuppressing)
+            // 「どのプロファイルが、なぜ駄目か」を 1 行にまとめる
+            .Select(pair => $"{pair.Key}: {pair.verdict.Reason}")
+            .ToList();
+
+        // 違反が 1 件も無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            violations.Count == 0,
+            "保存を許すキャッシュプロファイルが定義されています。"
+                + "使われた時点で、その応答は共有キャッシュへ保存可能になります。"
+                + Environment.NewLine
+                + string.Join(Environment.NewLine, violations));
     }
 
     [Fact]
