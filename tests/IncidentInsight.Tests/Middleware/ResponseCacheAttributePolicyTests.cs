@@ -40,18 +40,21 @@ namespace IncidentInsight.Tests.Middleware;
 ///   <item><description><b>応答ヘッダーへの直接の書き込み</b>
 ///     (<c>Response.Headers.CacheControl = "public,max-age=300";</c>)——
 ///     属性も設定も通らないので上の 2 つには映らない。
-///     <see cref="ControllersAndViews_DoNotWriteCacheControlDirectly"/> が落とす。
+///     <see cref="OnlyIntendedWriters_SetCacheControlDirectly"/> が落とす。
 ///     <b>実測</b>: この 1 行を <c>AnalyticsController.ByCause</c> の先頭へ足すと、
 ///     PHI の集計 JSON が <c>public,max-age=300</c> で返るのに 878 件すべて緑のまま通った。
 ///     </description></item>
 /// </list>
 ///
-/// <para><b>残っている境界。</b> 直接の書き込みを見るのはコントローラとビューのソースまで。
-/// フィルタ・ミドルウェア・タグヘルパーから書く形は見ない ——
-/// <c>Cache-Control</c> を<b>意図して</b>書く場所が実際にその層にあり
-/// (<c>SecurityHeadersMiddleware</c> の既定値と <c>Program.cs</c> の静的ファイル配信)、
-/// 一律に禁じると理由付きの除外表が要る。空でない除外表は「登録するだけで黙らせられる口」
-/// になるので、その層はレビューで見る(§6 のエスケープハッチと同じ扱い)。</para>
+/// <para><b>直接の書き込みは Web プロジェクト全体を見る</b>(<c>.cs</c> と <c>.cshtml</c>)。
+/// 以前はコントローラとビューのパスで絞っていたが、その外に置いた同じコード
+/// (<c>Pages/</c> のビュー、別フォルダの <c>partial class</c>)が素通りしたため、
+/// 走査を全体へ広げ、<b>意図して書く 2 か所だけ</b>を理由付きの許可表
+/// <see cref="IntendedCacheControlWriters"/> に置く形へ変えた。</para>
+///
+/// <para><b>残っている境界。</b> その許可表は人が判断するエスケープハッチで、
+/// 「その場所が本当に書いてよいか」は機械では決められない。エントリが増える差分は
+/// レビューで理由の妥当性を必ず確認すること(§6 のエスケープハッチと同じ扱い)。</para>
 ///
 /// <para><b>導出で作る(表を書かない)。</b> 「見るべきアクションの一覧」を手で持つと、
 /// 新しいコントローラを足した人が載せ忘れた時点でその画面だけ黙って検査から外れる。
@@ -447,6 +450,34 @@ public class ResponseCacheAttributePolicyTests
     // 量指定子は最短一致にして、1 行に 2 つ以上あるときも個別に取り除く
     private static readonly System.Text.RegularExpressions.Regex ClosedCommentPattern =
         new(@"@\*.*?\*@|/\*.*?\*/", System.Text.RegularExpressions.RegexOptions.Compiled);
+
+    // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。
+    //
+    // <b>なぜ要るのか。</b> 継承した属性は派生型からも見えるので、具象の名前で報告すると
+    // (a) 同じ 1 つの宣言が派生の数だけ並び、(b) 名指しされたファイルを開いても属性が無く、
+    // 直すべき 1 か所(基底)がどこにも出てこない。アクション側には同じ内容の検査
+    // (DeclarationScan_ReportsAnInheritedActionOnlyOnce)があるが、クラス側には無かった。
+    //
+    // <b>この検査は一度「走査の作り直し」で巻き添えに消えた。</b> 消えている間、
+    // ResponseCachePolicy.DeclaringTypeOf(Type) の本体を `return controller;` に潰しても
+    // 898 件すべて緑のまま通った(実測)——クラス側の宣言を持つ合成コントローラが
+    // 自分で宣言している 1 つだけになり、基底をたどる経路が一度も実行されないため。
+    [Fact]
+    public void DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase()
+    {
+        // 同じ抽象基底を継承する 2 つの具象コントローラを走査する
+        var declarations = ScanProbes(
+            typeof(ClassLevelInheritedProbeController),
+            typeof(SecondClassLevelInheritedProbeController));
+
+        // 基底のクラス属性(Duration = 77)に由来する宣言が 1 件だけであること
+        var inherited = Assert.Single(declarations, d => d.Attribute.Duration == 77);
+        // 名指しが、属性を実際に宣言している基底であること(派生の名前ではない)
+        Assert.Contains(
+            nameof(ClassLevelInheritedProbeControllerBase),
+            inherited.DeclaredOn,
+            StringComparison.Ordinal);
+    }
 
     /// <summary>
     /// 合成したコントローラに対して走査を実行する。

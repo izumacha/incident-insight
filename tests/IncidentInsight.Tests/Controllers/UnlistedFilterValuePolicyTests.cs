@@ -3502,7 +3502,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // (ControllerBase 派生の)コントローラが department 絞り込みの網羅ガードから
         // 丸ごと外れていた ——実測でも、その形の画面を足すと全件緑のまま
         // テスト件数すら変わらずに通った。写しを消せば ControllerScan_ReachesEveryControllerFile
-        // の射程に入る
+        // の射程に入る。
+        //
+        // <b>広がる向きが利用側で逆になる点に注意</b>: 網羅ガード側(?department= を受ける
+        // アクションの照合)では対象が広がる＝安全側だが、GovernedOptionProperties は
+        // この集合を<b>除外</b>に使っており、そちらでは広がる＝検査対象が減る。
+        // 現時点でアプリの全コントローラは Controller 派生なので集合は同一だが、
+        // ControllerBase 直下の API 風コントローラを足す人は、その ViewModel が
+        // *Options の required 検査から静かに外れないかを確かめること
         AppControllerScan.Controllers().ToList();
 
     /// <summary>

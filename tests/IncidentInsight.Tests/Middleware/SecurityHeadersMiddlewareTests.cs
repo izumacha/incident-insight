@@ -181,7 +181,10 @@ public class SecurityHeadersMiddlewareTests
                 + "(読めないまま緑にすると、文書と実装のずれが誰にも見えなくなります)。");
 
         // ドキュメントの値と定数が一字一句一致すること
-        Assert.Equal(documented.Groups["value"].Value.Trim(), SecurityHeadersMiddleware.StaticAssetCacheControl);
+        // (期待値は定数、実測値はドキュメント側。失敗文言が「文書が何を名乗っているか」を示す)
+        Assert.Equal(
+            SecurityHeadersMiddleware.StaticAssetCacheControl,
+            documented.Groups["value"].Value.Trim());
     }
 
     // 定数が、docstring の述べている不変条件(短い期間・immutable なし)を満たしていること。
