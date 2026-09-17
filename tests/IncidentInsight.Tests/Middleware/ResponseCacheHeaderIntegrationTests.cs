@@ -443,6 +443,39 @@ public class HostFilteringShortCircuitTests
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
     }
 
+    // 区切り文字だけの設定も、全ホスト許可になること。
+    //
+    // <b>ワイルドカードの綴りとは別の経路。</b> 汎用ホストの既定設定は
+    //   var hosts = config["AllowedHosts"]?.Split(';', RemoveEmptyEntries);
+    //   options.AllowedHosts = hosts?.Length > 0 ? hosts : new[] { "*" };
+    // なので、";" のように<b>1 件も残らない</b>値は既定の ["*"] へ落ちる ——
+    // つまり「空の項目は無害」なのは<b>空でない項目が 1 つでも残る場合だけ</b>。
+    //
+    // この形は手で書くより<b>テンプレート展開</b>で生まれる:
+    //   AllowedHosts=${PRIMARY_HOST};${SECONDARY_HOST}  ← 両方未定義なら ";" になる
+    //
+    // <b>空白入りの " ; " は別物</b>(実測で 400)。あちらは項目が 2 件残るので既定へ落ちず、
+    // 許可リストが [" ", " "] になって<b>すべて拒否</b>される ——サイトは落ちるが
+    // 「素通り」ではないので、警告の判定としては permissive ではない。
+    [Fact]
+    public async Task SeparatorsOnlyAllowedHosts_StillAcceptsAnyHost()
+    {
+        // 区切り文字だけの設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(";");
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+        // どのホスト名も許可リストに「書かれていない」はずのリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // 一致しないはずの Host ヘッダーを乗せる
+        request.Headers.Host = RejectedHost;
+
+        // 応答を受け取る
+        var response = await client.SendAsync(request);
+
+        // 400 にならない ——既定の ["*"] へ落ちているので絞り込みは効いていない
+        Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+    }
+
     /// <summary>指定した `AllowedHosts` で起動するアプリ。</summary>
     /// <remarks>
     /// 値だけが違う同じ本文を綴りの数だけ書き写さないために、設定値を受け取る形にしてある

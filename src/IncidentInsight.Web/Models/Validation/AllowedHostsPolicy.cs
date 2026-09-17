@@ -92,9 +92,22 @@ public static class AllowedHostsPolicy
         // 未設定・空・空白だけなら、絞り込みが効いていない
         if (string.IsNullOrWhiteSpace(allowedHosts)) return true;
 
-        // 区切って 1 つずつ見る(空の項目は書き間違いなので数えない)
-        return allowedHosts
-            .Split(Separator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+        // <b>フレームワークとまったく同じ分割</b>で項目を取り出す(空の項目だけを落とし、
+        // <b>トリムはしない</b>)。ここで trim すると、次の「1 件も残らないか」の判定が
+        // フレームワークとずれる
+        var entries = allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+
+        // <b>1 件も残らないなら全許可。</b> 汎用ホストの既定設定は
+        //   options.AllowedHosts = hosts?.Length > 0 ? hosts : new[] { "*" };
+        // なので、";" や ";;" のような値は既定の ["*"] へ落ちて全ホスト許可になる。
+        // つまり<b>「空の項目は無害」なのは、空でない項目が 1 つでも残る場合だけ</b>。
+        // 実測: AllowedHosts=";" は別ホストを 200 で受ける。この形は手で書くより
+        // テンプレート展開(AllowedHosts=${PRIMARY};${SECONDARY} の両方が未定義)で生まれる
+        if (entries.Length == 0) return true;
+
+        // 残った項目を 1 つずつ見る(前後の空白は照合の前に落とす)
+        return entries
+            .Select(entry => entry.Trim())
             // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
             .Any(IsWildcardEntry);
     }

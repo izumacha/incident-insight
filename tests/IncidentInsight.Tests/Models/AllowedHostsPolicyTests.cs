@@ -44,8 +44,18 @@ public class AllowedHostsPolicyTests
     [InlineData("incident.example.com", false)]
     // 複数の実ホスト名でも絞れている
     [InlineData("incident.example.com;www.incident.example.com", false)]
-    // 空の項目は書き間違いなので、絞れている判定を変えない
+    // 空の項目は、<b>空でない項目が残るかぎり</b>絞れている判定を変えない
     [InlineData("incident.example.com;;", false)]
+    // <b>1 件も残らない値は全許可。</b> 汎用ホストの既定設定が ["*"] へ落とすため
+    // (実測: AllowedHosts=";" は別ホストを 200 で受ける)。
+    // テンプレート展開 AllowedHosts=${PRIMARY};${SECONDARY} の両方未定義でこうなる
+    [InlineData(";", true)]
+    [InlineData(";;", true)]
+    [InlineData(";;;", true)]
+    // <b>空白入りは別物。</b> " ; " は項目が 2 件残るので既定へ落ちず、許可リストが
+    // [" ", " "] になって<b>すべて拒否</b>される(実測で 400)。サイトは落ちるが
+    // 「素通り」ではないので permissive ではない
+    [InlineData(" ; ", false)]
     // ワイルドカードを含む「部分一致」の綴りは HostFiltering では全許可にならない
     [InlineData("*.example.com", false)]
     // <b>ワイルドカードは * だけではない。</b> Kestrel の IPv6 Any / IPv4 Any も全許可になる
