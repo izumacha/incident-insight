@@ -302,23 +302,34 @@ public class AllowedHostsPolicyTests
         Assert.All(advice.Values, text => Assert.False(string.IsNullOrWhiteSpace(text)));
 
         // 既定（＝専用の案内が無い分類）へ落ちているものを数える。
-        // <b>照合の相手は定数。</b> DeadEntryFixAdvice(NothingToDelete) で求めると
-        // 比較が自分自身との照合になり、NothingToDelete に arm を足した瞬間に
-        // 足し忘れを 1 件も検出しなくなる（実測で全 1002 件が緑のまま通った）
+        // <b>照合の相手が関数の外の定数であることが要点</b>（理由は
+        // AllowedHostsPolicy.FallbackFixAdvice の docstring が正本）
         var fallback = AllowedHostsPolicy.FallbackFixAdvice;
         var fellBack = advice
             .Where(pair => string.Equals(pair.Value, fallback, StringComparison.Ordinal))
             .Select(pair => pair.Key)
             .ToList();
 
-        // 既定へ落ちてよいのは NothingToDelete だけ。
-        // NothingToDelete に専用の arm を足した場合もここで落ちる（期待を必ず更新させる）
+        // 既定へ落ちてよいのは NothingToDelete だけ
+        var expected = new[] { AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete };
+
+        // <b>落ち方が 2 通りあるので、文言も分ける。</b> 同じ文言にすると、
+        // 「arm を足したら『arm を足してください』と言われる」ことになり、
+        // いちばん安く赤を消す手が「検査を緩める」になってしまう
         Assert.True(
-            fellBack.SequenceEqual([AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete]),
-            "専用の案内が無い分類があります: "
-                + string.Join(", ", fellBack)
-                + "。AllowedHostsPolicy.DeadEntryFixAdvice に arm を足してください"
-                + "（switch の _ はコンパイルエラーにならないので、ここでしか気付けません）");
+            fellBack.SequenceEqual(expected),
+            fellBack.Except(expected).Any()
+                // 専用の案内が無い分類がある（＝分類を足したのに arm を忘れた）
+                ? "専用の案内が無い分類があります: "
+                    + string.Join(", ", fellBack.Except(expected))
+                    + "。AllowedHostsPolicy.DeadEntryFixAdvice に arm を足してください"
+                    + "（switch の _ はコンパイルエラーにならないので、ここでしか気付けません）"
+                // 既定へ落ちる分類が減った（＝NothingToDelete に専用の arm を足した）
+                : "NothingToDelete が既定の文面を使わなくなりました"
+                    + "（専用の arm を足したはずです）。"
+                    + "この検査の期待値も同じ変更セットで更新してください ——"
+                    + "更新せずに放置すると、既定の文面を誰も使わなくなり、"
+                    + "次に分類を足した人の arm 忘れを検出できなくなります");
     }
 
     // いちばん危ない分岐が、削除を戒める向きのままであること。
