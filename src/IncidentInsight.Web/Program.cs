@@ -393,9 +393,11 @@ if (!app.Environment.IsDevelopment())
         // (d) があるので「全部死んでいれば 400」とも書けない ——(d) はこの警告にも
         // IsPermissive にも同時に載るため、断定するとその場で 2 本が食い違う。
         //
-        // <b>直し方の案内は条件で変える。</b> 死んだ項目を消すと項目数が減り、
-        // <b>0 件になった場合だけ</b>既定の ["*"] へ落ちて全ホストを受け付ける
+        // <b>直し方の案内は条件で変える。</b> 死んだ項目を消したあと、残る一覧が
+        // どの Host でも受け付ける状態になるなら「消す」は直し方ではない
         // (400 が止まるので直ったように見えるが、実際は issue #64 へ移るだけ)。
+        // 化ける経路は「0 件になって ["*"] へ落ちる」と「残った項目自体がワイルドカード」の
+        // 2 つで、件数だけでは判別できない(規則は AllowedHostsPolicy の docstring が正本)。
         // 逆に、消したあとの設定がどの Host も受け付ける状態にならないなら
         // 「消す」が正しい直し方で、
         // テンプレート展開の "incident.example.com; ${SECONDARY}" のように
@@ -408,9 +410,11 @@ if (!app.Environment.IsDevelopment())
         var howToFix = deletingWouldOpenUp
             // 消すと、残る設定がどの Host も受け付ける状態になる
             // (項目が 0 件になるか、残った項目がワイルドカードのどちらか)
-            ? "Rewrite each listed entry to the real hostname. Do NOT simply delete them: "
-                + "with these entries gone the remaining list accepts every Host header — "
-                + "the spoofing hole this setting exists to close. "
+            ? "Do NOT simply delete them: with these entries gone the remaining list would "
+                + "accept every Host header — either it becomes empty and falls back to '*', "
+                + "or a wildcard entry ('*', '[::]' or '0.0.0.0') is left behind. "
+                + "Rewrite each listed entry to the real hostname AND remove any wildcard entry, "
+                + "so that real hostnames are all that is left. "
                 + "Write the list as 'a.example;b.example', with no spaces."
             // 消しても、残る設定はどの Host も受け付ける状態にはならない
             : "Fix each listed entry — either rewrite it to the real hostname, or remove it "

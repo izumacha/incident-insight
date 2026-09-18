@@ -184,46 +184,55 @@ public class AllowedHostsPolicyTests
     [InlineData("incident.example.test;0.0.0.0; ", true)]
     // 全角で書いた 0.0.0.0 も正規化で全許可になるので同じ
     [InlineData("incident.example.test;０.０.０.０; ", true)]
-    public void DeletingDeadEntriesWouldAllowEveryHost_IsTrueOnlyWhenNoLiveEntryRemains(
+    // <b>正規化できない綴りが残る形は false（消してよい）。</b> 実測ではフレームワークが
+    // 例外を投げる＝どの Host も受け付けないので、「消すと全許可になる」は事実と逆。
+    // IsPermissive をそのまま流用すると（あちらは警告のため fail-closed に倒す）
+    // ここが true になり、唯一無害な操作を禁じる案内になる（実測でそうなっていた）
+    [InlineData("0.0\t.0.0; ", false)]
+    public void DeletingDeadEntriesWouldAllowEveryHost_IsTrueWhenTheRemainingListWouldAcceptAnyHost(
         string? allowedHosts, bool expected)
     {
         // 判定を実行して、期待どおりかを確かめる
         Assert.Equal(expected, AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts));
     }
 
-    // 「消すと全許可へ化ける」と判定した設定が、本当にそうなること。
+    // 「死んだ項目を消したあとに何が残るか」を、手で書いた期待値で固定する。
     //
-    // <b>判定と、その判定が根拠にしている規則を突き合わせる。</b> 死んだ項目を実際に
-    // 取り除いた文字列を組み立て、それを IsPermissive へ通す ——true と答えた設定が
-    // 全許可にならない（または false と答えた設定が全許可になる）なら、
-    // 運用者への案内がその時点で逆を向く。
+    // <b>以前ここに置いていた「IsPermissive と一致すること」の検査は恒真だった。</b>
+    // 本体が IsActualWildcardEntry ベース、テストが IsPermissive ベースで、どちらも
+    // 同じ Wildcards / SplitEntries を読むため、判定が狭まれば両辺が同じだけ狭まる
+    // ——Wildcards を ["*"] に狭めても全行が緑のまま通る。CLAUDE.md が繰り返し
+    // 禁じている「同じ判定でガードを書く」形そのもの。
+    //
+    // そこで<b>手がかりを変える</b>: 判定の途中結果（消したあとに残る項目）を
+    // 文字列で直接書き下す。ここが合っていれば、あとは残った項目を
+    // ワイルドカードと突き合わせるだけで、その突き合わせは上の表が期待値付きで固定する。
     [Theory]
-    [InlineData("   ")]
-    [InlineData(" ; ")]
-    [InlineData("  *  ")]
-    [InlineData("incident.example.test; ")]
-    [InlineData("incident.example.test; www.example.test")]
-    // <b>ワイルドカードが生き残る形も必ず入れる。</b> これらを外すと、
-    // 「生きた項目が 1 件でも残るか」で判定する誤った実装でも表が緑になり、
-    // 検査が「守っている」と書いた fail-open をそのまま通す（実測でそうなっていた）
-    [InlineData("*; ")]
-    [InlineData("[::]; ")]
-    [InlineData("incident.example.test;0.0.0.0; ")]
-    public void DeletingDeadEntries_AgreesWithWhatIsPermissiveSaysAboutTheResult(string allowedHosts)
+    // 死んだ項目だけ ——消すと 1 件も残らない
+    [InlineData("   ", "")]
+    [InlineData(" ; ", "")]
+    // 生きた実ホスト名が残る
+    [InlineData("incident.example.test; ", "incident.example.test")]
+    [InlineData("incident.example.test; www.example.test", "incident.example.test")]
+    // <b>残るのがワイルドカードの形</b>（件数だけを見る判定が取りこぼしていた）
+    [InlineData("*; ", "*")]
+    [InlineData("incident.example.test;0.0.0.0; ", "incident.example.test;0.0.0.0")]
+    // 空の項目は分割の時点で落ちるので、残る一覧には現れない
+    [InlineData("incident.example.test;; ", "incident.example.test")]
+    public void NeverMatchingEntries_LeaveExactlyTheseEntriesBehind(
+        string allowedHosts, string expectedSurvivors)
     {
         // その設定で「一致しえない」と判定された項目を取り出す
         var dead = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
 
         // 死んだ項目を実際に取り除いた設定値を組み立てる（運用者が「消した」状態）
-        var afterDeletion = string.Join(
+        var survivors = string.Join(
             ";",
             allowedHosts.Split(';', StringSplitOptions.RemoveEmptyEntries)
                 .Where(entry => !dead.Contains(entry, StringComparer.Ordinal)));
 
-        // 消した結果が全許可になるかを、判定と実際の規則で突き合わせる
-        Assert.Equal(
-            AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts),
-            AllowedHostsPolicy.IsPermissive(afterDeletion));
+        // 残る項目が、手で書いた期待値と一致すること
+        Assert.Equal(expectedSurvivors, survivors);
     }
 
     // 2 つの判定が「同じ分割」を使い続けていること。

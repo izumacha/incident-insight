@@ -98,26 +98,61 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（<b>トリムしていない生の値</b>）。</param>
     /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
-    private static bool IsWildcardEntry(string entry)
-    {
-        // フレームワークと同じ正規化を通した綴りを入れる
-        string normalized;
+    private static bool IsWildcardEntry(string entry) =>
+        // 正規化できた綴りだけを 3 つのワイルドカードと突き合わせ、
+        // 判断できない綴りは「絞れている」と言えないので警告する側へ倒す
+        !TryNormalizeEntry(entry, out var normalized)
+        || Wildcards.Contains(normalized, StringComparer.Ordinal);
 
+    /// <summary>
+    /// フレームワークと同じ正規化（IDNA / NFKC）を試み、成功したかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>正規化の失敗を、2 つの問いで別々に解釈するために切り出してある。</b>
+    /// 「警告を出すべきか」（<see cref="IsPermissive"/>）は判断できない綴りを
+    /// <b>ワイルドカード側へ倒す</b>のが正しい（鳴りすぎる＝安全側）。
+    /// 一方「死んだ項目を消すと全ホスト許可へ化けるか」
+    /// （<see cref="DeletingDeadEntriesWouldAllowEveryHost"/>）では逆で、
+    /// 実測するとフレームワークはその綴りで<b>例外を投げる</b>（どの Host も受け付けない）ので、
+    /// ワイルドカード扱いすると「消すな、消すと全許可になる」という<b>事実と逆の案内</b>になる。
+    /// 正規化そのものは同じ手順なので、分岐だけを呼び出し側へ持たせる。
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
+    /// <param name="normalized">成功したときの正規化後の綴り。</param>
+    /// <returns>正規化できたなら <c>true</c>。</returns>
+    private static bool TryNormalizeEntry(string entry, out string normalized)
+    {
         // 正規化そのものが失敗しうるので捕まえる
         try
         {
             // HostFiltering と同じ手順でホスト名を正規化する
             normalized = new HostString(entry).ToUriComponent();
+            // ここまで来たら正規化できている
+            return true;
         }
         catch (ArgumentException)
         {
-            // 判断できない綴りは「絞れている」と言えないので、警告する側へ倒す
-            return true;
+            // 呼び出し側が誤って使わないよう、空文字を入れておく
+            normalized = string.Empty;
+            // 正規化できなかったことだけを伝え、解釈は呼び出し側に任せる
+            return false;
         }
-
-        // 正規化後の綴りが 3 つのワイルドカードのいずれかかを見る
-        return Wildcards.Contains(normalized, StringComparer.Ordinal);
     }
+
+    /// <summary>
+    /// その項目が、フレームワークに<b>実際に</b>全ホスト許可として扱われるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <see cref="IsWildcardEntry"/> との違いは<b>正規化できない綴りの扱いだけ</b>で、
+    /// こちらは「ワイルドカードではない」と答える（理由は
+    /// <see cref="TryNormalizeEntry"/> の docstring が正本）。
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
+    /// <returns>実際にワイルドカードとして扱われるなら <c>true</c>。</returns>
+    private static bool IsActualWildcardEntry(string entry) =>
+        // 正規化できた綴りだけを突き合わせる（できない綴りは全許可にはならない）
+        TryNormalizeEntry(entry, out var normalized)
+        && Wildcards.Contains(normalized, StringComparer.Ordinal);
 
     /// <summary>
     /// その設定値が「実質すべてのホストを許可する」かを返す。
@@ -223,20 +258,25 @@ public static class AllowedHostsPolicy
     /// </summary>
     /// <remarks>
     /// <para><b>直し方の案内を条件付きにするために要る。</b>
-    /// <see cref="NeverMatchingEntries"/> が挙げた項目を消すと項目数が減り、
-    /// <b>0 件になった場合だけ</b>フレームワークが既定の <c>["*"]</c> を入れて全許可になる
-    /// （規則は <see cref="IsPermissive"/> の docstring が正本）。
-    /// 400 が止まるので直ったように見えるが、実際には issue #64（Host ヘッダ偽装）へ移る。</para>
+    /// <see cref="NeverMatchingEntries"/> が挙げた項目を消したあと、残る一覧が
+    /// <b>どの <c>Host</c> でも受け付ける</b>状態になるなら、消すのは直し方ではない
+    /// ——400 が止まるので直ったように見えて、実際には issue #64（Host ヘッダ偽装）へ移る。</para>
     ///
-    /// <para><b>逆に、生きた項目が 1 つでも残るなら「消す」が正しい直し方。</b>
+    /// <para><b>全許可へ化ける経路は 2 つあり、「生きた項目が残るか」では判別できない。</b>
+    /// (a) 項目が 0 件になって既定の <c>["*"]</c> へ落ちる（<c>"   "</c> ・ <c>" ; "</c>）、
+    /// (b) <b>残った項目自体がワイルドカード</b>（<c>"*; "</c> ・
+    /// <c>"incident.example.com;0.0.0.0; "</c>。後者は <c>ASPNETCORE_URLS</c> を写すと自然に生まれる）。
+    /// (b) はどちらも生きた項目が残るので、件数だけを見る判定では取りこぼす（実測）。</para>
+    ///
+    /// <para><b>逆に、消したあとが全許可にならないなら「消す」が正しい直し方。</b>
     /// たとえば <c>AllowedHosts=incident.example.com; ${SECONDARY}</c> で
     /// <c>SECONDARY</c> が未定義だと値は <c>"incident.example.com; "</c> になり、
     /// 死んだ項目 <c>" "</c> には<b>書き換える先の実ホスト名が存在しない</b> ——
-    /// 末尾の <c>"; "</c> を消すのが唯一の直し方で、生きた項目が残るので全許可にはならない。
+    /// 末尾の <c>"; "</c> を消すのが唯一の直し方。
     /// 案内を無条件に「消すな」とすると、この形で運用者が直しようを失う。</para>
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
-    /// <returns>消すと 1 件も残らない（＝全許可へ化ける）なら <c>true</c>。</returns>
+    /// <returns>消したあとの一覧がどの <c>Host</c> でも受け付ける状態になるなら <c>true</c>。</returns>
     public static bool DeletingDeadEntriesWouldAllowEveryHost(string? allowedHosts)
     {
         // 未設定なら消す対象そのものが無い
@@ -245,16 +285,21 @@ public static class AllowedHostsPolicy
         // そもそも一致しえない項目が無ければ、消す話にならない
         if (NeverMatchingEntries(allowedHosts).Count == 0) return false;
 
-        // 死んだ項目を取り除いた「消したあとの設定値」を組み立てる
-        var afterDeletion = string.Join(
-            Separator,
-            SplitEntries(allowedHosts).Where(entry => !IsNeverMatchingEntry(entry)));
+        // 死んだ項目を取り除いたあとに残る項目を取り出す
+        var survivors = SplitEntries(allowedHosts)
+            .Where(entry => !IsNeverMatchingEntry(entry))
+            .ToArray();
 
-        // <b>その結果を同じ判定へ通す。</b> 「生きた項目が 1 件でも残るか」で見てはいけない
+        // <b>「生きた項目が 1 件でも残るか」で見てはいけない</b>
         // ——残った 1 件がワイルドカードなら、0 件にならなくても全許可のままだから。
         // 実測: "*; " と "incident.example.test;0.0.0.0; " は死んだ項目を消しても
         // どの Host も受け付ける（後者は ASPNETCORE_URLS を写して書くと自然に生まれる形）。
-        // IsPermissive を通せば、空になる経路もワイルドカードが残る経路も 1 本で覆える
-        return IsPermissive(afterDeletion);
+        //
+        // <b>ただし IsPermissive をそのまま通してもいけない。</b> あちらは正規化できない
+        // 綴りをワイルドカード側へ倒す（警告としては安全側）ので、"0.0<TAB>.0.0; " のような
+        // 値で「消すな、消すと全許可になる」と案内してしまう ——実測ではその綴りは
+        // フレームワークが例外を投げる（どの Host も受け付けない）ので、事実と逆になる。
+        // ここは「実際に全ホストを受け付けるか」を問うので IsActualWildcardEntry を使う
+        return survivors.Length == 0 || survivors.Any(IsActualWildcardEntry);
     }
 }
