@@ -194,19 +194,23 @@ public static class AllowedHostsPolicy
     /// 引数として口を開けておくと、使わない分岐が残るうえ、
     /// 次の書き手に「別の判定を渡してよい」と読ませてしまう（§6）。</para>
     ///
-    /// <para><b>呼び出し側の前提: 正規化できない項目を含めてはいけない。</b>
-    /// 内側の <see cref="IsWildcardEntry"/> はそれをワイルドカード側へ倒すので、
-    /// <c>["0.0\t.0.0"]</c> を渡すと <c>true</c>（どの Host でも受け付ける）を返すが、
-    /// 実際にはフレームワークが例外を投げてどの <c>Host</c> も受け付けない
-    /// ——<b>答えがちょうど逆になる</b>。
-    /// <see cref="ClassifyDeadEntryDeletion"/> は先に <c>Unknown</c> で除いてから呼ぶ。</para>
+    /// <para><b>正規化できない項目は <c>true</c> 側へ倒れる（仕様）。</b>
+    /// 内側の <see cref="IsWildcardEntry"/> がそう倒すので、
+    /// <c>["0.0\t.0.0"]</c> は「どの Host でも受け付ける」と答える ——
+    /// 実際にはフレームワークが例外を投げてどの <c>Host</c> も受け付けないので、
+    /// <b>事実としては逆</b>だが、<see cref="IsPermissive"/>（警告を出すか）にとっては
+    /// 鳴らす側なので正しい。<b>だから生の項目をそのまま渡してよい。</b></para>
+    ///
+    /// <para><b>倒してほしくない呼び出し側が、自分で除く。</b>
+    /// <see cref="ClassifyDeadEntryDeletion"/> は「消したら何が起きるか」を答えるので
+    /// 倒すと事実と逆の案内になる。だからあちらは正規化できない項目を先に
+    /// <c>Unknown</c> で除いてからここへ来る ——
+    /// <b>この関数の側で一律に除いてはいけない</b>（除くと警告が出なくなる）。</para>
     /// </remarks>
-    /// <param name="entries">
-    /// 分割済みの項目（トリムしていない生の値）。<b>正規化できる項目だけ</b>を渡すこと。
-    /// </param>
+    /// <param name="entries">分割済みの項目（トリムしていない生の値でよい）。</param>
     /// <returns>
     /// どの <c>Host</c> でも受け付ける状態なら <c>true</c>
-    /// （上の前提を満たしている場合。満たさない項目は <c>true</c> 側へ倒れる）。
+    /// （正規化できない項目は上記のとおり <c>true</c> 側へ数える）。
     /// </returns>
     private static bool AcceptsEveryHost(string[] entries) =>
         // 1 件も残らないなら既定の ["*"] へ落ちる／1 つでもワイルドカードがあれば全許可
@@ -412,6 +416,22 @@ public static class AllowedHostsPolicy
 
             // 名指しする項目が無いときと、分類が増えたのに足し忘れたとき。
             // どちらも断定せず、一覧全体を見直してもらう（上記のとおり fail-closed）
-            _ => "Review the whole list by hand: " + ReviewWholeListHint + ListFormatHint,
+            _ => FallbackFixAdvice,
         };
+
+    /// <summary>
+    /// 専用の案内を持たない分類へ返す既定の文面。
+    /// </summary>
+    /// <remarks>
+    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// 既定の文面を <c>DeadEntryFixAdvice(NothingToDelete)</c> で求めると、
+    /// 比較が<b>自分自身との照合</b>になり、<c>NothingToDelete</c> に専用の arm を
+    /// 足した瞬間に「足し忘れ」を 1 件も検出しなくなる
+    /// （実測: 5 つ目の値を arm 無しで足し、同時に <c>NothingToDelete</c> の arm を
+    ///  足すと全 1002 件が緑のまま、件数も変わらなかった）。
+    /// CLAUDE.md が繰り返し禁じている「同じ判定でガードを書く」形なので、
+    /// 照合の相手は<b>関数の外にある定数</b>にする。
+    /// </remarks>
+    public const string FallbackFixAdvice =
+        "Review the whole list by hand: " + ReviewWholeListHint + ListFormatHint;
 }

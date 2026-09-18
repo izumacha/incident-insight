@@ -112,6 +112,13 @@ public class AllowedHostsPolicyTests
     // <b>末尾だけではない。</b> 途中に紛れた制御文字でも同じ経路に落ちることを固定する
     // （末尾のケースだけだと、catch を「末尾の空白を落とす」に置き換えても緑のまま通る）
     [InlineData("0.0\t.0.0", true)]
+    // <b>実ホスト名と混ざった形も要る。</b> 上の 2 つは項目が 1 件なので、
+    // 「正規化できない項目を先に捨てる」退行を入れても 0 件になって
+    // entries.Length == 0 のフォールバックで true のまま通る（実測）。
+    // 混ざった形なら、捨てた瞬間に false へ落ちて警告が消えるので検出できる
+    [InlineData("incident.example.com;0.0\t.0.0", true)]
+    // 並びを入れ替えても同じ（判定は並び順を見ない）
+    [InlineData("0.0\t.0.0;incident.example.com", true)]
     public void IsPermissive_MirrorsWhetherHostFilteringLetsAnUnlistedHostThrough(
         string? allowedHosts, bool expected)
     {
@@ -294,15 +301,18 @@ public class AllowedHostsPolicyTests
         // どの案内も空でないこと（空だと警告が直し方を示さないまま出る）
         Assert.All(advice.Values, text => Assert.False(string.IsNullOrWhiteSpace(text)));
 
-        // 既定（＝専用の案内が無い分類）へ落ちているものを数える
-        var fallback = AllowedHostsPolicy.DeadEntryFixAdvice(
-            AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete);
+        // 既定（＝専用の案内が無い分類）へ落ちているものを数える。
+        // <b>照合の相手は定数。</b> DeadEntryFixAdvice(NothingToDelete) で求めると
+        // 比較が自分自身との照合になり、NothingToDelete に arm を足した瞬間に
+        // 足し忘れを 1 件も検出しなくなる（実測で全 1002 件が緑のまま通った）
+        var fallback = AllowedHostsPolicy.FallbackFixAdvice;
         var fellBack = advice
             .Where(pair => string.Equals(pair.Value, fallback, StringComparison.Ordinal))
             .Select(pair => pair.Key)
             .ToList();
 
-        // 既定へ落ちてよいのは NothingToDelete だけ
+        // 既定へ落ちてよいのは NothingToDelete だけ。
+        // NothingToDelete に専用の arm を足した場合もここで落ちる（期待を必ず更新させる）
         Assert.True(
             fellBack.SequenceEqual([AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete]),
             "専用の案内が無い分類があります: "
