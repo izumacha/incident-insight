@@ -366,7 +366,10 @@ if (!app.Environment.IsDevelopment())
     // 書くとテストから 1 行も走らないため(下の警告と同じ理由)
     var permissiveReason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
     // 「絞れている」以外なら警告する(判定そのものは AllowedHostsPolicy が持つ)
-    if (permissiveReason != AllowedHostsPolicy.PermissiveReason.NotPermissive)
+    // 警告に値するかの判断も AllowedHostsPolicy に持たせる ——ここで
+    // reason != NotPermissive と書くと規則の写しが 1 つ増え、「警告に値しない原因」を
+    // 足したときに片方だけが古い判断のまま残る(IsPermissive の docstring が禁じている形)
+    if (AllowedHostsPolicy.WarrantsWarning(permissiveReason))
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
@@ -399,7 +402,11 @@ if (!app.Environment.IsDevelopment())
     // IPv6 のクライアントを一斉に 400 にする)、"[::] " は全ホスト許可なのに
     // 「どのホスト名も受け付けない」と説明していた。規則と実測は
     // AllowedHostsPolicy の docstring が正本
-    var neverMatching = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
+    // <b>名指しする項目と直し方は 1 本の呼び出しで受け取る。</b> 別々に呼ぶと、同じ値を
+    // 2 度割って同じ正規化を 2 周するうえ、両者が同じ項目を見ていることを保証するものが
+    // 無くなる(判定の条件を片方にだけ足す変更が通ってしまう)
+    var (neverMatching, deletionOutcome) =
+        AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
     // 一致しえない項目が 1 つでもあれば、書いた本人にしか直せないので名指しで知らせる
     if (neverMatching.Count > 0)
     {
@@ -422,8 +429,7 @@ if (!app.Environment.IsDevelopment())
         // 対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中なので、
         // 書くとテストから 1 行も走らない（実測で、いちばん危ない分岐の文面を
         // 反対の意味へ差し替えても全 1000 件が緑のまま通った）
-        var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(
-            AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts));
+        var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(deletionOutcome);
 
         // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
         app.Logger.LogWarning(
