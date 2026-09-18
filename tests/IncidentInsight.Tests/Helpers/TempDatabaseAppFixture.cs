@@ -4,6 +4,8 @@ using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.AspNetCore.Hosting;
 // テスト用の設定上書きに使う
 using Microsoft.Extensions.Configuration;
+// 起動時のログを受け取るためのプロバイダ登録に使う
+using Microsoft.Extensions.Logging;
 
 // このヘルパーが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -39,9 +41,26 @@ public abstract class TempDatabaseAppFixture : IDisposable
     /// </summary>
     /// <param name="databaseFileNamePrefix">一時 DB のファイル名の接頭辞(どのテストの物か分かる値)。</param>
     /// <param name="settings">そのテストに固有の設定上書き(接続文字列はここで指定しない)。</param>
+    /// <param name="environmentName">
+    /// 起動する環境名。既定は <c>Development</c>(シード・パスワードポリシーが緩い)。
+    /// <b>起動時の警告を見たいテストだけが <c>Staging</c> を渡す</b> ——
+    /// <c>Program.cs</c> の警告は <c>if (!IsDevelopment())</c> の中にあるため、
+    /// 既定のままではその配線が 1 行も走らない(実測で、警告のブロックを丸ごと消しても
+    /// 全件緑のまま通った)。<c>Production</c> ではなく <c>Staging</c> を使うのは、
+    /// <c>Audit:HashSalt</c> の必須チェックが <c>IsProduction()</c> 限定で、
+    /// 秘密鍵を持ち込まずに同じ分岐を通せるため。
+    /// </param>
+    /// <param name="configureLogging">
+    /// ログの出力先を足したいテスト向けの差し込み口(既定は何もしない)。
+    /// <b>起動時の警告はアプリの組み立て中に出る</b>ので、後から
+    /// <c>Factory.Services</c> を覗いても間に合わない ——受け取るには
+    /// 起動前にプロバイダを登録しておく必要がある。
+    /// </param>
     protected TempDatabaseAppFixture(
         string databaseFileNamePrefix,
-        IReadOnlyDictionary<string, string?> settings)
+        IReadOnlyDictionary<string, string?> settings,
+        string environmentName = "Development",
+        Action<ILoggingBuilder>? configureLogging = null)
     {
         // 他のテストと衝突しない一時 DB のパスを決める(リポジトリ内に DB を作らない)
         _databasePath = Path.Combine(
@@ -51,8 +70,14 @@ public abstract class TempDatabaseAppFixture : IDisposable
         // 実運用設定を汚さないよう、テスト専用の設定でアプリを起動する
         Factory = _baseFactory.WithWebHostBuilder(builder =>
         {
-            // シード・パスワードポリシーが緩い Development 環境として起動する
-            builder.UseEnvironment("Development");
+            // 指定された環境として起動する(既定はシード・パスワードポリシーが緩い Development)
+            builder.UseEnvironment(environmentName);
+            // ログの出力先を足したいテストがあれば、起動前に登録しておく
+            if (configureLogging is not null)
+            {
+                // 渡された設定をそのままロギングの組み立てへ流す
+                builder.ConfigureLogging(configureLogging);
+            }
             // 設定値をテスト用に上書きする
             builder.ConfigureAppConfiguration((_, config) =>
             {

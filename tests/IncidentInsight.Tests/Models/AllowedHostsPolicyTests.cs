@@ -537,4 +537,102 @@ public class AllowedHostsPolicyTests
                 AllowedHostsPolicy.PermissiveReason.NoEntriesLeft),
             StringComparison.Ordinal);
     }
+
+    // 「どの原因が警告に値するか」の規則が 1 か所に保たれていることを固定する。
+    //
+    // <b>WarrantsWarning は Program.cs と IsPermissive の両方が使う。</b>
+    // 片方が自前で reason != NotPermissive と書き直すと規則の写しが増え、
+    // 「警告に値しない原因」を足したときに片方だけが古い判断のまま残る。
+    // ここで両者が必ず一致することを見ておけば、その食い違いが落ちる。
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(";")]
+    [InlineData("*")]
+    [InlineData("[::]")]
+    [InlineData("0.0.0.0")]
+    [InlineData("[::] ")]
+    [InlineData("０.０.０.０")]
+    [InlineData("*;incident.example.test")]
+    [InlineData("0.0\t.0.0")]
+    [InlineData("incident.example.test")]
+    [InlineData("incident.example.test;www.example.test")]
+    [InlineData("  *  ")]
+    [InlineData("incident.example.test; www.example.test")]
+    public void WarrantsWarning_AgreesWithIsPermissive(string? allowedHosts)
+    {
+        // 原因を求める
+        var reason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
+
+        // 「警告に値するか」と「全許可か」は同じ 1 つの規則から出ること
+        Assert.Equal(
+            AllowedHostsPolicy.IsPermissive(allowedHosts),
+            AllowedHostsPolicy.WarrantsWarning(reason));
+    }
+
+    // 「名指しする項目」と「その直し方の根拠になった項目」が同じ集合であることを固定する。
+    //
+    // <b>Program.cs はこの 1 本しか呼ばない。</b> 別々に呼ぶ形へ戻すと、判定の条件を
+    // 片方にだけ足す変更が通ってしまい、警告が名指しした項目とは別の集合から
+    // 導いた直し方を出せるようになる（どちらも「一致しえない項目」を名乗るので
+    // 運用者からは見分けが付かない）。
+    [Theory]
+    [InlineData(null)]
+    [InlineData("incident.example.test")]
+    [InlineData("incident.example.test; www.example.test")]
+    [InlineData("incident.example.test;0.0.0.0; ")]
+    [InlineData("0.0\t.0.0; ")]
+    [InlineData("   ")]
+    public void InspectNeverMatchingEntries_MatchesTheIndividualQueries(string? allowedHosts)
+    {
+        // まとめて受け取る形
+        var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
+
+        // 個別に呼んだ結果と、項目の並びまで含めて一致すること
+        Assert.Equal(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts), entries);
+
+        // 分類も一致すること
+        Assert.Equal(AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts), outcome);
+    }
+
+    // 「消してよい」の案内が、削除を<b>同列の選択肢として</b>勧めていないことを固定する。
+    //
+    // <b>Safe が保証するのは「絞り込みが開かないこと」だけ。</b> 名指しされる典型は
+    // "incident.example.com; www.example.com" の 2 件目＝その配備先が実際に使う
+    // ホスト名なので、消すと「静かに 400」が「意図して 400」へ変わるだけで、
+    // 警告が暴いたはずの障害が固定される。案内は空白を外す側を先に置く。
+    [Fact]
+    public void DeadEntryFixAdvice_LeadsWithFixingNotDeleting()
+    {
+        // 「消してよい」ときの案内を取り出す
+        var advice = AllowedHostsPolicy.DeadEntryFixAdvice(
+            AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe);
+
+        // 空白を外す直し方が案内されていること
+        Assert.Contains("removing the surrounding whitespace", advice, StringComparison.Ordinal);
+
+        // 削除には条件が添えられていること（無条件の「消してよい」にしない）
+        Assert.Contains("Only delete an entry if", advice, StringComparison.Ordinal);
+    }
+
+    // 既定の文面が、原因を断定していないことを固定する。
+    //
+    // <b>PermissiveCauseMessage は public なので、NotPermissive を渡す呼び出し側が
+    // 将来現れうる。</b> 以前の既定は「絞れていない」と断定していたため、
+    // そのとき正しい設定に対して事実と逆の説明を出すことになっていた。
+    [Fact]
+    public void FallbackPermissiveCauseMessage_DoesNotAssertTheListIsPermissive()
+    {
+        // 既定の文面（関数を呼ばずに定数を見る。理由は定数側の docstring）
+        var fallback = AllowedHostsPolicy.FallbackPermissiveCauseMessage;
+
+        // 「絞れていない」と断定していないこと
+        Assert.DoesNotContain("is not narrowed down", fallback, StringComparison.Ordinal);
+
+        // 正しく絞れている設定へ渡しても、事実と逆にならない文面であること
+        Assert.Equal(
+            fallback,
+            AllowedHostsPolicy.PermissiveCauseMessage(
+                AllowedHostsPolicy.PermissiveReason.NotPermissive));
+    }
 }
