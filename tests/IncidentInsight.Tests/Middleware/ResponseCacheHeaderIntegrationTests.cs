@@ -389,13 +389,9 @@ public class HostFilteringShortCircuitTests
         // (組み立てを書き写すと、ヘッダーやタイムアウトの既定を足したときに
         //  この 2 つのテストにだけ適用されない状態ができる)
         var client = _fixture.CreateNonRedirectingClient();
-        // 許可していないホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // Host ヘッダーだけを許可リスト外の値にする
-        request.Headers.Host = RejectedHost;
 
-        // 短絡した応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可していないホスト名で叩き、短絡した応答を受け取る
+        var response = await SendWithHostAsync(client, RejectedHost);
 
         // 手前で弾かれていること(通ってしまうと、そもそも絞り込みが効いていない)
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
@@ -472,13 +468,9 @@ public class HostFilteringShortCircuitTests
         using var fixture = new AllowedHostsFixture(allowedHosts);
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
-        // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // 一致しないはずの Host ヘッダーを乗せる
-        request.Headers.Host = RejectedHost;
 
-        // 応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可リストに「書かれていない」ホスト名で叩く
+        var response = await SendWithHostAsync(client, RejectedHost);
 
         // (a) フレームワークが期待した扱いをしていること(落ちたときに理由が読めるよう根拠も出す)
         Assert.True(
@@ -515,8 +507,13 @@ public class HostFilteringShortCircuitTests
     [Fact]
     public async Task WhitespaceAfterASeparator_KillsOnlyThatEntry()
     {
-        // 一覧を書くときに自然に入る形（区切りのうしろに空白）でアプリを起動する
-        using var fixture = new AllowedHostsFixture($"{AllowedHost}; {SecondHost}");
+        // 一覧を書くときに自然に入る形（区切りのうしろに空白）。
+        // <b>1 つの定数にまとめる</b> ——起動する設定と、判定へ渡す設定が
+        // 別々の綴りへずれると、HTTP 側と判定側で違う設定を語りながら緑のままになる
+        const string allowedHosts = $"{AllowedHost}; {SecondHost}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
 
@@ -534,11 +531,11 @@ public class HostFilteringShortCircuitTests
         // （実測とコードの主張がここで結び付く）
         Assert.Equal(
             $" {SecondHost}",
-            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries($"{AllowedHost}; {SecondHost}")));
+            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts)));
 
         // 絞り込み自体は効いているので、1 本目の警告は出ない
         // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
-        Assert.False(AllowedHostsPolicy.IsPermissive($"{AllowedHost}; {SecondHost}"));
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 
     /// <summary>指定した <c>Host</c> ヘッダーだけを差し替えて 1 回叩く。</summary>
@@ -567,13 +564,10 @@ public class HostFilteringShortCircuitTests
         using var fixture = new AllowedHostsFixture("0.0.0.0\t");
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
-        // どのホスト名でもよいのでリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // 一致しないはずの Host ヘッダーを乗せる
-        request.Headers.Host = RejectedHost;
 
         // 許可リストの正規化そのものが失敗するので、応答に至らず例外になる
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(request));
+        var error = await Assert.ThrowsAsync<ArgumentException>(
+            () => SendWithHostAsync(client, RejectedHost));
 
         // 失敗の出どころがホスト名の正規化であること(別の理由で落ちても緑にしない)
         Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
@@ -602,13 +596,9 @@ public class HostFilteringShortCircuitTests
     {
         // 上と同じ組み立てのクライアントを共有ヘルパーから受け取る
         var client = _fixture.CreateNonRedirectingClient();
-        // 許可したホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // Host ヘッダーを許可リストの値にする
-        request.Headers.Host = AllowedHost;
 
-        // 通常どおり処理された応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可したホスト名で叩き、通常どおり処理された応答を受け取る
+        var response = await SendWithHostAsync(client, AllowedHost);
 
         // 手前で弾かれていないこと
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);

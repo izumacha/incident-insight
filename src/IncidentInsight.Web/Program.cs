@@ -386,15 +386,21 @@ if (!app.Environment.IsDevelopment())
     {
         // 上の警告とは原因も対処も違うので、別のメッセージとして出す
         // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
-        // <b>結果ではなく仕組みだけを述べる。</b> 「その分だけ 400 になり、残りは生き続ける」と
-        // 書くと、(a) 同じ一覧にワイルドカードがある場合(全部 200 になる)と
-        // (b) 死んだ項目しか無い場合(全部 400 の全面障害)で文面が実態と食い違う。
-        // どちらの綴りもこの警告を鳴らしうるので、共通して正しいことだけを言う
+        // <b>項目 1 件の話だけを述べ、一覧全体がどうなるかは名乗らない。</b>
+        // 鳴りうる綴りで結果がばらばらだから: (a) 同じ一覧にワイルドカードがあれば全部 200、
+        // (b) 死んだ項目しか無ければ全部 400 の全面障害、(c) 生きた項目と混ざっていれば
+        // その 1 件だけが 400。共通して正しいのは「その項目はどの Host とも一致しない」だけ。
+        //
+        // <b>「書かれていないのと同じ」とも言えない。</b> 本当に消すと項目数が減り、
+        // 0 件になれば既定の ["*"] へ落ちて全部 200 になる ——(b) とは正反対で、
+        // 全面障害のときに「実質無効な設定です」と読ませることになる
+        // (";" が 200・" ; " が 400 という実測を HostFilteringShortCircuitTests が固定している)
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
             "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead — " +
-            "it is ignored when deciding which Host headers to accept, exactly as if it were absent. " +
+            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead: " +
+            "it accepts no hostname at all. Whether the site still serves depends on the rest of " +
+            "the list, so check every entry — if they are all dead, every request gets 400. " +
             "Remove the whitespace (write the list as 'a.example;b.example', no spaces) (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,

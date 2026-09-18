@@ -52,6 +52,21 @@ public static class AllowedHostsPolicy
     private static readonly string[] Wildcards = ["*", "[::]", "0.0.0.0"];
 
     /// <summary>
+    /// 設定値を、フレームワークとまったく同じ規則で項目へ分ける。
+    /// </summary>
+    /// <remarks>
+    /// <b>2 つの判定が同じ分割を見ることを、構造で保証するために切り出してある。</b>
+    /// 同じ式を 2 か所へ書き写すと、片方にだけトリムを足すような変更が通ってしまう
+    /// （そのとき壊れ方は「全拒否が全許可に化ける」と「死んだ項目が 1 件も挙がらない」で、
+    /// どちらも<b>警告が出なくなる</b>方向。CLAUDE.md §6 DRY）。
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値。</param>
+    /// <returns>空の項目を落としたあとの項目（<b>トリムはしない</b>）。</returns>
+    private static string[] SplitEntries(string allowedHosts) =>
+        // 空の項目だけを落とし、前後の空白は<b>残す</b>（フレームワークと同じ規則）
+        allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+
+    /// <summary>
     /// 許可リストの 1 項目が、フレームワークから見てワイルドカードかを返す。
     /// </summary>
     /// <remarks>
@@ -83,21 +98,6 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（<b>トリムしていない生の値</b>）。</param>
     /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
-    /// <summary>
-    /// 設定値を、フレームワークとまったく同じ規則で項目へ分ける。
-    /// </summary>
-    /// <remarks>
-    /// <b>2 つの判定が同じ分割を見ることを、構造で保証するために切り出してある。</b>
-    /// 同じ式を 2 か所へ書き写すと、片方にだけトリムを足すような変更が通ってしまう
-    /// （そのとき壊れ方は「全拒否が全許可に化ける」と「死んだ項目が 1 件も挙がらない」で、
-    /// どちらも<b>警告が出なくなる</b>方向。CLAUDE.md §6 DRY）。
-    /// </remarks>
-    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値。</param>
-    /// <returns>空の項目を落としたあとの項目（<b>トリムはしない</b>）。</returns>
-    private static string[] SplitEntries(string allowedHosts) =>
-        // 空の項目だけを落とし、前後の空白は<b>残す</b>（フレームワークと同じ規則）
-        allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
-
     private static bool IsWildcardEntry(string entry)
     {
         // フレームワークと同じ正規化を通した綴りを入れる
