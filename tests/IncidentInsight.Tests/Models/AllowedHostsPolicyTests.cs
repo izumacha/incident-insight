@@ -99,4 +99,61 @@ public class AllowedHostsPolicyTests
         // 判定を実行して、期待どおりかを確かめる
         Assert.Equal(expected, AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
+
+    [Theory]
+    // 未設定・空なら項目そのものが無い
+    [InlineData(null, "")]
+    [InlineData("", "")]
+    // 空白の無いふつうの一覧は 1 件も死んでいない
+    [InlineData("incident.example.test", "")]
+    [InlineData("incident.example.test;www.example.test", "")]
+    // 出荷時の既定(全許可)も、項目としては生きている
+    [InlineData("*", "")]
+    // <b>本命。</b> 一覧を書くときに自然に入る「区切りのうしろの空白」で、
+    // 2 件目だけがどの Host とも一致しなくなる(実測: 1 件目 200 / 2 件目 400)
+    [InlineData("incident.example.test; www.example.test", " www.example.test")]
+    // 前に空白でも同じ
+    [InlineData("incident.example.test ;www.example.test", "incident.example.test ")]
+    // 複数が死んでいれば全部挙げる(1 件目だけ直して終わりにさせない)
+    [InlineData(" a.example.test ; b.example.test ", " a.example.test | b.example.test ")]
+    // ワイルドカードのつもりの綴りも、空白があれば一致しえない
+    [InlineData("  *  ", "  *  ")]
+    // 空白だけの値も同じ(全ホストが落ちるので、これは運用者も気づける側)
+    [InlineData("   ", "   ")]
+    // " ; " は項目が 2 件残り、どちらも死んでいる
+    [InlineData(" ; ", " | ")]
+    // 正規化できない綴りも空白を含むのでここに載る ——
+    // IsPermissive 側でも鳴るが、運用者への指示(空白を外せ)は両方で一致する
+    [InlineData("0.0.0.0	", "0.0.0.0	")]
+    // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
+    // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
+    [InlineData(";;", "")]
+    public void NeverMatchingEntries_ListsEntriesThatNoHostHeaderCanEverMatch(
+        string? allowedHosts, string expectedJoined)
+    {
+        // 判定を実行する
+        var actual = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
+
+        // 属性に配列を書けないので、"|" 区切りの 1 本の文字列として突き合わせる
+        // (区切りに ";" を使うと、設定値そのものの区切りと見分けが付かなくなる)
+        Assert.Equal(expectedJoined, string.Join("|", actual));
+    }
+
+    // 2 つの判定が「同じ分割」を使い続けていること。
+    //
+    // <b>片方だけ規則が動くと、両方とも黙って外れる。</b> たとえば NeverMatchingEntries 側にだけ
+    // トリムを足すと死んだ項目が 1 件も挙がらなくなり、IsPermissive 側にだけ足すと
+    // 全拒否の設定が「全許可」に化ける ——どちらも警告が出なくなる方向。
+    // 分割規則そのものは private なので、観測できる出口から突き合わせる。
+    [Fact]
+    public void BothChecks_SeeTheSameEntries()
+    {
+        // 空の項目だけが落ちる(＝トリムされない)ことが両方で成り立つ設定値
+        const string allowedHosts = " a.example.test ;; b.example.test ";
+
+        // 死んだ項目は 2 件とも挙がる(空の項目は項目として数えない)
+        Assert.Equal(2, AllowedHostsPolicy.NeverMatchingEntries(allowedHosts).Count);
+        // 同じ値で、項目が残るので既定の ["*"] へは落ちない(＝全許可ではない)
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
 }

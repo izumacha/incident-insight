@@ -1,3 +1,5 @@
+// AllowedHosts の判定を、実測した扱いと突き合わせるために使う
+using IncidentInsight.Web.Models.Validation;
 // テスト対象のミドルウェア(キャッシュ抑止の値の定数)を使う
 using IncidentInsight.Web.Middleware;
 // WebApplicationFactory(実 HTTP パイプラインでの統合テスト)を使う
@@ -413,9 +415,23 @@ public class HostFilteringShortCircuitTests
     // HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
     //
     // <b>200 と 400 を同じ表で見る。</b> 「通ること」だけを並べると、判定を広げる変異
-    // (全拒否になる設定まで permissive と呼ぶ形)を 1 つも捕まえられない ——
-    // AllowedHostsPolicyTests の期待値はこの表と 1 対 1 で対応しているので、
-    // 片側だけを見ていると対応が崩れても緑のまま通る。
+    // (全拒否になる設定まで permissive と呼ぶ形)を 1 つも捕まえられない。
+    //
+    // <b>実測した扱いを、そのまま判定側にも突き合わせる。</b> 各行は 2 つを見る:
+    // (a) フレームワークが実際にどう扱うか、(b) AllowedHostsPolicy.IsPermissive が
+    // それと同じ答えを出すか。<b>(b) が要点である</b> ——(a) だけだと「フレームワークの
+    // 挙動」を確かめるだけで、判定側を壊しても落ちない。実測でも、IsWildcardEntry から
+    // 正規化(ToUriComponent)を外す変異は (a) だけの版では全件緑のまま通った
+    // (フレームワークは自分で正規化するので 200 のまま)。(b) があれば、
+    // 全角の行で「200 なのに判定は false」となって必ず落ちる。
+    //
+    // <b>覆っている範囲は正しく見積もること。</b> ここはアプリを 1 件につき 1 回起動する
+    // (一時 DB を作り、マイグレーションを全部流す)ので、AllowedHostsPolicyTests の
+    // ケースすべては写さない。選んでいるのは<b>フレームワーク側の前提が意外で、かつ
+    // 判定がそれに依存している</b>綴りだけ ——ワイルドカード 3 綴り・既定値への
+    // フォールバック・トリムしないこと・正規化。
+    // <b>「両方の表が 1 対 1 に対応している」とは書かない</b> ——一致を機械的に守って
+    // いるのはここに並べた行だけで、残りは AllowedHostsPolicyTests 側にしかない。
     //
     // 本文が 1 行も違わない写しを設定値の数だけ作らないため、[Theory] に畳んである
     // (CLAUDE.md §6 DRY)。
@@ -435,10 +451,17 @@ public class HostFilteringShortCircuitTests
     // --- 全拒否: 「空の項目は無害」なのは空でない項目が残る場合だけ ---
     // " ; " は項目が 2 件残るので既定へ落ちず、許可リストが [" ", " "] になる
     [InlineData(" ; ", 400, "空白は項目として残るので既定へ落ちない")]
-    // <b>トリムされない。</b> 空白付きのワイルドカードは正規化しても綴りが一致しない
+    // <b>トリムされない。</b> 空白付きのワイルドカードは正規化しても綴りが一致しない。
+    // (AllowedHost と併記した形は、同じ 1 つの仕組みしか確かめられないうえ
+    //  アプリの起動が 1 回増えるので置いていない ——判定側は
+    //  AllowedHostsPolicyTests が安く固定している)
     [InlineData("  *  ", 400, "前後の空白は落とされず \"*\" と一致しない")]
-    // 実ホスト名と併記しても同じ(併記した側は一致しうるが、送るのは許可外のホスト)
-    [InlineData(AllowedHost + "; * ", 400, "空白付きのワイルドカードは一致しない")]
+    // --- 全許可: 正規化(IDNA / NFKC)を通してから突き合わせること ---
+    // <b>この 1 件が正規化の検証を支えている。</b> 全角で書いた 0.0.0.0 は
+    // 正規化で 0.0.0.0 になるので全許可になる ——IsWildcardEntry から
+    // ToUriComponent() を外す変異は、これが無いと全件緑のまま通る
+    // (判定側も「全角は一致しない」で辻褄が合ってしまうため)
+    [InlineData("０.０.０.０", 200, "全角数字は IDNA/NFKC で 0.0.0.0 に正規化される")]
     public async Task AllowedHostsValue_DecidesWhetherAnUnlistedHostGetsThrough(
         string allowedHosts, int expectedStatus, string why)
     {
@@ -454,12 +477,23 @@ public class HostFilteringShortCircuitTests
         // 応答を受け取る
         var response = await client.SendAsync(request);
 
-        // 期待した扱いになっていること(落ちたときに理由が読めるよう、根拠も出す)
+        // (a) フレームワークが期待した扱いをしていること(落ちたときに理由が読めるよう根拠も出す)
         Assert.True(
             expectedStatus == (int)response.StatusCode,
             $"AllowedHosts=\"{allowedHosts}\" は {expectedStatus} になるはず({why})。" +
             $"実際は {(int)response.StatusCode}。" +
             "ここが変わったなら AllowedHostsPolicy の判定も同じだけ動かす必要がある");
+
+        // 200 で通る＝どんな Host も受け付ける＝警告を出すべき設定、という対応を作る
+        var shouldWarn = expectedStatus == 200;
+
+        // (b) 判定側が実測と同じ答えを出していること(ここが判定の退行を落とす)
+        Assert.True(
+            shouldWarn == AllowedHostsPolicy.IsPermissive(allowedHosts),
+            $"AllowedHosts=\"{allowedHosts}\" を、フレームワークは" +
+            $"{(shouldWarn ? "素通りさせる" : "弾く")}のに " +
+            $"IsPermissive は {AllowedHostsPolicy.IsPermissive(allowedHosts)} を返した({why})。" +
+            "判定はフレームワークの挙動を写したものなので、食い違ったらどちらかが退行している");
     }
 
     // 正規化できない綴りは、フレームワーク自身が例外を投げること。
@@ -499,7 +533,6 @@ public class HostFilteringShortCircuitTests
             // 検証したい許可リストをそのまま渡す
             ["AllowedHosts"] = allowedHosts,
         });
-
 
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
     //

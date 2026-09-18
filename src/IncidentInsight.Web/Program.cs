@@ -371,6 +371,35 @@ if (!app.Environment.IsDevelopment())
             // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
             allowedHosts);
     }
+
+    // 上の警告の<b>裏返し</b>を拾う。あちらは「絞ったつもりで全部通る」形しか見ないので、
+    // 「並べたつもりで一部が通らない」形は素通りする ——踏みやすいのは区切りのうしろに
+    // 空白を入れた複数指定 "a.example.test; b.example.test" で、一覧を書くときの自然な形。
+    // フレームワークは項目をトリムしないため 2 件目はどの Host とも一致せず、実測では
+    // 1 件目が 200・2 件目が 400 になる。つまり<b>サイトは生きたまま特定のホスト名だけが
+    // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
+    // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
+    // そのまま誤った安心になる。規則と実測は AllowedHostsPolicy の docstring が正本
+    var neverMatching = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
+    // 一致しえない項目が 1 つでもあれば、書いた本人にしか直せないので名指しで知らせる
+    if (neverMatching.Count > 0)
+    {
+        // 上の警告とは原因も対処も違うので、別のメッセージとして出す
+        // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
+        app.Logger.LogWarning(
+            "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
+            "in the {Environment} environment: {NeverMatchingEntries}. " +
+            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead: " +
+            "requests for those hostnames get 400 while the rest of the site keeps serving. " +
+            "Remove the whitespace (write the list as 'a.example;b.example', no spaces) (issue #64).",
+            // 何件あるかを先に出す ——値が長いときでも件数だけは読める
+            neverMatching.Count,
+            // どの環境の話かを添える(上の警告と同じ理由)
+            app.Environment.EnvironmentName,
+            // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
+            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない
+            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")));
+    }
 }
 
 // セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と
