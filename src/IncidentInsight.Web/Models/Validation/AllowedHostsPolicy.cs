@@ -67,7 +67,8 @@ public static class AllowedHostsPolicy
         allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
 
     /// <summary>
-    /// 許可リストの 1 項目が、フレームワークから見てワイルドカードかを返す。
+    /// その項目の並びが、どの <c>Host</c> でも受け付ける状態か、
+    /// そうなら<b>何が原因か</b>を返す。
     /// </summary>
     /// <remarks>
     /// <para><b>生の文字列で比べてはいけない。</b> <c>HostFilteringMiddleware</c> は各項目を
@@ -78,31 +79,63 @@ public static class AllowedHostsPolicy
     /// 生の <c>Ordinal</c> 比較のままだと、そこがそのまま「警告の出ない全許可」になる ——
     /// この判定が直したはずの穴が、1 段深いところに残る形。</para>
     ///
-    /// <para><b>正規化できない綴りは警告する側へ倒す（＝ belt and braces）。</b>
-    /// <c>ToUriComponent()</c> は <c>"0.0.0.0\t"</c> のような値で例外を投げる。
-    /// <b>実測では、いまのフレームワークは同じ正規化に失敗してリクエストごと例外になる</b>
-    /// （200 でも 400 でもない。<c>HostFilteringShortCircuitTests</c> が固定）。
-    /// つまり<b>今日の挙動は「素通り」ではない</b>ので、厳密にはこの判定の対象外 ——
-    /// それでも <c>true</c> を返すのは、<b>この綴りをどう扱うかがフレームワーク側の
-    /// 実装詳細に握られている</b>から。上流が例外をやめて「一致しない項目」として
-    /// 読み飛ばすようになれば、そのときは素通りではなく静かな全拒否になるが、
-    /// 逆にワイルドカードとして通す実装もありうる。判断材料が無い以上、
-    /// 見逃す側ではなく鳴らす側へ倒す（§9 fail-closed）。
-    /// <b>前後に空白がある綴り（<c>"0.0.0.0\t"</c> など）は <see cref="NeverMatchingEntries"/> にも
-    /// 載る</b>ので、そのときは運用者が受け取る指示（空白を外せ）が両方の警告で一致する。
-    /// <b>残っている境界: 途中に紛れた制御文字（<c>"0.0\t.0.0"</c>）はトリムしても変わらないので
-    /// そちらには載らない。</b>この綴りでは警告 1 だけが出るが、その文面はワイルドカードの
-    /// 話をするので、値とも症状（実測では毎リクエストが例外）とも噛み合わない。
-    /// 綴りから「どの制御文字が IDNA を壊すか」を機械的に言い当てることはできないので、
-    /// ここは<b>鳴らすことを優先し、文面の精度は捨てている</b>（黙るよりはよい）。</para>
+    /// <para><b>フォールバックの規則もここに置く。</b>
+    /// 「1 件も残らなければ既定の <c>["*"]</c> へ落ちる」「ワイルドカードが 1 つでもあれば
+    /// 全許可へ切り替わる」という 2 つは、これを読む判定が 2 つあっても同じでなければならない。
+    /// 書き写すと、フレームワーク側にもう 1 つ経路が増えたときに片方だけが直り、
+    /// その差は<b>「消してよい」と案内する方向</b>（fail-open）へ倒れる。</para>
+    ///
+    /// <para><b>bool ではなく理由を返すのが要点。</b> 以前はここが
+    /// 「ワイルドカードか」を返す <c>bool</c> で、正規化に失敗した項目も
+    /// <c>true</c>（＝ワイルドカード）へ畳んでいた。倒す向きは正しい（§9 fail-closed）が、
+    /// <b>畳んだ時点で「どちらだったか」が失われる</b>ため、警告の文面は
+    /// ワイルドカードの話しかできなくなる ——
+    /// <c>"0.0\t.0.0"</c>（途中に制御文字が紛れた綴り）で運用者が受け取るのは
+    /// 「'*' か '[::]' か '0.0.0.0' を消せ」という、<b>自分の設定に存在しないものを
+    /// 指す案内</b>で、実際の症状（実測では毎リクエストが例外）とも噛み合わない。
+    /// <b>「どの制御文字が IDNA を壊すか」を言い当てる必要は無い</b> ——
+    /// <see cref="TryNormalizeEntry"/> が<b>同じ正規化を実際に通して</b>答えを既に持っており、
+    /// 畳まずに運べば済む。以前この境界を「機械的には言い当てられない」と書いていたのは誤りで、
+    /// 予測ではなく観測の問題だった。</para>
+    ///
+    /// <para><b>並び順のとおりに前から見る。</b> フレームワークは項目を宣言順に
+    /// 正規化しながら走査し、<b>最初のワイルドカードで打ち切る</b>。
+    /// だから正規化できない項目とワイルドカードが同居するとき、結果は並び順で変わる ——
+    /// 実測では <c>"0.0\t.0.0;0.0.0.0"</c> は例外、<c>"0.0.0.0;0.0\t.0.0"</c> は 200
+    /// （<c>HostFilteringShortCircuitTests</c> が固定）。
+    /// <c>Any</c> で畳まず前から 1 件ずつ見るのは、この順序をそのまま写すため。</para>
     /// </remarks>
-    /// <param name="entry">許可リストの 1 項目（<b>トリムしていない生の値</b>）。</param>
-    /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
-    private static bool IsWildcardEntry(string entry) =>
-        // 正規化できた綴りだけを 3 つのワイルドカードと突き合わせ、
-        // 判断できない綴りは「絞れている」と言えないので警告する側へ倒す
-        !TryNormalizeEntry(entry, out var normalized)
-        || Wildcards.Contains(normalized, StringComparer.Ordinal);
+    /// <param name="entries">分割済みの項目（トリムしていない生の値でよい）。</param>
+    /// <returns>
+    /// どの <c>Host</c> でも受け付ける状態でなければ
+    /// <see cref="PermissiveReason.NotPermissive"/>、そうでなければその原因。
+    /// </returns>
+    private static PermissiveReason ClassifyEntries(string[] entries)
+    {
+        // 1 件も残らないなら、フレームワークは既定の ["*"] へ落ちる
+        if (entries.Length == 0) return PermissiveReason.NoEntriesLeft;
+
+        // フレームワークと同じく、宣言順に 1 件ずつ見て最初に当たったところで打ち切る
+        foreach (var entry in entries)
+        {
+            // 正規化できない綴りは、フレームワークが先に例外を投げる位置でもある
+            if (!TryNormalizeEntry(entry, out var normalized))
+            {
+                // 判断できない綴りは「絞れている」と言えないので、警告する側へ倒す
+                return PermissiveReason.UnparsableEntry;
+            }
+
+            // 正規化後の綴りが 3 つのワイルドカードのいずれかなら、その時点で全許可
+            if (Wildcards.Contains(normalized, StringComparer.Ordinal))
+            {
+                // どれが当たったかまでは要らない（運用者への案内は 3 綴りを並べる）
+                return PermissiveReason.WildcardEntry;
+            }
+        }
+
+        // 最後まで当たらなければ、実ホスト名だけの一覧
+        return PermissiveReason.NotPermissive;
+    }
 
     /// <summary>
     /// フレームワークと同じ正規化（IDNA / NFKC）を試み、成功したかを返す。
@@ -163,43 +196,87 @@ public static class AllowedHostsPolicy
     /// フレームワークが任意の <c>Host</c> を受け付ける状態なら <c>true</c>。
     /// 具体的には (a) 未設定、(b) 空の項目を落とすと<b>1 件も残らない</b>
     /// （<c>""</c> ・ <c>";"</c> ・ <c>";;"</c>。既定の <c>["*"]</c> へ落ちるため）、
-    /// (c) ワイルドカードを 1 つでも含む、のいずれか。
+    /// (c) ワイルドカードを 1 つでも含む、(d) 正規化できない綴りを含む
+    /// （素通りではないが「絞れている」とも言えないので鳴らす側へ倒す）、のいずれか。
+    /// <b>どれに当たったかは <see cref="ClassifyPermissive"/> が返す</b> ——
+    /// 警告の文面はそれに合わせる（値に無いワイルドカードを探させないため）。
     /// </returns>
-    public static bool IsPermissive(string? allowedHosts)
+    public static bool IsPermissive(string? allowedHosts) =>
+        // 理由まで求めたうえで「絞れている」以外なら警告する。
+        // <b>bool をここで組み立て直さない</b> ——同じ規則が 2 か所に現れると、
+        // 片方にだけ分岐が足されたとき「警告は出るのに文面は古い」形で食い違う
+        ClassifyPermissive(allowedHosts) != PermissiveReason.NotPermissive;
+
+    /// <summary>
+    /// その設定値が全許可なら、<b>その原因</b>を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b><see cref="IsPermissive"/> の中身をそのまま公開したもの。</b>
+    /// 警告ログは「絞れていない」ことだけでなく<b>なぜそうなのか</b>を運用者へ伝える必要があり、
+    /// 原因ごとに書くべきことが違う（値に無いワイルドカードを探させない・
+    /// 空の一覧なら既定へ落ちることを言う・正規化できない綴りなら症状が
+    /// 全拒否ではなく例外であることを言う）。
+    /// <b>原因の判定を Program.cs 側へ書いてはいけない</b> ——
+    /// あちらは <c>if (!IsDevelopment())</c> の中なのでテストから 1 行も走らない
+    /// （同じ理由で <see cref="DeadEntryFixAdvice"/> もここに置いてある）。</para>
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>
+    /// 実ホスト名だけに絞れているなら <see cref="PermissiveReason.NotPermissive"/>、
+    /// そうでなければ全許可になっている原因。
+    /// </returns>
+    public static PermissiveReason ClassifyPermissive(string? allowedHosts)
     {
-        // 未設定なら、フレームワークは分割すら行わず既定へ落ちる
-        if (allowedHosts is null) return true;
+        // 未設定なら、フレームワークは分割すら行わず既定の ["*"] へ落ちる
+        if (allowedHosts is null) return PermissiveReason.NoEntriesLeft;
 
         // <b>フレームワークとまったく同じ分割</b>で項目を取り出す（規則は SplitEntries が持つ）
         var entries = SplitEntries(allowedHosts);
 
-        // 規則そのものは 1 か所（AcceptsEveryHost）に置く。
-        // 判断できない綴りをワイルドカード側へ倒す（警告としては安全側）のは
-        // その先の IsWildcardEntry で、ここは選ばない
-        return AcceptsEveryHost(entries);
+        // 規則そのものは 1 か所（ClassifyEntries）に置く
+        return ClassifyEntries(entries);
+    }
+
+    /// <summary>
+    /// 設定値が全許可になっている原因。
+    /// </summary>
+    public enum PermissiveReason
+    {
+        /// <summary>全許可ではない（実ホスト名だけの一覧）。</summary>
+        NotPermissive,
+
+        /// <summary>
+        /// 空の項目を落とすと 1 件も残らない（未設定・<c>""</c> ・ <c>";"</c> など）。
+        /// フレームワークは既定の <c>["*"]</c> へ落ちる。
+        /// </summary>
+        NoEntriesLeft,
+
+        /// <summary>ワイルドカード（<c>*</c> ・ <c>[::]</c> ・ <c>0.0.0.0</c>）を含む。</summary>
+        WildcardEntry,
+
+        /// <summary>
+        /// 正規化できない綴りを含む（<c>"0.0\t.0.0"</c> など）。
+        /// 実測ではフレームワーク自身が例外を投げる ——
+        /// 素通りではないが「絞れている」とも言えないので警告する側へ数える。
+        /// </summary>
+        UnparsableEntry,
     }
 
     /// <summary>
     /// その項目の並びが、どの <c>Host</c> でも受け付ける状態かを返す。
     /// </summary>
     /// <remarks>
-    /// <para><b>フォールバックの規則を 1 か所に置くために切り出してある。</b>
-    /// 「1 件も残らなければ既定の <c>["*"]</c> へ落ちる」「ワイルドカードが 1 つでもあれば
-    /// 全許可へ切り替わる」という 2 つは、これを読む判定が 2 つあっても同じでなければならない。
-    /// 書き写すと、フレームワーク側にもう 1 つ経路が増えたときに片方だけが直り、
-    /// その差は<b>「消してよい」と案内する方向</b>（fail-open）へ倒れる。
-    /// <b>1 項目の見方を差し替える引数は持たせない</b> ——
-    /// <see cref="ClassifyDeadEntryDeletion"/> は正規化できない項目を先に
-    /// <c>Unknown</c> で除くので、そこへ渡せる 2 つ目の判定はもう存在しない。
-    /// 引数として口を開けておくと、使わない分岐が残るうえ、
-    /// 次の書き手に「別の判定を渡してよい」と読ませてしまう（§6）。</para>
+    /// <para><b>規則そのものは <see cref="ClassifyEntries"/> が持つ。</b>
+    /// ここは「原因は要らない、受け付けるかどうかだけ知りたい」呼び出し側
+    /// （<see cref="ClassifyDeadEntryDeletion"/>）のための言い換えで、
+    /// <b>判定を書き写さない</b>ためだけに存在する。</para>
     ///
     /// <para><b>正規化できない項目は <c>true</c> 側へ倒れる（仕様）。</b>
-    /// 内側の <see cref="IsWildcardEntry"/> がそう倒すので、
+    /// <see cref="ClassifyEntries"/> がそう倒すので、
     /// <c>["0.0\t.0.0"]</c> は「どの Host でも受け付ける」と答える ——
     /// 実際にはフレームワークが例外を投げてどの <c>Host</c> も受け付けないので、
     /// <b>事実としては逆</b>だが、<see cref="IsPermissive"/>（警告を出すか）にとっては
-    /// 鳴らす側なので正しい。<b>だから生の項目をそのまま渡してよい。</b></para>
+    /// 鳴らす側なので正しい。</para>
     ///
     /// <para><b>倒してほしくない呼び出し側が、自分で除く。</b>
     /// <see cref="ClassifyDeadEntryDeletion"/> は「消したら何が起きるか」を答えるので
@@ -213,8 +290,8 @@ public static class AllowedHostsPolicy
     /// （正規化できない項目は上記のとおり <c>true</c> 側へ数える）。
     /// </returns>
     private static bool AcceptsEveryHost(string[] entries) =>
-        // 1 件も残らないなら既定の ["*"] へ落ちる／1 つでもワイルドカードがあれば全許可
-        entries.Length == 0 || entries.Any(IsWildcardEntry);
+        // 「絞れている」以外はすべて、どの Host でも受け付ける側
+        ClassifyEntries(entries) != PermissiveReason.NotPermissive;
 
     /// <summary>
     /// 書かれているのに<b>どの <c>Host</c> とも一致しえない</b>項目を返す。
@@ -264,9 +341,8 @@ public static class AllowedHostsPolicy
     /// </summary>
     /// <remarks>
     /// <b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
-    /// 書くと、条件を広げたとき（<see cref="IsWildcardEntry"/> の docstring が
-    /// 「残っている境界」として挙げている、項目の途中に紛れた制御文字への対応など）に
-    /// 片方だけが取り残される。そのとき <see cref="ClassifyDeadEntryDeletion"/> は
+    /// 書くと、条件を広げたとき（項目の途中に紛れた制御文字まで
+    /// 「一致しえない」と数えるようにする、など）に片方だけが取り残される。そのとき <see cref="ClassifyDeadEntryDeletion"/> は
     /// 「生きた項目が残る」と答えるのに実際には 0 件になり、
     /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。
     /// </remarks>
@@ -341,8 +417,8 @@ public static class AllowedHostsPolicy
             return DeadEntryDeletionOutcome.Unknown;
         }
 
-        // ここまで来れば全項目が正規化できる。IsWildcardEntry が「判断できない綴りを
-        // ワイルドカード側へ倒す」のは正規化に失敗したときだけなので、上のガードを
+        // ここまで来れば全項目が正規化できる。ClassifyEntries が「判断できない綴りを
+        // 全許可側へ倒す」のは正規化に失敗したときだけなので、上のガードを
         // 通ったあとは倒し方の違いが消え、そのまま使ってよい
         // （倒し方だけが違う 2 つ目の判定を別に持つと、使われない分岐が残る。§6）
         return AcceptsEveryHost(survivors)
@@ -434,4 +510,62 @@ public static class AllowedHostsPolicy
     /// </remarks>
     public const string FallbackFixAdvice =
         "Review the whole list by hand: " + ReviewWholeListHint + ListFormatHint;
+    /// <summary>
+    /// 全許可になっている原因を、そのまま警告ログに載せられる文に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>対応表を <c>Program.cs</c> に置かない理由は
+    /// <see cref="DeadEntryFixAdvice"/> と同じ。</b> あちらは
+    /// <c>if (!IsDevelopment())</c> の中なので、書くとテストから 1 行も走らない。</para>
+    ///
+    /// <para><b>直し方（実ホスト名に絞る）は原因によらず同じなので、ここでは原因だけを言う。</b>
+    /// 直し方まで分岐させると、同じ 1 文が 4 通りに増えて食い違う口が増える。
+    /// 変えるべきなのは<b>運用者が自分の設定のどこを見ればよいか</b>だけ ——
+    /// 以前は 4 通りすべてに「'*' か '[::]' か '0.0.0.0' を消せ」と出していたため、
+    /// 空の一覧や制御文字の混入では<b>存在しないものを探させていた</b>。</para>
+    ///
+    /// <para><b>既定は断定しない側へ倒す。</b> 分類に値が増えたとき
+    /// <c>switch</c> の <c>_</c> は何も言わずに既定の文面を返す（<c>CS8509</c> は出ない）。
+    /// だから既定は原因を名指ししない汎用文にし、
+    /// <b>足し忘れ自体は <c>AllowedHostsPolicyTests</c> が enum から導いて落とす。</b></para>
+    /// </remarks>
+    /// <param name="reason">全許可になっている原因。</param>
+    /// <returns>ログにそのまま載せる原因の説明（英語。ログの他の文面とそろえる）。</returns>
+    public static string PermissiveCauseMessage(PermissiveReason reason) =>
+        // 原因ごとに、運用者が自分の設定のどこを見ればよいかを示す
+        reason switch
+        {
+            // 一覧そのものが空 ——値の中にワイルドカードは無いので、探させてはいけない
+            PermissiveReason.NoEntriesLeft =>
+                "The list has no non-empty entries, so the framework falls back to '*' "
+                + "and host filtering is disabled entirely.",
+
+            // ワイルドカードが混ざっている ——3 綴りを並べて、どれを消せばよいか示す
+            PermissiveReason.WildcardEntry =>
+                "The list contains a wildcard entry ('*', '[::]' or '0.0.0.0'), which "
+                + "disables host filtering entirely — even when real hostnames are listed too.",
+
+            // 正規化できない綴り ——症状が全許可ではなく例外なので、そう書く
+            PermissiveReason.UnparsableEntry =>
+                "One entry cannot be parsed as a hostname (a stray control or full-width "
+                + "character, for example). There may be no wildcard in the list at all: "
+                + "the framework currently fails to normalise that entry and errors on every "
+                + "request instead, so this is reported as 'not narrowed down' either way.",
+
+            // 「絞れている」ときと、分類が増えたのに足し忘れたとき。
+            // どちらも原因を名指しせず、値そのものを見てもらう（上記のとおり fail-closed）
+            _ => FallbackPermissiveCauseMessage,
+        };
+
+    /// <summary>
+    /// 専用の説明を持たない原因へ返す既定の文面。
+    /// </summary>
+    /// <remarks>
+    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// 理由は <see cref="FallbackFixAdvice"/> と同じで、
+    /// 既定の文面を <c>PermissiveCauseMessage(NotPermissive)</c> で求めると
+    /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。
+    /// </remarks>
+    public const string FallbackPermissiveCauseMessage =
+        "Host filtering is not narrowed down to real hostnames; inspect the value itself.";
 }

@@ -354,13 +354,22 @@ if (!app.Environment.IsDevelopment())
     // (全角の "０.０.０.０" も同じ)。ここを狭める変更は、直したばかりの穴を戻すことになる。
     // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
     // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
-    if (AllowedHostsPolicy.IsPermissive(allowedHosts))
+    // <b>「絞れていない」だけでなく、その原因まで運用者へ渡す。</b>
+    // IsPermissive が true になる経路は 4 つあり(未設定/空・ワイルドカード・
+    // 正規化できない綴り)、以前はどれでも「'*' か '[::]' か '0.0.0.0' を消せ」と
+    // 出していた ——値にワイルドカードが 1 つも無い綴り("0.0\t.0.0" のように
+    // 途中へ制御文字が紛れた形)では、<b>存在しないものを探させる案内</b>になり、
+    // しかも実際の症状(実測では毎リクエストが例外)とも噛み合わない。
+    // 文面の対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中で、
+    // 書くとテストから 1 行も走らないため(下の警告と同じ理由)
+    var permissiveReason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
+    // 「絞れている」以外なら警告する(判定そのものは AllowedHostsPolicy が持つ)
+    if (permissiveReason != AllowedHostsPolicy.PermissiveReason.NotPermissive)
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
             "AllowedHosts is permissive in the {Environment} environment " +
-            "(current value: {AllowedHosts}). " +
-            "A list containing '*', '[::]' or '0.0.0.0' disables host filtering entirely. " +
+            "(current value: {AllowedHosts}). {Cause} " +
             "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
             "behind a reverse proxy (issue #64).",
@@ -369,7 +378,9 @@ if (!app.Environment.IsDevelopment())
             app.Environment.EnvironmentName,
             // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
             // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
-            allowedHosts);
+            allowedHosts,
+            // その設定に合った原因の説明(直し方は原因によらず同じなので次の文で共通)
+            AllowedHostsPolicy.PermissiveCauseMessage(permissiveReason));
     }
 
     // 上の警告の<b>裏返し</b>を拾う。あちらは「絞ったつもりで全部通る」形しか見ないので、

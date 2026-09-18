@@ -422,7 +422,7 @@ public class HostFilteringShortCircuitTests
     // <b>実測した扱いを、そのまま判定側にも突き合わせる。</b> 各行は 2 つを見る:
     // (a) フレームワークが実際にどう扱うか、(b) AllowedHostsPolicy.IsPermissive が
     // それと同じ答えを出すか。<b>(b) が要点である</b> ——(a) だけだと「フレームワークの
-    // 挙動」を確かめるだけで、判定側を壊しても落ちない。実測でも、IsWildcardEntry から
+    // 挙動」を確かめるだけで、判定側を壊しても落ちない。実測でも、ClassifyEntries から
     // 正規化(ToUriComponent)を外す変異は (a) だけの版では全件緑のまま通った
     // (フレームワークは自分で正規化するので 200 のまま)。(b) があれば、
     // 全角の行で「200 なのに判定は false」となって必ず落ちる。
@@ -460,7 +460,7 @@ public class HostFilteringShortCircuitTests
     [InlineData("  *  ", 400, "前後の空白は落とされず \"*\" と一致しない")]
     // --- 全許可: 正規化(IDNA / NFKC)を通してから突き合わせること ---
     // <b>この 1 件が正規化の検証を支えている。</b> 全角で書いた 0.0.0.0 は
-    // 正規化で 0.0.0.0 になるので全許可になる ——IsWildcardEntry から
+    // 正規化で 0.0.0.0 になるので全許可になる ——ClassifyEntries から
     // ToUriComponent() を外す変異は、これが無いと全件緑のまま通る
     // (判定側も「全角は一致しない」で辻褄が合ってしまうため)
     [InlineData("０.０.０.０", 200, "全角数字は IDNA/NFKC で 0.0.0.0 に正規化される")]

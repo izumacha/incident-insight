@@ -350,4 +350,161 @@ public class AllowedHostsPolicyTests
         // 何を消すべきかも示していること（名指しの項目だけでは直らない）
         Assert.Contains("remove any wildcard entry", advice, StringComparison.Ordinal);
     }
+    // 全許可になる原因を、実測した扱いのとおりに分類できること。
+    //
+    // <b>並び順のある行が要点。</b> フレームワークは項目を宣言順に正規化しながら走査し、
+    // 最初のワイルドカードで打ち切るので、正規化できない項目と同居すると結果が並び順で
+    // 変わる（実測は HostFilteringShortCircuitTests が固定）。前から 1 件ずつ見る形を
+    // Any へ畳み直す退行は、この 2 行が無いと通ってしまう。
+    [Theory]
+    // --- 絞れている ---
+    [InlineData("incident.example.test", AllowedHostsPolicy.PermissiveReason.NotPermissive)]
+    [InlineData("a.example.test;b.example.test", AllowedHostsPolicy.PermissiveReason.NotPermissive)]
+    // 前後に空白がある項目は「死んでいる」だけで、全許可にはしない（警告 2 の担当）
+    [InlineData("a.example.test; b.example.test", AllowedHostsPolicy.PermissiveReason.NotPermissive)]
+    // --- 1 件も残らない（既定の ["*"] へ落ちる）---
+    [InlineData(null, AllowedHostsPolicy.PermissiveReason.NoEntriesLeft)]
+    [InlineData("", AllowedHostsPolicy.PermissiveReason.NoEntriesLeft)]
+    [InlineData(";", AllowedHostsPolicy.PermissiveReason.NoEntriesLeft)]
+    [InlineData(";;", AllowedHostsPolicy.PermissiveReason.NoEntriesLeft)]
+    // --- ワイルドカード ---
+    [InlineData("*", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    [InlineData("[::]", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    [InlineData("0.0.0.0", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    // 実ホスト名を「足した」つもりの綴り（issue #64 で踏んだ形）
+    [InlineData("*;incident.example.test", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    // 正規化（IDNA / NFKC）を通してから突き合わせること
+    [InlineData("０.０.０.０", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    // トリムしないので、前後に空白がある "*" はワイルドカードにならない（＝死んだ項目）
+    [InlineData("  *  ", AllowedHostsPolicy.PermissiveReason.NotPermissive)]
+    // --- 正規化できない綴り ---
+    [InlineData("0.0\t.0.0", AllowedHostsPolicy.PermissiveReason.UnparsableEntry)]
+    // 実ホスト名と混ざっても、原因は「読めない項目」のまま
+    [InlineData("incident.example.test;0.0\t.0.0", AllowedHostsPolicy.PermissiveReason.UnparsableEntry)]
+    // --- 並び順で答えが変わること（フレームワークの短絡と同じ）---
+    [InlineData("0.0\t.0.0;0.0.0.0", AllowedHostsPolicy.PermissiveReason.UnparsableEntry)]
+    [InlineData("0.0.0.0;0.0\t.0.0", AllowedHostsPolicy.PermissiveReason.WildcardEntry)]
+    public void ClassifyPermissive_NamesWhyTheListAcceptsEveryHost(
+        string? allowedHosts,
+        AllowedHostsPolicy.PermissiveReason expected)
+    {
+        // 設定値から原因を求める
+        var actual = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
+
+        // 実測した扱いと一致すること
+        Assert.Equal(expected, actual);
+    }
+
+    // 警告を出すかどうか（bool）と、その原因（enum）が食い違わないこと。
+    //
+    // <b>片方だけを直す変更を落とすための検査。</b> IsPermissive が原因の判定から
+    // 導かれていないと、「警告は出るのに文面は『絞れている』のまま」や、その逆が書ける。
+    // 期待値は<b>enum から導く</b>（NotPermissive 以外はすべて警告する側、と決めてある）。
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData(";")]
+    [InlineData("*")]
+    [InlineData("０.０.０.０")]
+    [InlineData("0.0\t.0.0")]
+    [InlineData("incident.example.test")]
+    [InlineData("a.example.test; b.example.test")]
+    [InlineData("  *  ")]
+    public void IsPermissive_AgreesWithTheReasonItWouldReport(string? allowedHosts)
+    {
+        // 原因を求める
+        var reason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
+
+        // 「絞れている」以外はすべて警告する側、という取り決めをそのまま期待値にする
+        var expected = reason != AllowedHostsPolicy.PermissiveReason.NotPermissive;
+
+        // bool 側が同じ答えを返すこと
+        Assert.Equal(expected, AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // 原因ごとに専用の説明があること（＝分類を足したのに文面を足し忘れていないこと）。
+    //
+    // <b>この検査が無いと足し忘れは検出できない。</b> switch の _ は
+    // コンパイルエラーにならず、警告レベルにもならない。しかも文面を使うのは
+    // Program.cs の if (!IsDevelopment()) の中なので、統合テストからも走らない。
+    // 既定へ落ちてよいのは NotPermissive だけ ——説明すべき原因が無い唯一の値。
+    [Fact]
+    public void PermissiveCauseMessage_GivesEveryReasonItsOwnExplanation()
+    {
+        // 原因の一覧を enum そのものから取り出す（手で書かない）
+        var reasons = Enum.GetValues<AllowedHostsPolicy.PermissiveReason>();
+
+        // 見るべき原因が 1 つも無い状態で緑にしない（fail-closed）
+        Assert.NotEmpty(reasons);
+
+        // 原因ごとの説明を集める
+        var messages = reasons.ToDictionary(
+            reason => reason,
+            AllowedHostsPolicy.PermissiveCauseMessage);
+
+        // どの説明も空でないこと（空だと警告が原因を示さないまま出る）
+        Assert.All(messages.Values, text => Assert.False(string.IsNullOrWhiteSpace(text)));
+
+        // 既定（＝専用の説明が無い原因）を数える。
+        // <b>照合の相手が関数の外の定数であることが要点</b>（理由は
+        // AllowedHostsPolicy.FallbackPermissiveCauseMessage の docstring が正本）
+        var fallback = AllowedHostsPolicy.FallbackPermissiveCauseMessage;
+        var fellBack = messages
+            .Where(pair => string.Equals(pair.Value, fallback, StringComparison.Ordinal))
+            .Select(pair => pair.Key)
+            .ToList();
+
+        // 既定へ落ちてよいのは NotPermissive だけ
+        var expected = new[] { AllowedHostsPolicy.PermissiveReason.NotPermissive };
+
+        // 落ち方が 2 通りあるので、文言も分ける（DeadEntryFixAdvice の検査と同じ理由）
+        Assert.True(
+            fellBack.SequenceEqual(expected),
+            fellBack.Except(expected).Any()
+                // 専用の説明が無い原因がある（＝原因を足したのに arm を忘れた）
+                ? "専用の説明が無い原因があります: "
+                    + string.Join(", ", fellBack.Except(expected))
+                    + "。AllowedHostsPolicy.PermissiveCauseMessage に arm を足してください"
+                    + "（switch の _ はコンパイルエラーにならないので、ここでしか気付けません）"
+                // 既定へ落ちる原因が減った（＝NotPermissive に専用の arm を足した）
+                : "NotPermissive が既定の文面を使わなくなりました"
+                    + "（専用の arm を足したはずです）。"
+                    + "この検査の期待値も同じ変更セットで更新してください ——"
+                    + "更新せずに放置すると、既定の文面を誰も使わなくなり、"
+                    + "次に原因を足した人の arm 忘れを検出できなくなります");
+    }
+
+    // 原因ごとに<b>違う</b>ことを言っていること。
+    //
+    // <b>足し忘れの検査だけでは足りない。</b> あちらは「既定と同じでないこと」しか見ないので、
+    // 3 つの arm すべてに同じ 1 文（たとえば元の「'*' か '[::]' か '0.0.0.0' を消せ」）を
+    // 書いても緑のまま通る ——それはこの変更が直したはずの状態そのもの。
+    [Fact]
+    public void PermissiveCauseMessage_DoesNotSendOperatorsLookingForSomethingElse()
+    {
+        // 説明すべき原因（NotPermissive 以外）の説明を集める
+        var messages = Enum.GetValues<AllowedHostsPolicy.PermissiveReason>()
+            .Where(reason => reason != AllowedHostsPolicy.PermissiveReason.NotPermissive)
+            .Select(AllowedHostsPolicy.PermissiveCauseMessage)
+            .ToList();
+
+        // 見るべき原因が 1 つも無い状態で緑にしない（fail-closed）
+        Assert.NotEmpty(messages);
+
+        // すべて別々の文であること（同じ文を使い回したらここで落ちる）
+        Assert.Equal(messages.Count, messages.Distinct(StringComparer.Ordinal).Count());
+
+        // ワイルドカードの 3 綴りを名指しするのは、実際にそれが原因のときだけ。
+        // <b>これが元の不具合そのもの</b> ——値に無いものを探させてはいけない
+        Assert.DoesNotContain(
+            "'[::]'",
+            AllowedHostsPolicy.PermissiveCauseMessage(
+                AllowedHostsPolicy.PermissiveReason.UnparsableEntry),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "'[::]'",
+            AllowedHostsPolicy.PermissiveCauseMessage(
+                AllowedHostsPolicy.PermissiveReason.NoEntriesLeft),
+            StringComparison.Ordinal);
+    }
 }
