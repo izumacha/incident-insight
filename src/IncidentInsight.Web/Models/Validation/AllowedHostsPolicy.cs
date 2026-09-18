@@ -207,10 +207,29 @@ public static class AllowedHostsPolicy
     /// 警告の文面はそれに合わせる（値に無いワイルドカードを探させないため）。
     /// </returns>
     public static bool IsPermissive(string? allowedHosts) =>
-        // 理由まで求めたうえで「絞れている」以外なら警告する。
+        // 理由まで求めたうえで、警告に値するかを共通の規則で決める。
         // <b>bool をここで組み立て直さない</b> ——同じ規則が 2 か所に現れると、
         // 片方にだけ分岐が足されたとき「警告は出るのに文面は古い」形で食い違う
-        ClassifyPermissive(allowedHosts) != PermissiveReason.NotPermissive;
+        WarrantsWarning(ClassifyPermissive(allowedHosts));
+
+    /// <summary>
+    /// その原因が、運用者へ警告を出すべきものかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>「どの原因が警告に値するか」を 1 か所へ置くために要る。</b>
+    /// <see cref="IsPermissive"/> と <c>Program.cs</c> の起動時チェックは
+    /// どちらもこの判断を必要とするが、どちらかが
+    /// <c>reason != PermissiveReason.NotPermissive</c> を自分で書くと、
+    /// 規則の写しが増える（実際に <c>Program.cs</c> がそう書いていた）。
+    /// そのとき「警告に値しない原因」を 1 つ足すと、
+    /// 片方だけが黙って古い判断のまま残る ——
+    /// <see cref="IsPermissive"/> の docstring が禁じているのと同じ形。
+    /// </remarks>
+    /// <param name="reason">全許可になっている原因（<see cref="ClassifyPermissive"/> の戻り値）。</param>
+    /// <returns>警告を出すべきなら <c>true</c>。</returns>
+    public static bool WarrantsWarning(PermissiveReason reason) =>
+        // 「絞れている」以外はすべて、運用者に知らせるべき状態
+        reason != PermissiveReason.NotPermissive;
 
     /// <summary>
     /// その設定値が全許可なら、<b>その原因</b>を返す。
@@ -443,6 +462,24 @@ public static class AllowedHostsPolicy
     }
 
     /// <summary>
+    /// 一致しえない項目と、それを<b>消すだけ</b>にしたら何が起きるかを<b>ひと続きで</b>返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>名指しする項目と、案内の根拠になった項目が同じ集合であることを、構造で保証する。</b>
+    /// 呼び出し側が <see cref="NeverMatchingEntries"/> と
+    /// <see cref="ClassifyDeadEntryDeletion"/> を別々に呼ぶと、同じ値を 2 度割って
+    /// 同じ正規化を 2 周するうえ、<b>両者が同じ項目を見ていることを保証するものが何も無い</b>
+    /// （判定の条件を片方にだけ足す変更が通ってしまう）。
+    /// 起動時のチェックはこの 1 本だけを呼ぶ（CLAUDE.md §6 DRY）。
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>一致しえない項目（無ければ空）と、それを消したときに何が起きるかの分類。</returns>
+    public static (IReadOnlyList<string> Entries, DeadEntryDeletionOutcome Outcome)
+        InspectNeverMatchingEntries(string? allowedHosts) =>
+        // 名指しする項目と分類を、同じ設定値から 1 度に導く
+        (NeverMatchingEntries(allowedHosts), ClassifyDeadEntryDeletion(allowedHosts));
+
+    /// <summary>
     /// 一覧をどう書くかの共通の一言（どの案内にも同じものを添える）。
     /// </summary>
     private const string ListFormatHint =
@@ -498,11 +535,18 @@ public static class AllowedHostsPolicy
                 + "a way that makes the effect of deleting unpredictable. Fix the whole list at "
                 + "once: " + ReviewWholeListHint + ListFormatHint,
 
-            // 消しても全許可にはならないので、書き換えても削除してもよい
+            // 消しても全許可にはならないが、<b>削除を同列に並べない</b>。
+            // 名指しされる典型は "incident.example.com; www.example.com" の 2 件目＝
+            // その配備先が実際に使うホスト名なので、消すと「静かに 400」が
+            // 「意図して 400」へ変わるだけで、警告が暴いたはずの障害が固定される。
+            // Safe が保証するのは「絞り込みが開かないこと」だけで、
+            // その項目が要らないことまでは言っていない
             DeadEntryDeletionOutcome.Safe =>
-                "Fix each listed entry — either rewrite it to the real hostname, or remove it "
-                + "(deleting these entries does not leave a list that accepts every Host)."
-                + ListFormatHint,
+                "Fix each listed entry by removing the surrounding whitespace, so the hostname "
+                + "is matched again. Only delete an entry if it contains no hostname you actually "
+                + "serve (an unset ${VARIABLE} leaves a blank entry like this) — deleting these "
+                + "entries does not leave a list that accepts every Host, but it does mean the "
+                + "hostname stays rejected." + ListFormatHint,
 
             // 名指しする項目が無いときと、分類が増えたのに足し忘れたとき。
             // どちらも断定せず、一覧全体を見直してもらう（上記のとおり fail-closed）
@@ -580,6 +624,14 @@ public static class AllowedHostsPolicy
     /// 既定の文面を <c>PermissiveCauseMessage(NotPermissive)</c> で求めると
     /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。
     /// </remarks>
+    /// <remarks>
+    /// <b>原因を名乗らない文面にしてある。</b> この関数は <c>public</c> なので、
+    /// <see cref="PermissiveReason.NotPermissive"/>（＝正しく絞れている設定）を
+    /// そのまま渡す呼び出し側が将来現れうる。以前の文面は
+    /// 「絞れていない」と断定していたため、そのとき<b>正しい設定に対して
+    /// 事実と逆の説明</b>を出すことになっていた（しかもテストがその対応を固定していた）。
+    /// 分類が増えたときの既定としても、断定しないほうが安全側（fail-closed）。
+    /// </remarks>
     public const string FallbackPermissiveCauseMessage =
-        "Host filtering is not narrowed down to real hostnames; inspect the value itself.";
+        "No specific cause is available for this value; inspect the value itself.";
 }
