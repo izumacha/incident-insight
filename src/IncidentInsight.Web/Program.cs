@@ -386,22 +386,27 @@ if (!app.Environment.IsDevelopment())
     {
         // 上の警告とは原因も対処も違うので、別のメッセージとして出す
         // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
-        // <b>項目 1 件の話だけを述べ、一覧全体がどうなるかは名乗らない。</b>
+        // <b>名指しした項目 1 件の事実だけを述べ、一覧全体の症状は名乗らない。</b>
         // 鳴りうる綴りで結果がばらばらだから: (a) 同じ一覧にワイルドカードがあれば全部 200、
-        // (b) 死んだ項目しか無ければ全部 400 の全面障害、(c) 生きた項目と混ざっていれば
-        // その 1 件だけが 400。共通して正しいのは「その項目はどの Host とも一致しない」だけ。
+        // (b) 死んだ項目しか無ければ全部 400、(c) 生きた項目と混ざっていればその 1 件だけが 400、
+        // (d) 正規化できない綴りならフレームワーク自身が例外を投げる(200 でも 400 でもない)。
+        // (d) があるので「全部死んでいれば 400」とも書けない ——(d) はこの警告にも
+        // IsPermissive にも同時に載るため、断定するとその場で 2 本が食い違う。
         //
-        // <b>「書かれていないのと同じ」とも言えない。</b> 本当に消すと項目数が減り、
-        // 0 件になれば既定の ["*"] へ落ちて全部 200 になる ——(b) とは正反対で、
-        // 全面障害のときに「実質無効な設定です」と読ませることになる
+        // <b>直し方は「消す」ではなく「本当のホスト名に書き換える」。</b> 消すと項目数が減り、
+        // 0 件になれば既定の ["*"] へ落ちて<b>全ホストを受け付ける</b>ようになる ——
+        // 400 が止まるので直ったように見えるが、実際には issue #64 そのもの
+        // (Host ヘッダ偽装が通る状態)へ移るだけ。空白だけの項目で起きやすい。
         // (";" が 200・" ; " が 400 という実測を HostFilteringShortCircuitTests が固定している)
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
             "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead: " +
-            "it accepts no hostname at all. Whether the site still serves depends on the rest of " +
-            "the list, so check every entry — if they are all dead, every request gets 400. " +
-            "Remove the whitespace (write the list as 'a.example;b.example', no spaces) (issue #64).",
+            "Host filtering does not trim entries, so an entry with surrounding whitespace is " +
+            "dead: it makes no hostname acceptable. Fix each listed entry by rewriting it to the " +
+            "real hostname with no surrounding spaces (write the list as 'a.example;b.example'). " +
+            "Do NOT simply delete them — an empty list falls back to '*' and then every Host " +
+            "header is accepted, which is the spoofing hole this setting exists to close " +
+            "(issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
             // どの環境の話かを添える(上の警告と同じ理由)
