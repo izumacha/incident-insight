@@ -206,8 +206,8 @@ public class AllowedHostsPolicyTests
     // 「死んだ項目を消したあとに何が残るか」を、手で書いた期待値で固定する。
     //
     // <b>以前ここに置いていた「IsPermissive と一致すること」の検査は恒真だった。</b>
-    // 本体もテストも同じワイルドカード判定を読んでいたため、どちらも
-    // 同じ Wildcards / SplitEntries を読むため、判定が狭まれば両辺が同じだけ狭まる
+    // 本体もテストも同じ Wildcards / SplitEntries を読んでいたため、
+    // 判定が狭まれば両辺が同じだけ狭まる
     // ——Wildcards を ["*"] に狭めても全行が緑のまま通る。CLAUDE.md が繰り返し
     // 禁じている「同じ判定でガードを書く」形そのもの。
     //
@@ -264,5 +264,69 @@ public class AllowedHostsPolicyTests
         // 同じ値で、空白付きの "*" はワイルドカードとして扱われない(＝全許可ではない)。
         // IsPermissive 側にだけトリムを足すと、ここが true になって落ちる
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // 分類すべてに、固有の案内が用意されていること。
+    //
+    // <b>switch の _ は足し忘れを黙って飲む。</b> 実測で、分類に 5 つ目の値を足しても
+    // ビルドは 0 Warning / 0 Error だった（CS8509 は _ があるぶん出ず、この repo は
+    // 警告をエラーにもしていない）。だから<b>enum から導いて</b>照合する ——
+    // 一覧を手で書くと、値を足した人が表とコードの両方を直し忘れたときに
+    // 「登録済みどうしは一致し続ける」ので全件緑のまま通る。
+    //
+    // <b>既定の文面は 1 つだけ許す。</b> NothingToDelete は「名指しする項目が無い」
+    // ＝専用の案内が要らない唯一の分類なので、ここだけが既定と同じでよい。
+    // 2 つ目が既定へ落ちたら、それは案内の足し忘れ。
+    [Fact]
+    public void DeadEntryFixAdvice_GivesEveryOutcomeItsOwnAdvice()
+    {
+        // 分類の一覧を enum そのものから取り出す（手で書かない）
+        var outcomes = Enum.GetValues<AllowedHostsPolicy.DeadEntryDeletionOutcome>();
+
+        // 見るべき分類が 1 つも無い状態で緑にしない（fail-closed）
+        Assert.NotEmpty(outcomes);
+
+        // 分類ごとの案内を集める
+        var advice = outcomes.ToDictionary(
+            outcome => outcome,
+            AllowedHostsPolicy.DeadEntryFixAdvice);
+
+        // どの案内も空でないこと（空だと警告が直し方を示さないまま出る）
+        Assert.All(advice.Values, text => Assert.False(string.IsNullOrWhiteSpace(text)));
+
+        // 既定（＝専用の案内が無い分類）へ落ちているものを数える
+        var fallback = AllowedHostsPolicy.DeadEntryFixAdvice(
+            AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete);
+        var fellBack = advice
+            .Where(pair => string.Equals(pair.Value, fallback, StringComparison.Ordinal))
+            .Select(pair => pair.Key)
+            .ToList();
+
+        // 既定へ落ちてよいのは NothingToDelete だけ
+        Assert.True(
+            fellBack.SequenceEqual([AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete]),
+            "専用の案内が無い分類があります: "
+                + string.Join(", ", fellBack)
+                + "。AllowedHostsPolicy.DeadEntryFixAdvice に arm を足してください"
+                + "（switch の _ はコンパイルエラーにならないので、ここでしか気付けません）");
+    }
+
+    // いちばん危ない分岐が、削除を戒める向きのままであること。
+    //
+    // <b>文面そのものを固定する数少ない箇所。</b> 通常この repo は文面を固定しないが、
+    // ここは「消してよい／いけない」という<b>向きが反転すると穴になる</b>案内で、
+    // かつ Program.cs へ書いていた頃はテストから 1 行も走らなかった
+    // （実測で、反対の意味へ差し替えても全件緑のまま通った）。
+    [Fact]
+    public void DeadEntryFixAdvice_TellsOperatorsNotToDeleteWhenDeletingWouldOpenUp()
+    {
+        // 消すと全ホスト許可になる分類の案内を取り出す
+        var advice = AllowedHostsPolicy.DeadEntryFixAdvice(
+            AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost);
+
+        // 削除を戒めていること（向きが反転したらここで落ちる）
+        Assert.Contains("Do NOT simply delete", advice, StringComparison.Ordinal);
+        // 何を消すべきかも示していること（名指しの項目だけでは直らない）
+        Assert.Contains("remove any wildcard entry", advice, StringComparison.Ordinal);
     }
 }

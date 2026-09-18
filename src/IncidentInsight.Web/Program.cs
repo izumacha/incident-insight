@@ -400,37 +400,11 @@ if (!app.Environment.IsDevelopment())
         // 2 つで、件数だけでは判別できない。さらに、残る項目に正規化できない綴りがあると
         // フレームワークの結果が並び順で変わるので断定できない ——
         // 3 値で受けるのはそのため(規則は AllowedHostsPolicy の docstring が正本)
-        var howToFix = AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts) switch
-        {
-            // 消すと全ホストを受け付ける状態になる ——直すべきは名指しの項目だけではない
-            AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost =>
-                "Do NOT simply delete them: with these entries gone the remaining list would "
-                + "accept every Host header — either it becomes empty and falls back to '*', "
-                + "or a wildcard entry ('*', '[::]' or '0.0.0.0') is left behind. "
-                + "Rewrite each listed entry to the real hostname AND remove any wildcard entry, "
-                + "so that real hostnames are all that is left.",
-
-            // 残る項目に正規化できない綴りがあるので、消した結果を断定しない
-            AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown =>
-                "Another entry cannot be parsed as a hostname, so this list is already broken in "
-                + "a way that makes the effect of deleting unpredictable. Fix the whole list at "
-                + "once: keep only real hostnames, with no wildcards and no stray characters.",
-
-            // 消しても全許可にはならないので、書き換えても削除してもよい
-            AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe =>
-                "Fix each listed entry — either rewrite it to the real hostname, or remove it "
-                + "(deleting these entries does not leave a list that accepts every Host).",
-
-            // <b>残りは安全側へ倒す。</b> ここへ来るのは (a) 名指しする項目が無い
-            // (この分岐自体が neverMatching.Count > 0 のときしか走らないので通常あり得ない)
-            // か、(b) 分類に新しい値が増えたのに、ここを直し忘れた場合。
-            // _ を「消してよい」側へ倒すと、(b) で削除を勧めた結果が全許可になりうる
-            // ——コンパイラは _ があるぶん何も言わないので、既定は断定しない側にする
-            _ => "Review the whole list by hand: keep only real hostnames, with no wildcards "
-                + "and no stray characters.",
-        }
-            // どの分岐でも、一覧の書き方は同じなので 1 度だけ添える
-            + " Write the list as 'a.example;b.example', with no spaces.";
+        // 対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中なので、
+        // 書くとテストから 1 行も走らない（実測で、いちばん危ない分岐の文面を
+        // 反対の意味へ差し替えても全 1000 件が緑のまま通った）
+        var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(
+            AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts));
 
         // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
         app.Logger.LogWarning(

@@ -173,8 +173,9 @@ public static class AllowedHostsPolicy
         // <b>フレームワークとまったく同じ分割</b>で項目を取り出す（規則は SplitEntries が持つ）
         var entries = SplitEntries(allowedHosts);
 
-        // 規則そのものは 1 か所（AcceptsEveryHost）に置き、ここは倒し方だけを選ぶ。
-        // 警告を出すかの判定なので、判断できない綴りはワイルドカード側へ倒す
+        // 規則そのものは 1 か所（AcceptsEveryHost）に置く。
+        // 判断できない綴りをワイルドカード側へ倒す（警告としては安全側）のは
+        // その先の IsWildcardEntry で、ここは選ばない
         return AcceptsEveryHost(entries);
     }
 
@@ -182,7 +183,7 @@ public static class AllowedHostsPolicy
     /// その項目の並びが、どの <c>Host</c> でも受け付ける状態かを返す。
     /// </summary>
     /// <remarks>
-    /// <b>フォールバックの規則を 1 か所に置くために切り出してある。</b>
+    /// <para><b>フォールバックの規則を 1 か所に置くために切り出してある。</b>
     /// 「1 件も残らなければ既定の <c>["*"]</c> へ落ちる」「ワイルドカードが 1 つでもあれば
     /// 全許可へ切り替わる」という 2 つは、これを読む判定が 2 つあっても同じでなければならない。
     /// 書き写すと、フレームワーク側にもう 1 つ経路が増えたときに片方だけが直り、
@@ -191,10 +192,22 @@ public static class AllowedHostsPolicy
     /// <see cref="ClassifyDeadEntryDeletion"/> は正規化できない項目を先に
     /// <c>Unknown</c> で除くので、そこへ渡せる 2 つ目の判定はもう存在しない。
     /// 引数として口を開けておくと、使わない分岐が残るうえ、
-    /// 次の書き手に「別の判定を渡してよい」と読ませてしまう（§6）。
+    /// 次の書き手に「別の判定を渡してよい」と読ませてしまう（§6）。</para>
+    ///
+    /// <para><b>呼び出し側の前提: 正規化できない項目を含めてはいけない。</b>
+    /// 内側の <see cref="IsWildcardEntry"/> はそれをワイルドカード側へ倒すので、
+    /// <c>["0.0\t.0.0"]</c> を渡すと <c>true</c>（どの Host でも受け付ける）を返すが、
+    /// 実際にはフレームワークが例外を投げてどの <c>Host</c> も受け付けない
+    /// ——<b>答えがちょうど逆になる</b>。
+    /// <see cref="ClassifyDeadEntryDeletion"/> は先に <c>Unknown</c> で除いてから呼ぶ。</para>
     /// </remarks>
-    /// <param name="entries">分割済みの項目（トリムしていない生の値）。</param>
-    /// <returns>どの <c>Host</c> でも受け付ける状態なら <c>true</c>。</returns>
+    /// <param name="entries">
+    /// 分割済みの項目（トリムしていない生の値）。<b>正規化できる項目だけ</b>を渡すこと。
+    /// </param>
+    /// <returns>
+    /// どの <c>Host</c> でも受け付ける状態なら <c>true</c>
+    /// （上の前提を満たしている場合。満たさない項目は <c>true</c> 側へ倒れる）。
+    /// </returns>
     private static bool AcceptsEveryHost(string[] entries) =>
         // 1 件も残らないなら既定の ["*"] へ落ちる／1 つでもワイルドカードがあれば全許可
         entries.Length == 0 || entries.Any(IsWildcardEntry);
@@ -334,4 +347,71 @@ public static class AllowedHostsPolicy
             // 消しても全許可にはならない＝消してよい
             : DeadEntryDeletionOutcome.Safe;
     }
+
+    /// <summary>
+    /// 一覧をどう書くかの共通の一言（どの案内にも同じものを添える）。
+    /// </summary>
+    private const string ListFormatHint =
+        " Write the list as 'a.example;b.example', with no spaces.";
+
+    /// <summary>
+    /// 一覧全体を作り直すよう促す一言（断定できない場合に共通で使う）。
+    /// </summary>
+    /// <remarks>
+    /// <b>2 か所へ書き写さない。</b> 「判断できない」と「分類が増えたのに案内を足し忘れた」は
+    /// 別の入口だが、運用者にしてほしいことは同じ。文面が割れると、同じ操作を
+    /// 別の出来事として受け取らせることになる（CLAUDE.md: 同じ理由の文面は一字一句そろえる）。
+    /// </remarks>
+    private const string ReviewWholeListHint =
+        "keep only real hostnames, with no wildcards and no stray characters.";
+
+    /// <summary>
+    /// 分類に応じた、運用者向けの直し方の案内を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ <c>Program.cs</c> に置かないのか。</b> あちらのトップレベル文は
+    /// <c>if (!IsDevelopment())</c> の中にあり、統合テストのフィクスチャはすべて
+    /// Development で起動するので、<b>この対応表は 1 行もテストから走らない</b>。
+    /// 実測でも、いちばん危ない分岐の文面を "Just delete them, it is fine" へ
+    /// 差し替えても<b>全 1000 件が緑のまま通り、件数すら変わらなかった</b>。
+    /// 判定を切り出したのと同じ理由（このクラスの docstring 冒頭）で、対応表も切り出す。</para>
+    ///
+    /// <para><b>既定は断定しない側へ倒す。</b> 分類に値が増えたとき、
+    /// <c>switch</c> の <c>_</c> は何も言わずに既定の文面を返す
+    /// （実測: 5 つ目の値を足してもビルドは 0 Warning / 0 Error。
+    ///  <c>CS8509</c> は <c>_</c> があるぶん出ず、この repo は警告をエラーにもしていない）。
+    /// だから既定を「消してよい」側へ倒してはいけない ——
+    /// 足し忘れた分類で削除を勧め、その結果が全許可になりうる。
+    /// <b>足し忘れ自体は <c>AllowedHostsPolicyTests</c> が enum から導いて落とす。</b></para>
+    /// </remarks>
+    /// <param name="outcome">消したときに何が起きるかの分類。</param>
+    /// <returns>ログにそのまま載せる案内（英語。ログの他の文面とそろえる）。</returns>
+    public static string DeadEntryFixAdvice(DeadEntryDeletionOutcome outcome) =>
+        // 分類ごとに、運用者がすべきことを 1 つだけ示す
+        outcome switch
+        {
+            // 消すと全ホストを受け付ける状態になる ——直すべきは名指しの項目だけではない
+            DeadEntryDeletionOutcome.WouldAllowEveryHost =>
+                "Do NOT simply delete them: with these entries gone the remaining list would "
+                + "accept every Host header — either it becomes empty and falls back to '*', "
+                + "or a wildcard entry ('*', '[::]' or '0.0.0.0') is left behind. "
+                + "Rewrite each listed entry to the real hostname AND remove any wildcard entry, "
+                + "so that real hostnames are all that is left." + ListFormatHint,
+
+            // 残る項目に正規化できない綴りがあるので、消した結果を断定しない
+            DeadEntryDeletionOutcome.Unknown =>
+                "Another entry cannot be parsed as a hostname, so this list is already broken in "
+                + "a way that makes the effect of deleting unpredictable. Fix the whole list at "
+                + "once: " + ReviewWholeListHint + ListFormatHint,
+
+            // 消しても全許可にはならないので、書き換えても削除してもよい
+            DeadEntryDeletionOutcome.Safe =>
+                "Fix each listed entry — either rewrite it to the real hostname, or remove it "
+                + "(deleting these entries does not leave a list that accepts every Host)."
+                + ListFormatHint,
+
+            // 名指しする項目が無いときと、分類が増えたのに足し忘れたとき。
+            // どちらも断定せず、一覧全体を見直してもらう（上記のとおり fail-closed）
+            _ => "Review the whole list by hand: " + ReviewWholeListHint + ListFormatHint,
+        };
 }

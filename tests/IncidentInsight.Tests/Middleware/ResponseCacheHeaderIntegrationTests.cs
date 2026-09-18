@@ -593,8 +593,13 @@ public class HostFilteringShortCircuitTests
         using (var fixture = new AllowedHostsFixture($"{UnparsableHost};0.0.0.0"))
         {
             // 先に正規化されて失敗するので、応答に至らず例外になる
-            await Assert.ThrowsAsync<ArgumentException>(
+            var error = await Assert.ThrowsAsync<ArgumentException>(
                 () => SendWithHostAsync(fixture.CreateNonRedirectingClient(), RejectedHost));
+
+            // <b>出どころがホスト名の正規化であることまで見る。</b> 型だけだと、
+            // 起動や設定バインドが別の理由で投げても緑になり、
+            // 「並び順で変わる」という前提が崩れたことを見逃す
+            Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
         }
 
         // 同じ 2 項目を<b>入れ替えた</b>だけの並び
