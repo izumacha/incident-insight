@@ -1988,7 +1988,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Func<ParameterInfo, bool> matches)
     {
         // 自分たちのアセンブリ(名前空間の切り直しで外れない)
-        var ownAssembly = typeof(IncidentsController).Assembly;
+        // 走査の基準となるアセンブリは共有ヘルパーが唯一の源(ここで書き写すと、基準を変えたときにコントローラの列挙とアクションの絞り込みが食い違う)
+        var ownAssembly = AppControllerScan.WebAssembly;
         // そのアセンブリのコントローラをすべて見て、拾った対を畳み方の純粋関数へ渡す
         return CollapseDuplicateActionParameters(ScannedControllers()
             .SelectMany(t => t.GetMethods(BindingFlags.Public | BindingFlags.Instance)
@@ -2048,8 +2049,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .GroupBy(match => (match.Key, match.Parameter.ParameterType))
             // 型まで同じものだけを 1 件に畳む(引数の数だけが違うオーバーロードがこの形)
             .Select(group => group.First())
-            // 実行ごとに順番が揺れないよう並びを固定する
+            // 実行ごとに順番が揺れないよう並びを固定する。
+            // <b>キーだけでは足りない</b>: 畳んだあとも同じキーの要素が(型違いで)複数残りうるので、
+            // キーだけで並べると同順位の 2 件は OrderBy の安定性により GroupBy が見た順
+            // ＝ Type.GetMethods の返す順(.NET が「規定しない」と明記している宣言順)のまま残る。
+            // それはこの畳み方がまさに取り除こうとしている依存なので、型名まで見て全順序にする
             .OrderBy(match => match.Key, StringComparer.Ordinal)
+            .ThenBy(
+                match => match.Parameter.ParameterType.FullName ?? match.Parameter.ParameterType.Name,
+                StringComparer.Ordinal)
             .ToList();
 
     // 畳み方が、<b>残す側</b>と<b>畳む側</b>の両方で意図どおりに働くこと。
@@ -2110,9 +2118,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 書き写すと、導出だけを狭めたときに検査も一緒に狭まって無力化される)。
     /// </remarks>
     private static IEnumerable<Type> ScannedControllers() =>
-        // 自分たちのアセンブリの、具象のコントローラすべて(抽象基底はルートを持たないので除く)
-        typeof(IncidentsController).Assembly.GetTypes()
-            .Where(t => typeof(ControllerBase).IsAssignableFrom(t) && !t.IsAbstract);
+        // 絞り込みは共有ヘルパーが唯一の源(ここで書き写すと、下の網羅ガードが
+        // この導出だけを見張る形になり、同じ絞り込みを使う他の検査が射程から外れる)
+        AppControllerScan.Controllers();
 
     // 走査が、Web プロジェクトに実在するコントローラを<b>1 つも取りこぼしていない</b>こと。
     //
@@ -3489,10 +3497,20 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 片方だけ拾い方を直したときにもう片方が古い基準のまま緑になる(§6 DRY)。
     /// </remarks>
     private static List<Type> WebControllers() =>
-        typeof(IncidentsController).Assembly
-            .GetTypes()
-            .Where(t => t.IsClass && !t.IsAbstract && typeof(Controller).IsAssignableFrom(t))
-            .ToList();
+        // 絞り込みは共有ヘルパーが唯一の源。以前はここに 2 つ目の写しがあり、しかも
+        // ControllerBase ではなく Controller で狭めていたため、ビューを返さない
+        // (ControllerBase 派生の)コントローラが department 絞り込みの網羅ガードから
+        // 丸ごと外れていた ——実測でも、その形の画面を足すと全件緑のまま
+        // テスト件数すら変わらずに通った。写しを消せば ControllerScan_ReachesEveryControllerFile
+        // の射程に入る。
+        //
+        // <b>広がる向きが利用側で逆になる点に注意</b>: 網羅ガード側(?department= を受ける
+        // アクションの照合)では対象が広がる＝安全側だが、GovernedOptionProperties は
+        // この集合を<b>除外</b>に使っており、そちらでは広がる＝検査対象が減る。
+        // 現時点でアプリの全コントローラは Controller 派生なので集合は同一だが、
+        // ControllerBase 直下の API 風コントローラを足す人は、その ViewModel が
+        // *Options の required 検査から静かに外れないかを確かめること
+        AppControllerScan.Controllers().ToList();
 
     /// <summary>
     /// 指定したコントローラが<b>自分で宣言している</b>アクションメソッドを返す。

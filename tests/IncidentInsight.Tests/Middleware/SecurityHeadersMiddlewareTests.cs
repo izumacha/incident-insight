@@ -4,6 +4,10 @@ using IncidentInsight.Web.Middleware;
 using Microsoft.AspNetCore.Http;
 // 応答フィーチャー(IHttpResponseFeature / HttpResponseFeature)を差し替えるために使う
 using Microsoft.AspNetCore.Http.Features;
+// リポジトリのパス(docs/security.md を読むため)を使う
+using IncidentInsight.Tests.Helpers;
+// ドキュメントから指示を取り出すために使う
+using System.Text.RegularExpressions;
 
 // このテストクラスの名前空間(置き場所)を宣言している
 namespace IncidentInsight.Tests.Middleware;
@@ -112,7 +116,11 @@ public class SecurityHeadersMiddlewareTests
     [InlineData("no-store,no-cache")]
     // MapHealthChecks が自分で書く値
     [InlineData("no-store, no-cache")]
-    // 明示的にキャッシュを許可している応答(将来そういう画面を作った場合)も尊重する
+    // 制限の緩い指示であっても上書きしないこと。これは<b>静的アセットのため</b>にある挙動で
+    // (上の StaticAssetCacheControl と同じ形)、MVC のアクションがこの形を名乗ってよいという
+    // 意味ではない —— PHI を返すアクションへキャッシュ可能な [ResponseCache] を足す道は
+    // ResponseCacheAttributePolicyTests が宣言の形で塞いでいる。
+    // ここで見ているのは「ミドルウェアは他人の指示を書き換えない」という 1 点だけ
     [InlineData("public, max-age=600")]
     public async Task InvokeAsync_OnStarting_LeavesDeclaredCacheControlUntouched(string declared)
     {
@@ -139,6 +147,102 @@ public class SecurityHeadersMiddlewareTests
 
         // 書き手が明示した値がそのまま残っていることを確認する
         Assert.Equal(declared, context.Response.Headers.CacheControl.ToString());
+    }
+
+    // 静的アセット用の指示が、docstring と docs/security.md が述べている内容と実際に一致すること。
+    //
+    // <b>なぜ要るのか。</b> 統合テストは「配信された値が定数と一致するか」しか見ないので、
+    // <b>定数の値そのものに対しては恒真</b>になる ——実測でも、定数を
+    // "public,max-age=31536000,immutable" や "private,max-age=1800" に書き換えると
+    // 897 件すべて緑のまま通った。ところが定数には文章で約束した内容がある:
+    //   (a) SecurityHeadersMiddleware の docstring —— 期間を短く保ち immutable を付けない。
+    //       _Layout.cshtml と _ValidationScriptsPartial.cshtml が wwwroot/lib 配下を
+    //       asp-append-version なしで参照しているため、長期・immutable にすると
+    //       脆弱性修正後も古いファイルが利用者のキャッシュに残り、消す手段が無くなる。
+    //   (b) docs/security.md —— 運用者へ「この指示を名乗る」と具体的な値で説明している。
+    //
+    // <b>上限を手で書き写さない。</b> 「1 時間以下」とテストに書く形も試したが、それは
+    // docs/security.md の値の写しでしかなく、private へ狭める・public を落とすといった
+    // 変更を 1 つも捕まえられなかった(実測)。<b>文書から読み取って突き合わせる</b>ことで、
+    // 定数か文書のどちらかだけを動かす差分が必ず落ちる。
+    [Fact]
+    public void StaticAssetCacheControl_MatchesTheDocumentedDirective()
+    {
+        // 運用者向けドキュメントを読む
+        var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+
+        // ドキュメントが名乗ると説明している指示を取り出す(`Cache-Control: <値>` の形)
+        var documented = Regex.Match(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`\s*を名乗");
+        // 取り出せなければ落とす ——読めないものを「一致している」と扱わない(fail-closed)
+        Assert.True(
+            documented.Success,
+            "docs/security.md から静的アセットの Cache-Control を読み取れませんでした。"
+                + "書き方を変えたなら、この照合も同じ変更セットで直してください"
+                + "(読めないまま緑にすると、文書と実装のずれが誰にも見えなくなります)。");
+
+        // ドキュメントの値と定数が一字一句一致すること
+        // (期待値は定数、実測値はドキュメント側。失敗文言が「文書が何を名乗っているか」を示す)
+        Assert.Equal(
+            SecurityHeadersMiddleware.StaticAssetCacheControl,
+            documented.Groups["value"].Value.Trim());
+    }
+
+    // 定数が、docstring の述べている不変条件(短い期間・immutable なし)を満たしていること。
+    //
+    // 上の照合は「定数と文書が一致すること」しか見ないので、<b>両方を同時に</b>
+    // 長期・immutable へ書き換える差分は通ってしまう。ここは文書と独立に、
+    // 値そのものの性質を見る(手がかりを変えるのが要点)。
+    // 保存できる時間を延ばす向きに効く指示の接頭辞。
+    // max-age だけを見ると、共有キャッシュへは s-maxage が優先されるため素通りする
+    private static readonly string[] MaxAgeFamilyPrefixes =
+        ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
+
+    [Fact]
+    public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
+    {
+        // 定数を解析して、指示ごとの値を取り出す
+        var directives = SecurityHeadersMiddleware.StaticAssetCacheControl
+            // カンマ区切りの各指示へ分ける
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .ToList();
+
+        // immutable を付けていないこと(付けると再取得の手段が無くなる)
+        Assert.DoesNotContain(
+            directives,
+            d => d.Equals("immutable", StringComparison.OrdinalIgnoreCase));
+
+        // 保存できる時間を表す指示を<b>すべて</b>取り出す。
+        // <b>max-age だけを見てはいけない</b>: s-maxage は共有キャッシュに対して max-age を
+        // 上書きするので、"public,s-maxage=31536000,max-age=3600" と書けば
+        // プロキシは 1 年保存するのに max-age だけを見る検査は 3600 しか見ない
+        // (実測でこの形が全件緑のまま通った)。stale-* も配信を延ばす向きに効く
+        var lifetimeDirectives = directives
+            .Where(d => MaxAgeFamilyPrefixes.Any(p => d.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
+            .ToList();
+
+        // 期間の指示が 1 つも無ければ、キャッシュ期間の意図が読めないので落とす
+        Assert.NotEmpty(lifetimeDirectives);
+
+        // 取り出した指示を 1 つずつ確かめる
+        foreach (var directive in lifetimeDirectives)
+        {
+            // 値の部分(= の後ろ)を取り出す
+            var value = directive[(directive.IndexOf('=') + 1)..];
+            // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
+            Assert.True(
+                int.TryParse(value, out var seconds),
+                $"キャッシュ期間の値を秒数として読み取れません: {directive}");
+
+            // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
+            // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
+            Assert.True(
+                seconds <= 24 * 60 * 60,
+                $"静的アセットのキャッシュ期間が長すぎます({directive})。"
+                    + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
+                    + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
+                    + "どうしても延ばすなら、lib/ を版付き URL で参照する形へ変えたうえで、"
+                    + "docs/security.md の記載も同じ変更セットで直してください。");
+        }
     }
 
     /// <summary>

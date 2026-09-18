@@ -3,6 +3,8 @@ using IncidentInsight.Web.Authorization;
 // DbContext / 監査インターセプタ / Seeder を使う
 using IncidentInsight.Web.Data;
 // ApplicationUser / AppRoles を使う
+// AllowedHosts が実質全許可かの判定を使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models;
 // AuditOptions(監査ログ用設定)を使う
 using IncidentInsight.Web.Models.Auditing;
@@ -340,24 +342,68 @@ if (!app.Environment.IsDevelopment())
     // HTTP → HTTPS リダイレクト
     app.UseHttpsRedirection();
 
-    // 本番で AllowedHosts が "*"(全ホスト許可)のままだと、Host ヘッダ偽装
+    // 本番で AllowedHosts が全許可のままだと、Host ヘッダ偽装
     // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
     // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
     var allowedHosts = app.Configuration["AllowedHosts"];
-    // 未設定・空・ワイルドカードのいずれかなら警告ログを出す
-    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Trim() == "*")
+    // 未設定・空・ワイルドカードを 1 つでも含むなら警告ログを出す。
+    // 判定を AllowedHostsPolicy に置いているのは、"*;incident.example.com" のように
+    // 「実ホスト名を足したつもりで全ホスト許可のまま」という綴りを取りこぼさないため。
+    // <b>見るべきは "*" だけではない</b> ——HostFiltering は "*" / "[::]" / "0.0.0.0" の
+    // いずれかが 1 つでもあれば全許可へ切り替わり、しかも判定は IDNA/NFKC 正規化の後で行う
+    // (全角の "０.０.０.０" も同じ)。ここを狭める変更は、直したばかりの穴を戻すことになる。
+    // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
+    // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
+    if (AllowedHostsPolicy.IsPermissive(allowedHosts))
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
-            "AllowedHosts is '*' in Production. Set it to the real hostname(s) via the " +
-            "AllowedHosts setting or environment variable (semicolon-separated) to prevent " +
-            "Host-header spoofing, especially behind a reverse proxy (issue #64).");
+            "AllowedHosts is permissive in the {Environment} environment " +
+            "(current value: {AllowedHosts}). " +
+            "A list containing '*', '[::]' or '0.0.0.0' disables host filtering entirely. " +
+            "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
+            "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
+            "behind a reverse proxy (issue #64).",
+            // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
+            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える
+            app.Environment.EnvironmentName,
+            // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
+            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
+            allowedHosts);
     }
 }
 
-// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)を
-// 静的ファイルを含む全レスポンスに付与する。認証・ルーティングより前に置き、
-// 例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする。
+// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と
+// キャッシュ抑止の既定値を、静的ファイルを含む「ここより後ろへ届いた」全レスポンスに付与する。
+// 認証・ルーティングより前に置き、例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする
+// (例外時は ExceptionHandlerMiddleware がこれより後ろを再実行するので、ここは必ず通る)。
+//
+// これより手前で応答が完結する経路が 2 つあり、どちらもこのヘッダー群が付かない。
+// どちらもこのアプリのデータを 1 文字も載せないので実害は無いと判断している。
+//   1. 本番の UseHttpsRedirection …… http:// へのリクエストに 307 + Location を返して
+//      短絡する。本文を持たず、307 は明示的な指示が無ければキャッシュされない。
+//      ただし Location は Request.Host から組み立てるので、要求元の Host をそのまま含む。
+//      つまりこの経路だけは「リクエスト由来の値を映し返さない」が成り立たない ——
+//      塞ぐのは AllowedHosts の絞り込み(issue #64)で、既定の "*" のままだと
+//      Host: evil.example が Location: https://evil.example/... として返る。
+//      詳細は docs/security.md「レスポンスヘッダー」の例外 1 が正本。
+//   2. HostFiltering …… AllowedHosts を実ホスト名へ絞ると(docs/security.md が
+//      運用者にそう指示している)、Host ヘッダーが一致しないリクエストへ 400 を返して
+//      短絡する。これは汎用ホストが IStartupFilter として登録するミドルウェアなので、
+//      Program.cs のどこに何を書いても必ずこれより手前にいる。
+//      実測: 400 が返り Cache-Control は付かないが、本文は空ではない ——
+//      フレームワークの定型ページ("Bad Request - Invalid Hostname")が返る。
+//      安全な理由は「空だから」ではなく「定型文で、要求元のホスト名も業務データも
+//      含まないから」で、その 2 点は HostFilteringShortCircuitTests が固定している。
+//
+// 覆いたくなったときに「この行を移す」で済ませないこと。 UseExceptionHandler /
+// UseHsts / UseHttpsRedirection は上の if (!IsDevelopment()) の中にあるので、
+// この行をそこへ移すと Development ではミドルウェアが 1 度も登録されず、
+// セキュリティヘッダーもキャッシュ抑止の既定値も丸ごと消える。
+// 1 を覆うなら、ここの無条件登録は残したまま本番ブロックの UseHsts の手前へ
+// もう 1 度登録する(二重登録でも、既に指示がある応答へは触れない設計なので安全)か、
+// リダイレクトをこの行より後ろへ出す。2 は上記のとおり順序では覆えないため、
+// 覆うには IStartupFilter で HostFiltering より前へ差し込む必要がある。
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
 // 静的ファイル(wwwroot)配信を有効化。
