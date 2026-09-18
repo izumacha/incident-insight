@@ -458,6 +458,11 @@ public class HostFilteringShortCircuitTests
     //  アプリの起動が 1 回増えるので置いていない ——判定側は
     //  AllowedHostsPolicyTests が安く固定している)
     [InlineData("  *  ", 400, "前後の空白は落とされず \"*\" と一致しない")]
+    // <b>ただし「空白を足せば必ず死ぬ」わけではない。</b> HostString.ToUriComponent() は
+    // 角括弧の IPv6 リテラルで "]" より後ろを捨てるので、"[::] " は "[::]" へ戻り
+    // <b>ワイルドカードとして効いてしまう</b>。空白付きの綴りを一律に「一致しない」と
+    // 扱う判定（生の綴りを Trim() と比べる形）は、ここで全許可の設定を見逃す
+    [InlineData("[::] ", 200, "角括弧 IPv6 は \"]\" の後ろが捨てられ [::] に戻る")]
     // --- 全許可: 正規化(IDNA / NFKC)を通してから突き合わせること ---
     // <b>この 1 件が正規化の検証を支えている。</b> 全角で書いた 0.0.0.0 は
     // 正規化で 0.0.0.0 になるので全許可になる ——ClassifyEntries から
@@ -538,6 +543,48 @@ public class HostFilteringShortCircuitTests
 
         // 絞り込み自体は効いているので、1 本目の警告は出ない
         // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // <b>上の裏返しを固定する。</b> 「前後に空白がある項目は死んでいる」は
+    // <b>綴りによらず成り立つ規則ではない</b> ——HostString.ToUriComponent() は
+    // 角括弧の IPv6 リテラルで "]" より後ろを捨てるので、"[::1] " は "[::1]" へ戻り
+    // <b>実際には一致する</b>（実測。同じ仕組みで "[::] " はワイルドカードに戻る）。
+    //
+    // 生の綴りを Trim() と比べていた頃は、この項目を「どの Host とも一致しない」と
+    // 名指しし、削除してよいと案内していた ——従うと IPv6 のクライアントが一斉に
+    // 400 になる。<b>警告が障害を作る側に回る</b>ので、見逃しより重い誤りだった。
+    //
+    // 判定側だけで固定すると、判定が写している相手（フレームワークの正規化）が
+    // 変わったときに気づけないため、実際に 200 が返ることまで確かめる。
+    [Fact]
+    public async Task BracketedIpv6WithTrailingSpace_StillMatches_AndIsNotReportedAsDead()
+    {
+        // 角括弧の IPv6 リテラルに、うしろだけ空白が付いた形
+        const string liveIpv6Entry = "[::1] ";
+        // 実ホスト名と併記する（片方が生きている一覧という、いちばん紛らわしい形）
+        const string allowedHosts = $"{AllowedHost};{liveIpv6Entry}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 空白付きで書いた IPv6 の項目が、実際には Host: [::1] を受け付けること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, "[::1]")).StatusCode);
+
+        // 絞り込み自体は効いている（この一覧に無いホストは弾かれる）こと ——
+        // これが無いと「そもそも全許可だから 200 だった」と区別が付かない
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, RejectedHost)).StatusCode);
+
+        // <b>本命。</b> 生きている項目を「死んでいる」と名指ししないこと
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts));
+
+        // 全許可でもないので、1 本目の警告も出ないこと（2 本とも黙るのが正しい設定）
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 

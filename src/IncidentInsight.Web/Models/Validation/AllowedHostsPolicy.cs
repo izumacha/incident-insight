@@ -141,16 +141,21 @@ public static class AllowedHostsPolicy
     /// フレームワークと同じ正規化（IDNA / NFKC）を試み、成功したかを返す。
     /// </summary>
     /// <remarks>
-    /// <b>正規化の失敗を、2 つの問いで別々に解釈するために切り出してある。</b>
+    /// <para><b>正規化の失敗を、3 つの問いで別々に解釈するために切り出してある。</b>
     /// 「警告を出すべきか」（<see cref="IsPermissive"/>）は判断できない綴りを
     /// <b>ワイルドカード側へ倒す</b>のが正しい（鳴りすぎる＝安全側）。
-    /// 一方「死んだ項目を消すと何が起きるか」
-    /// （<see cref="ClassifyDeadEntryDeletion"/>）では倒してはいけない ——
-    /// 実測するとフレームワークの結果は<b>項目の並び順で変わる</b>ので、
-    /// ワイルドカード扱いに倒すと「消すな、消すと全許可になる」という
-    /// <b>事実と逆の案内</b>になりうる。あちらは正規化できない項目が 1 つでもあれば
-    /// <c>Unknown</c> を返し、断定そのものをやめる。
-    /// 正規化の手順は同じなので、成否の解釈だけを呼び出し側へ持たせる。
+    /// 「死んだ項目を消すと何が起きるか」（<see cref="ClassifyDeadEntryDeletion"/>）は
+    /// <b>宣言順に見て実際にその綴りへ到達したときだけ</b>断定をやめる ——
+    /// 実測するとフレームワークの結果は<b>項目の並び順で変わる</b>ため、
+    /// 到達しない壊れた項目まで「判断できない」に倒すと、確定している答えを取り落とす。
+    /// 「その項目は一致しえないか」（<see cref="IsNeverMatchingEntry"/>）は
+    /// <b>どちらにも倒さず対象から外す</b> ——突き合わせる値そのものが作れない以上、
+    /// 「空白のせいで一致しない」とは言えないため。</para>
+    ///
+    /// <para><b>成功したときの値も返すのが要点。</b> フレームワークが <c>Host</c> と
+    /// 突き合わせるのは正規化<b>後</b>の綴りなので、呼び出し側が生の綴りを見て判断すると
+    /// 正規化で落ちる文字（角括弧 IPv6 の <c>]</c> 以降）を見落とす。
+    /// 正規化の手順は同じなので、成否と結果の解釈だけを呼び出し側へ持たせる。</para>
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
     /// <param name="normalized">成功したときの正規化後の綴り。</param>
@@ -263,37 +268,6 @@ public static class AllowedHostsPolicy
     }
 
     /// <summary>
-    /// その項目の並びが、どの <c>Host</c> でも受け付ける状態かを返す。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>規則そのものは <see cref="ClassifyEntries"/> が持つ。</b>
-    /// ここは「原因は要らない、受け付けるかどうかだけ知りたい」呼び出し側
-    /// （<see cref="ClassifyDeadEntryDeletion"/>）のための言い換えで、
-    /// <b>判定を書き写さない</b>ためだけに存在する。</para>
-    ///
-    /// <para><b>正規化できない項目は <c>true</c> 側へ倒れる（仕様）。</b>
-    /// <see cref="ClassifyEntries"/> がそう倒すので、
-    /// <c>["0.0\t.0.0"]</c> は「どの Host でも受け付ける」と答える ——
-    /// 実際にはフレームワークが例外を投げてどの <c>Host</c> も受け付けないので、
-    /// <b>事実としては逆</b>だが、<see cref="IsPermissive"/>（警告を出すか）にとっては
-    /// 鳴らす側なので正しい。</para>
-    ///
-    /// <para><b>倒してほしくない呼び出し側が、自分で除く。</b>
-    /// <see cref="ClassifyDeadEntryDeletion"/> は「消したら何が起きるか」を答えるので
-    /// 倒すと事実と逆の案内になる。だからあちらは正規化できない項目を先に
-    /// <c>Unknown</c> で除いてからここへ来る ——
-    /// <b>この関数の側で一律に除いてはいけない</b>（除くと警告が出なくなる）。</para>
-    /// </remarks>
-    /// <param name="entries">分割済みの項目（トリムしていない生の値でよい）。</param>
-    /// <returns>
-    /// どの <c>Host</c> でも受け付ける状態なら <c>true</c>
-    /// （正規化できない項目は上記のとおり <c>true</c> 側へ数える）。
-    /// </returns>
-    private static bool AcceptsEveryHost(string[] entries) =>
-        // 「絞れている」以外はすべて、どの Host でも受け付ける側
-        ClassifyEntries(entries) != PermissiveReason.NotPermissive;
-
-    /// <summary>
     /// 書かれているのに<b>どの <c>Host</c> とも一致しえない</b>項目を返す。
     /// </summary>
     /// <remarks>
@@ -340,17 +314,41 @@ public static class AllowedHostsPolicy
     /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
     /// </summary>
     /// <remarks>
-    /// <b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
+    /// <para><b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
     /// 書くと、条件を広げたとき（項目の途中に紛れた制御文字まで
     /// 「一致しえない」と数えるようにする、など）に片方だけが取り残される。そのとき <see cref="ClassifyDeadEntryDeletion"/> は
     /// 「生きた項目が残る」と答えるのに実際には 0 件になり、
-    /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。
+    /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。</para>
+    ///
+    /// <para><b>生の綴りではなく<see cref="TryNormalizeEntry">正規化後</see>を見る。</b>
+    /// フレームワークが <c>Host</c> ヘッダーと突き合わせるのは<b>正規化を通したあとの値</b>で、
+    /// この正規化は空白を落とすとは限らない代わりに<b>落とす綴りがある</b> ——
+    /// <c>HostString.ToUriComponent()</c> は角括弧の IPv6 リテラルで
+    /// <c>]</c> より<b>うしろを丸ごと捨てる</b>（実測:
+    /// <c>"[::1] "</c> → <c>"[::1]"</c> ・ <c>"[::] "</c> → <c>"[::]"</c>。
+    /// 素のホスト名は <c>" a.test"</c> → <c>" a.test"</c> で空白が残るので、
+    /// <b>この違いは括弧付きの綴りだけに出る</b>）。
+    /// 生の綴りを <c>Trim()</c> と比べていた頃は、この 2 つを「死んでいる」と誤って名指ししていた:
+    /// <c>"a.test;[::1] "</c> は実測で <c>Host: [::1]</c> を<b>200 で受ける</b>のに
+    /// 「消してよい」と案内し（消すと IPv6 のクライアントが一斉に 400 になる＝こちらが障害を作る）、
+    /// <c>"[::] "</c> に至っては実測で<b>全ホスト許可</b>なのに
+    /// 「どのホスト名も受け付けない」と説明していた
+    /// （<see cref="IsPermissive"/> は正規化を通すので正しく全許可と答えており、
+    /// <b>2 本の警告が同じ項目について逆のことを言う</b>状態だった）。</para>
+    ///
+    /// <para><b>正規化できない綴りは、ここでは死んだ項目に数えない。</b>
+    /// 突き合わせる値そのものが作れない以上「空白のせいで一致しない」とは言えず、
+    /// その綴りは <see cref="IsPermissive"/> 側が
+    /// <see cref="PermissiveReason.UnparsableEntry"/> として専用の文面で拾う。
+    /// ここで拾うと、同じ項目に対して<b>原因の違う 2 本の警告</b>が出て取り違えのもとになる。</para>
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
     /// <returns>どの <c>Host</c> とも一致しえないなら <c>true</c>。</returns>
     private static bool IsNeverMatchingEntry(string entry) =>
-        // 前後の空白を落とすと別物になる項目は、Host ヘッダーと綴りが一致しえない
-        !string.Equals(entry, entry.Trim(), StringComparison.Ordinal);
+        // 正規化できない綴りは別の警告の担当なので、ここでは死んだ項目に数えない
+        TryNormalizeEntry(entry, out var normalized)
+        // 正規化後にまだ前後の空白が残る項目は、Host ヘッダーと綴りが一致しえない
+        && !string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal);
 
     /// <summary>
     /// 一致しえない項目を<b>消すだけ</b>にしたら何が起きるかの分類。
@@ -391,9 +389,17 @@ public static class AllowedHostsPolicy
     /// ワイルドカードで打ち切るため、正規化できない項目が<b>前</b>にあれば例外
     /// （どの Host も受け付けない）、<b>後ろ</b>なら評価されず全許可になる。
     /// 実測: <c>"0.0\t.0.0;0.0.0.0"</c> は例外、<c>"0.0.0.0;0.0\t.0.0"</c> は 200。
-    /// この並び順の意味づけを写し取ると、上流の実装詳細に判定が縛られる。
     /// どちらにせよ設定は壊れている（露出ではなく障害）ので、
     /// <b>断定せず「判断できない」と答え、案内も断定しない</b>のが正しい。</para>
+    ///
+    /// <para><b>ただし「壊れた項目があるか」を <c>Any</c> で見てはいけない。</b>
+    /// 上のとおり結果を左右するのは<b>並び順</b>なので、判定も
+    /// <see cref="ClassifyEntries"/> に任せて<b>宣言順に見て最初に当たったところで打ち切る</b>。
+    /// <c>Any</c> で畳むと、前にワイルドカードがあって<b>実際には評価されない</b>壊れた項目まで
+    /// <see cref="DeadEntryDeletionOutcome.Unknown"/> に倒してしまう ——
+    /// <c>"0.0.0.0;0.0\t.0.0; "</c> は 1 件目で打ち切られて 200（全許可）で確定しているのに
+    /// 「消した結果は予測できない」と答え、運用者は
+    /// <b>本当に必要な「ワイルドカードの項目も消せ」という案内を受け取れない</b>。</para>
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>消したときに何が起きるかの分類。</returns>
@@ -402,30 +408,38 @@ public static class AllowedHostsPolicy
         // 未設定なら消す対象そのものが無い
         if (allowedHosts is null) return DeadEntryDeletionOutcome.NothingToDelete;
 
-        // そもそも一致しえない項目が無ければ、消す話にならない
-        if (NeverMatchingEntries(allowedHosts).Count == 0) return DeadEntryDeletionOutcome.NothingToDelete;
+        // 分割は 1 回だけ行い、その場で「死んだ項目」と「残る項目」へ分ける
+        // （NeverMatchingEntries を件数のためだけに呼び直すと、同じ値を 3 回割って
+        //  同じ正規化を 2 周することになる。§6 DRY）
+        var entries = SplitEntries(allowedHosts);
 
-        // 死んだ項目を取り除いたあとに残る項目を取り出す
-        var survivors = SplitEntries(allowedHosts)
-            .Where(entry => !IsNeverMatchingEntry(entry))
-            .ToArray();
+        // 死んだ項目を取り除いたあとに残る項目を取り出す（規則は IsNeverMatchingEntry が持つ）
+        var survivors = entries.Where(entry => !IsNeverMatchingEntry(entry)).ToArray();
 
-        // 残る項目に正規化できない綴りがあれば、結果が並び順で変わるので断定しない
-        if (survivors.Any(entry => !TryNormalizeEntry(entry, out _)))
+        // 1 件も減らなかったなら、そもそも消す対象が無い＝消す話にならない
+        if (survivors.Length == entries.Length) return DeadEntryDeletionOutcome.NothingToDelete;
+
+        // 残る項目を、フレームワークと同じ「宣言順に見て最初に当たったら打ち切る」規則で分類する。
+        // <b>Any で「正規化できない項目があるか」を先に見てはいけない。</b> あの形は並び順を
+        // 無視するので、前にワイルドカードがあって<b>実際には評価されない</b>壊れた項目まで
+        // 「判断できない」に倒してしまう ——たとえば "0.0.0.0;0.0\t.0.0; " は、フレームワークが
+        // 1 件目で打ち切るため結果が 200（全許可）で確定しているのに Unknown と答え、
+        // 運用者は「ワイルドカードの項目も消せ」という本当に必要な案内を受け取れなかった
+        // （並び順の実測は UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList が固定）
+        var survivorReason = ClassifyEntries(survivors);
+
+        // 順に見た結果、実際に正規化できない綴りへ到達したときだけ断定をやめる
+        return survivorReason switch
         {
-            // 判断できないことを、そのまま呼び出し側へ伝える
-            return DeadEntryDeletionOutcome.Unknown;
-        }
+            // 壊れた項目が先に評価される並びなので、消した結果は並び順しだいで変わる
+            PermissiveReason.UnparsableEntry => DeadEntryDeletionOutcome.Unknown,
 
-        // ここまで来れば全項目が正規化できる。ClassifyEntries が「判断できない綴りを
-        // 全許可側へ倒す」のは正規化に失敗したときだけなので、上のガードを
-        // 通ったあとは倒し方の違いが消え、そのまま使ってよい
-        // （倒し方だけが違う 2 つ目の判定を別に持つと、使われない分岐が残る。§6）
-        return AcceptsEveryHost(survivors)
-            // 消すと全ホストを受け付ける状態になる
-            ? DeadEntryDeletionOutcome.WouldAllowEveryHost
             // 消しても全許可にはならない＝消してよい
-            : DeadEntryDeletionOutcome.Safe;
+            PermissiveReason.NotPermissive => DeadEntryDeletionOutcome.Safe,
+
+            // 残りが 0 件（既定の ["*"] へ落ちる）か、残った項目自体がワイルドカード
+            _ => DeadEntryDeletionOutcome.WouldAllowEveryHost,
+        };
     }
 
     /// <summary>
