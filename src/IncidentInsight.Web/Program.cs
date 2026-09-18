@@ -354,13 +354,24 @@ if (!app.Environment.IsDevelopment())
     // (全角の "０.０.０.０" も同じ)。ここを狭める変更は、直したばかりの穴を戻すことになる。
     // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
     // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
-    if (AllowedHostsPolicy.IsPermissive(allowedHosts))
+    // <b>「絞れていない」だけでなく、その原因まで運用者へ渡す。</b>
+    // IsPermissive が true になる経路は複数あり(未設定/空・ワイルドカード・
+    // 正規化できない綴り。<b>正本は PermissiveReason の値そのもの</b>で、
+    // ここで数えて書くと原因を足したときこの数字だけが古くなる)、
+    // 以前はどれでも「'*' か '[::]' か '0.0.0.0' を消せ」と
+    // 出していた ——値にワイルドカードが 1 つも無い綴り("0.0\t.0.0" のように
+    // 途中へ制御文字が紛れた形)では、<b>存在しないものを探させる案内</b>になり、
+    // しかも実際の症状(実測では毎リクエストが例外)とも噛み合わない。
+    // 文面の対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中で、
+    // 書くとテストから 1 行も走らないため(下の警告と同じ理由)
+    var permissiveReason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
+    // 「絞れている」以外なら警告する(判定そのものは AllowedHostsPolicy が持つ)
+    if (permissiveReason != AllowedHostsPolicy.PermissiveReason.NotPermissive)
     {
         // 運用者が気づけるよう Warning レベルで通知する
         app.Logger.LogWarning(
             "AllowedHosts is permissive in the {Environment} environment " +
-            "(current value: {AllowedHosts}). " +
-            "A list containing '*', '[::]' or '0.0.0.0' disables host filtering entirely. " +
+            "(current value: {AllowedHosts}). {Cause} " +
             "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
             "behind a reverse proxy (issue #64).",
@@ -369,7 +380,66 @@ if (!app.Environment.IsDevelopment())
             app.Environment.EnvironmentName,
             // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
             // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
-            allowedHosts);
+            allowedHosts,
+            // その設定に合った原因の説明(直し方は原因によらず同じなので次の文で共通)
+            AllowedHostsPolicy.PermissiveCauseMessage(permissiveReason));
+    }
+
+    // 上の警告の<b>裏返し</b>を拾う。あちらは「絞ったつもりで全部通る」形しか見ないので、
+    // 「並べたつもりで一部が通らない」形は素通りする ——踏みやすいのは区切りのうしろに
+    // 空白を入れた複数指定 "a.example.test; b.example.test" で、一覧を書くときの自然な形。
+    // フレームワークは項目をトリムしないため 2 件目はどの Host とも一致せず、実測では
+    // 1 件目が 200・2 件目が 400 になる。つまり<b>サイトは生きたまま特定のホスト名だけが
+    // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
+    // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
+    // そのまま誤った安心になる。
+    // <b>判定は正規化後の綴りに対して行う。</b> 生の綴りを見ると、正規化で消える文字
+    // (角括弧 IPv6 の "]" より後ろ)を持つ項目を誤って名指しする ——実測では
+    // "[::1] " は Host: [::1] を 200 で受けるのに「消してよい」と案内し(消した運用者が
+    // IPv6 のクライアントを一斉に 400 にする)、"[::] " は全ホスト許可なのに
+    // 「どのホスト名も受け付けない」と説明していた。規則と実測は
+    // AllowedHostsPolicy の docstring が正本
+    var neverMatching = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
+    // 一致しえない項目が 1 つでもあれば、書いた本人にしか直せないので名指しで知らせる
+    if (neverMatching.Count > 0)
+    {
+        // 上の警告とは原因も対処も違うので、別のメッセージとして出す
+        // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
+        // <b>名指しした項目 1 件の事実だけを述べ、一覧全体の症状は名乗らない。</b>
+        // 鳴りうる綴りで結果がばらばらだから: (a) 同じ一覧にワイルドカードがあれば全部 200、
+        // (b) 死んだ項目しか無ければ全部 400、(c) 生きた項目と混ざっていればその 1 件だけが 400、
+        // (d) 正規化できない綴りならフレームワーク自身が例外を投げる(200 でも 400 でもない)。
+        // (d) があるので「全部死んでいれば 400」とも書けない ——(d) はこの警告にも
+        // IsPermissive にも同時に載るため、断定するとその場で 2 本が食い違う。
+        //
+        // <b>直し方の案内は、消したときに何が起きるかで変える。</b> 死んだ項目を消したあと、
+        // 残る一覧がどの Host でも受け付ける状態になるなら「消す」は直し方ではない
+        // (400 が止まるので直ったように見えるが、実際は issue #64 へ移るだけ)。
+        // 化ける経路は「0 件になって ["*"] へ落ちる」と「残った項目自体がワイルドカード」の
+        // 2 つで、件数だけでは判別できない。さらに、残る項目に正規化できない綴りがあると
+        // フレームワークの結果が並び順で変わるので断定できない ——
+        // 3 値で受けるのはそのため(規則は AllowedHostsPolicy の docstring が正本)
+        // 対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中なので、
+        // 書くとテストから 1 行も走らない（実測で、いちばん危ない分岐の文面を
+        // 反対の意味へ差し替えても全 1000 件が緑のまま通った）
+        var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(
+            AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts));
+
+        // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
+        app.Logger.LogWarning(
+            "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
+            "in the {Environment} environment: {NeverMatchingEntries}. " +
+            "Host filtering does not trim entries, so these entries keep surrounding whitespace " +
+            "after normalisation and no Host header can ever equal them. {HowToFix} (issue #64).",
+            // 何件あるかを先に出す ——値が長いときでも件数だけは読める
+            neverMatching.Count,
+            // どの環境の話かを添える(上の警告と同じ理由)
+            app.Environment.EnvironmentName,
+            // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
+            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない
+            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")),
+            // その設定に合った直し方(消してよいかどうかで文面が変わる)
+            howToFix);
     }
 }
 

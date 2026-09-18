@@ -1,3 +1,5 @@
+// AllowedHosts の判定を、実測した扱いと突き合わせるために使う
+using IncidentInsight.Web.Models.Validation;
 // テスト対象のミドルウェア(キャッシュ抑止の値の定数)を使う
 using IncidentInsight.Web.Middleware;
 // WebApplicationFactory(実 HTTP パイプラインでの統合テスト)を使う
@@ -357,6 +359,12 @@ public class HostFilteringShortCircuitTests
     // 許可リストに無いホスト名（本文へ映し返されていないことを確かめるために名前で持つ）
     private const string RejectedHost = "evil.example.test";
 
+    // 複数指定を書いたときの 2 件目（「区切りのうしろの空白」を再現するために使う）
+    private const string SecondHost = "www.example.test";
+
+    // ホスト名として正規化できない綴り（途中にタブが紛れた形）
+    private const string UnparsableHost = "0.0\t.0.0";
+
     /// <summary>
     /// <c>AllowedHosts</c> を実ホスト名へ絞ったアプリ。
     /// </summary>
@@ -384,13 +392,9 @@ public class HostFilteringShortCircuitTests
         // (組み立てを書き写すと、ヘッダーやタイムアウトの既定を足したときに
         //  この 2 つのテストにだけ適用されない状態ができる)
         var client = _fixture.CreateNonRedirectingClient();
-        // 許可していないホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // Host ヘッダーだけを許可リスト外の値にする
-        request.Headers.Host = RejectedHost;
 
-        // 短絡した応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可していないホスト名で叩き、短絡した応答を受け取る
+        var response = await SendWithHostAsync(client, RejectedHost);
 
         // 手前で弾かれていること(通ってしまうと、そもそも絞り込みが効いていない)
         Assert.Equal(System.Net.HttpStatusCode.BadRequest, response.StatusCode);
@@ -413,9 +417,23 @@ public class HostFilteringShortCircuitTests
     // HostFiltering の挙動と合っているかは、起動したアプリでしか確かめられない。
     //
     // <b>200 と 400 を同じ表で見る。</b> 「通ること」だけを並べると、判定を広げる変異
-    // (全拒否になる設定まで permissive と呼ぶ形)を 1 つも捕まえられない ——
-    // AllowedHostsPolicyTests の期待値はこの表と 1 対 1 で対応しているので、
-    // 片側だけを見ていると対応が崩れても緑のまま通る。
+    // (全拒否になる設定まで permissive と呼ぶ形)を 1 つも捕まえられない。
+    //
+    // <b>実測した扱いを、そのまま判定側にも突き合わせる。</b> 各行は 2 つを見る:
+    // (a) フレームワークが実際にどう扱うか、(b) AllowedHostsPolicy.IsPermissive が
+    // それと同じ答えを出すか。<b>(b) が要点である</b> ——(a) だけだと「フレームワークの
+    // 挙動」を確かめるだけで、判定側を壊しても落ちない。実測でも、ClassifyEntries から
+    // 正規化(ToUriComponent)を外す変異は (a) だけの版では全件緑のまま通った
+    // (フレームワークは自分で正規化するので 200 のまま)。(b) があれば、
+    // 全角の行で「200 なのに判定は false」となって必ず落ちる。
+    //
+    // <b>覆っている範囲は正しく見積もること。</b> ここはアプリを 1 件につき 1 回起動する
+    // (一時 DB を作り、マイグレーションを全部流す)ので、AllowedHostsPolicyTests の
+    // ケースすべては写さない。選んでいるのは<b>フレームワーク側の前提が意外で、かつ
+    // 判定がそれに依存している</b>綴りだけ ——ワイルドカード 3 綴り・既定値への
+    // フォールバック・トリムしないこと・正規化。
+    // <b>「両方の表が 1 対 1 に対応している」とは書かない</b> ——一致を機械的に守って
+    // いるのはここに並べた行だけで、残りは AllowedHostsPolicyTests 側にしかない。
     //
     // 本文が 1 行も違わない写しを設定値の数だけ作らないため、[Theory] に畳んである
     // (CLAUDE.md §6 DRY)。
@@ -435,10 +453,22 @@ public class HostFilteringShortCircuitTests
     // --- 全拒否: 「空の項目は無害」なのは空でない項目が残る場合だけ ---
     // " ; " は項目が 2 件残るので既定へ落ちず、許可リストが [" ", " "] になる
     [InlineData(" ; ", 400, "空白は項目として残るので既定へ落ちない")]
-    // <b>トリムされない。</b> 空白付きのワイルドカードは正規化しても綴りが一致しない
+    // <b>トリムされない。</b> 空白付きのワイルドカードは正規化しても綴りが一致しない。
+    // (AllowedHost と併記した形は、同じ 1 つの仕組みしか確かめられないうえ
+    //  アプリの起動が 1 回増えるので置いていない ——判定側は
+    //  AllowedHostsPolicyTests が安く固定している)
     [InlineData("  *  ", 400, "前後の空白は落とされず \"*\" と一致しない")]
-    // 実ホスト名と併記しても同じ(併記した側は一致しうるが、送るのは許可外のホスト)
-    [InlineData(AllowedHost + "; * ", 400, "空白付きのワイルドカードは一致しない")]
+    // <b>ただし「空白を足せば必ず死ぬ」わけではない。</b> HostString.ToUriComponent() は
+    // 角括弧の IPv6 リテラルで "]" より後ろを捨てるので、"[::] " は "[::]" へ戻り
+    // <b>ワイルドカードとして効いてしまう</b>。空白付きの綴りを一律に「一致しない」と
+    // 扱う判定（生の綴りを Trim() と比べる形）は、ここで全許可の設定を見逃す
+    [InlineData("[::] ", 200, "角括弧 IPv6 は \"]\" の後ろが捨てられ [::] に戻る")]
+    // --- 全許可: 正規化(IDNA / NFKC)を通してから突き合わせること ---
+    // <b>この 1 件が正規化の検証を支えている。</b> 全角で書いた 0.0.0.0 は
+    // 正規化で 0.0.0.0 になるので全許可になる ——ClassifyEntries から
+    // ToUriComponent() を外す変異は、これが無いと全件緑のまま通る
+    // (判定側も「全角は一致しない」で辻褄が合ってしまうため)
+    [InlineData("０.０.０.０", 200, "全角数字は IDNA/NFKC で 0.0.0.0 に正規化される")]
     public async Task AllowedHostsValue_DecidesWhetherAnUnlistedHostGetsThrough(
         string allowedHosts, int expectedStatus, string why)
     {
@@ -446,20 +476,130 @@ public class HostFilteringShortCircuitTests
         using var fixture = new AllowedHostsFixture(allowedHosts);
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
-        // 許可リストに「書かれていない」ホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // 一致しないはずの Host ヘッダーを乗せる
-        request.Headers.Host = RejectedHost;
 
-        // 応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可リストに「書かれていない」ホスト名で叩く
+        var response = await SendWithHostAsync(client, RejectedHost);
 
-        // 期待した扱いになっていること(落ちたときに理由が読めるよう、根拠も出す)
+        // (a) フレームワークが期待した扱いをしていること(落ちたときに理由が読めるよう根拠も出す)
         Assert.True(
             expectedStatus == (int)response.StatusCode,
             $"AllowedHosts=\"{allowedHosts}\" は {expectedStatus} になるはず({why})。" +
             $"実際は {(int)response.StatusCode}。" +
             "ここが変わったなら AllowedHostsPolicy の判定も同じだけ動かす必要がある");
+
+        // 200 で通る＝どんな Host も受け付ける＝警告を出すべき設定、という対応を作る
+        var shouldWarn = expectedStatus == 200;
+
+        // (b) 判定側が実測と同じ答えを出していること(ここが判定の退行を落とす)
+        Assert.True(
+            shouldWarn == AllowedHostsPolicy.IsPermissive(allowedHosts),
+            $"AllowedHosts=\"{allowedHosts}\" を、フレームワークは" +
+            $"{(shouldWarn ? "素通りさせる" : "弾く")}のに " +
+            $"IsPermissive は {AllowedHostsPolicy.IsPermissive(allowedHosts)} を返した({why})。" +
+            "判定はフレームワークの挙動を写したものなので、食い違ったらどちらかが退行している");
+    }
+
+    // <b>この PR の中心にある実測を固定する。</b> 区切りのうしろに空白を入れた複数指定は、
+    // 1 件目が生きたまま 2 件目だけが死ぬ ——「サイトは動いているのに特定のホスト名だけが
+    // 落ちる」という、監視にもヘルスチェックにも出ない形。
+    //
+    // <b>この 1 件だけは、片方のホストを見るだけでは足りない。</b> 400 側だけを見ると
+    // 「絞り込みが強すぎて全部落ちている」設定と区別が付かず、200 側だけを見ると
+    // 「ふつうに動いている」としか読めない。<b>2 つ揃ってはじめて「部分的に死んでいる」</b>
+    // という主張になる ——そしてその主張が NeverMatchingEntries を足した理由そのもので、
+    // docs/security.md と CLAUDE.md と Program.cs のコメントが揃ってこれを根拠にしている。
+    //
+    // 固定していないと、将来フレームワークが項目をトリムし始めた（＝この綴りが正しく
+    // 動くようになった）ときに、警告だけが「死んでいる」と言い続けるのに
+    // <b>全件緑のまま</b>になる。
+    [Fact]
+    public async Task WhitespaceAfterASeparator_KillsOnlyThatEntry()
+    {
+        // 一覧を書くときに自然に入る形（区切りのうしろに空白）。
+        // <b>1 つの定数にまとめる</b> ——起動する設定と、判定へ渡す設定が
+        // 別々の綴りへずれると、HTTP 側と判定側で違う設定を語りながら緑のままになる
+        const string allowedHosts = $"{AllowedHost}; {SecondHost}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 1 件目（空白が付いていない側）は、これまでどおり受け付けられること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+        // 2 件目（空白が付いた側）は、書いてあるのに弾かれること ——ここが本命
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, SecondHost)).StatusCode);
+
+        // 判定側もその 2 件目を「一致しえない項目」として名指しできること
+        // （実測とコードの主張がここで結び付く）
+        Assert.Equal(
+            $" {SecondHost}",
+            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts)));
+
+        // 絞り込み自体は効いているので、1 本目の警告は出ない
+        // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // <b>上の裏返しを固定する。</b> 「前後に空白がある項目は死んでいる」は
+    // <b>綴りによらず成り立つ規則ではない</b> ——HostString.ToUriComponent() は
+    // 角括弧の IPv6 リテラルで "]" より後ろを捨てるので、"[::1] " は "[::1]" へ戻り
+    // <b>実際には一致する</b>（実測。同じ仕組みで "[::] " はワイルドカードに戻る）。
+    //
+    // 生の綴りを Trim() と比べていた頃は、この項目を「どの Host とも一致しない」と
+    // 名指しし、削除してよいと案内していた ——従うと IPv6 のクライアントが一斉に
+    // 400 になる。<b>警告が障害を作る側に回る</b>ので、見逃しより重い誤りだった。
+    //
+    // 判定側だけで固定すると、判定が写している相手（フレームワークの正規化）が
+    // 変わったときに気づけないため、実際に 200 が返ることまで確かめる。
+    [Fact]
+    public async Task BracketedIpv6WithTrailingSpace_StillMatches_AndIsNotReportedAsDead()
+    {
+        // 角括弧の IPv6 リテラルに、うしろだけ空白が付いた形
+        const string liveIpv6Entry = "[::1] ";
+        // 実ホスト名と併記する（片方が生きている一覧という、いちばん紛らわしい形）
+        const string allowedHosts = $"{AllowedHost};{liveIpv6Entry}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 空白付きで書いた IPv6 の項目が、実際には Host: [::1] を受け付けること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, "[::1]")).StatusCode);
+
+        // 絞り込み自体は効いている（この一覧に無いホストは弾かれる）こと ——
+        // これが無いと「そもそも全許可だから 200 だった」と区別が付かない
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, RejectedHost)).StatusCode);
+
+        // <b>本命。</b> 生きている項目を「死んでいる」と名指ししないこと
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts));
+
+        // 全許可でもないので、1 本目の警告も出ないこと（2 本とも黙るのが正しい設定）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    /// <summary>指定した <c>Host</c> ヘッダーだけを差し替えて 1 回叩く。</summary>
+    /// <param name="client">リダイレクトを追わないクライアント。</param>
+    /// <param name="host">送る Host ヘッダーの値。</param>
+    /// <returns>受け取った応答。</returns>
+    private static Task<HttpResponseMessage> SendWithHostAsync(HttpClient client, string host)
+    {
+        // 検査対象の経路（認証不要で 200 が返る画面）へのリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // Host ヘッダーだけを指定された値にする
+        request.Headers.Host = host;
+        // 応答を返す（待つのは呼び出し側）
+        return client.SendAsync(request);
     }
 
     // 正規化できない綴りは、フレームワーク自身が例外を投げること。
@@ -474,16 +614,50 @@ public class HostFilteringShortCircuitTests
         using var fixture = new AllowedHostsFixture("0.0.0.0\t");
         // リダイレクトを追わないクライアントを受け取る
         var client = fixture.CreateNonRedirectingClient();
-        // どのホスト名でもよいのでリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // 一致しないはずの Host ヘッダーを乗せる
-        request.Headers.Host = RejectedHost;
 
         // 許可リストの正規化そのものが失敗するので、応答に至らず例外になる
-        var error = await Assert.ThrowsAsync<ArgumentException>(() => client.SendAsync(request));
+        var error = await Assert.ThrowsAsync<ArgumentException>(
+            () => SendWithHostAsync(client, RejectedHost));
 
         // 失敗の出どころがホスト名の正規化であること(別の理由で落ちても緑にしない)
         Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
+    }
+
+    // <b>フレームワークは項目を宣言順に正規化し、最初のワイルドカードで打ち切る。</b>
+    // そのため正規化できない項目が「前」にあれば例外、「後ろ」なら評価されず全許可になる。
+    //
+    // <b>この 1 件が ClassifyDeadEntryDeletion の Unknown を支えている。</b>
+    // 「消したら何が起きるか」を bool で答えると、どちらかの並びで必ず事実と逆の案内になる
+    // ——だから断定をやめた、というのが 3 値にした理由。その前提が上流の実装ごと
+    // 変わったら（例外を捕まえて読み飛ばすようになる等）Unknown は過剰になるので、
+    // 判定側の表ではなく<b>実際のフレームワーク</b>に対して固定しておく必要がある
+    // （CLAUDE.md: フレームワーク側の前提はこのクラスが、判定の境界は
+    //   AllowedHostsPolicyTests が固定する）。
+    [Fact]
+    public async Task UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList()
+    {
+        // 正規化できない項目が<b>ワイルドカードより前</b>にある並び
+        using (var fixture = new AllowedHostsFixture($"{UnparsableHost};0.0.0.0"))
+        {
+            // 先に正規化されて失敗するので、応答に至らず例外になる
+            var error = await Assert.ThrowsAsync<ArgumentException>(
+                () => SendWithHostAsync(fixture.CreateNonRedirectingClient(), RejectedHost));
+
+            // <b>出どころがホスト名の正規化であることまで見る。</b> 型だけだと、
+            // 起動や設定バインドが別の理由で投げても緑になり、
+            // 「並び順で変わる」という前提が崩れたことを見逃す
+            Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
+        }
+
+        // 同じ 2 項目を<b>入れ替えた</b>だけの並び
+        using (var fixture = new AllowedHostsFixture($"0.0.0.0;{UnparsableHost}"))
+        {
+            // 先頭のワイルドカードで打ち切られるので、壊れた項目は評価されず全許可になる
+            var response = await SendWithHostAsync(fixture.CreateNonRedirectingClient(), RejectedHost);
+
+            // 許可リストに無いホスト名が素通りすること（＝並び順で答えが反転する）
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
     }
 
     /// <summary>指定した `AllowedHosts` で起動するアプリ。</summary>
@@ -500,7 +674,6 @@ public class HostFilteringShortCircuitTests
             ["AllowedHosts"] = allowedHosts,
         });
 
-
     // 許可したホスト名なら、これまでどおりミドルウェアが既定の no-store を入れること。
     //
     // 上の検査は「弾かれること」しか見ないので、絞り込みが強すぎて全リクエストが 400 に
@@ -510,13 +683,9 @@ public class HostFilteringShortCircuitTests
     {
         // 上と同じ組み立てのクライアントを共有ヘルパーから受け取る
         var client = _fixture.CreateNonRedirectingClient();
-        // 許可したホスト名でリクエストを組み立てる
-        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
-        // Host ヘッダーを許可リストの値にする
-        request.Headers.Host = AllowedHost;
 
-        // 通常どおり処理された応答を受け取る
-        var response = await client.SendAsync(request);
+        // 許可したホスト名で叩き、通常どおり処理された応答を受け取る
+        var response = await SendWithHostAsync(client, AllowedHost);
 
         // 手前で弾かれていないこと
         Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
