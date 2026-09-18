@@ -4816,9 +4816,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <para><b>既定の腕は「誤った案内」ではなく例外にする。</b> C# の switch 式は既定の腕を
     /// 書かないと、enum へキャストしうる未定義の値 (<c>(EnumArgumentProtection)2</c>) について
     /// CS8524 を出す ——網羅性の警告は「名前の付いた値を足し忘れた」ことだけを指してはくれない。
-    /// そこで既定の腕を置き、<b>何が未対応かを名指しして落とす</b>。守り方を足した人はこの例外で
-    /// 気付き、案内どおりここへ 1 行足せば直る。黙って別の壊れ方として説明されるより、
-    /// 落ちて名前を出すほうが安全側(§9 fail-closed)。</para>
+    /// そこで既定の腕を置き、<b>何が未対応かを名指しして落とす</b>。黙って別の壊れ方として
+    /// 説明されるより、落ちて名前を出すほうが安全側(§9 fail-closed)。</para>
+    ///
+    /// <para><b>ただし既定の腕だけでは「守り方を足した人が気付く」働きを持たない(issue #237)。</b>
+    /// この関数を呼ぶのは <see cref="NonNullableEnumArguments"/> だけで、そこは
+    /// <b>違反(非 null 許容で受けている enum 引数)を見つけたときにしか</b>呼ばない。実在する
+    /// 引数が全部 <c>Nullable&lt;T&gt;</c> である限り導出は空集合なので、
+    /// <see cref="EnumArgumentProtection"/> に 3 つ目の値を足しても switch は
+    /// <b>一度も評価されない</b>。しかも既定の腕がある分、名前の付いた値の足し忘れを指す
+    /// CS8509 も出なくなる ——実測でも 3 つ目の値を足すと<b>ビルド警告 0・テストは全件緑のまま、
+    /// 件数すら動かなかった</b>。このファイルが繰り返し書いている「値を誰も読んでいない表」と
+    /// 同じ形が、その説明を書いている関数自身に残っていたことになる。そこで
+    /// <see cref="HowANonNullableEnumBreaks_CoversEveryProtection"/> が
+    /// <b>enum 自身から全値を導いて</b>この関数へ通す ——「気付く」を担っているのはその検査で、
+    /// 既定の腕はそこで名前を出して投げる役。</para>
     /// </remarks>
     /// <param name="protection">その引数の守り方。</param>
     /// <returns>非 null 許容で受けたときに何が起きるかの 1 文。</returns>
@@ -4837,6 +4849,63 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 + $"{nameof(HowANonNullableEnumBreaks)} にも同じ変更セットで 1 行足すこと"
                 + "(足さないと、失敗文言が読み手を別の直し方へ案内する)。"),
         };
+
+    // 上の switch が <b>enum のすべての値</b>に答えを持つこと。
+    //
+    // <b>なぜ要るのか(issue #237)。</b> HowANonNullableEnumBreaks の既定の腕は「守り方を
+    // 足した人が気付く」ための仕掛けだが、その腕が評価されるのは NonNullableEnumArguments が
+    // <b>違反を見つけたとき</b>だけで、実在する enum 引数が全部 Nullable&lt;T&gt; である今は
+    // 一度も呼ばれない。実測でも EnumArgumentProtection へ 3 つ目の値を足すと、
+    // <b>ビルド警告 0・テストは全件緑のまま、件数すら動かなかった</b>。この検査が enum 自身から
+    // 全値を導いて通すことで、足した時点で既定の腕が実際に投げ、docstring の主張と挙動が一致する。
+    //
+    // <b>一覧は表(EnumArgumentProtections)からではなく enum から導く。</b> 表を基準にすると
+    // 「値は定義したが、まだどの引数にも使っていない」状態がこの検査から外れる ——
+    // 守り方は引数より先に定義されるのが普通なので、それは最も起きやすい形になる
+    // (このファイルが「一覧は表からではなく導出から作る」と繰り返し書いているのと同じ理由)。
+    [Fact]
+    public void HowANonNullableEnumBreaks_CoversEveryProtection()
+    {
+        // 守り方の一覧を enum 自身から導く(手書きの一覧をここに置かない)
+        var protections = Enum.GetValues<EnumArgumentProtection>();
+
+        // 守り方が 1 つも拾えないのは「enum が空になった」より「導出が壊れた」可能性が高い。
+        // 「対象ゼロ＝緑」にせず落として、どちらを直すか人に決めさせる(このファイルの他の
+        // 網羅ガードと同じ fail-closed)
+        Assert.True(protections.Length > 0,
+            $"{nameof(EnumArgumentProtection)} の値が 1 つも見つからない。"
+            + "値を消したなら、この検査も同じ変更セットで直すこと"
+            + "(直さないと、壊れ方の説明の網羅検査が対象ゼロで全件緑になる)。");
+
+        // 守り方ごとに説明文を引く。未対応の値がここで初めて評価され、
+        // HowANonNullableEnumBreaks の既定の腕が名前を出して落とす
+        var descriptions = protections.ToDictionary(
+            protection => protection,
+            HowANonNullableEnumBreaks);
+
+        // 「腕はあるが中身が空」も落とす。空文字では「どちらの壊れ方か」を名指しできず、
+        // 失敗文言は "<キー> (X: )" という読み手に何も伝えない形になる
+        Assert.All(descriptions, entry => Assert.False(
+            string.IsNullOrWhiteSpace(entry.Value),
+            $"守り方 {entry.Key} の壊れ方の説明が空。"
+            + $"{nameof(HowANonNullableEnumBreaks)} にその守り方固有の 1 文を書くこと。"));
+
+        // 同じ文面を共有している守り方の組を拾う(あれば違反)
+        var shared = descriptions
+            .GroupBy(entry => entry.Value, StringComparer.Ordinal)
+            .Where(group => group.Count() > 1)
+            .Select(group => string.Join(" / ", group.Select(entry => entry.Key)))
+            .ToList();
+
+        // 文面は守り方ごとに違うこと。既存の腕を写して足すと、読み手は<b>別の守り方の</b>
+        // 壊れ方を説明される ——この関数が三項演算子をやめてまで避けた状態そのものが、
+        // 空でない文字列のまま戻ってくる(上の 2 つの検査はどちらも通ってしまう)
+        Assert.True(shared.Count == 0,
+            "壊れ方の説明が守り方をまたいで同じ文面になっている。"
+            + "守り方ごとに、その守り方に固有の 1 文を書くこと"
+            + "(写すと、読み手は別の守り方の壊れ方を説明され、別の直し方へ案内される):"
+            + Environment.NewLine + string.Join(Environment.NewLine, shared));
+    }
 
     // 上の判定が、通す側と落とす側の<b>両方</b>で意図どおりに働くこと。
     // 表に載っている引数は壊れ方まで名指しし、載っていない引数は「未登録」と言う
