@@ -148,9 +148,30 @@ public class AllowedHostsPolicyTests
     [InlineData("   ", "   ")]
     // " ; " は項目が 2 件残り、どちらも死んでいる
     [InlineData(" ; ", " | ")]
-    // 正規化できない綴りも空白を含むのでここに載る ——
-    // IsPermissive 側でも鳴るが、運用者への指示(空白を外せ)は両方で一致する
-    [InlineData("0.0.0.0\t", "0.0.0.0\t")]
+    // <b>正規化できない綴りはここに載せない。</b> 突き合わせる値そのものが作れない以上
+    // 「空白のせいで一致しない」とは言えず、この綴りは IsPermissive 側が
+    // UnparsableEntry 専用の文面（症状は全拒否ではなく毎リクエストの例外）で拾う。
+    // 両方で鳴らすと、同じ項目について原因の違う 2 本が出て取り違えのもとになる
+    [InlineData("0.0.0.0\t", "")]
+
+    // --- 正規化で消える文字を持つ綴り（角括弧の IPv6）---
+    // <b>生の綴りを Trim() と比べてはいけない。</b> HostString.ToUriComponent() は
+    // "]" より後ろを丸ごと捨てるので、実測では "[::1] " → "[::1]"・"[::] " → "[::]" となり、
+    // フレームワークはこれらを<b>一致させる</b>（"[::] " に至っては全ホスト許可になる）。
+    // 生の綴りで見ていた頃は、200 で受けている項目を「消してよい」と案内していた ——
+    // 従うと IPv6 のクライアントが一斉に 400 になる（こちらが障害を作る側）
+    [InlineData("incident.example.test;[::1] ", "")]
+    [InlineData("[::] ", "")]
+    // 捨てられるのは "]" の直後が :port でないときだけ。ポートが続けば空白は残るので、
+    // こちらは従来どおり死んだ項目として名指しする（実測: "[fe80::1]:8080 " はそのまま）
+    [InlineData("incident.example.test;[fe80::1]:8080 ", "[fe80::1]:8080 ")]
+    // <b>残っている境界: 括弧の内側へ入った空白は名指しできない。</b> 素の IPv6 を書くと
+    // HostString が括弧を補うので、実測では "::1 " → "[::1 ]" となり空白が<b>内側</b>へ入る。
+    // 正規化後の前後には空白が無いのでここでは拾えないが、Host ヘッダーは解析の時点で
+    // 空白を持たないため実際には一致しない＝<b>見逃す側</b>の誤り。
+    // 取りこぼしは docs/security.md が「前後の空白しか検出できない」と断っているとおりで、
+    // 逆向き（生きている項目を「消してよい」と案内する）より安全なのでこの形を選んでいる
+    [InlineData("incident.example.test;::1 ", "")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
     [InlineData(";;", "")]
@@ -194,15 +215,24 @@ public class AllowedHostsPolicyTests
     // 全角で書いた 0.0.0.0 も正規化で全許可になるので同じ
     [InlineData("incident.example.test;０.０.０.０; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
 
-    // --- 判断できない（残る項目に正規化できない綴りがある）---
+    // --- 判断できない（残る項目に正規化できない綴りがあり、そこへ実際に到達する）---
     // <b>並び順で結果が変わるので断定してはいけない。</b> 実測では
     //   "0.0<TAB>.0.0;0.0.0.0" → 例外（どの Host も受け付けない）
     //   "0.0.0.0;0.0<TAB>.0.0" → 200（どの Host も受け付ける）
     // TryProcessHosts が宣言順に正規化し、最初のワイルドカードで打ち切るため。
     // bool で答えるとどちらかの並びで必ず事実と逆の案内になる
     [InlineData("0.0\t.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    // 壊れた項目が<b>先</b>にあるので、フレームワークはそこで例外になる＝断定できない
     [InlineData("0.0\t.0.0;0.0.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
-    [InlineData("0.0.0.0;0.0\t.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+
+    // --- 壊れた項目があっても、そこへ到達しないなら結果は確定している ---
+    // <b>「壊れた項目があるか」を Any で畳んではいけない。</b> この並びは 1 件目の
+    // ワイルドカードで打ち切られるので 2 件目は評価されず、実測でも 200（全許可）で確定する
+    // （UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList が
+    //  "0.0.0.0;0.0<TAB>.0.0" を 200 として固定している）。
+    // Unknown に倒すと「消した結果は予測できない」としか言えず、運用者は
+    // <b>本当に必要な「ワイルドカードの項目も消せ」という案内を受け取れない</b>
+    [InlineData("0.0.0.0;0.0\t.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
     public void ClassifyDeadEntryDeletion_SaysWhatDeletingWouldActuallyDo(
         string? allowedHosts, AllowedHostsPolicy.DeadEntryDeletionOutcome expected)
     {

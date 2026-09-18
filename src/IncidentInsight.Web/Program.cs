@@ -355,7 +355,7 @@ if (!app.Environment.IsDevelopment())
     // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
     // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
     // <b>「絞れていない」だけでなく、その原因まで運用者へ渡す。</b>
-    // IsPermissive が true になる経路は 4 つあり(未設定/空・ワイルドカード・
+    // IsPermissive が true になる経路は 3 つあり(未設定/空・ワイルドカード・
     // 正規化できない綴り)、以前はどれでも「'*' か '[::]' か '0.0.0.0' を消せ」と
     // 出していた ——値にワイルドカードが 1 つも無い綴り("0.0\t.0.0" のように
     // 途中へ制御文字が紛れた形)では、<b>存在しないものを探させる案内</b>になり、
@@ -390,7 +390,13 @@ if (!app.Environment.IsDevelopment())
     // 1 件目が 200・2 件目が 400 になる。つまり<b>サイトは生きたまま特定のホスト名だけが
     // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
     // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
-    // そのまま誤った安心になる。規則と実測は AllowedHostsPolicy の docstring が正本
+    // そのまま誤った安心になる。
+    // <b>判定は正規化後の綴りに対して行う。</b> 生の綴りを見ると、正規化で消える文字
+    // (角括弧 IPv6 の "]" より後ろ)を持つ項目を誤って名指しする ——実測では
+    // "[::1] " は Host: [::1] を 200 で受けるのに「消してよい」と案内し(消した運用者が
+    // IPv6 のクライアントを一斉に 400 にする)、"[::] " は全ホスト許可なのに
+    // 「どのホスト名も受け付けない」と説明していた。規則と実測は
+    // AllowedHostsPolicy の docstring が正本
     var neverMatching = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
     // 一致しえない項目が 1 つでもあれば、書いた本人にしか直せないので名指しで知らせる
     if (neverMatching.Count > 0)
@@ -421,8 +427,8 @@ if (!app.Environment.IsDevelopment())
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
             "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so an entry with surrounding whitespace is " +
-            "dead: it accepts no hostname at all. {HowToFix} (issue #64).",
+            "Host filtering does not trim entries, so these entries keep surrounding whitespace " +
+            "after normalisation and no Host header can ever equal them. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
             // どの環境の話かを添える(上の警告と同じ理由)
