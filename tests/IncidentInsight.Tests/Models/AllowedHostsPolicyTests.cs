@@ -159,41 +159,48 @@ public class AllowedHostsPolicyTests
     }
 
     [Theory]
-    // 未設定・死んだ項目が無い設定では、そもそも「消す」話にならない
-    [InlineData(null, false)]
-    [InlineData("incident.example.test", false)]
-    [InlineData("*", false)]
-    // <b>生きた項目が残るので消してよい形。</b> テンプレート展開
-    // AllowedHosts=incident.example.test; ${SECONDARY} で SECONDARY が未定義だとこうなる。
-    // 死んだ項目 " " には書き換える先の実ホスト名が無いので、消す以外に直しようが無い
-    [InlineData("incident.example.test; ", false)]
-    [InlineData("incident.example.test; www.example.test", false)]
-    // <b>消すと 1 件も残らない形。</b> 「消すな」と案内する必要がある
-    [InlineData("   ", true)]
-    [InlineData(" ; ", true)]
-    [InlineData("  *  ", true)]
-    // 死んだ項目と空の項目しか無い場合も、消せば 0 件になる
-    [InlineData(" ;; ", true)]
-    // <b>0 件にならなくても危ない形。</b> 残った 1 件がワイルドカードなら、
-    // 消したあとの設定は依然としてどの Host も受け付ける（実測）。
-    // 「生きた項目が 1 件でも残るか」で判定すると、ここを取りこぼして
-    // <b>削除してよいと案内した結果が全ホスト許可</b>になる
-    [InlineData("*; ", true)]
-    [InlineData("[::]; ", true)]
+    // --- 消す対象が無い ---
+    [InlineData(null, AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("incident.example.test", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("*", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+
+    // --- 消してよい（残るのが実ホスト名だけ）---
+    // テンプレート展開 AllowedHosts=incident.example.test; ${SECONDARY} で
+    // SECONDARY が未定義だとこうなる。死んだ項目 " " には書き換える先が無いので、
+    // 消す以外に直しようが無い ——無条件に「消すな」と案内すると手詰まりになる
+    [InlineData("incident.example.test; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe)]
+    [InlineData("incident.example.test; www.example.test", AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe)]
+
+    // --- 消すと全ホスト許可になる: 経路 (a) 項目が 0 件になる ---
+    [InlineData("   ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    [InlineData(" ; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    [InlineData("  *  ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    [InlineData(" ;; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+
+    // --- 消すと全ホスト許可になる: 経路 (b) 残った項目自体がワイルドカード ---
+    // <b>0 件にならなくても危ない。</b>「生きた項目が 1 件でも残るか」で判定すると
+    // ここを取りこぼし、削除してよいと案内した結果が全ホスト許可になる
+    [InlineData("*; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    [InlineData("[::]; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
     // ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと自然に生まれる形
-    [InlineData("incident.example.test;0.0.0.0; ", true)]
+    [InlineData("incident.example.test;0.0.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
     // 全角で書いた 0.0.0.0 も正規化で全許可になるので同じ
-    [InlineData("incident.example.test;０.０.０.０; ", true)]
-    // <b>正規化できない綴りが残る形は false（消してよい）。</b> 実測ではフレームワークが
-    // 例外を投げる＝どの Host も受け付けないので、「消すと全許可になる」は事実と逆。
-    // IsPermissive をそのまま流用すると（あちらは警告のため fail-closed に倒す）
-    // ここが true になり、唯一無害な操作を禁じる案内になる（実測でそうなっていた）
-    [InlineData("0.0\t.0.0; ", false)]
-    public void DeletingDeadEntriesWouldAllowEveryHost_IsTrueWhenTheRemainingListWouldAcceptAnyHost(
-        string? allowedHosts, bool expected)
+    [InlineData("incident.example.test;０.０.０.０; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+
+    // --- 判断できない（残る項目に正規化できない綴りがある）---
+    // <b>並び順で結果が変わるので断定してはいけない。</b> 実測では
+    //   "0.0<TAB>.0.0;0.0.0.0" → 例外（どの Host も受け付けない）
+    //   "0.0.0.0;0.0<TAB>.0.0" → 200（どの Host も受け付ける）
+    // TryProcessHosts が宣言順に正規化し、最初のワイルドカードで打ち切るため。
+    // bool で答えるとどちらかの並びで必ず事実と逆の案内になる
+    [InlineData("0.0\t.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    [InlineData("0.0\t.0.0;0.0.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    [InlineData("0.0.0.0;0.0\t.0.0; ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    public void ClassifyDeadEntryDeletion_SaysWhatDeletingWouldActuallyDo(
+        string? allowedHosts, AllowedHostsPolicy.DeadEntryDeletionOutcome expected)
     {
-        // 判定を実行して、期待どおりかを確かめる
-        Assert.Equal(expected, AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts));
+        // 分類を実行して、期待どおりかを確かめる
+        Assert.Equal(expected, AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts));
     }
 
     // 「死んだ項目を消したあとに何が残るか」を、手で書いた期待値で固定する。

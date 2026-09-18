@@ -111,11 +111,13 @@ public static class AllowedHostsPolicy
     /// <b>正規化の失敗を、2 つの問いで別々に解釈するために切り出してある。</b>
     /// 「警告を出すべきか」（<see cref="IsPermissive"/>）は判断できない綴りを
     /// <b>ワイルドカード側へ倒す</b>のが正しい（鳴りすぎる＝安全側）。
-    /// 一方「死んだ項目を消すと全ホスト許可へ化けるか」
-    /// （<see cref="DeletingDeadEntriesWouldAllowEveryHost"/>）では逆で、
-    /// 実測するとフレームワークはその綴りで<b>例外を投げる</b>（どの Host も受け付けない）ので、
-    /// ワイルドカード扱いすると「消すな、消すと全許可になる」という<b>事実と逆の案内</b>になる。
-    /// 正規化そのものは同じ手順なので、分岐だけを呼び出し側へ持たせる。
+    /// 一方「死んだ項目を消すと何が起きるか」
+    /// （<see cref="ClassifyDeadEntryDeletion"/>）では倒してはいけない ——
+    /// 実測するとフレームワークの結果は<b>項目の並び順で変わる</b>ので、
+    /// ワイルドカード扱いに倒すと「消すな、消すと全許可になる」という
+    /// <b>事実と逆の案内</b>になりうる。あちらは正規化できない項目が 1 つでもあれば
+    /// <c>Unknown</c> を返し、断定そのものをやめる。
+    /// 正規化の手順は同じなので、成否の解釈だけを呼び出し側へ持たせる。
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
     /// <param name="normalized">成功したときの正規化後の綴り。</param>
@@ -138,21 +140,6 @@ public static class AllowedHostsPolicy
             return false;
         }
     }
-
-    /// <summary>
-    /// その項目が、フレームワークに<b>実際に</b>全ホスト許可として扱われるかを返す。
-    /// </summary>
-    /// <remarks>
-    /// <see cref="IsWildcardEntry"/> との違いは<b>正規化できない綴りの扱いだけ</b>で、
-    /// こちらは「ワイルドカードではない」と答える（理由は
-    /// <see cref="TryNormalizeEntry"/> の docstring が正本）。
-    /// </remarks>
-    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
-    /// <returns>実際にワイルドカードとして扱われるなら <c>true</c>。</returns>
-    private static bool IsActualWildcardEntry(string entry) =>
-        // 正規化できた綴りだけを突き合わせる（できない綴りは全許可にはならない）
-        TryNormalizeEntry(entry, out var normalized)
-        && Wildcards.Contains(normalized, StringComparer.Ordinal);
 
     /// <summary>
     /// その設定値が「実質すべてのホストを許可する」かを返す。
@@ -186,12 +173,28 @@ public static class AllowedHostsPolicy
         // <b>フレームワークとまったく同じ分割</b>で項目を取り出す（規則は SplitEntries が持つ）
         var entries = SplitEntries(allowedHosts);
 
-        // <b>1 件も残らないなら全許可。</b> 空文字や ";" ・ ";;" がここに落ちる
-        if (entries.Length == 0) return true;
-
-        // 1 つでもワイルドカードがあれば、その時点で全ホスト許可になる
-        return entries.Any(IsWildcardEntry);
+        // 規則そのものは 1 か所（AcceptsEveryHost）に置き、ここは倒し方だけを選ぶ。
+        // 警告を出すかの判定なので、判断できない綴りはワイルドカード側へ倒す
+        return AcceptsEveryHost(entries, IsWildcardEntry);
     }
+
+    /// <summary>
+    /// その項目の並びが、どの <c>Host</c> でも受け付ける状態かを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>フォールバックの規則を 1 か所に置くために切り出してある。</b>
+    /// 「1 件も残らなければ既定の <c>["*"]</c> へ落ちる」「ワイルドカードが 1 つでもあれば
+    /// 全許可へ切り替わる」という 2 つは、判定が 2 つあっても同じでなければならない。
+    /// 書き写すと、フレームワーク側にもう 1 つ経路が増えたときに片方だけが直り、
+    /// その差は<b>「消してよい」と案内する方向</b>（fail-open）へ倒れる。
+    /// <b>問いごとに違うのは 1 項目の見方だけ</b>なので、そこだけを引数で受け取る。
+    /// </remarks>
+    /// <param name="entries">分割済みの項目（トリムしていない生の値）。</param>
+    /// <param name="isWildcard">1 項目をワイルドカードとみなすかの判定。</param>
+    /// <returns>どの <c>Host</c> でも受け付ける状態なら <c>true</c>。</returns>
+    private static bool AcceptsEveryHost(string[] entries, Func<string, bool> isWildcard) =>
+        // 1 件も残らないなら既定の ["*"] へ落ちる／1 つでもワイルドカードがあれば全許可
+        entries.Length == 0 || entries.Any(isWildcard);
 
     /// <summary>
     /// 書かれているのに<b>どの <c>Host</c> とも一致しえない</b>項目を返す。
@@ -254,7 +257,25 @@ public static class AllowedHostsPolicy
         !string.Equals(entry, entry.Trim(), StringComparison.Ordinal);
 
     /// <summary>
-    /// 一致しえない項目を<b>消すだけ</b>にすると、全ホスト許可へ化けるかを返す。
+    /// 一致しえない項目を<b>消すだけ</b>にしたら何が起きるかの分類。
+    /// </summary>
+    public enum DeadEntryDeletionOutcome
+    {
+        /// <summary>消す対象が無い（一致しえない項目が 1 件も無い）。</summary>
+        NothingToDelete,
+
+        /// <summary>消しても、残る一覧がどの <c>Host</c> でも受け付ける状態にはならない。</summary>
+        Safe,
+
+        /// <summary>消すと、残る一覧がどの <c>Host</c> でも受け付ける状態になる。</summary>
+        WouldAllowEveryHost,
+
+        /// <summary>判断できない（残る項目に正規化できない綴りがある）。</summary>
+        Unknown,
+    }
+
+    /// <summary>
+    /// 一致しえない項目を消したときに何が起きるかを分類する。
     /// </summary>
     /// <remarks>
     /// <para><b>直し方の案内を条件付きにするために要る。</b>
@@ -268,38 +289,46 @@ public static class AllowedHostsPolicy
     /// <c>"incident.example.com;0.0.0.0; "</c>。後者は <c>ASPNETCORE_URLS</c> を写すと自然に生まれる）。
     /// (b) はどちらも生きた項目が残るので、件数だけを見る判定では取りこぼす（実測）。</para>
     ///
-    /// <para><b>逆に、消したあとが全許可にならないなら「消す」が正しい直し方。</b>
-    /// たとえば <c>AllowedHosts=incident.example.com; ${SECONDARY}</c> で
-    /// <c>SECONDARY</c> が未定義だと値は <c>"incident.example.com; "</c> になり、
-    /// 死んだ項目 <c>" "</c> には<b>書き換える先の実ホスト名が存在しない</b> ——
-    /// 末尾の <c>"; "</c> を消すのが唯一の直し方。
-    /// 案内を無条件に「消すな」とすると、この形で運用者が直しようを失う。</para>
+    /// <para><b>bool ではなく 3 値にしてあるのは、答えられない場合があるから。</b>
+    /// 残る項目に正規化できない綴りが混じっていると、フレームワークの結果は
+    /// <b>並び順で変わる</b> ——<c>TryProcessHosts</c> は宣言順に正規化し、最初の
+    /// ワイルドカードで打ち切るため、正規化できない項目が<b>前</b>にあれば例外
+    /// （どの Host も受け付けない）、<b>後ろ</b>なら評価されず全許可になる。
+    /// 実測: <c>"0.0\t.0.0;0.0.0.0"</c> は例外、<c>"0.0.0.0;0.0\t.0.0"</c> は 200。
+    /// この並び順の意味づけを写し取ると、上流の実装詳細に判定が縛られる。
+    /// どちらにせよ設定は壊れている（露出ではなく障害）ので、
+    /// <b>断定せず「判断できない」と答え、案内も断定しない</b>のが正しい。</para>
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
-    /// <returns>消したあとの一覧がどの <c>Host</c> でも受け付ける状態になるなら <c>true</c>。</returns>
-    public static bool DeletingDeadEntriesWouldAllowEveryHost(string? allowedHosts)
+    /// <returns>消したときに何が起きるかの分類。</returns>
+    public static DeadEntryDeletionOutcome ClassifyDeadEntryDeletion(string? allowedHosts)
     {
         // 未設定なら消す対象そのものが無い
-        if (allowedHosts is null) return false;
+        if (allowedHosts is null) return DeadEntryDeletionOutcome.NothingToDelete;
 
         // そもそも一致しえない項目が無ければ、消す話にならない
-        if (NeverMatchingEntries(allowedHosts).Count == 0) return false;
+        if (NeverMatchingEntries(allowedHosts).Count == 0) return DeadEntryDeletionOutcome.NothingToDelete;
 
         // 死んだ項目を取り除いたあとに残る項目を取り出す
         var survivors = SplitEntries(allowedHosts)
             .Where(entry => !IsNeverMatchingEntry(entry))
             .ToArray();
 
-        // <b>「生きた項目が 1 件でも残るか」で見てはいけない</b>
-        // ——残った 1 件がワイルドカードなら、0 件にならなくても全許可のままだから。
-        // 実測: "*; " と "incident.example.test;0.0.0.0; " は死んだ項目を消しても
-        // どの Host も受け付ける（後者は ASPNETCORE_URLS を写して書くと自然に生まれる形）。
-        //
-        // <b>ただし IsPermissive をそのまま通してもいけない。</b> あちらは正規化できない
-        // 綴りをワイルドカード側へ倒す（警告としては安全側）ので、"0.0<TAB>.0.0; " のような
-        // 値で「消すな、消すと全許可になる」と案内してしまう ——実測ではその綴りは
-        // フレームワークが例外を投げる（どの Host も受け付けない）ので、事実と逆になる。
-        // ここは「実際に全ホストを受け付けるか」を問うので IsActualWildcardEntry を使う
-        return survivors.Length == 0 || survivors.Any(IsActualWildcardEntry);
+        // 残る項目に正規化できない綴りがあれば、結果が並び順で変わるので断定しない
+        if (survivors.Any(entry => !TryNormalizeEntry(entry, out _)))
+        {
+            // 判断できないことを、そのまま呼び出し側へ伝える
+            return DeadEntryDeletionOutcome.Unknown;
+        }
+
+        // ここまで来れば全項目が正規化できる。IsWildcardEntry が「判断できない綴りを
+        // ワイルドカード側へ倒す」のは正規化に失敗したときだけなので、上のガードを
+        // 通ったあとは倒し方の違いが消え、そのまま使ってよい
+        // （倒し方だけが違う 2 つ目の判定を別に持つと、使われない分岐が残る。§6）
+        return AcceptsEveryHost(survivors, IsWildcardEntry)
+            // 消すと全ホストを受け付ける状態になる
+            ? DeadEntryDeletionOutcome.WouldAllowEveryHost
+            // 消しても全許可にはならない＝消してよい
+            : DeadEntryDeletionOutcome.Safe;
     }
 }
