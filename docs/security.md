@@ -64,6 +64,9 @@
      そこで `Program.cs` は**これ専用の 2 本目の警告**を出します
      (`AllowedHosts contains N entry/entries that can never match any Host header …`。
      死んでいる項目を `[ ]` で囲んで名指しします ——空白は目で見えないためです)。
+     この警告は**仕組みだけ**を述べ、「その分だけ 400 になる」とは書きません ——
+     同じ一覧にワイルドカードがあれば結局すべて 200 になり、死んだ項目しか無ければ
+     すべて 400 の全面障害になるので、件数によって実際の症状が変わるためです。
      **配備後は 2 本とも出ていないことを確認してください。**
      一覧は空白を入れずに `a.example;b.example` と書きます。
      判定の正本は `Models/Validation/AllowedHostsPolicy`(既定設定をそのまま写した理由と

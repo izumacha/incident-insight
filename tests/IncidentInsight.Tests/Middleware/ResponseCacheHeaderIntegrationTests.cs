@@ -359,6 +359,9 @@ public class HostFilteringShortCircuitTests
     // 許可リストに無いホスト名（本文へ映し返されていないことを確かめるために名前で持つ）
     private const string RejectedHost = "evil.example.test";
 
+    // 複数指定を書いたときの 2 件目（「区切りのうしろの空白」を再現するために使う）
+    private const string SecondHost = "www.example.test";
+
     /// <summary>
     /// <c>AllowedHosts</c> を実ホスト名へ絞ったアプリ。
     /// </summary>
@@ -494,6 +497,62 @@ public class HostFilteringShortCircuitTests
             $"{(shouldWarn ? "素通りさせる" : "弾く")}のに " +
             $"IsPermissive は {AllowedHostsPolicy.IsPermissive(allowedHosts)} を返した({why})。" +
             "判定はフレームワークの挙動を写したものなので、食い違ったらどちらかが退行している");
+    }
+
+    // <b>この PR の中心にある実測を固定する。</b> 区切りのうしろに空白を入れた複数指定は、
+    // 1 件目が生きたまま 2 件目だけが死ぬ ——「サイトは動いているのに特定のホスト名だけが
+    // 落ちる」という、監視にもヘルスチェックにも出ない形。
+    //
+    // <b>この 1 件だけは、片方のホストを見るだけでは足りない。</b> 400 側だけを見ると
+    // 「絞り込みが強すぎて全部落ちている」設定と区別が付かず、200 側だけを見ると
+    // 「ふつうに動いている」としか読めない。<b>2 つ揃ってはじめて「部分的に死んでいる」</b>
+    // という主張になる ——そしてその主張が NeverMatchingEntries を足した理由そのもので、
+    // docs/security.md と CLAUDE.md と Program.cs のコメントが揃ってこれを根拠にしている。
+    //
+    // 固定していないと、将来フレームワークが項目をトリムし始めた（＝この綴りが正しく
+    // 動くようになった）ときに、警告だけが「死んでいる」と言い続けるのに
+    // <b>全件緑のまま</b>になる。
+    [Fact]
+    public async Task WhitespaceAfterASeparator_KillsOnlyThatEntry()
+    {
+        // 一覧を書くときに自然に入る形（区切りのうしろに空白）でアプリを起動する
+        using var fixture = new AllowedHostsFixture($"{AllowedHost}; {SecondHost}");
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 1 件目（空白が付いていない側）は、これまでどおり受け付けられること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+        // 2 件目（空白が付いた側）は、書いてあるのに弾かれること ——ここが本命
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, SecondHost)).StatusCode);
+
+        // 判定側もその 2 件目を「一致しえない項目」として名指しできること
+        // （実測とコードの主張がここで結び付く）
+        Assert.Equal(
+            $" {SecondHost}",
+            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries($"{AllowedHost}; {SecondHost}")));
+
+        // 絞り込み自体は効いているので、1 本目の警告は出ない
+        // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
+        Assert.False(AllowedHostsPolicy.IsPermissive($"{AllowedHost}; {SecondHost}"));
+    }
+
+    /// <summary>指定した <c>Host</c> ヘッダーだけを差し替えて 1 回叩く。</summary>
+    /// <param name="client">リダイレクトを追わないクライアント。</param>
+    /// <param name="host">送る Host ヘッダーの値。</param>
+    /// <returns>受け取った応答。</returns>
+    private static Task<HttpResponseMessage> SendWithHostAsync(HttpClient client, string host)
+    {
+        // 検査対象の経路（認証不要で 200 が返る画面）へのリクエストを組み立てる
+        var request = new HttpRequestMessage(HttpMethod.Get, "/Account/AccessDenied");
+        // Host ヘッダーだけを指定された値にする
+        request.Headers.Host = host;
+        // 応答を返す（待つのは呼び出し側）
+        return client.SendAsync(request);
     }
 
     // 正規化できない綴りは、フレームワーク自身が例外を投げること。

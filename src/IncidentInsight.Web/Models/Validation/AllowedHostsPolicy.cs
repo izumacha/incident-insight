@@ -73,11 +73,31 @@ public static class AllowedHostsPolicy
     /// 読み飛ばすようになれば、そのときは素通りではなく静かな全拒否になるが、
     /// 逆にワイルドカードとして通す実装もありうる。判断材料が無い以上、
     /// 見逃す側ではなく鳴らす側へ倒す（§9 fail-closed）。
-    /// <b>なお、この綴りは <see cref="NeverMatchingEntries"/> にも載る</b>ので、
-    /// 運用者が受け取る指示（空白を外せ）は両方の警告で一致する。</para>
+    /// <b>前後に空白がある綴り（<c>"0.0.0.0\t"</c> など）は <see cref="NeverMatchingEntries"/> にも
+    /// 載る</b>ので、そのときは運用者が受け取る指示（空白を外せ）が両方の警告で一致する。
+    /// <b>残っている境界: 途中に紛れた制御文字（<c>"0.0\t.0.0"</c>）はトリムしても変わらないので
+    /// そちらには載らない。</b>この綴りでは警告 1 だけが出るが、その文面はワイルドカードの
+    /// 話をするので、値とも症状（実測では毎リクエストが例外）とも噛み合わない。
+    /// 綴りから「どの制御文字が IDNA を壊すか」を機械的に言い当てることはできないので、
+    /// ここは<b>鳴らすことを優先し、文面の精度は捨てている</b>（黙るよりはよい）。</para>
     /// </remarks>
     /// <param name="entry">許可リストの 1 項目（<b>トリムしていない生の値</b>）。</param>
     /// <returns>フレームワークがワイルドカードとして扱うなら <c>true</c>。</returns>
+    /// <summary>
+    /// 設定値を、フレームワークとまったく同じ規則で項目へ分ける。
+    /// </summary>
+    /// <remarks>
+    /// <b>2 つの判定が同じ分割を見ることを、構造で保証するために切り出してある。</b>
+    /// 同じ式を 2 か所へ書き写すと、片方にだけトリムを足すような変更が通ってしまう
+    /// （そのとき壊れ方は「全拒否が全許可に化ける」と「死んだ項目が 1 件も挙がらない」で、
+    /// どちらも<b>警告が出なくなる</b>方向。CLAUDE.md §6 DRY）。
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値。</param>
+    /// <returns>空の項目を落としたあとの項目（<b>トリムはしない</b>）。</returns>
+    private static string[] SplitEntries(string allowedHosts) =>
+        // 空の項目だけを落とし、前後の空白は<b>残す</b>（フレームワークと同じ規則）
+        allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+
     private static bool IsWildcardEntry(string entry)
     {
         // フレームワークと同じ正規化を通した綴りを入れる
@@ -128,9 +148,8 @@ public static class AllowedHostsPolicy
         // 未設定なら、フレームワークは分割すら行わず既定へ落ちる
         if (allowedHosts is null) return true;
 
-        // <b>フレームワークとまったく同じ分割</b>で項目を取り出す
-        // (空の項目だけを落とし、<b>トリムはしない</b>)
-        var entries = allowedHosts.Split(Separator, StringSplitOptions.RemoveEmptyEntries);
+        // <b>フレームワークとまったく同じ分割</b>で項目を取り出す（規則は SplitEntries が持つ）
+        var entries = SplitEntries(allowedHosts);
 
         // <b>1 件も残らないなら全許可。</b> 空文字や ";" ・ ";;" がここに落ちる
         if (entries.Length == 0) return true;
@@ -174,9 +193,8 @@ public static class AllowedHostsPolicy
         // 未設定なら項目そのものが無い
         if (allowedHosts is null) return [];
 
-        // IsPermissive とまったく同じ分割を使う(片方だけ規則が動くのを防ぐ)
-        return allowedHosts
-            .Split(Separator, StringSplitOptions.RemoveEmptyEntries)
+        // IsPermissive とまったく同じ分割を使う（同じ関数を呼ぶので、片方だけ規則が動かない）
+        return SplitEntries(allowedHosts)
             // 前後の空白を落とすと別物になる項目＝どの Host とも一致しえない
             .Where(entry => !string.Equals(entry, entry.Trim(), StringComparison.Ordinal))
             // 警告へそのまま載せるので、書かれた順のまま配列にする

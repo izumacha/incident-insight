@@ -386,11 +386,15 @@ if (!app.Environment.IsDevelopment())
     {
         // 上の警告とは原因も対処も違うので、別のメッセージとして出す
         // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
+        // <b>結果ではなく仕組みだけを述べる。</b> 「その分だけ 400 になり、残りは生き続ける」と
+        // 書くと、(a) 同じ一覧にワイルドカードがある場合(全部 200 になる)と
+        // (b) 死んだ項目しか無い場合(全部 400 の全面障害)で文面が実態と食い違う。
+        // どちらの綴りもこの警告を鳴らしうるので、共通して正しいことだけを言う
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
             "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead: " +
-            "requests for those hostnames get 400 while the rest of the site keeps serving. " +
+            "Host filtering does not trim entries, so surrounding whitespace makes an entry dead — " +
+            "it is ignored when deciding which Host headers to accept, exactly as if it were absent. " +
             "Remove the whitespace (write the list as 'a.example;b.example', no spaces) (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,

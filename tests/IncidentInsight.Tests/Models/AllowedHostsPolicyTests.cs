@@ -14,12 +14,19 @@ namespace IncidentInsight.Tests.Models;
 /// そのうえ 307 リダイレクトの <c>Location</c> は要求元の <c>Host</c> をそのまま含むので、
 /// キャッシュ抑止の効かない応答に攻撃者の入力が載る状態が残る。</para>
 ///
-/// <para><b>拾うべきなのは「黙って素通りする」形だけ。</b>
-/// この判定は <c>HostFilteringMiddleware</c> の挙動をそのまま写しており（規則と理由は
+/// <para><b>この判定が拾うのは「黙って素通りする」形だけ。</b>
+/// <c>HostFilteringMiddleware</c> の挙動をそのまま写しており（規則と理由は
 /// <see cref="AllowedHostsPolicy"/> の docstring が正本）、<b>独自に丸めない</b>。
 /// 前後の空白を落とすような「親切な」補正を入れると、フレームワークが実際には
-/// <b>全拒否</b>している設定まで「全許可」と報告することになる。全拒否はサイトが落ちるので
-/// 運用者はすぐ気づく ——見逃してはいけないのは、気づけないほう。</para>
+/// <b>一致させていない</b>設定まで「全許可」と報告することになる。</para>
+///
+/// <para><b>「一致しない」側は野放しではない。</b>
+/// <see cref="AllowedHostsPolicy.NeverMatchingEntries"/> が別の警告として拾う ——
+/// <c>"a.example.test; b.example.test"</c> のような綴りは<b>1 件目が生きたまま
+/// 2 件目だけが落ちる</b>ので、「全拒否ならサイトが落ちてすぐ気づく」は成り立たない
+/// （その実測は <c>HostFilteringShortCircuitTests</c> が固定している）。
+/// 下の表で <c>false</c> になっている空白入りの綴りは、
+/// <b>この判定の対象外というだけで、警告の対象ではある</b>。</para>
 ///
 /// <para><b>各ケースの期待値は実測値。</b> 同じ値でアプリを起動し、許可リストに無い
 /// <c>Host</c> を送ったときの応答（200 ＝素通り / 400 ＝拒否）と突き合わせてある。
@@ -73,13 +80,15 @@ public class AllowedHostsPolicyTests
     [InlineData("0.0.0.1", false)]
     [InlineData("[::1]", false)]
 
-    // --- 全拒否（サイトは落ちるが「素通り」ではないので警告の対象ではない）---
+    // --- 一致しない（「素通り」ではないので<b>この判定の</b>対象ではない。
+    //     警告そのものは NeverMatchingEntries 側が出す）---
     // <b>トリムしないのが要点。</b> 空白付きの綴りは正規化しても "*" と一致しないため、
-    // 許可リストが [" * "] のまま残り<b>すべて 400</b> になる（実測）。
-    // ここを true にすると「全拒否をワイルドカードと呼ぶ」ことになり、規則と食い違う
+    // ワイルドカードとして扱われない（＝許可リストは無効にならない）。
+    // ここを true にすると「一致しない項目をワイルドカードと呼ぶ」ことになり、規則と食い違う
     [InlineData("  *  ", false)]
     [InlineData("incident.example.com; * ", false)]
-    // 空白だけの値も同じ（項目が 1 件残るので既定の ["*"] へは落ちない）
+    // 空白だけの値も同じ（項目が 1 件残るので既定の ["*"] へは落ちない。
+    // この綴りだけは実際に全ホストが落ちるが、判定の理屈は上の 2 つと同じ）
     [InlineData("   ", false)]
     // " ; " は項目が 2 件残るので既定へ落ちず、許可リストが [" ", " "] になる
     [InlineData(" ; ", false)]
@@ -124,7 +133,7 @@ public class AllowedHostsPolicyTests
     [InlineData(" ; ", " | ")]
     // 正規化できない綴りも空白を含むのでここに載る ——
     // IsPermissive 側でも鳴るが、運用者への指示(空白を外せ)は両方で一致する
-    [InlineData("0.0.0.0	", "0.0.0.0	")]
+    [InlineData("0.0.0.0\t", "0.0.0.0\t")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
     [InlineData(";;", "")]
@@ -148,12 +157,18 @@ public class AllowedHostsPolicyTests
     [Fact]
     public void BothChecks_SeeTheSameEntries()
     {
-        // 空の項目だけが落ちる(＝トリムされない)ことが両方で成り立つ設定値
-        const string allowedHosts = " a.example.test ;; b.example.test ";
+        // 空の項目だけが落ちる(＝トリムされない)ことが両方で成り立つ設定値。
+        // <b>2 件目を空白付きのワイルドカードにしてあるのが要点</b> ——ここをただの
+        // ホスト名にすると、IsPermissive 側にだけトリムを足す変異でも
+        // 「ワイルドカードが無い」ままなので false が返り、<b>この検査が緑で通る</b>
+        // (実測。守っていると書いた変異を実際には 1 つも捕まえていなかった)
+        const string allowedHosts = " a.example.test ;; * ";
 
-        // 死んだ項目は 2 件とも挙がる(空の項目は項目として数えない)
+        // 死んだ項目は 2 件とも挙がる(空の項目は項目として数えない)。
+        // NeverMatchingEntries 側にだけトリムを足すと、ここが 0 件になって落ちる
         Assert.Equal(2, AllowedHostsPolicy.NeverMatchingEntries(allowedHosts).Count);
-        // 同じ値で、項目が残るので既定の ["*"] へは落ちない(＝全許可ではない)
+        // 同じ値で、空白付きの "*" はワイルドカードとして扱われない(＝全許可ではない)。
+        // IsPermissive 側にだけトリムを足すと、ここが true になって落ちる
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 }
