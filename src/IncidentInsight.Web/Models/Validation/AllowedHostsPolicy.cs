@@ -200,4 +200,38 @@ public static class AllowedHostsPolicy
             // 警告へそのまま載せるので、書かれた順のまま配列にする
             .ToArray();
     }
+
+    /// <summary>
+    /// 一致しえない項目を<b>消すだけ</b>にすると、全ホスト許可へ化けるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>直し方の案内を条件付きにするために要る。</b>
+    /// <see cref="NeverMatchingEntries"/> が挙げた項目を消すと項目数が減り、
+    /// <b>0 件になった場合だけ</b>フレームワークが既定の <c>["*"]</c> を入れて全許可になる
+    /// （規則は <see cref="IsPermissive"/> の docstring が正本）。
+    /// 400 が止まるので直ったように見えるが、実際には issue #64（Host ヘッダ偽装）へ移る。</para>
+    ///
+    /// <para><b>逆に、生きた項目が 1 つでも残るなら「消す」が正しい直し方。</b>
+    /// たとえば <c>AllowedHosts=incident.example.com; ${SECONDARY}</c> で
+    /// <c>SECONDARY</c> が未定義だと値は <c>"incident.example.com; "</c> になり、
+    /// 死んだ項目 <c>" "</c> には<b>書き換える先の実ホスト名が存在しない</b> ——
+    /// 末尾の <c>"; "</c> を消すのが唯一の直し方で、生きた項目が残るので全許可にはならない。
+    /// 案内を無条件に「消すな」とすると、この形で運用者が直しようを失う。</para>
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>消すと 1 件も残らない（＝全許可へ化ける）なら <c>true</c>。</returns>
+    public static bool DeletingDeadEntriesWouldAllowEveryHost(string? allowedHosts)
+    {
+        // 未設定なら消す対象そのものが無い
+        if (allowedHosts is null) return false;
+
+        // 判定の土台は他の 2 つとまったく同じ分割を使う
+        var entries = SplitEntries(allowedHosts);
+
+        // そもそも一致しえない項目が無ければ、消す話にならない
+        if (NeverMatchingEntries(allowedHosts).Count == 0) return false;
+
+        // 生きた項目（前後の空白が無い項目）が 1 つも無ければ、消すと 0 件になる
+        return !entries.Any(entry => string.Equals(entry, entry.Trim(), StringComparison.Ordinal));
+    }
 }

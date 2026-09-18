@@ -87,14 +87,18 @@ public class AllowedHostsPolicyTests
     // ここを true にすると「一致しない項目をワイルドカードと呼ぶ」ことになり、規則と食い違う。
     //
     // <b>判定は 3 つとも同じだが、運用上の症状は残りの項目しだいで変わる。</b>
-    // 下の 2 つは生きた項目が 1 つも無いので<b>すべて 400</b>、
-    // 生きた項目と混ざった "incident.example.com; * " はその 1 件だけが 400 になる
-    // （実測。HostFilteringShortCircuitTests が固定）
-    [InlineData("  *  ", false)]
-    // 空白だけの値も同じ（項目が 1 件残るので既定の ["*"] へは落ちない）
+    // 生きた項目が 1 つも無ければ全ホストが落ち、混ざっていればその 1 件だけが落ちる。
+    // <b>帰属は綴りごとに書く</b> ——統合テストの表に実在する行にだけ
+    // 「固定されている」と書く（覆っていない綴りまで巻き込むと、
+    //  実際には落ちない変異を「落ちるはず」と読ませることになる）
+    [InlineData("  *  ", false)]   // すべて 400（HostFilteringShortCircuitTests の表が固定）
+    // 空白だけの値も同じ（項目が 1 件残るので既定の ["*"] へは落ちない）。
+    // <b>この綴りは統合テストの表には無い</b>ので、固定されているのは判定側だけ
     [InlineData("   ", false)]
     // <b>こちらは部分的に落ちる。</b> 1 件目は生きているので 200 を返し続け、
-    // 空白付きの 2 件目だけが一致しない ——警告が拾うべきなのはこの形
+    // 空白付きの 2 件目だけが一致しない ——警告が拾うべきなのはこの形。
+    // 部分的に落ちること自体は、実ホスト名 2 件を使う
+    // WhitespaceAfterASeparator_KillsOnlyThatEntry が固定している
     [InlineData("incident.example.com; * ", false)]
     // " ; " は項目が 2 件残るので既定へ落ちず、許可リストが [" ", " "] になる
     [InlineData(" ; ", false)]
@@ -152,6 +156,58 @@ public class AllowedHostsPolicyTests
         // 属性に配列を書けないので、"|" 区切りの 1 本の文字列として突き合わせる
         // (区切りに ";" を使うと、設定値そのものの区切りと見分けが付かなくなる)
         Assert.Equal(expectedJoined, string.Join("|", actual));
+    }
+
+    [Theory]
+    // 未設定・死んだ項目が無い設定では、そもそも「消す」話にならない
+    [InlineData(null, false)]
+    [InlineData("incident.example.test", false)]
+    [InlineData("*", false)]
+    // <b>生きた項目が残るので消してよい形。</b> テンプレート展開
+    // AllowedHosts=incident.example.test; ${SECONDARY} で SECONDARY が未定義だとこうなる。
+    // 死んだ項目 " " には書き換える先の実ホスト名が無いので、消す以外に直しようが無い
+    [InlineData("incident.example.test; ", false)]
+    [InlineData("incident.example.test; www.example.test", false)]
+    // <b>消すと 1 件も残らない形。</b> ここだけ「消すな」と案内する必要がある
+    [InlineData("   ", true)]
+    [InlineData(" ; ", true)]
+    [InlineData("  *  ", true)]
+    // 死んだ項目と空の項目しか無い場合も、消せば 0 件になる
+    [InlineData(" ;; ", true)]
+    public void DeletingDeadEntriesWouldAllowEveryHost_IsTrueOnlyWhenNoLiveEntryRemains(
+        string? allowedHosts, bool expected)
+    {
+        // 判定を実行して、期待どおりかを確かめる
+        Assert.Equal(expected, AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts));
+    }
+
+    // 「消すと全許可へ化ける」と判定した設定が、本当にそうなること。
+    //
+    // <b>判定と、その判定が根拠にしている規則を突き合わせる。</b> 死んだ項目を実際に
+    // 取り除いた文字列を組み立て、それを IsPermissive へ通す ——true と答えた設定が
+    // 全許可にならない（または false と答えた設定が全許可になる）なら、
+    // 運用者への案内がその時点で逆を向く。
+    [Theory]
+    [InlineData("   ")]
+    [InlineData(" ; ")]
+    [InlineData("  *  ")]
+    [InlineData("incident.example.test; ")]
+    [InlineData("incident.example.test; www.example.test")]
+    public void DeletingDeadEntries_AgreesWithWhatIsPermissiveSaysAboutTheResult(string allowedHosts)
+    {
+        // その設定で「一致しえない」と判定された項目を取り出す
+        var dead = AllowedHostsPolicy.NeverMatchingEntries(allowedHosts);
+
+        // 死んだ項目を実際に取り除いた設定値を組み立てる（運用者が「消した」状態）
+        var afterDeletion = string.Join(
+            ";",
+            allowedHosts.Split(';', StringSplitOptions.RemoveEmptyEntries)
+                .Where(entry => !dead.Contains(entry, StringComparer.Ordinal)));
+
+        // 消した結果が全許可になるかを、判定と実際の規則で突き合わせる
+        Assert.Equal(
+            AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts),
+            AllowedHostsPolicy.IsPermissive(afterDeletion));
     }
 
     // 2 つの判定が「同じ分割」を使い続けていること。

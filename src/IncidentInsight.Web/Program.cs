@@ -393,27 +393,43 @@ if (!app.Environment.IsDevelopment())
         // (d) があるので「全部死んでいれば 400」とも書けない ——(d) はこの警告にも
         // IsPermissive にも同時に載るため、断定するとその場で 2 本が食い違う。
         //
-        // <b>直し方は「消す」ではなく「本当のホスト名に書き換える」。</b> 消すと項目数が減り、
-        // 0 件になれば既定の ["*"] へ落ちて<b>全ホストを受け付ける</b>ようになる ——
-        // 400 が止まるので直ったように見えるが、実際には issue #64 そのもの
-        // (Host ヘッダ偽装が通る状態)へ移るだけ。空白だけの項目で起きやすい。
-        // (";" が 200・" ; " が 400 という実測を HostFilteringShortCircuitTests が固定している)
+        // <b>直し方の案内は条件で変える。</b> 死んだ項目を消すと項目数が減り、
+        // <b>0 件になった場合だけ</b>既定の ["*"] へ落ちて全ホストを受け付ける
+        // (400 が止まるので直ったように見えるが、実際は issue #64 へ移るだけ)。
+        // 逆に生きた項目が 1 つでも残るなら「消す」が正しい直し方で、
+        // テンプレート展開の "incident.example.com; ${SECONDARY}" のように
+        // <b>書き換える先の実ホスト名が存在しない</b>形では消す以外に直しようが無い。
+        // 無条件に「消すな」と案内すると、その形で運用者が手詰まりになる。
+        // 判定は AllowedHostsPolicy が持つ(規則を Program.cs へ書き写さない)
+        var deletingWouldOpenUp = AllowedHostsPolicy.DeletingDeadEntriesWouldAllowEveryHost(allowedHosts);
+
+        // 消すと全許可へ化ける設定にだけ、削除を戒める 1 文を足す
+        var howToFix = deletingWouldOpenUp
+            // 生きた項目が 1 つも無いので、消すと ["*"] へ落ちる
+            ? "Rewrite each listed entry to the real hostname with no surrounding spaces. "
+                + "Do NOT simply delete them: no live entry would remain, an empty list falls "
+                + "back to '*', and then every Host header is accepted — the spoofing hole this "
+                + "setting exists to close."
+            // 生きた項目が残るので、消しても全許可にはならない
+            : "Fix each listed entry — either rewrite it to the real hostname with no surrounding "
+                + "spaces, or remove it (a live entry remains, so the list will not fall back "
+                + "to '*'). Write the list as 'a.example;b.example', with no spaces.";
+
+        // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
             "in the {Environment} environment: {NeverMatchingEntries}. " +
             "Host filtering does not trim entries, so an entry with surrounding whitespace is " +
-            "dead: it makes no hostname acceptable. Fix each listed entry by rewriting it to the " +
-            "real hostname with no surrounding spaces (write the list as 'a.example;b.example'). " +
-            "Do NOT simply delete them — an empty list falls back to '*' and then every Host " +
-            "header is accepted, which is the spoofing hole this setting exists to close " +
-            "(issue #64).",
+            "dead: it accepts no hostname at all. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
             // どの環境の話かを添える(上の警告と同じ理由)
             app.Environment.EnvironmentName,
             // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
             // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない
-            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")));
+            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")),
+            // その設定に合った直し方(消してよいかどうかで文面が変わる)
+            howToFix);
     }
 }
 
