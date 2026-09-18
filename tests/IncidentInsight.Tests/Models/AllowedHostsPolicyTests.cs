@@ -168,12 +168,22 @@ public class AllowedHostsPolicyTests
     // 死んだ項目 " " には書き換える先の実ホスト名が無いので、消す以外に直しようが無い
     [InlineData("incident.example.test; ", false)]
     [InlineData("incident.example.test; www.example.test", false)]
-    // <b>消すと 1 件も残らない形。</b> ここだけ「消すな」と案内する必要がある
+    // <b>消すと 1 件も残らない形。</b> 「消すな」と案内する必要がある
     [InlineData("   ", true)]
     [InlineData(" ; ", true)]
     [InlineData("  *  ", true)]
     // 死んだ項目と空の項目しか無い場合も、消せば 0 件になる
     [InlineData(" ;; ", true)]
+    // <b>0 件にならなくても危ない形。</b> 残った 1 件がワイルドカードなら、
+    // 消したあとの設定は依然としてどの Host も受け付ける（実測）。
+    // 「生きた項目が 1 件でも残るか」で判定すると、ここを取りこぼして
+    // <b>削除してよいと案内した結果が全ホスト許可</b>になる
+    [InlineData("*; ", true)]
+    [InlineData("[::]; ", true)]
+    // ASPNETCORE_URLS=http://0.0.0.0:8080 を写して書くと自然に生まれる形
+    [InlineData("incident.example.test;0.0.0.0; ", true)]
+    // 全角で書いた 0.0.0.0 も正規化で全許可になるので同じ
+    [InlineData("incident.example.test;０.０.０.０; ", true)]
     public void DeletingDeadEntriesWouldAllowEveryHost_IsTrueOnlyWhenNoLiveEntryRemains(
         string? allowedHosts, bool expected)
     {
@@ -193,6 +203,12 @@ public class AllowedHostsPolicyTests
     [InlineData("  *  ")]
     [InlineData("incident.example.test; ")]
     [InlineData("incident.example.test; www.example.test")]
+    // <b>ワイルドカードが生き残る形も必ず入れる。</b> これらを外すと、
+    // 「生きた項目が 1 件でも残るか」で判定する誤った実装でも表が緑になり、
+    // 検査が「守っている」と書いた fail-open をそのまま通す（実測でそうなっていた）
+    [InlineData("*; ")]
+    [InlineData("[::]; ")]
+    [InlineData("incident.example.test;0.0.0.0; ")]
     public void DeletingDeadEntries_AgreesWithWhatIsPermissiveSaysAboutTheResult(string allowedHosts)
     {
         // その設定で「一致しえない」と判定された項目を取り出す

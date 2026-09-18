@@ -195,11 +195,28 @@ public static class AllowedHostsPolicy
 
         // IsPermissive とまったく同じ分割を使う（同じ関数を呼ぶので、片方だけ規則が動かない）
         return SplitEntries(allowedHosts)
-            // 前後の空白を落とすと別物になる項目＝どの Host とも一致しえない
-            .Where(entry => !string.Equals(entry, entry.Trim(), StringComparison.Ordinal))
+            // 一致しえない項目だけを残す（規則は IsNeverMatchingEntry が持つ）
+            .Where(IsNeverMatchingEntry)
             // 警告へそのまま載せるので、書かれた順のまま配列にする
             .ToArray();
     }
+
+    /// <summary>
+    /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
+    /// 書くと、条件を広げたとき（<see cref="IsWildcardEntry"/> の docstring が
+    /// 「残っている境界」として挙げている、項目の途中に紛れた制御文字への対応など）に
+    /// 片方だけが取り残される。そのとき <see cref="DeletingDeadEntriesWouldAllowEveryHost"/> は
+    /// 「生きた項目が残る」と答えるのに実際には 0 件になり、
+    /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
+    /// <returns>どの <c>Host</c> とも一致しえないなら <c>true</c>。</returns>
+    private static bool IsNeverMatchingEntry(string entry) =>
+        // 前後の空白を落とすと別物になる項目は、Host ヘッダーと綴りが一致しえない
+        !string.Equals(entry, entry.Trim(), StringComparison.Ordinal);
 
     /// <summary>
     /// 一致しえない項目を<b>消すだけ</b>にすると、全ホスト許可へ化けるかを返す。
@@ -225,13 +242,19 @@ public static class AllowedHostsPolicy
         // 未設定なら消す対象そのものが無い
         if (allowedHosts is null) return false;
 
-        // 判定の土台は他の 2 つとまったく同じ分割を使う
-        var entries = SplitEntries(allowedHosts);
-
         // そもそも一致しえない項目が無ければ、消す話にならない
         if (NeverMatchingEntries(allowedHosts).Count == 0) return false;
 
-        // 生きた項目（前後の空白が無い項目）が 1 つも無ければ、消すと 0 件になる
-        return !entries.Any(entry => string.Equals(entry, entry.Trim(), StringComparison.Ordinal));
+        // 死んだ項目を取り除いた「消したあとの設定値」を組み立てる
+        var afterDeletion = string.Join(
+            Separator,
+            SplitEntries(allowedHosts).Where(entry => !IsNeverMatchingEntry(entry)));
+
+        // <b>その結果を同じ判定へ通す。</b> 「生きた項目が 1 件でも残るか」で見てはいけない
+        // ——残った 1 件がワイルドカードなら、0 件にならなくても全許可のままだから。
+        // 実測: "*; " と "incident.example.test;0.0.0.0; " は死んだ項目を消しても
+        // どの Host も受け付ける（後者は ASPNETCORE_URLS を写して書くと自然に生まれる形）。
+        // IsPermissive を通せば、空になる経路もワイルドカードが残る経路も 1 本で覆える
+        return IsPermissive(afterDeletion);
     }
 }

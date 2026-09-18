@@ -396,7 +396,8 @@ if (!app.Environment.IsDevelopment())
         // <b>直し方の案内は条件で変える。</b> 死んだ項目を消すと項目数が減り、
         // <b>0 件になった場合だけ</b>既定の ["*"] へ落ちて全ホストを受け付ける
         // (400 が止まるので直ったように見えるが、実際は issue #64 へ移るだけ)。
-        // 逆に生きた項目が 1 つでも残るなら「消す」が正しい直し方で、
+        // 逆に、消したあとの設定がどの Host も受け付ける状態にならないなら
+        // 「消す」が正しい直し方で、
         // テンプレート展開の "incident.example.com; ${SECONDARY}" のように
         // <b>書き換える先の実ホスト名が存在しない</b>形では消す以外に直しようが無い。
         // 無条件に「消すな」と案内すると、その形で運用者が手詰まりになる。
@@ -405,15 +406,16 @@ if (!app.Environment.IsDevelopment())
 
         // 消すと全許可へ化ける設定にだけ、削除を戒める 1 文を足す
         var howToFix = deletingWouldOpenUp
-            // 生きた項目が 1 つも無いので、消すと ["*"] へ落ちる
-            ? "Rewrite each listed entry to the real hostname with no surrounding spaces. "
-                + "Do NOT simply delete them: no live entry would remain, an empty list falls "
-                + "back to '*', and then every Host header is accepted — the spoofing hole this "
-                + "setting exists to close."
-            // 生きた項目が残るので、消しても全許可にはならない
-            : "Fix each listed entry — either rewrite it to the real hostname with no surrounding "
-                + "spaces, or remove it (a live entry remains, so the list will not fall back "
-                + "to '*'). Write the list as 'a.example;b.example', with no spaces.";
+            // 消すと、残る設定がどの Host も受け付ける状態になる
+            // (項目が 0 件になるか、残った項目がワイルドカードのどちらか)
+            ? "Rewrite each listed entry to the real hostname. Do NOT simply delete them: "
+                + "with these entries gone the remaining list accepts every Host header — "
+                + "the spoofing hole this setting exists to close. "
+                + "Write the list as 'a.example;b.example', with no spaces."
+            // 消しても、残る設定はどの Host も受け付ける状態にはならない
+            : "Fix each listed entry — either rewrite it to the real hostname, or remove it "
+                + "(deleting these entries does not leave a list that accepts every Host). "
+                + "Write the list as 'a.example;b.example', with no spaces.";
 
         // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
         app.Logger.LogWarning(
