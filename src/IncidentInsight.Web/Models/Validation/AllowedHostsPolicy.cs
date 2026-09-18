@@ -175,7 +175,7 @@ public static class AllowedHostsPolicy
 
         // 規則そのものは 1 か所（AcceptsEveryHost）に置き、ここは倒し方だけを選ぶ。
         // 警告を出すかの判定なので、判断できない綴りはワイルドカード側へ倒す
-        return AcceptsEveryHost(entries, IsWildcardEntry);
+        return AcceptsEveryHost(entries);
     }
 
     /// <summary>
@@ -184,17 +184,20 @@ public static class AllowedHostsPolicy
     /// <remarks>
     /// <b>フォールバックの規則を 1 か所に置くために切り出してある。</b>
     /// 「1 件も残らなければ既定の <c>["*"]</c> へ落ちる」「ワイルドカードが 1 つでもあれば
-    /// 全許可へ切り替わる」という 2 つは、判定が 2 つあっても同じでなければならない。
+    /// 全許可へ切り替わる」という 2 つは、これを読む判定が 2 つあっても同じでなければならない。
     /// 書き写すと、フレームワーク側にもう 1 つ経路が増えたときに片方だけが直り、
     /// その差は<b>「消してよい」と案内する方向</b>（fail-open）へ倒れる。
-    /// <b>問いごとに違うのは 1 項目の見方だけ</b>なので、そこだけを引数で受け取る。
+    /// <b>1 項目の見方を差し替える引数は持たせない</b> ——
+    /// <see cref="ClassifyDeadEntryDeletion"/> は正規化できない項目を先に
+    /// <c>Unknown</c> で除くので、そこへ渡せる 2 つ目の判定はもう存在しない。
+    /// 引数として口を開けておくと、使わない分岐が残るうえ、
+    /// 次の書き手に「別の判定を渡してよい」と読ませてしまう（§6）。
     /// </remarks>
     /// <param name="entries">分割済みの項目（トリムしていない生の値）。</param>
-    /// <param name="isWildcard">1 項目をワイルドカードとみなすかの判定。</param>
     /// <returns>どの <c>Host</c> でも受け付ける状態なら <c>true</c>。</returns>
-    private static bool AcceptsEveryHost(string[] entries, Func<string, bool> isWildcard) =>
+    private static bool AcceptsEveryHost(string[] entries) =>
         // 1 件も残らないなら既定の ["*"] へ落ちる／1 つでもワイルドカードがあれば全許可
-        entries.Length == 0 || entries.Any(isWildcard);
+        entries.Length == 0 || entries.Any(IsWildcardEntry);
 
     /// <summary>
     /// 書かれているのに<b>どの <c>Host</c> とも一致しえない</b>項目を返す。
@@ -246,7 +249,7 @@ public static class AllowedHostsPolicy
     /// <b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
     /// 書くと、条件を広げたとき（<see cref="IsWildcardEntry"/> の docstring が
     /// 「残っている境界」として挙げている、項目の途中に紛れた制御文字への対応など）に
-    /// 片方だけが取り残される。そのとき <see cref="DeletingDeadEntriesWouldAllowEveryHost"/> は
+    /// 片方だけが取り残される。そのとき <see cref="ClassifyDeadEntryDeletion"/> は
     /// 「生きた項目が残る」と答えるのに実際には 0 件になり、
     /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。
     /// </remarks>
@@ -325,7 +328,7 @@ public static class AllowedHostsPolicy
         // ワイルドカード側へ倒す」のは正規化に失敗したときだけなので、上のガードを
         // 通ったあとは倒し方の違いが消え、そのまま使ってよい
         // （倒し方だけが違う 2 つ目の判定を別に持つと、使われない分岐が残る。§6）
-        return AcceptsEveryHost(survivors, IsWildcardEntry)
+        return AcceptsEveryHost(survivors)
             // 消すと全ホストを受け付ける状態になる
             ? DeadEntryDeletionOutcome.WouldAllowEveryHost
             // 消しても全許可にはならない＝消してよい

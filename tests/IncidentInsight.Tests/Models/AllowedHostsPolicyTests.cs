@@ -206,7 +206,7 @@ public class AllowedHostsPolicyTests
     // 「死んだ項目を消したあとに何が残るか」を、手で書いた期待値で固定する。
     //
     // <b>以前ここに置いていた「IsPermissive と一致すること」の検査は恒真だった。</b>
-    // 本体が IsActualWildcardEntry ベース、テストが IsPermissive ベースで、どちらも
+    // 本体もテストも同じワイルドカード判定を読んでいたため、どちらも
     // 同じ Wildcards / SplitEntries を読むため、判定が狭まれば両辺が同じだけ狭まる
     // ——Wildcards を ["*"] に狭めても全行が緑のまま通る。CLAUDE.md が繰り返し
     // 禁じている「同じ判定でガードを書く」形そのもの。

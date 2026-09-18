@@ -362,6 +362,9 @@ public class HostFilteringShortCircuitTests
     // 複数指定を書いたときの 2 件目（「区切りのうしろの空白」を再現するために使う）
     private const string SecondHost = "www.example.test";
 
+    // ホスト名として正規化できない綴り（途中にタブが紛れた形）
+    private const string UnparsableHost = "0.0\t.0.0";
+
     /// <summary>
     /// <c>AllowedHosts</c> を実ホスト名へ絞ったアプリ。
     /// </summary>
@@ -571,6 +574,38 @@ public class HostFilteringShortCircuitTests
 
         // 失敗の出どころがホスト名の正規化であること(別の理由で落ちても緑にしない)
         Assert.Contains("IDN", error.Message, StringComparison.Ordinal);
+    }
+
+    // <b>フレームワークは項目を宣言順に正規化し、最初のワイルドカードで打ち切る。</b>
+    // そのため正規化できない項目が「前」にあれば例外、「後ろ」なら評価されず全許可になる。
+    //
+    // <b>この 1 件が ClassifyDeadEntryDeletion の Unknown を支えている。</b>
+    // 「消したら何が起きるか」を bool で答えると、どちらかの並びで必ず事実と逆の案内になる
+    // ——だから断定をやめた、というのが 3 値にした理由。その前提が上流の実装ごと
+    // 変わったら（例外を捕まえて読み飛ばすようになる等）Unknown は過剰になるので、
+    // 判定側の表ではなく<b>実際のフレームワーク</b>に対して固定しておく必要がある
+    // （CLAUDE.md: フレームワーク側の前提はこのクラスが、判定の境界は
+    //   AllowedHostsPolicyTests が固定する）。
+    [Fact]
+    public async Task UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList()
+    {
+        // 正規化できない項目が<b>ワイルドカードより前</b>にある並び
+        using (var fixture = new AllowedHostsFixture($"{UnparsableHost};0.0.0.0"))
+        {
+            // 先に正規化されて失敗するので、応答に至らず例外になる
+            await Assert.ThrowsAsync<ArgumentException>(
+                () => SendWithHostAsync(fixture.CreateNonRedirectingClient(), RejectedHost));
+        }
+
+        // 同じ 2 項目を<b>入れ替えた</b>だけの並び
+        using (var fixture = new AllowedHostsFixture($"0.0.0.0;{UnparsableHost}"))
+        {
+            // 先頭のワイルドカードで打ち切られるので、壊れた項目は評価されず全許可になる
+            var response = await SendWithHostAsync(fixture.CreateNonRedirectingClient(), RejectedHost);
+
+            // 許可リストに無いホスト名が素通りすること（＝並び順で答えが反転する）
+            Assert.Equal(System.Net.HttpStatusCode.OK, response.StatusCode);
+        }
     }
 
     /// <summary>指定した `AllowedHosts` で起動するアプリ。</summary>

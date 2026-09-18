@@ -417,8 +417,17 @@ if (!app.Environment.IsDevelopment())
                 + "once: keep only real hostnames, with no wildcards and no stray characters.",
 
             // 消しても全許可にはならないので、書き換えても削除してもよい
-            _ => "Fix each listed entry — either rewrite it to the real hostname, or remove it "
+            AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe =>
+                "Fix each listed entry — either rewrite it to the real hostname, or remove it "
                 + "(deleting these entries does not leave a list that accepts every Host).",
+
+            // <b>残りは安全側へ倒す。</b> ここへ来るのは (a) 名指しする項目が無い
+            // (この分岐自体が neverMatching.Count > 0 のときしか走らないので通常あり得ない)
+            // か、(b) 分類に新しい値が増えたのに、ここを直し忘れた場合。
+            // _ を「消してよい」側へ倒すと、(b) で削除を勧めた結果が全許可になりうる
+            // ——コンパイラは _ があるぶん何も言わないので、既定は断定しない側にする
+            _ => "Review the whole list by hand: keep only real hostnames, with no wildcards "
+                + "and no stray characters.",
         }
             // どの分岐でも、一覧の書き方は同じなので 1 度だけ添える
             + " Write the list as 'a.example;b.example', with no spaces.";
