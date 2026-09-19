@@ -595,6 +595,36 @@ public class AllowedHostsPolicyTests
         Assert.Equal(AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts), outcome);
     }
 
+    // 名指しと分類が<b>同じ振り分け</b>から来ていることを、観測できる形で固定する。
+    //
+    // <b>上の一致検査だけでは足りない。</b> あちらは 3 つの公開 API を突き合わせるので、
+    // 3 つとも同じ写しを持てば（＝振り分けを別々にやり直しても、条件が同じうちは）緑のまま通る。
+    // 壊れるのは「片方の判定にだけ条件を足した」瞬間で、そのとき必ず現れるのがこの食い違い:
+    // <b>名指しは 0 件なのに「消せば直る」と案内する</b>（名指し側にだけ条件を足した場合）か、
+    // <b>名指しはあるのに「消す対象は無い」と言う</b>（分類側にだけ足した場合）。
+    // どちらも運用者には「警告が言っていることが噛み合わない」としか見えない。
+    [Theory]
+    // 名指しする項目が無い設定（分類は NothingToDelete でなければならない）
+    [InlineData(null)]
+    [InlineData("incident.example.test")]
+    [InlineData("incident.example.test;www.example.test")]
+    // 名指しする項目がある設定（分類は NothingToDelete であってはならない）
+    [InlineData("incident.example.test; ")]
+    [InlineData("incident.example.test;0.0.0.0; ")]
+    [InlineData("0.0\t.0.0; ")]
+    [InlineData("   ")]
+    public void InspectNeverMatchingEntries_NamesEntriesExactlyWhenItSaysThereIsSomethingToDelete(
+        string? allowedHosts)
+    {
+        // 名指しする項目と分類を、1 度の呼び出しで受け取る
+        var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
+
+        // 「消す対象が無い」と答えるのは、名指しする項目が 1 件も無いときだけ
+        Assert.Equal(
+            entries.Count == 0,
+            outcome == AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete);
+    }
+
     // 「消してよい」の案内が、削除を<b>同列の選択肢として</b>勧めていないことを固定する。
     //
     // <b>Safe が保証するのは「絞り込みが開かないこと」だけ。</b> 名指しされる典型は

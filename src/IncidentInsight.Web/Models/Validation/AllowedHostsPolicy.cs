@@ -316,18 +316,10 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>一致しえない項目（無ければ空）。運用者へそのまま見せる想定。</returns>
-    public static IReadOnlyList<string> NeverMatchingEntries(string? allowedHosts)
-    {
-        // 未設定なら項目そのものが無い
-        if (allowedHosts is null) return [];
-
-        // IsPermissive とまったく同じ分割を使う（同じ関数を呼ぶので、片方だけ規則が動かない）
-        return SplitEntries(allowedHosts)
-            // 一致しえない項目だけを残す（規則は IsNeverMatchingEntry が持つ）
-            .Where(IsNeverMatchingEntry)
-            // 警告へそのまま載せるので、書かれた順のまま配列にする
-            .ToArray();
-    }
+    public static IReadOnlyList<string> NeverMatchingEntries(string? allowedHosts) =>
+        // 振り分けは 1 か所（PartitionEntries）だけが行う。ここで自前に振り分け直すと、
+        // 分類側（ClassifyDeadEntryDeletion）と「同じ項目を見ている」保証が構造から外れる
+        PartitionEntries(allowedHosts).Dead;
 
     /// <summary>
     /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
@@ -422,44 +414,10 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>消したときに何が起きるかの分類。</returns>
-    public static DeadEntryDeletionOutcome ClassifyDeadEntryDeletion(string? allowedHosts)
-    {
-        // 未設定なら消す対象そのものが無い
-        if (allowedHosts is null) return DeadEntryDeletionOutcome.NothingToDelete;
+    public static DeadEntryDeletionOutcome ClassifyDeadEntryDeletion(string? allowedHosts) =>
+        // 分割と振り分けは共有のパスへ任せる（分類と名指しが同じ集合を見ることを構造に載せる）
+        ClassifyDeletionOf(PartitionEntries(allowedHosts));
 
-        // 分割は 1 回だけ行い、その場で「死んだ項目」と「残る項目」へ分ける
-        // （NeverMatchingEntries を件数のためだけに呼び直すと、同じ値を 3 回割って
-        //  同じ正規化を 2 周することになる。§6 DRY）
-        var entries = SplitEntries(allowedHosts);
-
-        // 死んだ項目を取り除いたあとに残る項目を取り出す（規則は IsNeverMatchingEntry が持つ）
-        var survivors = entries.Where(entry => !IsNeverMatchingEntry(entry)).ToArray();
-
-        // 1 件も減らなかったなら、そもそも消す対象が無い＝消す話にならない
-        if (survivors.Length == entries.Length) return DeadEntryDeletionOutcome.NothingToDelete;
-
-        // 残る項目を、フレームワークと同じ「宣言順に見て最初に当たったら打ち切る」規則で分類する。
-        // <b>Any で「正規化できない項目があるか」を先に見てはいけない。</b> あの形は並び順を
-        // 無視するので、前にワイルドカードがあって<b>実際には評価されない</b>壊れた項目まで
-        // 「判断できない」に倒してしまう ——たとえば "0.0.0.0;0.0\t.0.0; " は、フレームワークが
-        // 1 件目で打ち切るため結果が 200（全許可）で確定しているのに Unknown と答え、
-        // 運用者は「ワイルドカードの項目も消せ」という本当に必要な案内を受け取れなかった
-        // （並び順の実測は UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList が固定）
-        var survivorReason = ClassifyEntries(survivors);
-
-        // 順に見た結果、実際に正規化できない綴りへ到達したときだけ断定をやめる
-        return survivorReason switch
-        {
-            // 壊れた項目が先に評価される並びなので、消した結果は並び順しだいで変わる
-            PermissiveReason.UnparsableEntry => DeadEntryDeletionOutcome.Unknown,
-
-            // 消しても全許可にはならない＝消してよい
-            PermissiveReason.NotPermissive => DeadEntryDeletionOutcome.Safe,
-
-            // 残りが 0 件（既定の ["*"] へ落ちる）か、残った項目自体がワイルドカード
-            _ => DeadEntryDeletionOutcome.WouldAllowEveryHost,
-        };
-    }
 
     /// <summary>
     /// 一致しえない項目と、それを<b>消すだけ</b>にしたら何が起きるかを<b>ひと続きで</b>返す。
@@ -475,9 +433,106 @@ public static class AllowedHostsPolicy
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>一致しえない項目（無ければ空）と、それを消したときに何が起きるかの分類。</returns>
     public static (IReadOnlyList<string> Entries, DeadEntryDeletionOutcome Outcome)
-        InspectNeverMatchingEntries(string? allowedHosts) =>
-        // 名指しする項目と分類を、同じ設定値から 1 度に導く
-        (NeverMatchingEntries(allowedHosts), ClassifyDeadEntryDeletion(allowedHosts));
+        InspectNeverMatchingEntries(string? allowedHosts)
+    {
+        // 設定値を 1 度だけ分割し、1 度だけ「死んだ項目」と「残る項目」へ振り分ける
+        var partition = PartitionEntries(allowedHosts);
+
+        // 名指しする項目と分類を、その 1 つの振り分けから作る
+        // （ここが「同じ集合を見ている」ことの根拠。2 つの公開 API を別々に呼ぶ形に戻すと、
+        //  片方の判定にだけ条件や副作用を足す変更が通ってしまう）
+        return (partition.Dead, ClassifyDeletionOf(partition));
+    }
+
+    /// <summary>
+    /// 設定値を<b>1 度だけ</b>分割し、「一致しえない項目」と「残る項目」へ振り分けた結果。
+    /// </summary>
+    /// <param name="Dead">どの <c>Host</c> とも一致しえない項目（書かれた順）。</param>
+    /// <param name="Survivors">それらを消したあとに残る項目（書かれた順）。</param>
+    private readonly record struct EntryPartition(string[] Dead, string[] Survivors);
+
+    /// <summary>
+    /// 設定値を分割し、<see cref="IsNeverMatchingEntry"/> で 1 度だけ振り分ける。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>名指しと分類の唯一の入口にする。</b> 「一致しえない項目を挙げる」
+    /// （<see cref="NeverMatchingEntries"/>）と「それを消すと何が起きるか」
+    /// （<see cref="ClassifyDeadEntryDeletion"/>）は、<b>同じ振り分けの表と裏</b>でしかない。
+    /// それぞれが自前で分割・振り分けをすると、判定の条件を片方にだけ足す変更が通り、
+    /// <b>名指しした項目と案内の根拠になった項目が食い違う</b>
+    /// （挙げていない項目を前提にした案内、あるいはその逆）。両方をここから導けば、
+    /// その食い違いは<b>書こうとしても書けない</b>。</para>
+    ///
+    /// <para><b>正規化を項目ごとに 1 回で済ませる。</b> <see cref="IsNeverMatchingEntry"/> は
+    /// 内部で <c>HostString.ToUriComponent()</c>（IDN の往復）を通す。2 つの公開 API を
+    /// 別々に呼んでいた頃は分割が 2 回・正規化が項目ごとに 2 回走っていた。
+    /// 実害の中心は速度ではなく<b>契約</b>で、「1 度に導く」と読んだ人がこの判定へ
+    /// 副作用（メモ化・計測・1 回だけのログ）を足すと、静かに 2 回実行される。</para>
+    /// </remarks>
+    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>振り分けた結果（未設定ならどちらも空）。</returns>
+    private static EntryPartition PartitionEntries(string? allowedHosts)
+    {
+        // 未設定なら項目そのものが無い（分割も正規化も走らせない）
+        if (allowedHosts is null) return new EntryPartition([], []);
+
+        // IsPermissive とまったく同じ分割を使う（同じ関数を呼ぶので、片方だけ規則が動かない）
+        var entries = SplitEntries(allowedHosts);
+
+        // 死んだ項目と残る項目を作る。ここが振り分けの唯一の場所
+        var dead = new List<string>();
+        var survivors = new List<string>();
+
+        // 書かれた順のまま 1 件ずつ振り分ける（並び順は分類の判定に効くので崩さない）
+        foreach (var entry in entries)
+        {
+            // 判定は 1 項目につき 1 回だけ呼ぶ（規則は IsNeverMatchingEntry が持つ）
+            if (IsNeverMatchingEntry(entry)) dead.Add(entry);
+            // 一致しうる項目は「消したあとに残る側」へ入れる
+            else survivors.Add(entry);
+        }
+
+        // 振り分けた結果を、警告へそのまま載せられる配列の形で返す
+        return new EntryPartition(dead.ToArray(), survivors.ToArray());
+    }
+
+    /// <summary>
+    /// 振り分け済みの結果から、「死んだ項目を消すと何が起きるか」を分類する。
+    /// </summary>
+    /// <remarks>
+    /// 判定の理由は <see cref="ClassifyDeadEntryDeletion"/> の docstring が正本。
+    /// ここは<b>振り分けをやり直さない</b>ことだけを担う（やり直すと、上の
+    /// <see cref="PartitionEntries"/> が構造に載せた保証がその場で外れる）。
+    /// </remarks>
+    /// <param name="partition">1 度だけ振り分けた結果。</param>
+    /// <returns>消したときに何が起きるかの分類。</returns>
+    private static DeadEntryDeletionOutcome ClassifyDeletionOf(EntryPartition partition)
+    {
+        // 死んだ項目が 1 件も無いなら、そもそも消す話にならない
+        if (partition.Dead.Length == 0) return DeadEntryDeletionOutcome.NothingToDelete;
+
+        // 残る項目を、フレームワークと同じ「宣言順に見て最初に当たったら打ち切る」規則で分類する。
+        // <b>Any で「正規化できない項目があるか」を先に見てはいけない。</b> あの形は並び順を
+        // 無視するので、前にワイルドカードがあって<b>実際には評価されない</b>壊れた項目まで
+        // 「判断できない」に倒してしまう ——たとえば "0.0.0.0;0.0\t.0.0; " は、フレームワークが
+        // 1 件目で打ち切るため結果が 200（全許可）で確定しているのに Unknown と答え、
+        // 運用者は「ワイルドカードの項目も消せ」という本当に必要な案内を受け取れなかった
+        // （並び順の実測は UnparsableEntry_ChangesTheOutcomeDependingOnItsPositionInTheList が固定）
+        var survivorReason = ClassifyEntries(partition.Survivors);
+
+        // 順に見た結果、実際に正規化できない綴りへ到達したときだけ断定をやめる
+        return survivorReason switch
+        {
+            // 壊れた項目が先に評価される並びなので、消した結果は並び順しだいで変わる
+            PermissiveReason.UnparsableEntry => DeadEntryDeletionOutcome.Unknown,
+
+            // 消しても全許可にはならない＝消してよい
+            PermissiveReason.NotPermissive => DeadEntryDeletionOutcome.Safe,
+
+            // 残りが 0 件（既定の ["*"] へ落ちる）か、残った項目自体がワイルドカード
+            _ => DeadEntryDeletionOutcome.WouldAllowEveryHost,
+        };
+    }
 
     /// <summary>
     /// 一覧をどう書くかの共通の一言（どの案内にも同じものを添える）。
