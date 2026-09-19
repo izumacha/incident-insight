@@ -33,6 +33,11 @@ public class CSharpLiteralTests
 
         // 姉妹の文字リテラル側も同じ規則であること（片方だけ直す変更を防ぐ）
         Assert.Equal(-1, CSharpLiteral.FindCharLiteralEnd("var a = '閉じない\nvar b = 'x';", 8));
+
+        // <b>行末が \ の形も、姉妹そろって打ち切ること。</b> ここを「エスケープが無い形」
+        // だけで確かめていたため、文字リテラル側に同じ穴が残っているのを見落としていた
+        // （実測: 次の行のアポストロフィを終端として拾っていた）
+        Assert.Equal(-1, CSharpLiteral.FindCharLiteralEnd("var a = 'x\\\nvar b = 'y';", 8));
     }
 
     // 行末が <c>\</c> で終わるリテラルでも、改行の打ち切りが効くこと。

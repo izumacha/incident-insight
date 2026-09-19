@@ -313,6 +313,14 @@ public static class AllowedHostsPolicy
     /// <b>綴りに関係なく</b>一致しえない（<c>" * "</c> のようにワイルドカードのつもりの綴りも
     /// ここに落ちる）。内側の空白（<c>"a b.test"</c>）は別の話なので見ない ——
     /// そもそもホスト名として不正で、ここで扱うと「何を保証しているか」がぼやける。</para>
+    ///
+    ///
+    /// <para><b>起動時のチェックはここを直接は呼ばない</b>（<see cref="InspectNeverMatchingEntries"/>
+    /// を 1 本だけ呼ぶ）。それでも公開のまま残しているのは、<b>2 つの出力を別々に観測する入口</b>
+    /// が要るため —— <c>ResponseCacheHeaderIntegrationTests</c> は「一致しえない項目が 1 件だけか」
+    /// を、<c>AllowedHostsPolicyTests</c> は分類と切り離した値を、それぞれここから見る。
+    /// まとめた入口だけにすると、どちらが崩れたのかを失敗文言から切り分けられない。
+    /// <b>本番の経路は <see cref="InspectNeverMatchingEntries"/> 1 本だけ</b>と読むこと。</para>
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>一致しえない項目（無ければ空）。運用者へそのまま見せる想定。</returns>
@@ -411,6 +419,11 @@ public static class AllowedHostsPolicy
     /// <c>"0.0.0.0;0.0\t.0.0; "</c> は 1 件目で打ち切られて 200（全許可）で確定しているのに
     /// 「消した結果は予測できない」と答え、運用者は
     /// <b>本当に必要な「ワイルドカードの項目も消せ」という案内を受け取れない</b>。</para>
+    ///
+    ///
+    /// <para><b>起動時のチェックはここを直接は呼ばない</b>（<see cref="InspectNeverMatchingEntries"/>
+    /// を 1 本だけ呼ぶ）。公開のまま残す理由は <see cref="NeverMatchingEntries"/> と同じで、
+    /// 分類だけを切り離して観測する入口として使う。</para>
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>消したときに何が起きるかの分類。</returns>

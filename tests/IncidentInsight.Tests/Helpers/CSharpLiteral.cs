@@ -41,12 +41,23 @@ public static class CSharpLiteral
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
-            // エスケープなら次の 1 文字を読み飛ばす
-            if (source[i] == '\\') { i++; continue; }
-            // 単一引用符に出会ったらそこが閉じ位置
-            if (source[i] == '\'') return i;
             // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
             if (source[i] == '\n') return -1;
+            // エスケープなら次の 1 文字を読み飛ばす
+            if (source[i] == '\\')
+            {
+                // <b>エスケープは改行を食べない。</b> 無条件に次の 1 文字を飛ばすと、
+                // 行末が \ のときに改行そのものが飛ばされて上の打ち切りが一度も効かず、
+                // <b>次の行のアポストロフィを終端として拾う</b>（実測）。
+                // 姉妹の FindStringLiteralEnd と同じ手当て ——片方だけ直さない
+                if (i + 1 < source.Length && source[i + 1] == '\n') return -1;
+                // エスケープされた 1 文字を飛ばす
+                i++;
+                // 続きを見る
+                continue;
+            }
+            // 単一引用符に出会ったらそこが閉じ位置
+            if (source[i] == '\'') return i;
         }
 
         // 閉じ引用符が見つからなかった
