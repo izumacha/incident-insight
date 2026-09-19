@@ -187,9 +187,6 @@ public static class CSharpLiteral
             return close < 0 ? -1 : close + fenceLength - 1;
         }
 
-        // ここへ来るのは生文字列ではないリテラルなので、またげるのは逐語的のときだけ。
-        // 綴りは利用側と同じ 1 つの規則から作る（食い違うと分岐の選び方がずれる）
-        var canSpanLines = CanSpanLines(source, quoteIndex);
 
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
@@ -202,7 +199,8 @@ public static class CSharpLiteral
             // 位置がずれた走査が<b>次の行以降の引用符</b>を終端として拾い、あいだの実コードが
             // 丸ごとリテラルの中身として潰される（ModelState 側は潰した範囲を空白で埋めるので、
             // そこにある StartsWith( の検査漏れが報告されなくなる＝静かな fail-open）
-            if (!canSpanLines && source[i] == '\n') return -1;
+            // 生文字列は上で処理済みなので、ここでまたげるのは逐語的リテラルだけ
+            if (!isVerbatim && source[i] == '\n') return -1;
             // 通常のリテラルだけバックスラッシュをエスケープとして扱う
             if (!isVerbatim && source[i] == '\\')
             {

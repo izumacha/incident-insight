@@ -894,8 +894,10 @@ public class ResponseCacheAttributePolicyTests
             "  この画面は Cache-Control をミドルウェアの既定に任せる",
             "*@"));
 
-        // C# の複数行コメントも同じ
-        Assert.Empty(ScanLines(
+        // C# の複数行コメントも同じ（<b>.cs として</b>走査する ——ビューでは /* を
+        // コメントとして扱わない。理由は StripComments の説明）
+        Assert.Empty(ScanLinesAs(
+            ".cs",
             "/*",
             "  Cache-Control はここでは書かない",
             "*/"));
@@ -908,8 +910,9 @@ public class ResponseCacheAttributePolicyTests
                 "  メモ",
                 "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // 閉じていないコメントの中で終わっても、実コードを拾わない
-        Assert.Empty(ScanLines(
+        // 閉じていないコメントの中で終わっても、実コードを拾わない（同じく .cs として）
+        Assert.Empty(ScanLinesAs(
+            ".cs",
             "/*",
             "  Response.Headers.CacheControl = \"public\";"));
     }
@@ -1030,15 +1033,65 @@ public class ResponseCacheAttributePolicyTests
         Assert.Empty(withStrayQuote);
     }
 
+    // ビューの地の文にある <c>//</c> ・ <c>/*</c> を、コメントとして扱わないこと。
+    //
+    // <b>Razor のマークアップでは // も /* もコメントではない。</b> ところがこの走査は
+    // C# の綴りをそのまま当てていたため、地の文に URL（https://…）や注記（/* …）があると
+    // <b>その行の残り、あるいは閉じ綴りが来るまでの全行が走査から落ちる</b> ——
+    // 本物のキャッシュ指示を見逃す（実測で、いずれも報告されなかった）。
+    // 姉妹の走査（ModelStateKeyPrefixMatchTests.Neutralize）が同じ実測から同じ判断を
+    // しており、そちらのコメントが先に記録していた。
+    [Fact]
+    public void CodeScan_DoesNotTreatMarkupSlashesAsComments()
+    {
+        // 地の文の URL と同じ行に書いた指示を拾うこと（// で打ち切らない）
+        Assert.Equal(
+            new[] { 1 },
+            ScanLines(
+                "<p>詳しくは https://example.test を参照</p> @{ Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // 地の文の /* が、以降の行を飲み込まないこと
+        Assert.Equal(
+            new[] { 2, 3 },
+            ScanLines(
+                "<p>注: レベル3 /* 補足</p>",
+                "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }",
+                "@{ Response.Headers[\"Cache-Control\"] = \"public\"; }"));
+
+        // Razor のコメントはこれまでどおり潰すこと（ビューで残る唯一の綴り）
+        Assert.Empty(ScanLines(
+            "@* Cache-Control はミドルウェアの既定に任せる *@"));
+
+        // .cs 側では // と /* がこれまでどおりコメントであること（片方だけ直さない）
+        Assert.Empty(ScanLinesAs(
+            ".cs",
+            "// Response.Headers.CacheControl = \"public\";"));
+    }
+
     /// <summary>
     /// 合成した複数行のソースを走査し、該当した行番号を返す(検査用の入り口)。
     /// </summary>
     /// <param name="lines">合成したソースの各行。</param>
     /// <returns>該当した行番号(1 始まり)。</returns>
-    private static int[] ScanLines(params string[] lines)
+    private static int[] ScanLines(params string[] lines) =>
+        // 既定はビュー(.cshtml)。コメントの綴りが違うので、拡張子まで本物と同じにする
+        ScanLinesAs(".cshtml", lines);
+
+    /// <summary>
+    /// 合成した複数行のソースを、指定した拡張子のファイルとして走査する(検査用の入り口)。
+    /// </summary>
+    /// <remarks>
+    /// <b>拡張子を渡せるようにしてあるのは、コメントの綴りがビューと C# で違うため。</b>
+    /// ビューでは <c>//</c> ・ <c>/*</c> をコメントとして扱わない(理由は
+    /// <see cref="StripComments"/>)ので、同じ行でも答えが変わる。
+    /// </remarks>
+    /// <param name="extension">書き出すファイルの拡張子(<c>.cshtml</c> か <c>.cs</c>)。</param>
+    /// <param name="lines">合成したソースの各行。</param>
+    /// <returns>該当した行番号(1 始まり)。</returns>
+    private static int[] ScanLinesAs(string extension, params string[] lines)
     {
         // 使い捨ての作業場へ書き出して、本物と同じ経路で走査する
-        var path = Path.Combine(Path.GetTempPath(), $"ii-scan-{Guid.NewGuid():N}.cshtml");
+        var path = Path.Combine(Path.GetTempPath(), $"ii-scan-{Guid.NewGuid():N}{extension}");
         // 後始末を必ず行う
         try
         {
@@ -1125,6 +1178,8 @@ public class ResponseCacheAttributePolicyTests
     {
         // ファイルを 1 行ずつ読む(何行目かを失敗文言に載せるため)
         var lines = File.ReadAllLines(sourcePath);
+        // ビュー(.cshtml)かどうかでコメントの綴りが変わる(理由は StripComments の説明)
+        var isView = sourcePath.EndsWith(".cshtml", StringComparison.OrdinalIgnoreCase);
         // ブロックコメントの途中なら、閉じるまでの綴りを持つ(外なら null)
         string? pendingCloser = null;
         // 結果を貯める
@@ -1134,7 +1189,7 @@ public class ResponseCacheAttributePolicyTests
         for (var i = 0; i < lines.Length; i++)
         {
             // この行からコメントを取り除き、次の行へ持ち越す状態を受け取る
-            var (code, nextCloser) = StripComments(lines[i], pendingCloser);
+            var (code, nextCloser) = StripComments(lines[i], pendingCloser, isView);
             // 次の行の判定に使う状態を更新する
             pendingCloser = nextCloser;
             // 行番号(1 始まり)・元の行・実コードを記録する
@@ -1183,7 +1238,10 @@ public class ResponseCacheAttributePolicyTests
     /// 直前の行から持ち越したブロックコメントの閉じ綴り(コメントの外なら <c>null</c>)。
     /// </param>
     /// <returns>コメントを除いた実コードと、次の行へ持ち越す閉じ綴り。</returns>
-    private static (string Code, string? PendingCloser) StripComments(string line, string? pendingCloser)
+    private static (string Code, string? PendingCloser) StripComments(
+        string line,
+        string? pendingCloser,
+        bool isView)
     {
         // 実コードだけを貯める入れ物
         var code = new System.Text.StringBuilder();
@@ -1287,12 +1345,26 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
-            // 行コメントが始まったら、そこから先は読まない
-            if (StartsWithAt(line, i, "//")) break;
-            // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
+            // <b>ビューでは // と /* をコメントとして扱わない。</b> Razor のマークアップの
+            // 地の文に普通に現れる（URL の https:// ・ 注記の /* …）のに、行コメント・
+            // ブロックコメントとして読むと<b>その行の残り、あるいは閉じ綴りが来るまでの
+            // 全行が走査から落ちる</b> ——本物のキャッシュ指示を見逃す。実測でも、
+            // <p>注: "レベル3 /* 補足</p> の次の 2 行に置いた書き込みが報告されなかった。
+            // 姉妹の走査（ModelStateKeyPrefixMatchTests.Neutralize）が同じ実測から同じ
+            // 判断をしている ——ビューでは Razor の @* *@ だけを潰す。
+            // 代償は「@{ } の中に書いた // のコメントも実コードとして貯める」ことだが、
+            // 倒れる向きは<b>多く報告する側</b>なので気づける
+            if (!isView)
+            {
+                // 行コメントが始まったら、そこから先は読まない
+                if (StartsWithAt(line, i, "//")) break;
+                // C# のブロックコメントは閉じ綴りを待つ状態にする
+                if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
+            }
+
+            // Razor のブロックコメントはどちらでも扱う(ビューにしか現れないが、
+            // .cs 側に書いても実害は無いので分岐を増やさない)
             if (StartsWithAt(line, i, "@*")) { pendingCloser = "*@"; i += 2; continue; }
-            // C# のブロックコメントも同様
-            if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
 
             // ここまで来た文字は実コードなので貯める
             code.Append(line[i]);
@@ -1467,7 +1539,8 @@ public class ResponseCacheAttributePolicyTests
     private static bool MentionsCacheControl(string line)
     {
         // コメントの外から読み始めて、この行の実コードを取り出す
-        var (code, _) = StripComments(line, null);
+        // (単独行の入口は C# として扱う。ビューの扱いはファイル経由の CodeLines が持つ)
+        var (code, _) = StripComments(line, null, isView: false);
         // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
         return CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
