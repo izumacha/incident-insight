@@ -1469,6 +1469,75 @@ public class ResponseCacheAttributePolicyTests
                 .ToArray());
     }
 
+    // 階層の<b>途中</b>の override に付いた属性が、その型の名前で 1 件だけ報告されること。
+    //
+    // <b>なぜ要るのか。</b> GetBaseDefinition() が返すのは「最初に virtual として宣言された
+    // 定義」なので、属性が途中の型の override に付いていると根にも自分自身にも無い。
+    // 根へ一足飛びに跳ぶ実装では<b>どちらの検査も外れて具象が名指しされ</b>、
+    // 1 つの宣言が具象の数だけ違反として並び、しかも名指しされたファイルを開いても
+    // 属性が無い ——DeclaringTypeOf が防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    //
+    // 既存の DeclarationScan_ReportsAnInheritedActionOnlyOnce は「基底が宣言・具象が素の継承」
+    // の 2 段しか見ないので、この 3 段の形は素通りしていた。
+    [Fact]
+    public void DeclarationScan_NamesTheMidHierarchyOverrideThatActuallyDeclaresTheAttribute()
+    {
+        // 同じ中間型を継承する 2 つの具象を走査する
+        var declarations = ScanProbes(
+            typeof(MidOverrideProbeLeaf),
+            typeof(SecondMidOverrideProbeLeaf));
+
+        // 中間型の宣言(Duration = 55)に由来する宣言が 1 件だけであること
+        // （具象を名指しする実装では、ここが 2 件になって落ちる）
+        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 55);
+
+        // 名指しが、属性を実際に宣言している中間型であること（具象でも根でもない）
+        Assert.Contains(
+            nameof(MidOverrideProbeControllerMid),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>属性を持たず、virtual なアクションを宣言するだけの根。</summary>
+    private abstract class MidOverrideProbeControllerRoot : ControllerBase
+    {
+        /// <summary>派生が override する、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>階層の途中で override し、そこに属性を付ける型（直すべき 1 か所）。</summary>
+    /// <remarks>期間の値(55)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class MidOverrideProbeControllerMid : MidOverrideProbeControllerRoot
+    {
+        /// <summary>属性を宣言する override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 55)]
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>属性を付けずに override だけする具象。</summary>
+    /// <remarks>
+    /// <b>ここで override させるのが要点。</b> 素の継承にすると、走査が見つける
+    /// <c>MethodInfo</c> の <c>DeclaringType</c> は中間型のままなので
+    /// 「自分自身が宣言しているか」の検査で当たってしまい、<b>さかのぼる経路を一度も通らない</b>
+    /// （実測: 素の継承にした版では、根へ一足飛びに跳ぶ実装へ戻しても全件緑のまま通った）。
+    /// </remarks>
+    private sealed class MidOverrideProbeLeaf : MidOverrideProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じ中間型を継承する 2 つ目の具象（畳み方の検証に使う）。</summary>
+    private sealed class SecondMidOverrideProbeLeaf : MidOverrideProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
     /// <summary>
     /// 同じ宣言元へ複数付けられる、検証用の属性（<c>AllowMultiple = true</c>）。
     /// </summary>

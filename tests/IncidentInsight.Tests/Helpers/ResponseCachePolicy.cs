@@ -302,6 +302,12 @@ public static class ResponseCachePolicy
     /// 1 つの宣言が派生の数だけ違反として並び、しかも名指しされたファイルを開いても
     /// 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
     /// (クラス側の同名のオーバーロードも、同じ理由から同じ手当てをしている)。
+    ///
+    /// <para><b>さかのぼり方は「根へ跳ぶ」ではなく「1 段ずつ」。</b>
+    /// <c>GetBaseDefinition()</c> が返すのは<b>最初に virtual として宣言された定義</b>なので、
+    /// 属性が<b>途中の型</b>の <c>override</c> に付いている場合は根にも自分自身にも無く、
+    /// どちらの検査も外れて具象が名指しされる。連なりを 1 段ずつ見れば、
+    /// 途中の宣言も「自分自身が宣言しているか」で正しく捕まる。</para>
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
     /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
@@ -315,16 +321,30 @@ public static class ResponseCachePolicy
             return method.DeclaringType!;
         }
 
-        // override なら、最初に宣言された(仮想メソッドの根の)定義までさかのぼる
-        var baseDefinition = method.GetBaseDefinition();
-        // 根の定義が属性を宣言しているなら、その型が直すべき場所
-        if (baseDefinition.GetCustomAttributes(inherit: false).Any(matches))
+        // override の連なりを識別するための目印(同じ仮想メソッドはどこから見ても同じ根を持つ)
+        var rootDefinition = method.GetBaseDefinition();
+
+        // <b>根へ一足飛びに跳ばず、override の連なりを 1 段ずつさかのぼる。</b>
+        // 跳ぶと、途中の型が宣言した属性を素通りして具象を名指しすることになる ——
+        // Root(virtual) → Mid([ResponseCache] override) → Leaf1 / Leaf2(素の override)で、
+        // Leaf の inherit: false は空・根は Root.Export なので<b>どちらの検査も外れ</b>、
+        // 1 つの宣言が Leaf の数だけ違反として並び、しかも名指しされたファイルを開いても
+        // 属性が無い ——この関数が防ぐために存在する形そのものになる(実測で 2 件並んだ)
+        for (var type = method.DeclaringType?.BaseType; type is not null; type = type.BaseType)
         {
-            // 根の定義を持つ型を返す
-            return baseDefinition.DeclaringType!;
+            // その型<b>自身が宣言している</b>メソッドの中から、同じ仮想メソッドの定義を探す
+            var declared = type
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .FirstOrDefault(candidate => candidate.GetBaseDefinition().Equals(rootDefinition));
+
+            // その段が同じメソッドを宣言していなければ、さらに基底へ
+            if (declared is null) continue;
+
+            // その定義が属性を宣言しているなら、そこが直すべき場所
+            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return type;
         }
 
-        // どちらでもなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
+        // どこにも見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
         return method.DeclaringType!;
     }
 

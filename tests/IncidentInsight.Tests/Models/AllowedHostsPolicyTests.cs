@@ -603,23 +603,48 @@ public class AllowedHostsPolicyTests
     // <b>名指しは 0 件なのに「消せば直る」と案内する</b>（名指し側にだけ条件を足した場合）か、
     // <b>名指しはあるのに「消す対象は無い」と言う</b>（分類側にだけ足した場合）。
     // どちらも運用者には「警告が言っていることが噛み合わない」としか見えない。
+    //
+    // <b>行ごとに (名指し, 分類) の組を手で書く。</b> 「名指しが 0 件であることと分類が
+    // NothingToDelete であることが一致する」だけを見る形にしていたが、それは今の実装では
+    // <b>構造上つねに真</b>（分類の入口が Dead.Length == 0 で、どの分岐も NothingToDelete を
+    // 返さない）で、振り分けを丸ごと潰しても緑のまま通る ——行を並べたぶんだけ
+    // 正規化・並び順を覆っているように読めて、実際には 1 つも覆っていなかった。
     [Theory]
-    // 名指しする項目が無い設定（分類は NothingToDelete でなければならない）
-    [InlineData(null)]
-    [InlineData("incident.example.test")]
-    [InlineData("incident.example.test;www.example.test")]
-    // 名指しする項目がある設定（分類は NothingToDelete であってはならない）
-    [InlineData("incident.example.test; ")]
-    [InlineData("incident.example.test;0.0.0.0; ")]
-    [InlineData("0.0\t.0.0; ")]
-    [InlineData("   ")]
+    // 一致しえない項目が無い設定（分類は NothingToDelete でなければならない）
+    [InlineData(null, "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("incident.example.test", "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("incident.example.test;www.example.test", "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    // 空白付きの項目だけが死に、実ホスト名が残る＝消してよい
+    [InlineData("incident.example.test; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe)]
+    // 残るほうにワイルドカードがあるので、消すと全許可になる
+    [InlineData("incident.example.test;0.0.0.0; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    // 残るほうに正規化できない綴りがあるので、消した結果は並び順しだい＝断定しない
+    [InlineData("0.0\t.0.0; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    // 全部死ぬので、消すと 0 件になって既定の ["*"] へ落ちる
+    [InlineData("   ", "   ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
     public void InspectNeverMatchingEntries_NamesEntriesExactlyWhenItSaysThereIsSomethingToDelete(
-        string? allowedHosts)
+        string? allowedHosts,
+        string expectedDeadEntries,
+        AllowedHostsPolicy.DeadEntryDeletionOutcome expectedOutcome)
     {
         // 名指しする項目と分類を、1 度の呼び出しで受け取る
         var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
 
-        // 「消す対象が無い」と答えるのは、名指しする項目が 1 件も無いときだけ
+        // 期待する名指しを、書きやすいように '|' 区切りの 1 つの文字列から組み立てる
+        // （項目そのものが空白なので、区切りには空白以外の文字を使う）
+        var expected = expectedDeadEntries.Length == 0
+            ? []
+            : expectedDeadEntries.Split('|');
+
+        // 名指しする項目が、並びまで含めて期待どおりであること
+        Assert.Equal(expected, entries);
+
+        // 分類が期待どおりであること
+        Assert.Equal(expectedOutcome, outcome);
+
+        // そのうえで、2 つが噛み合っていること（名指しが 0 件のときだけ「消す対象が無い」）。
+        // 上の 2 つは行ごとの期待値なので、この関係そのものは別に固定する ——
+        // 行を足した人が、噛み合わない組を書いてしまうのを防ぐ
         Assert.Equal(
             entries.Count == 0,
             outcome == AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete);
