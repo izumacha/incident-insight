@@ -1000,6 +1000,36 @@ public class ResponseCacheAttributePolicyTests
                 """@{ var url = @"https://example.test"" ; Context.Response.Headers.CacheControl = "public";"""));
     }
 
+    // 地の文の迷子の引用符が、<b>コメントの範囲の判断を変えない</b>こと。
+    //
+    // <b>この形は「見逃し」に見えて実は正しい。</b> 閉じない " を行末まで飲み込んでいた頃は、
+    // 後ろの @* がコメントとして読まれず、<b>本当はコメントアウトされている行</b>が
+    // 違反として報告されていた ——直したことで報告されなくなるので、
+    // 差分だけを見ると取りこぼしたように見える。判断の基準は「引用符が有る／無いで
+    // 答えが変わらないこと」なので、両方を走査して突き合わせる。
+    [Fact]
+    public void CodeScan_AStrayProseQuote_DoesNotChangeWhatCountsAsCommentedOut()
+    {
+        // 1〜3 行目が Razor のコメント。2 行目の書き込みはコメントアウトされている
+        var withStrayQuote = ScanLines(
+            "<p>注: \"レベル3 以上</p> @* この画面は既定に任せる",
+            "Context.Response.Headers.CacheControl = \"public,max-age=300\";",
+            "*@");
+
+        // 迷子の引用符だけを取り除いた、同じ形
+        var withoutStrayQuote = ScanLines(
+            "<p>注: レベル3 以上</p> @* この画面は既定に任せる",
+            "Context.Response.Headers.CacheControl = \"public,max-age=300\";",
+            "*@");
+
+        // 引用符の有無で答えが変わらないこと（どちらもコメントの中なので 0 件）
+        Assert.Equal(withoutStrayQuote, withStrayQuote);
+
+        // 念のため、その「変わらない答え」が 0 件であることも押さえる
+        // （両方とも同じように壊れて 1 件になっても上の検査は通ってしまう）
+        Assert.Empty(withStrayQuote);
+    }
+
     /// <summary>
     /// 合成した複数行のソースを走査し、該当した行番号を返す(検査用の入り口)。
     /// </summary>
@@ -1396,7 +1426,7 @@ public class ResponseCacheAttributePolicyTests
     /// 続いているので貯めるのが正しく、またげないリテラルは<b>そもそもリテラルではない</b>
     /// （正しい C# では閉じずに行が終わらない）ので地の文として扱うのが正しい。</para>
     ///
-    /// <para><b>判定は共有ヘルパーに任せる。</b> ここで「引用符が 3 つ以上か」を数え直すと、
+    /// <para><b>判定は <see cref="CSharpLiteral.CanSpanLines"/> に任せる。</b> ここで「引用符が 3 つ以上か」を数え直すと、
     /// <c>@"""</c>（逐語的リテラルの中の <c>""</c>）を生文字列のフェンスと取り違え、
     /// 終端を求める側と<b>同じ入力に別の答え</b>を出す（§6 DRY）。</para>
     ///
@@ -1410,8 +1440,7 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>次に読む位置。</returns>
     private static int UnterminatedLiteralEnd(string line, int start) =>
         // 改行をまたげるリテラルは本当に続いているので、行末までを中身として貯める(解釈しない)
-        CSharpLiteral.IsVerbatim(line, start)
-            || CSharpLiteral.QuoteRunLength(line, start) >= CSharpLiteral.RawStringFenceLength
+        CSharpLiteral.CanSpanLines(line, start)
             ? line.Length
             // またげないリテラルは地の文の引用符なので、1 文字だけ進めてふつうに走査を続ける
             : start + 1;
