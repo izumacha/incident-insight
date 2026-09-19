@@ -70,26 +70,6 @@ public static class CSharpLiteral
     public const int RawStringFenceLength = 3;
 
     /// <summary>
-    /// その引用符が、<b>改行をまたげる</b>リテラル（逐語的 ・ 生文字列）の開きかを返す。
-    /// </summary>
-    /// <remarks>
-    /// <b>「またげるか」の綴りを 1 つにするために置いている。</b>
-    /// <see cref="FindStringLiteralEnd"/> は終端を求める都合で「生文字列か」「逐語的か」を
-    /// 順に見るが、行単位で読む利用側が要るのは<b>その和</b>だけ。利用側がその和を
-    /// 書き下すと、フェンスの扱いをこちらで直したときに<b>同じ入力へ別の答え</b>を
-    /// 返すようになる（どちらの分岐を選ぶかで「貯める」と「走査し直す」が入れ替わるので、
-    /// 壊れ方は誤検知にも見逃しにも振れる）。判定は必ずここを通すこと。
-    /// </remarks>
-    /// <param name="source">走査するソース。</param>
-    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
-    /// <returns>改行をまたげるリテラルの開きなら <c>true</c>。</returns>
-    public static bool CanSpanLines(string source, int quoteIndex) =>
-        // 逐語的リテラルは改行をまたげる
-        IsVerbatim(source, quoteIndex)
-        // 生文字列リテラルも改行をまたげる
-        || QuoteRunLength(source, quoteIndex) >= RawStringFenceLength;
-
-    /// <summary>
     /// その引用符が<b>逐語的リテラル</b>（<c>@"</c> ・ <c>@$"</c> ・ <c>$@"</c>）の開きかを返す。
     /// </summary>
     /// <remarks>
