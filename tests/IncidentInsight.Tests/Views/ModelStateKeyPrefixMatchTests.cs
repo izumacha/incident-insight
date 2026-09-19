@@ -55,7 +55,7 @@ namespace IncidentInsight.Tests.Views;
 ///     読んでいたため、2 つ目の引用符を終端と誤認して以降の解釈がずれた
 ///     (実測: 本文に引用符が奇数個あると、直後に置いた素の <c>StartsWith</c> が素通り)。
 ///     → フェンス(引用符 3 つ以上)は補間文字列として扱わず、フェンスを数える
-///     <see cref="SkipStringLiteral"/> へ回す。残っている境界は同メソッドの説明を参照。</item>
+///     <see cref="CSharpLiteral.FindStringLiteralEnd"/> へ回す。残っている境界は同メソッドの説明を参照。</item>
 /// </list>
 /// いずれも「検査が形だけ通る条件」を見ていたのが原因で、<b>守りたい性質そのもの</b>を
 /// 条件にしていなかった。</para>
@@ -381,7 +381,7 @@ public class ModelStateKeyPrefixMatchTests
                 // 閉じ記号の位置を求める（補間文字列は穴を数えて末尾まで進む）
                 var end = c != '"' ? CSharpLiteral.FindCharLiteralEnd(arguments, i)
                     : IsInterpolatedStart(arguments, i) ? SkipInterpolatedString(arguments, i)
-                    : SkipStringLiteral(arguments, i);
+                    : CSharpLiteral.FindStringLiteralEnd(arguments, i);
                 // 閉じていなければこれ以上は解釈できないので打ち切る
                 if (end < 0) break;
                 // リテラル全体を読み飛ばす
@@ -548,7 +548,7 @@ public class ModelStateKeyPrefixMatchTests
                     continue;
                 }
                 var isString = chars[i] == '"';
-                var end = isString ? SkipStringLiteral(source, i) : CSharpLiteral.FindCharLiteralEnd(source, i);
+                var end = isString ? CSharpLiteral.FindStringLiteralEnd(source, i) : CSharpLiteral.FindCharLiteralEnd(source, i);
                 // 閉じ記号が無ければ、その 1 文字はリテラルの開始ではなかったと解釈して読み進める。
                 // ここでファイル全体を打ち切ってはいけない: Razor の本文にある素のアポストロフィ
                 // (英文の don't など。Create.cshtml だけで 56 個ある)で以降のコメントが一切
@@ -649,7 +649,7 @@ public class ModelStateKeyPrefixMatchTests
                 // 閉じ記号を探して位置を進める（補間文字列は穴を数えて末尾まで進む）
                 i = c != '"' ? CSharpLiteral.FindCharLiteralEnd(source, i)
                     : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i)
-                    : SkipStringLiteral(source, i);
+                    : CSharpLiteral.FindStringLiteralEnd(source, i);
                 // 閉じ記号が見つからなければ読み取り不能
                 if (i < 0) return null;
                 // 読み飛ばしたので次の文字へ
@@ -671,65 +671,6 @@ public class ModelStateKeyPrefixMatchTests
     }
 
     /// <summary>
-    /// 引用符の位置から文字列リテラルの閉じ引用符の位置を返す(見つからなければ -1)。
-    ///
-    /// <para>C# の 3 つの書き方を扱う。<b>1 つでも取り違えるとリテラルの終わりを
-    /// 見失い、そこから先の解釈が丸ごとずれる</b>——<c>Neutralize</c> は以降の
-    /// コメントを潰せなくなり、§5 が求める日本語コメントに <c>StartsWith(</c> と
-    /// 書いてあるだけで正しいコードが違反として報告される。正しいコードを咎める
-    /// 検出網はいずれ緩められる方向へ倒れるので、ここは網羅しておく。
-    /// <list type="bullet">
-    ///   <item>通常の <c>"..."</c> … バックスラッシュがエスケープになる。</item>
-    ///   <item>逐語的 <c>@"..."</c> … バックスラッシュはエスケープ<b>ではなく</b>、
-    ///     引用符を重ねた <c>""</c> が引用符 1 つを表す(実測: 逐語的リテラルを通常の
-    ///     規則で読むと、末尾のバックスラッシュが閉じ引用符を打ち消して暴走した)。</item>
-    ///   <item>生文字列 <c>"""..."""</c> … 開始と同じ数の引用符が終端になる。</item>
-    /// </list></para>
-    /// </summary>
-    private static int SkipStringLiteral(string source, int quoteIndex)
-    {
-        // 直前の接頭辞を遡って逐語的リテラルかを判定する。@" だけでなく @$" / $@" もあり、
-        // 直前 1 文字だけ見る版は @$" を取り違えてバックスラッシュをエスケープ扱いし、
-        // 末尾のバックスラッシュで閉じ引用符を飲み込んで暴走した
-        var isVerbatim = false;
-        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '@' || source[k] == '$'); k--)
-            // 接頭辞に @ が含まれていれば逐語的リテラル
-            if (source[k] == '@') { isVerbatim = true; break; }
-
-        // 引用符が 3 つ以上続いていれば生文字列リテラル。ただし逐語的リテラルの
-        // @"""..." は「引用符を重ねて 1 つを表す」書き方なので生文字列とは別物——
-        // 先に逐語的かを見てから判定しないと、終端の意味を取り違えて暴走する
-        var fenceLength = 0;
-        while (quoteIndex + fenceLength < source.Length && source[quoteIndex + fenceLength] == '"') fenceLength++;
-        if (!isVerbatim && fenceLength >= 3)
-        {
-            // 開始と同じ数の引用符が並ぶ位置が終端になる
-            var fence = new string('"', fenceLength);
-            // 開始フェンスの直後から終端フェンスを探す
-            var close = source.IndexOf(fence, quoteIndex + fenceLength, StringComparison.Ordinal);
-            // 見つからなければ読み取り不能、見つかればフェンス末尾の位置を返す
-            return close < 0 ? -1 : close + fenceLength - 1;
-        }
-
-        // 開き引用符の次の文字から探し始める
-        for (var i = quoteIndex + 1; i < source.Length; i++)
-        {
-            // 通常のリテラルだけバックスラッシュをエスケープとして扱う
-            if (!isVerbatim && source[i] == '\\') { i++; continue; }
-            // 引用符に出会った場合の扱いはリテラルの種類で違う
-            if (source[i] == '"')
-            {
-                // 逐語的リテラルでは "" が引用符 1 つを表すので、2 つ続くなら本文の一部
-                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
-                // それ以外はここが閉じ位置
-                return i;
-            }
-        }
-        // 閉じ引用符が見つからなかった
-        return -1;
-    }
-
-    /// <summary>
     /// その引用符が補間文字列(<c>$"</c> / <c>$@"</c> / <c>@$"</c>)の開始かを返す。
     ///
     /// <para><b>生の補間文字列(<c>$$"""…{{x}}…"""</c>)は「補間文字列ではない」と答える。</b>
@@ -737,7 +678,7 @@ public class ModelStateKeyPrefixMatchTests
     /// 同じ数の引用符)、ふつうの補間文字列として読むと<b>2 つ目の引用符を終端と誤認</b>し、
     /// そこから先の解釈が丸ごとずれる。実測では、本文に引用符が奇数個ある生の補間文字列の
     /// 直後に置いた素の <c>StartsWith</c> が<b>報告されないまま素通り</b>した。
-    /// ここで false を返すと <see cref="SkipStringLiteral"/>(フェンスを数えて終端を正しく
+    /// ここで false を返すと <see cref="CSharpLiteral.FindStringLiteralEnd"/>(フェンスを数えて終端を正しく
     /// 求める)へ回るので、少なくとも<b>終端は必ず正しく求まる</b>。</para>
     ///
     /// <para><b>残っている境界:</b> その代わり、生の補間文字列の<b>穴の中</b>に書いた呼び出しは
@@ -749,11 +690,12 @@ public class ModelStateKeyPrefixMatchTests
     /// </summary>
     private static bool IsInterpolatedStart(string source, int quoteIndex)
     {
-        // 引用符が 3 つ以上続くなら生の文字列リテラル(補間の有無によらず別扱いにする)
-        var fence = 0;
-        while (quoteIndex + fence < source.Length && source[quoteIndex + fence] == '"') fence++;
-        // 生のフェンスなら補間文字列としては扱わない(上の説明のとおり)
-        if (fence >= 3) return false;
+        // 引用符が 3 つ以上続くなら生の文字列リテラル(補間の有無によらず別扱いにする)。
+        // <b>ここで数え直さない</b> ——終端を求める側(FindStringLiteralEnd)と同じ規則を
+        // 使わないと、フェンスの長さの扱いを直したときに片方だけが取り残される(§6 DRY)
+        if (CSharpLiteral.QuoteRunLength(source, quoteIndex) >= CSharpLiteral.RawStringFenceLength)
+            // 生のフェンスなら補間文字列としては扱わない(上の説明のとおり)
+            return false;
         // 引用符の手前にある $ と @ の並びを遡って見る
         for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
             // $ が含まれていれば補間文字列
@@ -777,10 +719,9 @@ public class ModelStateKeyPrefixMatchTests
     /// <param name="blankInto">穴の外の文言を潰す先(<c>null</c> なら潰さない)。</param>
     private static int SkipInterpolatedString(string source, int quoteIndex, char[]? blankInto = null)
     {
-        // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない
-        var isVerbatim = false;
-        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
-            if (source[k] == '@') { isVerbatim = true; break; }
+        // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない。
+        // 接頭辞の遡り方は共有の規則を使う(書き写すと片方だけ直る。§6 DRY)
+        var isVerbatim = CSharpLiteral.IsVerbatim(source, quoteIndex);
 
         // 現在の穴の深さ（0 なら文字列の本文側）
         var depth = 0;
@@ -813,7 +754,7 @@ public class ModelStateKeyPrefixMatchTests
                 // $"{Fmt("… StartsWith(x) …")}" のような文言が違反として報告される
                 var nested = c != '"' ? CSharpLiteral.FindCharLiteralEnd(source, i)
                     : IsInterpolatedStart(source, i) ? SkipInterpolatedString(source, i, blankInto)
-                    : SkipStringLiteral(source, i);
+                    : CSharpLiteral.FindStringLiteralEnd(source, i);
                 // 末尾が求まらなければ読み取り不能
                 if (nested < 0) return -1;
                 // 入れ子がふつうの文字列なら、その中身も空白へ潰す(引用符は残す)
