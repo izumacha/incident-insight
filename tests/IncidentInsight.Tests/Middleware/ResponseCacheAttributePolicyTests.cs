@@ -1437,6 +1437,58 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
+    // 同じ宣言元に<b>同じ種類</b>の属性が複数付いているとき、全部が返ること。
+    //
+    // <b>なぜ要るのか（種類をキーへ足しただけでは残る fail-open）。</b>
+    // キーを (宣言元, 種類) で止めると、AllowMultiple = true の属性を 2 つ付けたときに
+    // 2 個目以降が seen に飲まれ、違反の一覧へ到達しない。<b>許す側の宣言がたまたま
+    // 2 個目だと、検査は緑のまま PHI を含みうる応答に共有キャッシュ可能な指示が残る</b> ——
+    // 種類を足して直したのと、まったく同じ形の事故が種類の中で再発する。
+    //
+    // [ResponseCache] は AllowMultiple = false なので、この形は合成入力でしか作れない。
+    [Fact]
+    public void AttributeScan_ReturnsEveryInstance_WhenTheAttributeAllowsMultiples()
+    {
+        // 同じ種類を 2 つ付けた合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 2 つとも返ること（通し番号がキーに無いと 1 件に畳まれて落ちる）
+        Assert.Equal(2, declarations.Count);
+
+        // 畳まれたときに「どちらが消えたか」で結果が変わらないよう、中身まで見る
+        Assert.Equal(
+            new[] { "a", "b" },
+            declarations
+                .Select(d => ((RepeatableProbeAttribute)d.Attribute).Policy)
+                .OrderBy(policy => policy, StringComparer.Ordinal)
+                .ToArray());
+    }
+
+    /// <summary>
+    /// 同じ宣言元へ複数付けられる、検証用の属性（<c>AllowMultiple = true</c>）。
+    /// </summary>
+    /// <remarks>
+    /// 実在のキャッシュ指示属性はいずれも <c>AllowMultiple = false</c> なので、
+    /// この経路は合成入力でしか通せない。<b>だから合成する</b> ——
+    /// 実在の属性だけを渡している限り、通し番号を落としても全件緑のまま通る。
+    /// </remarks>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
+    private sealed class RepeatableProbeAttribute(string policy) : Attribute
+    {
+        /// <summary>どちらの宣言かを見分けるための目印。</summary>
+        public string Policy { get; } = policy;
+    }
+
+    /// <summary>同じ種類の属性を 2 つ宣言する合成コントローラ。</summary>
+    [RepeatableProbe("a")]
+    [RepeatableProbe("b")]
+    private sealed class RepeatedKindProbeController : ControllerBase;
+
     /// <summary>
     /// 「種類を問わない走査」を検証するためだけの、2 種類目の属性。
     /// </summary>

@@ -162,6 +162,17 @@ public static class ResponseCachePolicy
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
+            // 「同じ宣言元に、同じ種類の属性が何個目か」を数える。
+            // <b>キーを (宣言元, 種類) だけにすると、1 つの宣言元に同じ属性を複数付けられる型
+            // (AttributeUsage の AllowMultiple = true)で 2 個目以降が黙って落ちる</b> ——
+            // 種類をキーへ足して直したのとまったく同じ形の fail-open が、種類の中に残る。
+            // 通し番号なら AllowMultiple = false の属性では必ず 0 になる(そういう属性は
+            // 継承の規則上 1 つしか見えない)ので、既存の畳み方は 1 ビットも変わらない。
+            // <b>コントローラごとに数え直すのが要点</b> ——走査全体で 1 つ持つと、
+            // 基底の同じ宣言を見る 2 つ目の具象で番号が 1 つ進み、キーが変わって
+            // 「派生の数だけ並べない」という本来の目的がその場で壊れる(実測で 2 件落ちた)
+            var ordinals = new Dictionary<string, int>(StringComparer.Ordinal);
+
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
             foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
@@ -177,11 +188,12 @@ public static class ResponseCachePolicy
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
                 // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
-                // <b>キーに属性の型を含める。</b> 含めないと、2 種類以上に一致する述語を
-                // 渡した瞬間（3 つ目のキャッシュ指示 [OutputCache] を見るようになるときの
+                // <b>キーに属性の型と通し番号を含める。</b> 型を含めないと、2 種類以上に一致する
+                // 述語を渡した瞬間（3 つ目のキャッシュ指示 [OutputCache] を見るようになるときの
                 // 最も自然な足し方）に、同じ型へ両方が付いていても先に返った 1 件しか
-                // yield されず、もう 1 件は違反の一覧へ到達しない＝静かな fail-open になる
-                if (seen.Add($"type:{declaredOn}:{attribute.GetType().FullName}"))
+                // yield されず、もう 1 件は違反の一覧へ到達しない＝静かな fail-open になる。
+                // 通し番号はその中で同じ事故が「同じ種類を複数付けられる属性」で再発するのを防ぐ
+                if (seen.Add(NextDeclarationKey(ordinals, $"type:{declaredOn}", attribute)))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
@@ -209,9 +221,9 @@ public static class ResponseCachePolicy
                     var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // 同じ宣言を派生の数だけ返さないよう、シグネチャと<b>属性の型</b>まで含めて記録する
-                    // （属性の型を落とすとクラス側とまったく同じ fail-open になる）
-                    if (seen.Add($"method:{declaredOn}({method}):{attribute.GetType().FullName}"))
+                    // 同じ宣言を派生の数だけ返さないよう、シグネチャと<b>属性の型・通し番号</b>まで
+                    // 含めて記録する（どちらを落としてもクラス側とまったく同じ fail-open になる）
+                    if (seen.Add(NextDeclarationKey(ordinals, $"method:{declaredOn}({method})", attribute)))
                     {
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
@@ -219,6 +231,48 @@ public static class ResponseCachePolicy
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 「宣言元 × 属性の種類 × その中での通し番号」という、重複除去のキーを作る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>通し番号まで入れる理由。</b> キーを (宣言元, 種類) で止めると、
+    /// <c>AttributeUsage(AllowMultiple = true)</c> の属性を同じ宣言元へ 2 つ付けたとき、
+    /// 2 個目以降が <c>seen</c> に飲まれて違反の一覧へ到達しない。
+    /// 許す側の宣言が 2 個目だと<b>検査は緑のまま出荷される</b> ——
+    /// 種類をキーへ足して直したのと、まったく同じ形の fail-open が種類の中に残る。</para>
+    ///
+    /// <para><b>既存の畳み方は変わらない。</b> <c>AllowMultiple = false</c> の属性
+    /// （<c>[ResponseCache]</c> がこれ）は、継承の規則上 1 つの宣言元から 1 つしか見えないので
+    /// 通し番号は必ず 0 になる。基底の 1 つの宣言を派生の数だけ並べない、という本来の
+    /// 目的はそのまま保たれる。</para>
+    ///
+    /// <para><b>残っている境界。</b> <c>AllowMultiple = true</c> の属性を基底と派生の両方が
+    /// 宣言している場合、<see cref="DeclaringTypeOf(Type, Func{object, bool})"/> は
+    /// どちらの属性についても「派生が宣言している」と答えるため、基底の分が派生の名前で
+    /// 報告されうる（その基底を継承する別の具象からは基底の名前でも報告されるので、
+    /// <b>1 つの宣言が 2 件に見える</b>）。<b>取りこぼすのではなく多く報告する側</b>なので、
+    /// そのまま残してある ——静かに落ちるより、名指しが重複して人の目に触れるほうが安全。
+    /// 実際にそういう属性を足す人が、宣言元のたどり方ごと見直すこと。</para>
+    /// </remarks>
+    /// <param name="ordinals">宣言元と種類ごとの出現回数（この走査 1 回分の作業用）。</param>
+    /// <param name="site">宣言元を表すキーの前半（クラス側 / アクション側で綴りが違う）。</param>
+    /// <param name="attribute">キーを作りたい属性。</param>
+    /// <returns>重複除去に使うキー。</returns>
+    private static string NextDeclarationKey(
+        Dictionary<string, int> ordinals,
+        string site,
+        object attribute)
+    {
+        // 宣言元と属性の種類までをキーの前半にする
+        var kind = $"{site}:{attribute.GetType().FullName}";
+        // その組み合わせが今回の走査で何個目かを取り出す(初出なら 0)
+        var ordinal = ordinals.TryGetValue(kind, out var count) ? count : 0;
+        // 次に同じ組み合わせが来たときのために 1 つ進めておく
+        ordinals[kind] = ordinal + 1;
+        // 通し番号まで含めたキーを返す
+        return $"{kind}#{ordinal}";
     }
 
     /// <summary>
