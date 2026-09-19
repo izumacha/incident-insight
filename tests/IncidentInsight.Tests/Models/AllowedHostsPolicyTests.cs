@@ -570,30 +570,13 @@ public class AllowedHostsPolicyTests
             AllowedHostsPolicy.WarrantsWarning(reason));
     }
 
-    // 「名指しする項目」と「その直し方の根拠になった項目」が同じ集合であることを固定する。
-    //
-    // <b>Program.cs はこの 1 本しか呼ばない。</b> 別々に呼ぶ形へ戻すと、判定の条件を
-    // 片方にだけ足す変更が通ってしまい、警告が名指しした項目とは別の集合から
-    // 導いた直し方を出せるようになる（どちらも「一致しえない項目」を名乗るので
-    // 運用者からは見分けが付かない）。
-    [Theory]
-    [InlineData(null)]
-    [InlineData("incident.example.test")]
-    [InlineData("incident.example.test; www.example.test")]
-    [InlineData("incident.example.test;0.0.0.0; ")]
-    [InlineData("0.0\t.0.0; ")]
-    [InlineData("   ")]
-    public void InspectNeverMatchingEntries_MatchesTheIndividualQueries(string? allowedHosts)
-    {
-        // まとめて受け取る形
-        var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
-
-        // 個別に呼んだ結果と、項目の並びまで含めて一致すること
-        Assert.Equal(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts), entries);
-
-        // 分類も一致すること
-        Assert.Equal(AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts), outcome);
-    }
+    // 注: ここには InspectNeverMatchingEntries_MatchesTheIndividualQueries があった。
+    // 3 つの公開 API が<b>同じ振り分けを読むようになった時点で反証不能</b>になったので外した ——
+    // 実測でも、振り分けの述語を潰す変異に対して 6 行すべて緑のまま通る（3 つが一緒に動くため）。
+    // 緑のままの検査が「守られている」と読めてしまうのは、この PR が他の箇所で潰した形そのもの。
+    // 個別の API の値は、それぞれの Theory
+    // （NeverMatchingEntries_ListsEntriesThatNoHostHeaderCanEverMatch /
+    //  ClassifyDeadEntryDeletion_SaysWhatDeletingWouldActuallyDo）が引き続き固定する。
 
     // まとめて受け取る入口が返す (名指し, 分類) の組を、行ごとに固定する。
     //
