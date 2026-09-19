@@ -1513,48 +1513,101 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>基底の 2 種類をそのまま継承する具象。</summary>
     private sealed class SharedSiteProbeLeafB : SharedSiteProbeBase;
 
-    // 同じ宣言元に<b>同じ種類</b>の属性が複数付いているとき、全部が返ること。
+    // 同じ宣言元へ<b>複数付けられる種類</b>の属性に出会ったら、黙って畳まずに落ちること。
     //
-    // <b>なぜ要るのか（種類をキーへ足しただけでは残る fail-open）。</b>
-    // キーを (宣言元, 種類) で止めると、AllowMultiple = true の属性を 2 つ付けたときに
-    // 2 個目以降が seen に飲まれ、違反の一覧へ到達しない。<b>許す側の宣言がたまたま
-    // 2 個目だと、検査は緑のまま PHI を含みうる応答に共有キャッシュ可能な指示が残る</b> ——
-    // 種類を足して直したのと、まったく同じ形の事故が種類の中で再発する。
+    // <b>なぜ畳まずに落とすのか。</b> この走査は (宣言元, 属性の種類) で重複を畳むので、
+    // AllowMultiple = true の属性が同じ宣言元に 2 つ付いていると 2 個目以降が消える。
+    // <b>許す側の宣言がたまたま 2 個目だと、検査は緑のまま PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る</b>。
     //
-    // [ResponseCache] は AllowMultiple = false なので、この形は合成入力でしか作れない。
+    // <b>なぜキーへ位置を入れて「直して」おかないのか。</b> 実在のキャッシュ指示属性は
+    // すべて AllowMultiple = false なので、この形は今のところ作れない。先回りで入れると
+    // GetCustomAttributes の規定されていない並び順に答えが依存し、基底の宣言が派生の名前でも
+    // 報告される境界を新たに作る ——実在しない事情のために払う代償としては大きい
+    // （CLAUDE.md §6）。代わりに門番を置いて、<b>実際に足す人が必ず一度手を止める</b>ようにした。
     [Fact]
-    public void AttributeScan_ReturnsEveryInstance_WhenTheAttributeAllowsMultiples()
+    public void AttributeScan_RefusesToScan_WhenTheAttributeCanBeAppliedMoreThanOnce()
     {
-        // 同じ種類を 2 つ付けた合成コントローラを走査する
+        // 複数付けられる属性を拾う述語で走査すると落ちること
+        var error = Assert.Throws<NotSupportedException>(() =>
+            ResponseCachePolicy
+                .AttributeDeclarationsOn(
+                    [typeof(RepeatedKindProbeController)],
+                    typeof(ResponseCacheAttributePolicyTests).Assembly,
+                    a => a is RepeatableProbeAttribute)
+                .ToList());
+
+        // 何が問題かが失敗文言から分かること（黙って畳まれたのと区別が付くように）
+        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+
+        // 直し方まで案内していること（キーだけ直して DeclaringTypeOf を放置させない）
+        Assert.Contains("DeclaringTypeOf", error.Message, StringComparison.Ordinal);
+    }
+
+    // アクション側でも、宣言元をたどる条件が<b>その属性の型</b>まで絞られていること。
+    //
+    // <b>なぜクラス側の検査では足りないのか（実測）。</b> 種類が階層で分かれる形の合成は
+    // クラス側にしか無く、アクション側の SameKindAs を外しても 1080 件すべて緑のまま通った。
+    // 壊れ方はクラス側と同じで、基底の Export が [ResponseCache]・中間型の override が
+    // 2 種類目を宣言していると、[ResponseCache] の宣言が<b>中間型の名前で報告される</b> ——
+    // 名指しされたファイルを開いてもその属性は無い。
+    [Fact]
+    public void AttributeScan_NamesTheDeclaringTypePerKind_ForActionsToo()
+    {
+        // 2 種類に一致する述語で、アクション側に種類が分かれた階層を走査する
         var declarations = ResponseCachePolicy
             .AttributeDeclarationsOn(
-                [typeof(RepeatedKindProbeController)],
+                [typeof(SplitKindsActionProbeLeaf)],
                 typeof(ResponseCacheAttributePolicyTests).Assembly,
-                a => a is RepeatableProbeAttribute)
+                a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
             .ToList();
 
-        // 2 つとも返ること（通し番号がキーに無いと 1 件に畳まれて落ちる）
-        Assert.Equal(2, declarations.Count);
+        // 根が宣言した 1 種類目を取り出す
+        var inherited = Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 23 });
 
-        // 畳まれたときに「どちらが消えたか」で結果が変わらないよう、中身まで見る
-        Assert.Equal(
-            new[] { "a", "b" },
-            declarations
-                .Select(d => ((RepeatableProbeAttribute)d.Attribute).Policy)
-                .OrderBy(policy => policy, StringComparer.Ordinal)
-                .ToArray());
+        // 名指しが根であること（2 種類目を宣言している中間型ではない）
+        Assert.Contains(
+            nameof(SplitKindsActionProbeRoot),
+            inherited.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>アクションに 1 種類目だけを宣言する根。</summary>
+    /// <remarks>期間の値(23)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class SplitKindsActionProbeRoot : ControllerBase
+    {
+        /// <summary>1 種類目を宣言する virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 23)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じアクションを override して<b>2 種類目だけ</b>を宣言する中間型。</summary>
+    private abstract class SplitKindsActionProbeMid : SplitKindsActionProbeRoot
+    {
+        /// <summary>2 種類目だけを宣言する override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [SecondKindProbe]
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>属性を付けずに override だけする具象。</summary>
+    private sealed class SplitKindsActionProbeLeaf : SplitKindsActionProbeMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
     }
 
     // 階層の<b>途中</b>の override に付いた属性が、その型の名前で 1 件だけ報告されること。
     //
     // <b>なぜ要るのか。</b> GetBaseDefinition() が返すのは「最初に virtual として宣言された
-    // 定義」なので、属性が途中の型の override に付いていると根にも自分自身にも無い。
+    // 定義」なので、属性が階層の途中の override に付いていると根にも自分自身にも無い。
     // 根へ一足飛びに跳ぶ実装では<b>どちらの検査も外れて具象が名指しされ</b>、
     // 1 つの宣言が具象の数だけ違反として並び、しかも名指しされたファイルを開いても
     // 属性が無い ——DeclaringTypeOf が防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
-    //
-    // 既存の DeclarationScan_ReportsAnInheritedActionOnlyOnce は「基底が宣言・具象が素の継承」
-    // の 2 段しか見ないので、この 3 段の形は素通りしていた。
     [Fact]
     public void DeclarationScan_NamesTheMidHierarchyOverrideThatActuallyDeclaresTheAttribute()
     {
@@ -1564,7 +1617,6 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondMidOverrideProbeLeaf));
 
         // 中間型の宣言(Duration = 55)に由来する宣言が 1 件だけであること
-        // （具象を名指しする実装では、ここが 2 件になって落ちる）
         var declared = Assert.Single(declarations, d => d.Attribute.Duration == 55);
 
         // 名指しが、属性を実際に宣言している中間型であること（具象でも根でもない）
@@ -1572,61 +1624,6 @@ public class ResponseCacheAttributePolicyTests
             nameof(MidOverrideProbeControllerMid),
             declared.DeclaredOn,
             StringComparison.Ordinal);
-    }
-
-    // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
-    //
-    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
-    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
-    // 一度も通らない</b>。実測で、その continue を break に変えても 1078 件すべて緑のまま通り、
-    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
-    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
-    [Fact]
-    public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
-    {
-        // 属性を宣言し直さない中間型をはさむ 2 つの具象を走査する
-        var declarations = ScanProbes(
-            typeof(SkippedMidProbeLeaf),
-            typeof(SecondSkippedMidProbeLeaf));
-
-        // 根の宣言(Duration = 66)に由来する宣言が 1 件だけであること
-        // （読み飛ばさない実装では、ここが 2 件になって落ちる）
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 66);
-
-        // 名指しが、属性を実際に宣言している根であること（具象でも中間型でもない）
-        Assert.Contains(
-            nameof(SkippedMidProbeControllerRoot),
-            declared.DeclaredOn,
-            StringComparison.Ordinal);
-    }
-
-    /// <summary>virtual なアクションに属性を付けて宣言する根。</summary>
-    /// <remarks>期間の値(66)は、この経路で拾えたことを見分けるための目印。</remarks>
-    private abstract class SkippedMidProbeControllerRoot : ControllerBase
-    {
-        /// <summary>属性を宣言する virtual なアクション。</summary>
-        /// <returns>内容を持たない結果。</returns>
-        [ResponseCache(Duration = 66)]
-        public virtual IActionResult Export() => NoContent();
-    }
-
-    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
-    private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
-
-    /// <summary>属性を付けずに override だけする具象。</summary>
-    private sealed class SkippedMidProbeLeaf : SkippedMidProbeControllerMid
-    {
-        /// <summary>属性を持たない override。</summary>
-        /// <returns>内容を持たない結果。</returns>
-        public override IActionResult Export() => NoContent();
-    }
-
-    /// <summary>同じ中間型を継承する 2 つ目の具象（畳み方の検証に使う）。</summary>
-    private sealed class SecondSkippedMidProbeLeaf : SkippedMidProbeControllerMid
-    {
-        /// <summary>属性を持たない override。</summary>
-        /// <returns>内容を持たない結果。</returns>
-        public override IActionResult Export() => NoContent();
     }
 
     /// <summary>属性を持たず、virtual なアクションを宣言するだけの根。</summary>
@@ -1669,13 +1666,125 @@ public class ResponseCacheAttributePolicyTests
         public override IActionResult Export() => NoContent();
     }
 
+    // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
+    //
+    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
+    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
+    // 一度も通らない</b>。実測で、その continue を break に変えても全件緑のまま通り、
+    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
+    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
+    [Fact]
+    public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
+    {
+        // 属性を宣言し直さない中間型をはさむ 2 つの具象を走査する
+        var declarations = ScanProbes(
+            typeof(SkippedMidProbeLeaf),
+            typeof(SecondSkippedMidProbeLeaf));
+
+        // 根の宣言(Duration = 66)に由来する宣言が 1 件だけであること
+        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 66);
+
+        // 名指しが、属性を実際に宣言している根であること（具象でも中間型でもない）
+        Assert.Contains(
+            nameof(SkippedMidProbeControllerRoot),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>virtual なアクションに属性を付けて宣言する根。</summary>
+    /// <remarks>期間の値(66)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class SkippedMidProbeControllerRoot : ControllerBase
+    {
+        /// <summary>属性を宣言する virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 66)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
+    private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
+
+    /// <summary>属性を付けずに override だけする具象。</summary>
+    private sealed class SkippedMidProbeLeaf : SkippedMidProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じ中間型を継承する 2 つ目の具象（畳み方の検証に使う）。</summary>
+    private sealed class SecondSkippedMidProbeLeaf : SkippedMidProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    // さかのぼりが「同じアクションを宣言しているが属性は持たない段」を<b>通り抜ける</b>こと。
+    //
+    // <b>なぜ既存の 2 つでは足りないのか（実測）。</b> MidOverrideProbe は 1 段目で属性に当たり、
+    // SkippedMidProbe は中間型がそのアクションを宣言していないので読み飛ばす。どちらも
+    // 「宣言はしているが属性が無いので次の段へ進む」経路を通らず、その行を
+    // 「当たらなければ具象を名指しして打ち切る」へ変えても 1080 件すべて緑のまま通った。
+    [Fact]
+    public void DeclarationScan_KeepsWalking_PastALevelThatRedeclaresTheActionWithoutTheAttribute()
+    {
+        // 属性を持たない override をはさむ 2 つの具象を走査する
+        var declarations = ScanProbes(
+            typeof(BareOverrideProbeLeaf),
+            typeof(SecondBareOverrideProbeLeaf));
+
+        // 根の宣言(Duration = 34)に由来する宣言が 1 件だけであること
+        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 34);
+
+        // 名指しが、属性を実際に宣言している根であること
+        Assert.Contains(
+            nameof(BareOverrideProbeRoot),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>属性を付けた virtual なアクションを宣言する根。</summary>
+    /// <remarks>期間の値(34)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class BareOverrideProbeRoot : ControllerBase
+    {
+        /// <summary>属性を宣言する virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 34)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じアクションを override するが、属性は持たない中間型（通り抜ける段）。</summary>
+    private abstract class BareOverrideProbeMid : BareOverrideProbeRoot
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>属性を付けずに override だけする具象。</summary>
+    private sealed class BareOverrideProbeLeaf : BareOverrideProbeMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じ中間型を継承する 2 つ目の具象（畳み方の検証に使う）。</summary>
+    private sealed class SecondBareOverrideProbeLeaf : BareOverrideProbeMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
     /// <summary>
     /// 同じ宣言元へ複数付けられる、検証用の属性（<c>AllowMultiple = true</c>）。
     /// </summary>
     /// <remarks>
     /// 実在のキャッシュ指示属性はいずれも <c>AllowMultiple = false</c> なので、
-    /// この経路は合成入力でしか通せない。<b>だから合成する</b> ——
-    /// 実在の属性だけを渡している限り、通し番号を落としても全件緑のまま通る。
+    /// 門番（<c>EnsureDedupKeyCanSeparate</c>）が働く経路は合成入力でしか通せない。
+    /// <b>だから合成する</b> ——実在の属性だけを渡している限り、門番を消しても全件緑のまま通る。
     /// </remarks>
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
     private sealed class RepeatableProbeAttribute(string policy) : Attribute

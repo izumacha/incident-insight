@@ -162,17 +162,6 @@ public static class ResponseCachePolicy
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
-            // 「同じ宣言元に、同じ種類の属性が何個目か」を数える。
-            // <b>キーを (宣言元, 種類) だけにすると、1 つの宣言元に同じ属性を複数付けられる型
-            // (AttributeUsage の AllowMultiple = true)で 2 個目以降が黙って落ちる</b> ——
-            // 種類をキーへ足して直したのとまったく同じ形の fail-open が、種類の中に残る。
-            // 通し番号なら AllowMultiple = false の属性では必ず 0 になる(そういう属性は
-            // 継承の規則上 1 つしか見えない)ので、既存の畳み方は 1 ビットも変わらない。
-            // <b>コントローラごとに数え直すのが要点</b> ——走査全体で 1 つ持つと、
-            // 基底の同じ宣言を見る 2 つ目の具象で番号が 1 つ進み、キーが変わって
-            // 「派生の数だけ並べない」という本来の目的がその場で壊れる(実測で 2 件落ちた)
-            var ordinals = new Dictionary<string, int>(StringComparer.Ordinal);
-
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
             foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
@@ -181,19 +170,13 @@ public static class ResponseCachePolicy
                 // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-                // たどる条件を<b>この属性の型</b>まで絞る。matches をそのまま渡すと、
-                // 2 種類以上に一致する述語のとき「別の種類を宣言している型」で止まり、
-                // 名指しされたファイルを開いてもその属性が無い、という既に直したはずの形に戻る
+                // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
                 var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
                 // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
-                // <b>キーに属性の型と通し番号を含める。</b> 型を含めないと、2 種類以上に一致する
-                // 述語を渡した瞬間（3 つ目のキャッシュ指示 [OutputCache] を見るようになるときの
-                // 最も自然な足し方）に、同じ型へ両方が付いていても先に返った 1 件しか
-                // yield されず、もう 1 件は違反の一覧へ到達しない＝静かな fail-open になる。
-                // 通し番号はその中で同じ事故が「同じ種類を複数付けられる属性」で再発するのを防ぐ
-                if (seen.Add(NextDeclarationKey(ordinals, $"type:{declaredOn}", attribute)))
+                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
+                if (seen.Add(DeclarationKey($"type:{declaredOn}", attribute)))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
@@ -217,13 +200,12 @@ public static class ResponseCachePolicy
                     // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
-                    // クラス側と同じ理由で、たどる条件をこの属性の型まで絞る
+                    // クラス側と同じく、たどる条件をこの属性の型まで絞る
                     var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // 同じ宣言を派生の数だけ返さないよう、シグネチャと<b>属性の型・通し番号</b>まで
-                    // 含めて記録する（どちらを落としてもクラス側とまったく同じ fail-open になる）
-                    if (seen.Add(NextDeclarationKey(ordinals, $"method:{declaredOn}({method})", attribute)))
+                    // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
+                    if (seen.Add(DeclarationKey($"method:{declaredOn}({method})", attribute)))
                     {
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
@@ -234,45 +216,76 @@ public static class ResponseCachePolicy
     }
 
     /// <summary>
-    /// 「宣言元 × 属性の種類 × その中での通し番号」という、重複除去のキーを作る。
+    /// 「宣言元 × 属性の種類」という、重複除去のキーを作る。
     /// </summary>
     /// <remarks>
-    /// <para><b>通し番号まで入れる理由。</b> キーを (宣言元, 種類) で止めると、
-    /// <c>AttributeUsage(AllowMultiple = true)</c> の属性を同じ宣言元へ 2 つ付けたとき、
-    /// 2 個目以降が <c>seen</c> に飲まれて違反の一覧へ到達しない。
-    /// 許す側の宣言が 2 個目だと<b>検査は緑のまま出荷される</b> ——
-    /// 種類をキーへ足して直したのと、まったく同じ形の fail-open が種類の中に残る。</para>
+    /// <para><b>種類まで含める理由。</b> 宣言元だけをキーにすると、2 種類以上に一致する述語
+    /// （3 つ目のキャッシュ指示 <c>[OutputCache]</c> を見るようになるときの最も自然な足し方）
+    /// を渡した瞬間に、同じ型へ両方が付いていても先に返った 1 件しか <c>yield</c> されず、
+    /// もう 1 件は違反の一覧へ到達しない ——<b>検査は緑のまま、PHI を含みうる応答に
+    /// 共有キャッシュ可能な指示が残る</b>。</para>
     ///
-    /// <para><b>既存の畳み方は変わらない。</b> <c>AllowMultiple = false</c> の属性
-    /// （<c>[ResponseCache]</c> がこれ）は、継承の規則上 1 つの宣言元から 1 つしか見えないので
-    /// 通し番号は必ず 0 になる。基底の 1 つの宣言を派生の数だけ並べない、という本来の
-    /// 目的はそのまま保たれる。</para>
+    /// <para><b>「同じ宣言元に同じ種類が何個目か」は含めない。</b> それが要るのは
+    /// <c>AttributeUsage(AllowMultiple = true)</c> の属性を同じ宣言元へ 2 つ付けたときだが、
+    /// <b>実在のキャッシュ指示属性はすべて <c>AllowMultiple = false</c></b> なので、
+    /// この形は今のところ作れない。通し番号を先回りで入れると
+    /// <list type="bullet">
+    ///   <item><c>GetCustomAttributes</c> の<b>規定されていない並び順</b>に答えが依存する、</item>
+    ///   <item>基底の宣言が派生の名前でも報告されて<b>1 つの宣言が 2 件に見える</b>境界を新たに作る、</item>
+    /// </list>
+    /// という代償を、実在しない事情のために払うことになる
+    /// （CLAUDE.md §6「将来を見越した過度な抽象化を避ける」。この repo は空の除外表が
+    /// 「登録するだけで黙らせられる口」になった実例を記録している）。</para>
     ///
-    /// <para><b>残っている境界。</b> <c>AllowMultiple = true</c> の属性を基底と派生の両方が
-    /// 宣言している場合、<see cref="DeclaringTypeOf(Type, Func{object, bool})"/> は
-    /// どちらの属性についても「派生が宣言している」と答えるため、基底の分が派生の名前で
-    /// 報告されうる（その基底を継承する別の具象からは基底の名前でも報告されるので、
-    /// <b>1 つの宣言が 2 件に見える</b>）。<b>取りこぼすのではなく多く報告する側</b>なので、
-    /// そのまま残してある ——静かに落ちるより、名指しが重複して人の目に触れるほうが安全。
-    /// 実際にそういう属性を足す人が、宣言元のたどり方ごと見直すこと。</para>
+    /// <para><b>代わりに fail-closed にしてある。</b> 黙って落とすと静かな fail-open になるので、
+    /// <see cref="EnsureDedupKeyCanSeparate"/> が「複数付けられる属性」を見つけた時点で
+    /// <b>落とす</b>。実際にそういう属性を足す人は、そこで必ず一度手を止めることになる
+    /// （§9 fail-closed: 不明なら拒否）。</para>
     /// </remarks>
-    /// <param name="ordinals">宣言元と種類ごとの出現回数（この走査 1 回分の作業用）。</param>
     /// <param name="site">宣言元を表すキーの前半（クラス側 / アクション側で綴りが違う）。</param>
     /// <param name="attribute">キーを作りたい属性。</param>
     /// <returns>重複除去に使うキー。</returns>
-    private static string NextDeclarationKey(
-        Dictionary<string, int> ordinals,
-        string site,
-        object attribute)
+    private static string DeclarationKey(string site, object attribute)
     {
-        // 宣言元と属性の種類までをキーの前半にする
-        var kind = $"{site}:{attribute.GetType().FullName}";
-        // その組み合わせが今回の走査で何個目かを取り出す(初出なら 0)
-        var ordinal = ordinals.TryGetValue(kind, out var count) ? count : 0;
-        // 次に同じ組み合わせが来たときのために 1 つ進めておく
-        ordinals[kind] = ordinal + 1;
-        // 通し番号まで含めたキーを返す
-        return $"{kind}#{ordinal}";
+        // 複数付けられる属性は、この畳み方では 2 個目以降を落としてしまうので先に落とす
+        EnsureDedupKeyCanSeparate(attribute);
+
+        // 宣言元と属性の種類でキーを作る
+        return $"{site}:{attribute.GetType().FullName}";
+    }
+
+    /// <summary>
+    /// その属性が「同じ宣言元へ複数付けられる」種類なら、走査を<b>落とす</b>。
+    /// </summary>
+    /// <remarks>
+    /// <b>黙って畳まないための門番。</b> <see cref="DeclarationKey"/> は (宣言元, 種類) で
+    /// 畳むので、<c>AllowMultiple = true</c> の属性が同じ宣言元に 2 つ付いていると
+    /// 2 個目以降が消える。許す側の宣言がたまたま 2 個目だと<b>検査は緑のまま出荷される</b>ので、
+    /// 消す代わりにここで止める。<b>直し方は「キーを位置まで含む形にする」だが、
+    /// それだけでは足りない</b> ——宣言元をたどる
+    /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
+    /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
+    /// <b>2 つをセットで見直すこと。</b>
+    /// </remarks>
+    /// <param name="attribute">確かめる属性。</param>
+    /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
+    private static void EnsureDedupKeyCanSeparate(object attribute)
+    {
+        // その属性の型が「同じ対象へ複数付けてよい」と名乗っているかを読む
+        var allowsMultiple = attribute
+            .GetType()
+            .GetCustomAttribute<AttributeUsageAttribute>(inherit: true)?
+            .AllowMultiple ?? false;
+
+        // 複数付けられないなら、(宣言元, 種類) で畳んで取りこぼしは起きない
+        if (!allowsMultiple) return;
+
+        // 取りこぼしうる形なので、黙って畳まずに落とす(§9 fail-closed)
+        throw new NotSupportedException(
+            $"{attribute.GetType().FullName} は AllowMultiple = true です。"
+                + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "
+                + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
+                + "キーへ位置を含める形へ変え、あわせて DeclaringTypeOf の名指しも見直してください。");
     }
 
     /// <summary>
