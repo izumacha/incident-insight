@@ -1598,6 +1598,28 @@ public class ResponseCacheAttributePolicyTests
         Assert.Contains("DeclaringTypeOf", error.Message, StringComparison.Ordinal);
     }
 
+    // 門番が<b>アクション側でも</b>効いていること。
+    //
+    // <b>なぜ別に要るのか（実測）。</b> 門番はキーを作る DeclarationKey の中にあるので、
+    // アクション側がキーを自前で組み立てる形に戻ると素通りする ——値が同じなので
+    // 全件緑のまま通った。この PR は SameKindAs でまったく同じクラス側／アクション側の
+    // 非対称を踏んでいるので、門番にも同じ対の検査を置く。
+    [Fact]
+    public void AttributeScan_RefusesToScan_WhenAnActionCarriesTheAttributeMoreThanOnce()
+    {
+        // アクション側に複数付けた合成コントローラを走査すると落ちること
+        var error = Assert.Throws<NotSupportedException>(() =>
+            ResponseCachePolicy
+                .AttributeDeclarationsOn(
+                    [typeof(RepeatedKindOnActionProbeController)],
+                    typeof(ResponseCacheAttributePolicyTests).Assembly,
+                    a => a is RepeatableProbeAttribute)
+                .ToList());
+
+        // 何が問題かが失敗文言から分かること
+        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+    }
+
     // アクション側でも、宣言元をたどる条件が<b>その属性の型</b>まで絞られていること。
     //
     // <b>なぜクラス側の検査では足りないのか（実測）。</b> 種類が階層で分かれる形の合成は
@@ -1847,10 +1869,20 @@ public class ResponseCacheAttributePolicyTests
         public string Policy { get; } = policy;
     }
 
-    /// <summary>同じ種類の属性を 2 つ宣言する合成コントローラ。</summary>
+    /// <summary>同じ種類の属性をクラス側へ 2 つ宣言する合成コントローラ。</summary>
     [RepeatableProbe("a")]
     [RepeatableProbe("b")]
     private sealed class RepeatedKindProbeController : ControllerBase;
+
+    /// <summary>同じ種類の属性を<b>アクション側</b>へ 2 つ宣言する合成コントローラ。</summary>
+    private sealed class RepeatedKindOnActionProbeController : ControllerBase
+    {
+        /// <summary>同じ種類の属性を 2 つ持つ、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [RepeatableProbe("a")]
+        [RepeatableProbe("b")]
+        public IActionResult Probe() => NoContent();
+    }
 
     /// <summary>
     /// 「種類を問わない走査」を検証するためだけの、2 種類目の属性。

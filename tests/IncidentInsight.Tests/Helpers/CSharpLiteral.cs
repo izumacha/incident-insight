@@ -156,11 +156,20 @@ public static class CSharpLiteral
             return close < 0 ? -1 : close + fenceLength - 1;
         }
 
+        // 改行をまたげるのは逐語的リテラルだけ（生文字列は上で処理済み）
+        var canSpanLines = isVerbatim;
+
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
             // 通常のリテラルだけバックスラッシュをエスケープとして扱う
             if (!isVerbatim && source[i] == '\\') { i++; continue; }
+            // <b>ふつうの "…" は改行をまたげないので、改行に出会ったら誤検出として打ち切る。</b>
+            // 姉妹の FindCharLiteralEnd が同じ理由で同じことをしている ——打ち切らないと、
+            // 位置がずれた走査が<b>次の行以降の引用符</b>を終端として拾い、あいだの実コードが
+            // 丸ごとリテラルの中身として潰される（ModelState 側は潰した範囲を空白で埋めるので、
+            // そこにある StartsWith( の検査漏れが報告されなくなる＝静かな fail-open）
+            if (!canSpanLines && source[i] == '\n') return -1;
             // 引用符に出会った場合の扱いはリテラルの種類で違う
             if (source[i] == '"')
             {
