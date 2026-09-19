@@ -1376,6 +1376,10 @@ public class ResponseCacheAttributePolicyTests
     // <b>現在の配線は 1 種類しか見ていないので、合成入力でしか固定できない。</b>
     // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
     // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
+    //
+    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす。
+    // 型と通し番号のどちらが効いているかまでは分けられない（2 種類が同じ宣言元に付いた形なので、
+    // 片方だけでも分かれてしまう）ので、それぞれ専用の検査が別にある。
     [Fact]
     public void AttributeScan_ReturnsEveryMatchedKind_NotJustTheFirstOnEachDeclaration()
     {
@@ -1392,7 +1396,8 @@ public class ResponseCacheAttributePolicyTests
             .Where(d => !d.DeclaredOn.EndsWith(".Probe", StringComparison.Ordinal))
             .ToList();
 
-        // クラス側の 1 種類目（キーに属性の型が無いと、どちらか一方しか返らず落ちる）
+        // クラス側の 1 種類目（キーが宣言元だけ＝型も通し番号も無い版では、
+        // どちらか一方しか返らず落ちる）
         Assert.Single(classLevel, d => d.Attribute is ResponseCacheAttribute { Duration: 88 });
         // クラス側の 2 種類目
         Assert.Single(classLevel, d => d.Attribute is SecondKindProbeAttribute);
@@ -1404,6 +1409,10 @@ public class ResponseCacheAttributePolicyTests
 
         // アクション側の 1 種類目（キーがシグネチャだけだと、こちらも 1 件に畳まれる）
         Assert.Single(actionLevel, d => d.Attribute is ResponseCacheAttribute { Duration: 99 });
+        // 注: 2 種類が<b>同じ宣言元</b>に付いているので、型を落としても通し番号が
+        // 0 と 1 に分けてしまい、この検査は緑のまま通る（実測）。型の部分が効いているかは
+        // AttributeScan_KeepsDeclarationsApartByKind_NotJustByOrdinal が見る ——
+        // 「型をキーへ足した変更はここで覆われている」と読んで、あちらを削らないこと
         // アクション側の 2 種類目
         Assert.Single(actionLevel, d => d.Attribute is SecondKindProbeAttribute);
     }
@@ -1451,7 +1460,12 @@ public class ResponseCacheAttributePolicyTests
     //
     // 正しい実装では 3 件（LeafA の 2 種類目 / Base の 1 種類目 / Base の 2 種類目）。
     // キーから型を落とすと、Base の宣言元の通し番号が走査の順で食い合い、
-    // <b>どちらかが 1 件消えて 2 件になる</b>（消える側は列挙順しだいなので、件数で見る）。
+    // <b>Base の 2 種類目が消えて、1 種類目が 2 件になる</b>。
+    //
+    // <b>検出しているのは件数ではなく内訳のほう。</b> 消えた分の席を重複が埋めるので
+    // <b>件数は 3 のまま変わらない</b>（実測。落ちるのは下の Assert.Single で、
+    // 「Base の 1 種類目が 2 件ある」として報告される）。件数は内訳が全部そろったことを
+    // 言うための締めで、<b>これだけに削らないこと</b>。
     [Fact]
     public void AttributeScan_KeepsDeclarationsApartByKind_NotJustByOrdinal()
     {
@@ -1463,10 +1477,11 @@ public class ResponseCacheAttributePolicyTests
                 a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
             .ToList();
 
-        // 3 件そろうこと（型をキーから落とすと 2 件になって落ちる）
+        // 内訳が「これで全部」であることの締め（下の 3 つと必ずセットで読む）
         Assert.Equal(3, declarations.Count);
 
-        // 内訳も見る: 基底の 1 種類目が、基底の名前で 1 件
+        // <b>ここからが検出器。</b> 基底の 1 種類目が、基底の名前で 1 件
+        // （型をキーから落とすと、ここが 2 件になって落ちる）
         Assert.Single(
             declarations,
             d => d.Attribute is ResponseCacheAttribute { Duration: 12 }

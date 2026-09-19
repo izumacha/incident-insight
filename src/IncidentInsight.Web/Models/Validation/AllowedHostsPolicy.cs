@@ -418,7 +418,6 @@ public static class AllowedHostsPolicy
         // 分割と振り分けは共有のパスへ任せる（分類と名指しが同じ集合を見ることを構造に載せる）
         ClassifyDeletionOf(PartitionEntries(allowedHosts));
 
-
     /// <summary>
     /// 一致しえない項目と、それを<b>消すだけ</b>にしたら何が起きるかを<b>ひと続きで</b>返す。
     /// </summary>
