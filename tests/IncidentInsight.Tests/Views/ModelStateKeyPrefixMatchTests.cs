@@ -690,11 +690,12 @@ public class ModelStateKeyPrefixMatchTests
     /// </summary>
     private static bool IsInterpolatedStart(string source, int quoteIndex)
     {
-        // 引用符が 3 つ以上続くなら生の文字列リテラル(補間の有無によらず別扱いにする)
-        var fence = 0;
-        while (quoteIndex + fence < source.Length && source[quoteIndex + fence] == '"') fence++;
-        // 生のフェンスなら補間文字列としては扱わない(上の説明のとおり)
-        if (fence >= 3) return false;
+        // 引用符が 3 つ以上続くなら生の文字列リテラル(補間の有無によらず別扱いにする)。
+        // <b>ここで数え直さない</b> ——終端を求める側(FindStringLiteralEnd)と同じ規則を
+        // 使わないと、フェンスの長さの扱いを直したときに片方だけが取り残される(§6 DRY)
+        if (CSharpLiteral.QuoteRunLength(source, quoteIndex) >= CSharpLiteral.RawStringFenceLength)
+            // 生のフェンスなら補間文字列としては扱わない(上の説明のとおり)
+            return false;
         // 引用符の手前にある $ と @ の並びを遡って見る
         for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
             // $ が含まれていれば補間文字列
@@ -718,10 +719,9 @@ public class ModelStateKeyPrefixMatchTests
     /// <param name="blankInto">穴の外の文言を潰す先(<c>null</c> なら潰さない)。</param>
     private static int SkipInterpolatedString(string source, int quoteIndex, char[]? blankInto = null)
     {
-        // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない
-        var isVerbatim = false;
-        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
-            if (source[k] == '@') { isVerbatim = true; break; }
+        // 逐語的な補間文字列（@$" / $@"）ではバックスラッシュがエスケープにならない。
+        // 接頭辞の遡り方は共有の規則を使う(書き写すと片方だけ直る。§6 DRY)
+        var isVerbatim = CSharpLiteral.IsVerbatim(source, quoteIndex);
 
         // 現在の穴の深さ（0 なら文字列の本文側）
         var depth = 0;

@@ -59,31 +59,6 @@ public static class CSharpLiteral
     public const int RawStringFenceLength = 3;
 
     /// <summary>
-    /// その引用符が、<b>改行をまたげる</b>リテラル（逐語的 <c>@"…"</c> ・ 生文字列
-    /// <c>"""…"""</c>）の開きかを返す。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>行単位で読む利用側のための判定。</b> ソース全体を見る利用側にとっては
-    /// 「閉じない」はそのまま読み取り不能だが、<b>1 行しか見ていない利用側では
-    /// 改行をまたげるリテラルは必ず閉じない側に落ちる</b>。そこで行末まで中身と見なすと、
-    /// 同じ行の後ろに置かれた <c>@* … *@</c> がコメントとして落ちず、
-    /// §5 どおりの日本語コメントで CI が赤くなる。</para>
-    ///
-    /// <para><b>判定をここに置く理由。</b> 利用側で「引用符が 3 つ以上か」だけを数え直すと、
-    /// <c>@"""</c>（逐語的リテラルの中の <c>""</c>）を生文字列のフェンスと取り違え、
-    /// <see cref="FindStringLiteralEnd"/> と<b>同じ入力に別の答えを出す</b>。
-    /// 判定の写しは、片方だけを直したときに静かにずれる（CLAUDE.md §6 DRY）。</para>
-    /// </remarks>
-    /// <param name="source">走査するソース。</param>
-    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
-    /// <returns>改行をまたげるリテラルの開きなら <c>true</c>。</returns>
-    public static bool CanSpanLines(string source, int quoteIndex) =>
-        // 逐語的リテラルは改行をまたげる
-        IsVerbatimStart(source, quoteIndex)
-        // 生文字列リテラルも改行をまたげる（逐語的でないときだけフェンスとして読む）
-        || QuoteRunLength(source, quoteIndex) >= RawStringFenceLength;
-
-    /// <summary>
     /// その引用符が<b>逐語的リテラル</b>（<c>@"</c> ・ <c>@$"</c> ・ <c>$@"</c>）の開きかを返す。
     /// </summary>
     /// <remarks>
@@ -94,7 +69,7 @@ public static class CSharpLiteral
     /// <param name="source">走査するソース。</param>
     /// <param name="quoteIndex">開きの二重引用符の位置。</param>
     /// <returns>逐語的リテラルの開きなら <c>true</c>。</returns>
-    private static bool IsVerbatimStart(string source, int quoteIndex)
+    public static bool IsVerbatim(string source, int quoteIndex)
     {
         // 接頭辞（@ と $ の並び）を遡って見る
         for (var k = quoteIndex - 1; k >= 0 && (source[k] == '@' || source[k] == '$'); k--)
@@ -164,8 +139,8 @@ public static class CSharpLiteral
     /// <returns>閉じ引用符の位置。閉じないまま終端に達すれば <c>-1</c>。</returns>
     public static int FindStringLiteralEnd(string source, int quoteIndex)
     {
-        // 逐語的リテラルかどうかは 1 か所の規則で判定する（規則は IsVerbatimStart が持つ）
-        var isVerbatim = IsVerbatimStart(source, quoteIndex);
+        // 逐語的リテラルかどうかは 1 か所の規則で判定する（規則は IsVerbatim が持つ）
+        var isVerbatim = IsVerbatim(source, quoteIndex);
 
         // 引用符が 3 つ以上続いていれば生文字列リテラル。ただし逐語的リテラルの
         // @"""..." は「引用符を重ねて 1 つを表す」書き方なので生文字列とは別物——
