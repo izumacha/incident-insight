@@ -1437,6 +1437,67 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
+    // 重複除去のキーの<b>属性の型</b>の部分が効いていること。
+    //
+    // <b>なぜ上の 2 つでは足りないのか（実測）。</b>
+    // AttributeScan_ReturnsEveryMatchedKind は 2 種類が<b>同じ宣言元</b>に付いた形なので、
+    // 通し番号だけでも 0 と 1 に分かれて両方返る ——キーから型を落としても落ちない。
+    // 型が効いているかは、<b>具象ごとに「その宣言元で見える同じ種類の数」が変わる</b>形で
+    // しか観測できない。ここでは L1 が 2 種類目を自分で宣言し直すことでそれを作る:
+    //
+    //   Base   : [SecondKindProbe] [ResponseCache(12)]
+    //   LeafA  : [SecondKindProbe]（自分で宣言し直す。AllowMultiple = false なので基底の分は見えない）
+    //   LeafB  : 素の継承
+    //
+    // 正しい実装では 3 件（LeafA の 2 種類目 / Base の 1 種類目 / Base の 2 種類目）。
+    // キーから型を落とすと、Base の宣言元の通し番号が走査の順で食い合い、
+    // <b>どちらかが 1 件消えて 2 件になる</b>（消える側は列挙順しだいなので、件数で見る）。
+    [Fact]
+    public void AttributeScan_KeepsDeclarationsApartByKind_NotJustByOrdinal()
+    {
+        // 2 種類に一致する述語で、2 つの具象を走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SharedSiteProbeLeafA), typeof(SharedSiteProbeLeafB)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
+            .ToList();
+
+        // 3 件そろうこと（型をキーから落とすと 2 件になって落ちる）
+        Assert.Equal(3, declarations.Count);
+
+        // 内訳も見る: 基底の 1 種類目が、基底の名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 12 }
+                && d.DeclaredOn.Contains(nameof(SharedSiteProbeBase), StringComparison.Ordinal));
+
+        // 基底の 2 種類目が、基底の名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is SecondKindProbeAttribute
+                && d.DeclaredOn.EndsWith(nameof(SharedSiteProbeBase), StringComparison.Ordinal));
+
+        // 具象が宣言し直した 2 種類目が、その具象の名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is SecondKindProbeAttribute
+                && d.DeclaredOn.EndsWith(nameof(SharedSiteProbeLeafA), StringComparison.Ordinal));
+    }
+
+    /// <summary>2 種類の属性をクラス側に宣言する抽象基底。</summary>
+    /// <remarks>期間の値(12)は、この経路で拾えたことを見分けるための目印。</remarks>
+    [SecondKindProbe]
+    [ResponseCache(Duration = 12)]
+    private abstract class SharedSiteProbeBase : ControllerBase;
+
+    /// <summary>2 種類目だけを自分で宣言し直す具象（宣言元が基底から移る）。</summary>
+    [SecondKindProbe]
+    private sealed class SharedSiteProbeLeafA : SharedSiteProbeBase;
+
+    /// <summary>基底の 2 種類をそのまま継承する具象。</summary>
+    private sealed class SharedSiteProbeLeafB : SharedSiteProbeBase;
+
     // 同じ宣言元に<b>同じ種類</b>の属性が複数付いているとき、全部が返ること。
     //
     // <b>なぜ要るのか（種類をキーへ足しただけでは残る fail-open）。</b>
@@ -1496,6 +1557,61 @@ public class ResponseCacheAttributePolicyTests
             nameof(MidOverrideProbeControllerMid),
             declared.DeclaredOn,
             StringComparison.Ordinal);
+    }
+
+    // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
+    //
+    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
+    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
+    // 一度も通らない</b>。実測で、その continue を break に変えても 1078 件すべて緑のまま通り、
+    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
+    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
+    [Fact]
+    public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
+    {
+        // 属性を宣言し直さない中間型をはさむ 2 つの具象を走査する
+        var declarations = ScanProbes(
+            typeof(SkippedMidProbeLeaf),
+            typeof(SecondSkippedMidProbeLeaf));
+
+        // 根の宣言(Duration = 66)に由来する宣言が 1 件だけであること
+        // （読み飛ばさない実装では、ここが 2 件になって落ちる）
+        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 66);
+
+        // 名指しが、属性を実際に宣言している根であること（具象でも中間型でもない）
+        Assert.Contains(
+            nameof(SkippedMidProbeControllerRoot),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>virtual なアクションに属性を付けて宣言する根。</summary>
+    /// <remarks>期間の値(66)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class SkippedMidProbeControllerRoot : ControllerBase
+    {
+        /// <summary>属性を宣言する virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 66)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
+    private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
+
+    /// <summary>属性を付けずに override だけする具象。</summary>
+    private sealed class SkippedMidProbeLeaf : SkippedMidProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>同じ中間型を継承する 2 つ目の具象（畳み方の検証に使う）。</summary>
+    private sealed class SecondSkippedMidProbeLeaf : SkippedMidProbeControllerMid
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
     }
 
     /// <summary>属性を持たず、virtual なアクションを宣言するだけの根。</summary>
