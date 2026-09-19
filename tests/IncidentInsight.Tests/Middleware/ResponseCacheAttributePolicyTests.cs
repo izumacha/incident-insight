@@ -914,6 +914,36 @@ public class ResponseCacheAttributePolicyTests
             "  Response.Headers.CacheControl = \"public\";"));
     }
 
+    // C# の 3 つの文字列リテラルすべてで、リテラルの終わりを取り違えないこと。
+    //
+    // <b>なぜ要るのか。</b> この走査はかつて自前の写しを持っており、姉妹の走査
+    // (Views.ModelStateKeyPrefixMatchTests)が<b>過去に踏んだ不具合として明記していた</b>
+    // 2 つをそのまま作り直していた ——逐語的かどうかを直前 1 文字だけで見る形と、
+    // 生文字列 """…""" を扱わない形。判定は CSharpLiteral.FindStringLiteralEnd へ寄せたが、
+    // <b>Web プロジェクトにこの 2 つの書き方が 1 つも無い間は、写しへ戻しても全件緑になる</b>。
+    // だから合成した行で固定する。
+    [Fact]
+    public void CodeScan_FindsTheEndOfEveryKindOfStringLiteral()
+    {
+        // 逐語的な補間文字列は、末尾のバックスラッシュで閉じ引用符を飲み込まない。
+        // 飲み込むと、その先の @*…*@ がコメントとして落ちず、§5 どおりの日本語コメントが
+        // 「Cache-Control への直接の書き込み」として報告される（＝正しいコードで赤くなる）
+        Assert.Empty(ScanLines(
+            """@{ var path = @$"logs\"; } @* Cache-Control はミドルウェアの既定に任せる *@"""));
+
+        // 順序を入れ替えた $@"…" も同じ（接頭辞は遡って見るので、どちらの並びでも逐語的）
+        Assert.Empty(ScanLines(
+            """@{ var path = $@"logs\"; } @* Cache-Control はミドルウェアの既定に任せる *@"""));
+
+        // 生文字列は開始フェンスと同じ数の引用符までが中身。
+        // 「空のリテラル + 余った引用符」と読むと、中身の // から先が行コメント扱いになり、
+        // <b>同じ行に書かれた本物のキャッシュ指示を取り落とす</b>（＝見逃す側へ倒れる）
+        Assert.Equal(
+            new[] { 1 },
+            ScanLines(
+                """"@{ var url = """https://example.test"""; Context.Response.Headers.CacheControl = "public"; }""""));
+    }
+
     /// <summary>
     /// 合成した複数行のソースを走査し、該当した行番号を返す(検査用の入り口)。
     /// </summary>
@@ -1139,8 +1169,12 @@ public class ResponseCacheAttributePolicyTests
                     continue;
                 }
 
-                // リテラルの終わりの位置を求める(逐語的文字列 @"…" もここで扱う)
-                var end = SkipStringLiteral(line, i);
+                // 閉じ引用符の位置を共有ヘルパーに求める(逐語的 @"…" ・ 生文字列 """…""" もここで扱う)
+                var closingQuote = CSharpLiteral.FindStringLiteralEnd(line, i);
+                // 閉じないまま行が終わったら行末までをリテラルの中身と見なす。
+                // <b>安全側はこちら</b> ——残りを実コードとして貯めるので、
+                // そこにキャッシュ指示が書かれていれば見逃さない(取りこぼす側へ倒れない)
+                var end = closingQuote < 0 ? line.Length : closingQuote + 1;
                 // <b>中身は実コードとして残す。</b> ヘッダー名は文字列キーとして書かれる
                 // (Response.Headers["Cache-Control"] = …)ので、読み飛ばすと本命を取り落とす。
                 // ここでやりたいのは「リテラルの中の記号をコメントの開始と読まない」ことだけ
@@ -1226,7 +1260,7 @@ public class ResponseCacheAttributePolicyTests
     /// <b>誤検知を消すつもりで見逃しを作っていた</b>（向きを間違えた手当ての実例）。</para>
     ///
     /// <para><b>残っている境界。</b> これは「増やしたことに気付く」ための網であって
-    /// 証明ではない（<see cref="SkipStringLiteral"/> の解説と同じ立場）。
+    /// 証明ではない（<see cref="CSharpLiteral.FindStringLiteralEnd"/> の解説と同じ立場）。
     /// 開きの判定は綴りの前後を見るだけなので、補間文字列の入れ子のような形は追わない。
     /// <b>次に穴が出たら、綴りを 1 つずつ足すのではなく本物のパーサへ移すこと。</b></para>
     ///
@@ -1270,75 +1304,6 @@ public class ResponseCacheAttributePolicyTests
         end = close + 1;
         // 文字リテラルとして読めた
         return true;
-    }
-
-    /// <summary>
-    /// 文字列（または文字）リテラルの終わりまで読み飛ばし、次に読む位置を返す。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>中身を捨てるためではなく、中の記号をコメントの開始と読まないために使う。</b>
-    /// （この一文はもともと 2 つ目の <c>&lt;remarks&gt;</c> に書かれていたが、XML ドキュメントの
-    /// <c>&lt;remarks&gt;</c> は 1 つしか許されず、2 つ目はツールに捨てられていた。）</para>
-    ///
-    /// <para>扱うのは 2 つ: 通常の <c>"…"</c>（<c>\"</c> のエスケープを踏まえる）と、
-    /// 逐語的文字列 <c>@"…"</c>（エスケープが無く、<c>""</c> が 1 つの引用符）。
-    /// 単一引用符 <c>'…'</c> は <see cref="TryReadQuotedRun"/> が扱う
-    /// （地の文のアポストロフィと区別する必要があるため、直前の文字で開きかどうかを見る）。</para>
-    ///
-    /// <para><b>ここは「言語を再実装しない」の境界線上にある。</b> 補間文字列の
-    /// <c>$"…{式}…"</c> の式の中にさらに文字列が入る形のような入れ子までは追わない。
-    /// この走査は<b>「増やしたことに気付く」ための網であって証明ではない</b> ——
-    /// これ以上の穴が出たら、綴りを 1 つずつ塞ぐのではなく本物のパーサへ移すこと
-    /// （この repo が YAML で <c>YamlDotNet</c> を入れたのと同じ判断。
-    /// 自前の走査で同義な書き方を網羅しようとすると、見落とすか誤検知するかの
-    /// どちらかにしかならない）。</para>
-    /// </remarks>
-    /// <param name="line">対象の行。</param>
-    /// <param name="start">開始の二重引用符の位置。</param>
-    /// <returns>リテラルの直後の位置（閉じないまま行が終われば行末）。</returns>
-    private static int SkipStringLiteral(string line, int start)
-    {
-        // 呼び出し側が '"' のときだけここへ来る(アポストロフィは TryReadCharLiteral が扱う)
-        const char quote = '"';
-        // 直前が @ なら逐語的文字列(エスケープが効かず、"" が 1 つの引用符)
-        var verbatim = start > 0 && line[start - 1] == '@';
-        // 開いた引用符の次から読む
-        var i = start + 1;
-
-        // 閉じる引用符を探す
-        while (i < line.Length)
-        {
-            // 逐語的でなければ、バックスラッシュの次の 1 文字はエスケープされている
-            if (!verbatim && line[i] == '\\')
-            {
-                // エスケープされた 1 文字を飛ばす
-                i += 2;
-                // 続きを見る
-                continue;
-            }
-
-            // 引用符に当たった
-            if (line[i] == quote)
-            {
-                // 逐語的文字列で "" が続くなら、それは 1 つの引用符を表すので閉じない
-                if (verbatim && i + 1 < line.Length && line[i + 1] == quote)
-                {
-                    // 2 文字分飛ばして続きを見る
-                    i += 2;
-                    // 続きを見る
-                    continue;
-                }
-
-                // ここで閉じたので、その次の位置を返す
-                return i + 1;
-            }
-
-            // それ以外の文字はリテラルの中身なので読み進める
-            i++;
-        }
-
-        // 閉じないまま行が終わった(行末を返す)
-        return line.Length;
     }
 
     /// <summary>指定位置がその綴りで始まるかを返す(範囲外でも例外にしない)。</summary>
