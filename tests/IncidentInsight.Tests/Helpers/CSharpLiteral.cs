@@ -54,6 +54,33 @@ public static class CSharpLiteral
     }
 
     /// <summary>
+    /// 生文字列リテラルの開始と見なす、引用符の連なりの最小の長さ。
+    /// </summary>
+    public const int RawStringFenceLength = 3;
+
+    /// <summary>
+    /// その位置から続く二重引用符の<b>連なりの長さ</b>を返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>「フェンスかどうか」の規則を 1 か所に置くために公開している。</b>
+    /// 行単位で読む利用側は「閉じなかったときにどう振る舞うか」を自分で決める必要があり
+    /// （複数行にまたがる生文字列は、1 行しか見ていなければ必ず閉じないため）、
+    /// その判断に連なりの長さが要る。ここを持たないと、利用側が数え直す写しを持つことになる。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="index">数え始める位置。</param>
+    /// <returns>その位置から続く二重引用符の数（その位置が引用符でなければ 0）。</returns>
+    public static int QuoteRunLength(string source, int index)
+    {
+        // 連なりの長さを数える
+        var length = 0;
+        // 引用符が続くあいだ進める
+        while (index + length < source.Length && source[index + length] == '"') length++;
+        // 数えた長さを返す
+        return length;
+    }
+
+    /// <summary>
     /// 二重引用符の位置から、<b>閉じ引用符の位置</b>を返す（読めなければ <c>-1</c>）。
     /// </summary>
     /// <remarks>
@@ -101,9 +128,8 @@ public static class CSharpLiteral
         // 引用符が 3 つ以上続いていれば生文字列リテラル。ただし逐語的リテラルの
         // @"""..." は「引用符を重ねて 1 つを表す」書き方なので生文字列とは別物——
         // 先に逐語的かを見てから判定しないと、終端の意味を取り違えて暴走する
-        var fenceLength = 0;
-        while (quoteIndex + fenceLength < source.Length && source[quoteIndex + fenceLength] == '"') fenceLength++;
-        if (!isVerbatim && fenceLength >= 3)
+        var fenceLength = QuoteRunLength(source, quoteIndex);
+        if (!isVerbatim && fenceLength >= RawStringFenceLength)
         {
             // 開始と同じ数の引用符が並ぶ位置が終端になる
             var fence = new string('"', fenceLength);
