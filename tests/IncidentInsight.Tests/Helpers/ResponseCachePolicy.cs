@@ -170,14 +170,21 @@ public static class ResponseCachePolicy
                 // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-                var declaringType = DeclaringTypeOf(controller, matches);
+                // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
+                var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
-                // 同じ宣言元で既に返していなければ返す(派生の数だけ並べない)
-                if (seen.Add($"type:{declaredOn}"))
+                // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
+                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
+                if (seen.Add(DeclarationKey($"type:{declaredOn}", attribute)))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
+                }
+                else
+                {
+                    // 畳んだので、それが「失って良い重複」だったことを確かめる
+                    EnsureNothingWasLost(attribute);
                 }
             }
 
@@ -198,19 +205,119 @@ public static class ResponseCachePolicy
                     // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
-                    var declaringType = DeclaringTypeOf(method, matches);
+                    // クラス側と同じく、たどる条件をこの属性の型まで絞る
+                    var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // 同じ宣言を派生の数だけ返さないよう、シグネチャまで含めて記録する
-                    if (seen.Add($"method:{declaredOn}({method.ToString()})"))
+                    // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
+                    if (seen.Add(DeclarationKey($"method:{declaredOn}({method})", attribute)))
                     {
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
+                    }
+                    else
+                    {
+                        // クラス側と同じ理由で、畳んだ 1 件が重複だったことを確かめる
+                        EnsureNothingWasLost(attribute);
                     }
                 }
             }
         }
     }
+
+    /// <summary>
+    /// 「宣言元 × 属性の種類」という、重複除去のキーを作る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>種類まで含める理由。</b> 宣言元だけをキーにすると、2 種類以上に一致する述語
+    /// （3 つ目のキャッシュ指示 <c>[OutputCache]</c> を見るようになるときの最も自然な足し方）
+    /// を渡した瞬間に、同じ型へ両方が付いていても先に返った 1 件しか <c>yield</c> されず、
+    /// もう 1 件は違反の一覧へ到達しない ——<b>検査は緑のまま、PHI を含みうる応答に
+    /// 共有キャッシュ可能な指示が残る</b>。</para>
+    ///
+    /// <para><b>「同じ宣言元に同じ種類が何個目か」は含めない。</b> それが要るのは
+    /// <c>AttributeUsage(AllowMultiple = true)</c> の属性を同じ宣言元へ 2 つ付けたときだが、
+    /// <b>実在のキャッシュ指示属性はすべて <c>AllowMultiple = false</c></b> なので、
+    /// この形は今のところ作れない。通し番号を先回りで入れると
+    /// <list type="bullet">
+    ///   <item><c>GetCustomAttributes</c> の<b>規定されていない並び順</b>に答えが依存する、</item>
+    ///   <item>基底の宣言が派生の名前でも報告されて<b>1 つの宣言が 2 件に見える</b>境界を新たに作る、</item>
+    /// </list>
+    /// という代償を、実在しない事情のために払うことになる
+    /// （CLAUDE.md §6「将来を見越した過度な抽象化を避ける」。この repo は空の除外表が
+    /// 「登録するだけで黙らせられる口」になった実例を記録している）。</para>
+    ///
+    /// <para><b>代わりに fail-closed にしてある。</b> 黙って落とすと静かな fail-open になるので、
+    /// <see cref="EnsureNothingWasLost"/> が<b>実際に畳んで 1 件失った時点で落とす</b>。実際にそういう属性を足す人は、そこで必ず一度手を止めることになる
+    /// （§9 fail-closed: 不明なら拒否）。</para>
+    /// </remarks>
+    /// <param name="site">宣言元を表すキーの前半（クラス側 / アクション側で綴りが違う）。</param>
+    /// <param name="attribute">キーを作りたい属性。</param>
+    /// <returns>重複除去に使うキー。</returns>
+    private static string DeclarationKey(string site, object attribute)
+    {
+        // 宣言元と属性の種類でキーを作る
+        return $"{site}:{attribute.GetType().FullName}";
+    }
+
+    /// <summary>
+    /// 畳んだ 1 件が「失って良い重複」だったことを確かめ、そうでなければ<b>落とす</b>。
+    /// </summary>
+    /// <remarks>
+    /// <b>黙って畳まないための門番。</b> <see cref="DeclarationKey"/> は (宣言元, 種類) で
+    /// 畳むので、<c>AllowMultiple = true</c> の属性が同じ宣言元に 2 つ付いていると
+    /// 2 個目以降が消える。許す側の宣言がたまたま 2 個目だと<b>検査は緑のまま出荷される</b>ので、
+    /// 消す代わりにここで止める。
+    ///
+    /// <para><b>「その属性を見かけたら」ではなく「実際に畳んだら」で鳴らす。</b>
+    /// 前者だと、複数付けられる属性が<b>1 つしか付いていなくても</b>走査全体が落ち、
+    /// アセンブリ中の本物の違反が 1 件も報告されなくなる（しかも失敗文言は違反ではなく
+    /// キーの話をする）。畳んだ瞬間＝実際に 1 件失った瞬間に鳴らせば、
+    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para><b>直し方は「キーを位置まで含む形にする」だが、
+    /// それだけでは足りない</b> ——宣言元をたどる
+    /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
+    /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
+    /// <b>2 つをセットで見直すこと。</b>
+    /// </remarks>
+    /// <param name="attribute">確かめる属性。</param>
+    /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
+    private static void EnsureNothingWasLost(object attribute)
+    {
+        // その属性の型が「同じ対象へ複数付けてよい」と名乗っているかを読む
+        var allowsMultiple = attribute
+            .GetType()
+            .GetCustomAttribute<AttributeUsageAttribute>(inherit: true)?
+            .AllowMultiple ?? false;
+
+        // 複数付けられない属性が同じキーで重なるのは、基底の 1 つの宣言を
+        // 派生の数だけ見ているだけ ——畳むのが正しいので、何も失われていない
+        if (!allowsMultiple) return;
+
+        // 複数付けられる属性が畳まれた＝2 個目以降が違反の一覧へ到達しないので落とす(§9 fail-closed)
+        throw new NotSupportedException(
+            $"{attribute.GetType().FullName} は AllowMultiple = true です。"
+                + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "
+                + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
+                + "キーへ位置を含める形へ変え、あわせて DeclaringTypeOf の名指しも見直してください。");
+    }
+
+    /// <summary>
+    /// 「拾う条件を満たし、かつ<b>この属性と同じ型</b>」という条件を作る。
+    /// </summary>
+    /// <remarks>
+    /// <b>宣言元をたどるときは、種類まで絞らないと別の属性で止まる。</b>
+    /// <c>matches</c> が 2 種類以上に一致する述語（3 つ目のキャッシュ指示を見るように
+    /// なるときの自然な形）だと、基底が A・派生が B を宣言している場合に
+    /// <c>DeclaringTypeOf</c> は A についても「派生が宣言している」と答える ——
+    /// 名指しされたファイルを開いても A が無く、直すべき 1 か所が出てこない。
+    /// これは基底へ引き上げた宣言で一度直した形そのものなので、同じ轍を踏まない。
+    /// </remarks>
+    /// <param name="attribute">宣言元をたどりたい属性。</param>
+    /// <param name="matches">呼び出し側が渡した、拾う属性かどうかの条件。</param>
+    /// <returns>同じ型の属性だけを通す条件。</returns>
+    private static Func<object, bool> SameKindAs(object attribute, Func<object, bool> matches) =>
+        // 元の条件を満たし、かつ型が同じものだけを「同じ宣言」と見なす
+        candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
@@ -221,6 +328,12 @@ public static class ResponseCachePolicy
     /// 1 つの宣言が派生の数だけ違反として並び、しかも名指しされたファイルを開いても
     /// 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
     /// (クラス側の同名のオーバーロードも、同じ理由から同じ手当てをしている)。
+    ///
+    /// <para><b>さかのぼり方は「根へ跳ぶ」ではなく「1 段ずつ」。</b>
+    /// <c>GetBaseDefinition()</c> が返すのは<b>最初に virtual として宣言された定義</b>なので、
+    /// 属性が<b>途中の型</b>の <c>override</c> に付いている場合は根にも自分自身にも無く、
+    /// どちらの検査も外れて具象が名指しされる。連なりを 1 段ずつ見れば、
+    /// 途中の宣言も「自分自身が宣言しているか」で正しく捕まる。</para>
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
     /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
@@ -234,16 +347,30 @@ public static class ResponseCachePolicy
             return method.DeclaringType!;
         }
 
-        // override なら、最初に宣言された(仮想メソッドの根の)定義までさかのぼる
-        var baseDefinition = method.GetBaseDefinition();
-        // 根の定義が属性を宣言しているなら、その型が直すべき場所
-        if (baseDefinition.GetCustomAttributes(inherit: false).Any(matches))
+        // override の連なりを識別するための目印(同じ仮想メソッドはどこから見ても同じ根を持つ)
+        var rootDefinition = method.GetBaseDefinition();
+
+        // <b>根へ一足飛びに跳ばず、override の連なりを 1 段ずつさかのぼる。</b>
+        // 跳ぶと、途中の型が宣言した属性を素通りして具象を名指しすることになる ——
+        // Root(virtual) → Mid([ResponseCache] override) → Leaf1 / Leaf2(素の override)で、
+        // Leaf の inherit: false は空・根は Root.Export なので<b>どちらの検査も外れ</b>、
+        // 1 つの宣言が Leaf の数だけ違反として並び、しかも名指しされたファイルを開いても
+        // 属性が無い ——この関数が防ぐために存在する形そのものになる(実測で 2 件並んだ)
+        for (var type = method.DeclaringType?.BaseType; type is not null; type = type.BaseType)
         {
-            // 根の定義を持つ型を返す
-            return baseDefinition.DeclaringType!;
+            // その型<b>自身が宣言している</b>メソッドの中から、同じ仮想メソッドの定義を探す
+            var declared = type
+                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .FirstOrDefault(candidate => candidate.GetBaseDefinition().Equals(rootDefinition));
+
+            // その段が同じメソッドを宣言していなければ、さらに基底へ
+            if (declared is null) continue;
+
+            // その定義が属性を宣言しているなら、そこが直すべき場所
+            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return type;
         }
 
-        // どちらでもなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
+        // どこにも見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
         return method.DeclaringType!;
     }
 

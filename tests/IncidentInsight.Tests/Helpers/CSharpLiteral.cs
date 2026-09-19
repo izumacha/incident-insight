@@ -2,7 +2,7 @@
 namespace IncidentInsight.Tests.Helpers;
 
 /// <summary>
-/// C# のソースを走査する検査が共有する、<b>文字リテラル</b>（<c>'…'</c>）の読み取り。
+/// C# のソースを走査する検査が共有する、リテラル（<c>'…'</c> ・ <c>"…"</c>）の読み取り。
 /// </summary>
 /// <remarks>
 /// <para><b>なぜ共有するのか。</b> 「アポストロフィから閉じのアポストロフィまでを、
@@ -41,12 +41,214 @@ public static class CSharpLiteral
         // 開き引用符の次の文字から探し始める
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
+            // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
+            if (IsLineBreak(source[i])) return -1;
             // エスケープなら次の 1 文字を読み飛ばす
-            if (source[i] == '\\') { i++; continue; }
+            if (source[i] == '\\')
+            {
+                // <b>エスケープは改行を食べない。</b> 無条件に次の 1 文字を飛ばすと、
+                // 行末が \ のときに改行そのものが飛ばされて上の打ち切りが一度も効かず、
+                // <b>次の行のアポストロフィを終端として拾う</b>（実測）。
+                // 姉妹の FindStringLiteralEnd と同じ手当て ——片方だけ直さない
+                if (i + 1 < source.Length && IsLineBreak(source[i + 1])) return -1;
+                // エスケープされた 1 文字を飛ばす
+                i++;
+                // 続きを見る
+                continue;
+            }
             // 単一引用符に出会ったらそこが閉じ位置
             if (source[i] == '\'') return i;
-            // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
-            if (source[i] == '\n') return -1;
+        }
+
+        // 閉じ引用符が見つからなかった
+        return -1;
+    }
+
+    /// <summary>
+    /// 生文字列リテラルの開始と見なす、引用符の連なりの最小の長さ。
+    /// </summary>
+    public const int RawStringFenceLength = 3;
+
+    /// <summary>
+    /// その引用符が<b>逐語的リテラル</b>（<c>@"</c> ・ <c>@$"</c> ・ <c>$@"</c>）の開きかを返す。
+    /// </summary>
+    /// <remarks>
+    /// 直前の接頭辞を<b>遡って</b>見る。<c>@"</c> だけでなく <c>@$"</c> / <c>$@"</c> もあり、
+    /// 直前 1 文字だけ見る版は <c>@$"</c> を取り違えてバックスラッシュをエスケープ扱いし、
+    /// <b>末尾のバックスラッシュで閉じ引用符を飲み込んで暴走した</b>。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <returns>逐語的リテラルの開きなら <c>true</c>。</returns>
+    public static bool IsVerbatim(string source, int quoteIndex) =>
+        // 接頭辞に @ が含まれていれば逐語的リテラル（遡り方は PrefixContains が持つ）
+        PrefixContains(source, quoteIndex, '@');
+
+    /// <summary>
+    /// その引用符が<b>補間文字列</b>（<c>$"</c> ・ <c>@$"</c> ・ <c>$@"</c>）の開きかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="IsVerbatim"/> と同じ遡り方で答える必要がある。</b>
+    /// 「逐語的か」と「補間か」は <c>@$"…"</c> について<b>同時に成り立つ</b>ので、
+    /// 片方だけ遡り方を直すと <c>@$"…"</c> の扱いが 2 つの答えに割れ、
+    /// エスケープの規則をどちらで読むかがずれる。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <returns>補間文字列の開きなら <c>true</c>。</returns>
+    public static bool IsInterpolated(string source, int quoteIndex) =>
+        // 接頭辞に $ が含まれていれば補間文字列
+        PrefixContains(source, quoteIndex, '$');
+
+    /// <summary>
+    /// 引用符の手前にある接頭辞（<c>@</c> と <c>$</c> の並び）に、その印があるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>直前 1 文字だけを見ないこと。</b> <c>@$"</c> / <c>$@"</c> のように 2 つ並ぶので、
+    /// 直前 1 文字だけ見る版は <c>@$"</c> を逐語的と判定できず、バックスラッシュを
+    /// エスケープ扱いして<b>末尾のバックスラッシュで閉じ引用符を飲み込んで暴走した</b>。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <param name="marker">探す印（<c>@</c> か <c>$</c>）。</param>
+    /// <returns>接頭辞にその印があれば <c>true</c>。</returns>
+    public static bool PrefixContains(string source, int quoteIndex, char marker)
+    {
+        // 接頭辞（@ と $ の並び）を遡って見る
+        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '@' || source[k] == '$'); k--)
+            // 探している印が見つかった
+            if (source[k] == marker) return true;
+
+        // 接頭辞にその印は無い
+        return false;
+    }
+
+    /// <summary>
+    /// その文字が行の終わりを表すかを返す（<c>\n</c> と、単独の <c>\r</c> の両方）。
+    /// </summary>
+    /// <remarks>
+    /// <b><c>\n</c> だけを見てはいけない。</b> CR だけで改行するファイルでは打ち切りが
+    /// 効かず、またげないリテラルが<b>次の行の引用符を終端として拾う</b>
+    /// （実測で確認）。CRLF は <c>\r</c> の次が <c>\n</c> なので <c>\n</c> だけでも
+    /// 止まるが、CR だけのファイルは止まらない。
+    /// </remarks>
+    /// <param name="c">調べる文字。</param>
+    /// <returns>行の終わりなら <c>true</c>。</returns>
+    private static bool IsLineBreak(char c) =>
+        // 改行と復帰のどちらも行の終わりとして扱う
+        c is '\n' or '\r';
+
+    /// <summary>
+    /// その位置から続く二重引用符の<b>連なりの長さ</b>を返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>「フェンスかどうか」の規則を 1 か所に置くために公開している。</b>
+    /// 行単位で読む利用側は「閉じなかったときにどう振る舞うか」を自分で決める必要があり
+    /// （複数行にまたがる生文字列は、1 行しか見ていなければ必ず閉じないため）、
+    /// その判断に連なりの長さが要る。ここを持たないと、利用側が数え直す写しを持つことになる。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="index">数え始める位置。</param>
+    /// <returns>その位置から続く二重引用符の数（その位置が引用符でなければ 0）。</returns>
+    public static int QuoteRunLength(string source, int index)
+    {
+        // 連なりの長さを数える
+        var length = 0;
+        // 引用符が続くあいだ進める
+        while (index + length < source.Length && source[index + length] == '"') length++;
+        // 数えた長さを返す
+        return length;
+    }
+
+    /// <summary>
+    /// 二重引用符の位置から、<b>閉じ引用符の位置</b>を返す（読めなければ <c>-1</c>）。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ共有するのか（実測した取り違え 2 件）。</b> この処理はかつて 2 か所に
+    /// 別々の実装で存在し、片方だけが次の 2 つを扱えていた ——そして前者のコメントは、
+    /// <b>その 2 つがまさに過去に踏んだ不具合である</b>と明記していた。
+    /// <list type="bullet">
+    ///   <item><c>@$"…"</c> / <c>$@"…"</c> … 直前 1 文字だけを見る版はこれを逐語的リテラルと
+    ///     判定できず、バックスラッシュをエスケープ扱いして<b>末尾のバックスラッシュで
+    ///     閉じ引用符を飲み込み、走査が暴走した</b>。その先の <c>@* … *@</c>（§5 が求める
+    ///     Razor コメント）まで飲み込まれ、<b>規約どおりのコメントが違反として報告されうる</b>。</item>
+    ///   <item>生文字列 <c>"""…"""</c> … 扱えない版は開始フェンスを「空のリテラル＋余った
+    ///     引用符」と読むため、本文の行が<b>実コードとして走査に載り</b>、存在しない違反を報告する。</item>
+    /// </list>
+    /// どちらも<b>正しいコードで赤くなる</b>側の壊れ方で、そういう検出網はいずれ緩められる。
+    /// 写しを持つ限り「片方だけが直っている」状態が戻るので、1 か所に置く（CLAUDE.md §6 DRY）。</para>
+    ///
+    /// <para>扱うのは C# の 3 つの書き方。
+    /// <list type="bullet">
+    ///   <item>通常の <c>"…"</c> … バックスラッシュがエスケープになる。</item>
+    ///   <item>逐語的 <c>@"…"</c> … バックスラッシュはエスケープ<b>ではなく</b>、
+    ///     引用符を重ねた <c>""</c> が引用符 1 つを表す。</item>
+    ///   <item>生文字列 <c>"""…"""</c> … 開始と同じ数の引用符が終端になる。</item>
+    /// </list></para>
+    ///
+    /// <para><b>補間文字列の穴（<c>$"…{式}…"</c> の <c>{式}</c>）は追わない。</b>
+    /// 穴の中にさらに文字列が入る形まで見るには専用の走査が要る。必要な利用側は
+    /// 自分でそこへ回す（呼ぶ前に補間の開始かを判定する）。ここは
+    /// <b>「増やしたことに気付く」ための網であって証明ではない</b> ——
+    /// これ以上の穴が出たら、綴りを 1 つずつ塞ぐのではなく本物のパーサへ移すこと。</para>
+    /// </remarks>
+    /// <param name="source">走査するソース（行単位で呼んでもよい）。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <returns>閉じ引用符の位置。閉じないまま終端に達すれば <c>-1</c>。</returns>
+    public static int FindStringLiteralEnd(string source, int quoteIndex)
+    {
+        // 逐語的リテラルかどうかは 1 か所の規則で判定する（規則は IsVerbatim が持つ）
+        var isVerbatim = IsVerbatim(source, quoteIndex);
+
+        // 引用符が 3 つ以上続いていれば生文字列リテラル。ただし逐語的リテラルの
+        // @"""..." は「引用符を重ねて 1 つを表す」書き方なので生文字列とは別物——
+        // 先に逐語的かを見てから判定しないと、終端の意味を取り違えて暴走する
+        var fenceLength = QuoteRunLength(source, quoteIndex);
+        if (!isVerbatim && fenceLength >= RawStringFenceLength)
+        {
+            // 開始と同じ数の引用符が並ぶ位置が終端になる
+            var fence = new string('"', fenceLength);
+            // 開始フェンスの直後から終端フェンスを探す
+            var close = source.IndexOf(fence, quoteIndex + fenceLength, StringComparison.Ordinal);
+            // 見つからなければ読み取り不能、見つかればフェンス末尾の位置を返す
+            return close < 0 ? -1 : close + fenceLength - 1;
+        }
+
+
+        // 開き引用符の次の文字から探し始める
+        for (var i = quoteIndex + 1; i < source.Length; i++)
+        {
+            // <b>改行の検査をエスケープより先に置く。</b> 後ろに置くと、行末が \ で終わる
+            // リテラルで「次の 1 文字を飛ばす」が<b>改行そのものを食べて</b>しまい、
+            // 打ち切りが一度も効かない（実測で、次の行の引用符を終端として拾った）
+            // <b>ふつうの "…" は改行をまたげないので、改行に出会ったら誤検出として打ち切る。</b>
+            // 姉妹の FindCharLiteralEnd が同じ理由で同じことをしている ——打ち切らないと、
+            // 位置がずれた走査が<b>次の行以降の引用符</b>を終端として拾い、あいだの実コードが
+            // 丸ごとリテラルの中身として潰される（ModelState 側は潰した範囲を空白で埋めるので、
+            // そこにある StartsWith( の検査漏れが報告されなくなる＝静かな fail-open）
+            // 生文字列は上で処理済みなので、ここでまたげるのは逐語的リテラルだけ
+            if (!isVerbatim && IsLineBreak(source[i])) return -1;
+            // 通常のリテラルだけバックスラッシュをエスケープとして扱う
+            if (!isVerbatim && source[i] == '\\')
+            {
+                // <b>エスケープは改行を食べない。</b> 上の打ち切りは「改行を見たら」なので、
+                // 次の 1 文字を無条件に飛ばすと<b>改行そのものが飛ばされて一度も効かない</b>
+                // （実測: 行末が \ のリテラルで、次の行の引用符を終端として拾った）
+                // ここは !isVerbatim の中なので、またげないことは確定している
+                if (i + 1 < source.Length && IsLineBreak(source[i + 1])) return -1;
+                // エスケープされた 1 文字を飛ばす
+                i++;
+                // 続きを見る
+                continue;
+            }
+            // 引用符に出会った場合の扱いはリテラルの種類で違う
+            if (source[i] == '"')
+            {
+                // 逐語的リテラルでは "" が引用符 1 つを表すので、2 つ続くなら本文の一部
+                if (isVerbatim && i + 1 < source.Length && source[i + 1] == '"') { i++; continue; }
+                // それ以外はここが閉じ位置
+                return i;
+            }
         }
 
         // 閉じ引用符が見つからなかった

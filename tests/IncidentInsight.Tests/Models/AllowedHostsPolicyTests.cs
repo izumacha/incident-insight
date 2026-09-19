@@ -570,29 +570,70 @@ public class AllowedHostsPolicyTests
             AllowedHostsPolicy.WarrantsWarning(reason));
     }
 
-    // 「名指しする項目」と「その直し方の根拠になった項目」が同じ集合であることを固定する。
+    // 注: ここには InspectNeverMatchingEntries_MatchesTheIndividualQueries があった。
+    // 3 つの公開 API が<b>同じ振り分けを読むようになった時点で反証不能</b>になったので外した ——
+    // 実測でも、振り分けの述語を潰す変異に対して 6 行すべて緑のまま通る（3 つが一緒に動くため）。
+    // 緑のままの検査が「守られている」と読めてしまうのは、この PR が他の箇所で潰した形そのもの。
+    // 個別の API の値は、それぞれの Theory
+    // （NeverMatchingEntries_ListsEntriesThatNoHostHeaderCanEverMatch /
+    //  ClassifyDeadEntryDeletion_SaysWhatDeletingWouldActuallyDo）が引き続き固定する。
+
+    // まとめて受け取る入口が返す (名指し, 分類) の組を、行ごとに固定する。
     //
-    // <b>Program.cs はこの 1 本しか呼ばない。</b> 別々に呼ぶ形へ戻すと、判定の条件を
-    // 片方にだけ足す変更が通ってしまい、警告が名指しした項目とは別の集合から
-    // 導いた直し方を出せるようになる（どちらも「一致しえない項目」を名乗るので
-    // 運用者からは見分けが付かない）。
+    // <b>この検査が保証しないこと（先に書く）。</b> 「名指しと分類が<b>同じ振り分け</b>から
+    // 来ている」ことは<b>外から観測できない</b>ので、ここでは固定していない ——
+    // 実測でも、実装を以前の「2 つの公開 API を別々に呼ぶ」形へ戻すと、
+    // 値はすべて同じなので<b>全件緑のまま通る</b>。2 つの述語が一致しているあいだは
+    // 1 回の振り分けと 2 回の振り分けに差が出ないからで、それはまさにこの検査が
+    // 生き延びるべき場面そのもの。<b>構造の保証はコードの形（PartitionEntries が唯一の
+    // 振り分け）とレビューが持つ</b>。ここに書いてあると、機械が見ていると誤解される。
+    //
+    // <b>この検査が保証すること。</b> 行ごとの (名指し, 分類) の値。空白付きの項目・
+    // 残りがワイルドカード・正規化できない綴り・全部死ぬ、の 4 つを覆う
+    // （実測: 振り分けの述語を潰すと 7 行中 4 行が落ちる）。
+    // 以前は「名指しが 0 件 ⇔ NothingToDelete」だけを見ており、それは今の実装では
+    // <b>構造上つねに真</b>（分類の入口が Dead.Length == 0 で、どの分岐も NothingToDelete を
+    // 返さない）なので、振り分けを丸ごと潰しても緑のまま通っていた ——行を並べたぶんだけ
+    // 正規化・並び順を覆っているように読めて、実際には 1 つも覆っていなかった。
     [Theory]
-    [InlineData(null)]
-    [InlineData("incident.example.test")]
-    [InlineData("incident.example.test; www.example.test")]
-    [InlineData("incident.example.test;0.0.0.0; ")]
-    [InlineData("0.0\t.0.0; ")]
-    [InlineData("   ")]
-    public void InspectNeverMatchingEntries_MatchesTheIndividualQueries(string? allowedHosts)
+    // 一致しえない項目が無い設定（分類は NothingToDelete でなければならない）
+    [InlineData(null, "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("incident.example.test", "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    [InlineData("incident.example.test;www.example.test", "", AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete)]
+    // 空白付きの項目だけが死に、実ホスト名が残る＝消してよい
+    [InlineData("incident.example.test; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe)]
+    // 残るほうにワイルドカードがあるので、消すと全許可になる
+    [InlineData("incident.example.test;0.0.0.0; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    // 残るほうに正規化できない綴りがあるので、消した結果は並び順しだい＝断定しない
+    [InlineData("0.0\t.0.0; ", " ", AllowedHostsPolicy.DeadEntryDeletionOutcome.Unknown)]
+    // 全部死ぬので、消すと 0 件になって既定の ["*"] へ落ちる
+    [InlineData("   ", "   ", AllowedHostsPolicy.DeadEntryDeletionOutcome.WouldAllowEveryHost)]
+    public void InspectNeverMatchingEntries_NamesEntriesExactlyWhenItSaysThereIsSomethingToDelete(
+        string? allowedHosts,
+        string expectedDeadEntries,
+        AllowedHostsPolicy.DeadEntryDeletionOutcome expectedOutcome)
     {
-        // まとめて受け取る形
+        // 名指しする項目と分類を、1 度の呼び出しで受け取る
         var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
 
-        // 個別に呼んだ結果と、項目の並びまで含めて一致すること
-        Assert.Equal(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts), entries);
+        // 期待する名指しを、書きやすいように '|' 区切りの 1 つの文字列から組み立てる
+        // （項目そのものが空白なので、区切りには空白以外の文字を使う）
+        var expected = expectedDeadEntries.Length == 0
+            ? []
+            : expectedDeadEntries.Split('|');
 
-        // 分類も一致すること
-        Assert.Equal(AllowedHostsPolicy.ClassifyDeadEntryDeletion(allowedHosts), outcome);
+        // 名指しする項目が、並びまで含めて期待どおりであること
+        Assert.Equal(expected, entries);
+
+        // 分類が期待どおりであること
+        Assert.Equal(expectedOutcome, outcome);
+
+        // 2 つが噛み合っていること（名指しが 0 件のときだけ「消す対象が無い」）。
+        // <b>実装に対しては構造上つねに真</b>なので、これが見ているのは実装ではなく
+        // <b>上の行</b>——行を足した人が噛み合わない組を書いてしまうのを防ぐためだけに置く
+        Assert.Equal(
+            entries.Count == 0,
+            outcome == AllowedHostsPolicy.DeadEntryDeletionOutcome.NothingToDelete);
     }
 
     // 「消してよい」の案内が、削除を<b>同列の選択肢として</b>勧めていないことを固定する。
