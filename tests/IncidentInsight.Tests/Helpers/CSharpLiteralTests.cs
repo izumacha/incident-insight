@@ -1,5 +1,3 @@
-// 検証対象の共有ヘルパーを使う
-using IncidentInsight.Tests.Helpers;
 
 // このテストが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -35,6 +33,23 @@ public class CSharpLiteralTests
 
         // 姉妹の文字リテラル側も同じ規則であること（片方だけ直す変更を防ぐ）
         Assert.Equal(-1, CSharpLiteral.FindCharLiteralEnd("var a = '閉じない\nvar b = 'x';", 8));
+    }
+
+    // 行末が <c>\</c> で終わるリテラルでも、改行の打ち切りが効くこと。
+    //
+    // <b>なぜ別に要るのか（実測）。</b> 改行の検査をエスケープの検査より<b>後ろ</b>に置くと、
+    // 「次の 1 文字を飛ばす」が改行そのものを食べてしまい、打ち切りが一度も効かない
+    // ——次の行の引用符を終端として拾い、あいだの実コードが丸ごと潰される。
+    // 正しい C# では通常のリテラルが行末を <c>\</c> で終えることは無いが、
+    // この走査は <c>.cshtml</c> の地の文（<c>"</c> が HTML の属性の区切りでもある）も読む。
+    [Fact]
+    public void FindStringLiteralEnd_StopsAtANewline_EvenWhenTheLineEndsWithABackslash()
+    {
+        // 1 行目が \ で終わり、2 行目に別の " があるソース
+        const string source = "var a = \"abc\\\nif (k.StartsWith(\"A\")) { }";
+
+        // エスケープが改行を食べずに打ち切ること
+        Assert.Equal(-1, CSharpLiteral.FindStringLiteralEnd(source, 8));
     }
 
     // 改行をまたげるリテラルは、改行の先まで読んで正しい終端を返すこと。

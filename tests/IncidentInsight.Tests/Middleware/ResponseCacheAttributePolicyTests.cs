@@ -959,6 +959,10 @@ public class ResponseCacheAttributePolicyTests
     // 報告されなくなった。<b>誤検知を消すつもりで見逃しを作る</b>向きの誤りなので (a) へ戻した。
     // この走査はもともと「リテラルの中身も実コードとして貯める」設計（ヘッダー名は文字列キーと
     // して書かれるため）で、過剰報告は織り込み済み。見逃しだけが織り込めない。
+    //
+    // <b>(a) でも塞がらない形がある。</b> ここで固定するのは<b>開始行の中</b>だけで、
+    // リテラルの開閉は行をまたいで持ち越されないため、2 行目以降に /* や @* があると
+    // 以降が潰れる（origin/main から変わらない既存の境界。issue #252）。
     [Fact]
     public void CodeScan_KeepsAnUnterminatedLiteralAsContent_RatherThanInterpretingIt()
     {
@@ -1214,8 +1218,16 @@ public class ResponseCacheAttributePolicyTests
                 // 閉じなかったときは<b>行末までを中身と見なす</b>。理由は下の 3 段落。
                 //
                 // この走査は行単位なので、改行をまたげるリテラル(@"…" ・ """…""")の開始行は
-                // 必ずここへ落ちる。残りを<b>走査せず</b>実コードとして貯めるので、そこに
-                // キャッシュ指示が書かれていれば見逃さない(取りこぼす側へ倒れない)。
+                // 必ずここへ落ちる。残りを<b>走査せず</b>実コードとして貯めるので、
+                // <b>その行に</b>キャッシュ指示が書かれていれば見逃さない。
+                //
+                // <b>ただし「この行の中では」までしか言えない（残っている境界）。</b>
+                // リテラルが開いたままかどうかは行をまたいで持ち越されないので、
+                // <b>2 行目以降</b>は素の実コードとして走査される。そこに /* や @* があると
+                // コメント状態が持ち越され、閉じ綴りはリテラルの中にしか無いため
+                // <b>以降のファイル全体が潰れる</b>（実測: 4 行目に置いた本物の書き込みが
+                // 報告されなかった）。origin/main も同じ挙動で、この PR が変えたものではない。
+                // 塞ぐにはリテラルの開閉も pendingCloser と同じように持ち越す必要がある（issue #252）。
                 //
                 // <b>「開きの直後から走査を続ける」形にしてはいけない。</b> 一度そうしたが、
                 // リテラルの中身が実コードとして<b>解釈される</b>ようになり、中に // や /* が
@@ -1431,9 +1443,10 @@ public class ResponseCacheAttributePolicyTests
     // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
     // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
     //
-    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす。
-    // 型と通し番号のどちらが効いているかまでは分けられない（2 種類が同じ宣言元に付いた形なので、
-    // 片方だけでも分かれてしまう）ので、それぞれ専用の検査が別にある。
+    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす
+    // （実測: キーから属性の型を落とすと、クラス側・アクション側の Assert.Single が落ちる）。
+    // <b>覆うのは「同じ宣言元に 2 種類」の形だけ</b>で、宣言元が具象と基底に分かれる形は
+    // AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne が見る。
     [Fact]
     public void AttributeScan_ReturnsEveryMatchedKind_NotJustTheFirstOnEachDeclaration()
     {
@@ -1463,10 +1476,6 @@ public class ResponseCacheAttributePolicyTests
 
         // アクション側の 1 種類目（キーがシグネチャだけだと、こちらも 1 件に畳まれる）
         Assert.Single(actionLevel, d => d.Attribute is ResponseCacheAttribute { Duration: 99 });
-        // 注: 2 種類が<b>同じ宣言元</b>に付いているので、型を落としても通し番号が
-        // 0 と 1 に分けてしまい、この検査は緑のまま通る（実測）。型の部分が効いているかは
-        // AttributeScan_KeepsDeclarationsApartByKind_NotJustByOrdinal が見る ——
-        // 「型をキーへ足した変更はここで覆われている」と読んで、あちらを削らないこと
         // アクション側の 2 種類目
         Assert.Single(actionLevel, d => d.Attribute is SecondKindProbeAttribute);
     }
@@ -1502,26 +1511,22 @@ public class ResponseCacheAttributePolicyTests
 
     // 重複除去のキーの<b>属性の型</b>の部分が効いていること。
     //
-    // <b>なぜ上の 2 つでは足りないのか（実測）。</b>
-    // AttributeScan_ReturnsEveryMatchedKind は 2 種類が<b>同じ宣言元</b>に付いた形なので、
-    // 通し番号だけでも 0 と 1 に分かれて両方返る ——キーから型を落としても落ちない。
-    // 型が効いているかは、<b>具象ごとに「その宣言元で見える同じ種類の数」が変わる</b>形で
-    // しか観測できない。ここでは L1 が 2 種類目を自分で宣言し直すことでそれを作る:
+    // <b>なぜ上の検査と別に要るのか。</b> AttributeScan_ReturnsEveryMatchedKind は
+    // 2 種類が<b>同じ宣言元</b>に付いた形しか見ない。こちらは<b>宣言元が具象と基底に
+    // 分かれる</b>形 ——具象が 2 種類目を宣言し直すと、その具象からは基底の 2 種類目が
+    // 見えなくなり、走査ごとに「その宣言元で見える同じ種類の数」が変わる。
+    // 宣言元をたどる側（SameKindAs）とキーの側が噛み合っていないと、ここで崩れる:
     //
     //   Base   : [SecondKindProbe] [ResponseCache(12)]
     //   LeafA  : [SecondKindProbe]（自分で宣言し直す。AllowMultiple = false なので基底の分は見えない）
     //   LeafB  : 素の継承
     //
     // 正しい実装では 3 件（LeafA の 2 種類目 / Base の 1 種類目 / Base の 2 種類目）。
-    // キーから型を落とすと、Base の宣言元の通し番号が走査の順で食い合い、
-    // <b>Base の 2 種類目が消えて、1 種類目が 2 件になる</b>。
-    //
-    // <b>検出しているのは件数ではなく内訳のほう。</b> 消えた分の席を重複が埋めるので
-    // <b>件数は 3 のまま変わらない</b>（実測。落ちるのは下の Assert.Single で、
-    // 「Base の 1 種類目が 2 件ある」として報告される）。件数は内訳が全部そろったことを
-    // 言うための締めで、<b>これだけに削らないこと</b>。
+    // キーから型を落とすと Base の宣言元で 2 種類が同じキーになり、<b>2 件に減る</b>
+    // （実測: 落ちるのは下の Assert.Equal(3, …)）。内訳の Assert.Single は
+    // 「どちらが消えたか」まで押さえるために置いてあるので、件数だけに削らないこと。
     [Fact]
-    public void AttributeScan_KeepsDeclarationsApartByKind_NotJustByOrdinal()
+    public void AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne()
     {
         // 2 種類に一致する述語で、2 つの具象を走査する
         var declarations = ResponseCachePolicy
