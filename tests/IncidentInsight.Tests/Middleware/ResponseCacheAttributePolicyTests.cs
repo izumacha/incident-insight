@@ -1397,6 +1397,117 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
+    // 2 種類以上に一致する述語を渡したとき、<b>同じ宣言元に付いた別々の属性が両方とも返る</b>こと。
+    //
+    // <b>なぜ要るのか（fail-open の実例）。</b> AttributeDeclarationsOn は自身を
+    // 「属性の種類を問わない走査」と名乗り、新しい属性種別での再利用を促している。
+    // ところが重複除去のキーが「どの属性が一致したか」を持っていなかった頃は、
+    // 3 つ目のキャッシュ指示（[OutputCache] 等）を見るために述語を
+    // <c>a => a is ResponseCacheAttribute || a is OutputCacheAttribute</c> と広げた瞬間、
+    // 同じコントローラに両方が付いていても<b>先に返った 1 件しか yield されず</b>、
+    // もう 1 件は違反の一覧へ到達しなかった。検査は緑のまま、PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る ——<b>痕跡はテスト件数にも出ない</b>。
+    //
+    // <b>現在の配線は 1 種類しか見ていないので、合成入力でしか固定できない。</b>
+    // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
+    // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
+    [Fact]
+    public void AttributeScan_ReturnsEveryMatchedKind_NotJustTheFirstOnEachDeclaration()
+    {
+        // 「2 種類のどちらかなら拾う」という、3 つ目の指示を足すときに最も自然な述語
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(TwoKindsProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
+            .ToList();
+
+        // クラス側の宣言だけを取り出す（アクション側は名前が ".Probe" で終わる）
+        var classLevel = declarations
+            .Where(d => !d.DeclaredOn.EndsWith(".Probe", StringComparison.Ordinal))
+            .ToList();
+
+        // クラス側の 1 種類目（キーに属性の型が無いと、どちらか一方しか返らず落ちる）
+        Assert.Single(classLevel, d => d.Attribute is ResponseCacheAttribute { Duration: 88 });
+        // クラス側の 2 種類目
+        Assert.Single(classLevel, d => d.Attribute is SecondKindProbeAttribute);
+
+        // アクション側の宣言だけを取り出す
+        var actionLevel = declarations
+            .Where(d => d.DeclaredOn.EndsWith(".Probe", StringComparison.Ordinal))
+            .ToList();
+
+        // アクション側の 1 種類目（キーがシグネチャだけだと、こちらも 1 件に畳まれる）
+        Assert.Single(actionLevel, d => d.Attribute is ResponseCacheAttribute { Duration: 99 });
+        // アクション側の 2 種類目
+        Assert.Single(actionLevel, d => d.Attribute is SecondKindProbeAttribute);
+    }
+
+    // 2 種類以上に一致する述語のとき、<b>名指しが「その属性を実際に宣言している型」</b>であること。
+    //
+    // <b>なぜ要るのか。</b> 宣言元をたどる条件にも述語をそのまま渡していた頃は、
+    // 基底が A・派生が B を宣言していると、A についても「派生が宣言している」と答えた
+    // （派生が B に一致してしまうため）。名指しされたファイルを開いても A が無く、
+    // 直すべき 1 か所が出てこない ——基底へ引き上げた宣言で一度直した形そのもの。
+    [Fact]
+    public void AttributeScan_NamesTheTypeThatDeclaredThatKind_WhenKindsAreSplitAcrossTheHierarchy()
+    {
+        // 基底が [ResponseCache]、派生が 2 種類目を宣言している形を走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SplitKindsProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
+            .ToList();
+
+        // 基底で宣言された [ResponseCache] の宣言を取り出す
+        var inherited = Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 66 });
+
+        // 名指しは基底（派生は 2 種類目しか宣言していない）
+        Assert.Contains(
+            nameof(SplitKindsProbeControllerBase),
+            inherited.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 「種類を問わない走査」を検証するためだけの、2 種類目の属性。
+    /// </summary>
+    /// <remarks>
+    /// <b>本物の <c>[OutputCache]</c> を使わない理由。</b> ここで見たいのは
+    /// 「述語が 2 種類に一致したとき、両方が別件として返るか」だけで、
+    /// 具体的な属性が何かは関係がない。自前の属性にしておけば、
+    /// テストプロジェクトが出力キャッシュの参照を持つかどうかに左右されず、
+    /// <b>重複除去のキーから属性の型が落ちた瞬間だけ</b>落ちる。
+    /// </remarks>
+    [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+    private sealed class SecondKindProbeAttribute : Attribute;
+
+    /// <summary>
+    /// クラス側・アクション側のそれぞれに 2 種類の属性を持つ合成コントローラ。
+    /// </summary>
+    /// <remarks>期間の値(88 / 99)は、どちらの経路で拾えたかを見分けるための目印。</remarks>
+    [ResponseCache(Duration = 88)]
+    [SecondKindProbe]
+    private sealed class TwoKindsProbeController : ControllerBase
+    {
+        /// <summary>2 種類の属性を持つ、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 99)]
+        [SecondKindProbe]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>1 種類目だけをクラス側に宣言する抽象基底。</summary>
+    [ResponseCache(Duration = 66)]
+    private abstract class SplitKindsProbeControllerBase : ControllerBase;
+
+    /// <summary>2 種類目だけを自分で宣言し、1 種類目は基底から継承する具象。</summary>
+    [SecondKindProbe]
+    private sealed class SplitKindsProbeController : SplitKindsProbeControllerBase;
+
     /// <summary>
     /// 合成したコントローラに対して走査を実行する。
     /// </summary>

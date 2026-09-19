@@ -170,11 +170,18 @@ public static class ResponseCachePolicy
                 // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-                var declaringType = DeclaringTypeOf(controller, matches);
+                // たどる条件を<b>この属性の型</b>まで絞る。matches をそのまま渡すと、
+                // 2 種類以上に一致する述語のとき「別の種類を宣言している型」で止まり、
+                // 名指しされたファイルを開いてもその属性が無い、という既に直したはずの形に戻る
+                var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
-                // 同じ宣言元で既に返していなければ返す(派生の数だけ並べない)
-                if (seen.Add($"type:{declaredOn}"))
+                // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
+                // <b>キーに属性の型を含める。</b> 含めないと、2 種類以上に一致する述語を
+                // 渡した瞬間（3 つ目のキャッシュ指示 [OutputCache] を見るようになるときの
+                // 最も自然な足し方）に、同じ型へ両方が付いていても先に返った 1 件しか
+                // yield されず、もう 1 件は違反の一覧へ到達しない＝静かな fail-open になる
+                if (seen.Add($"type:{declaredOn}:{attribute.GetType().FullName}"))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
@@ -198,11 +205,13 @@ public static class ResponseCachePolicy
                     // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
-                    var declaringType = DeclaringTypeOf(method, matches);
+                    // クラス側と同じ理由で、たどる条件をこの属性の型まで絞る
+                    var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // 同じ宣言を派生の数だけ返さないよう、シグネチャまで含めて記録する
-                    if (seen.Add($"method:{declaredOn}({method.ToString()})"))
+                    // 同じ宣言を派生の数だけ返さないよう、シグネチャと<b>属性の型</b>まで含めて記録する
+                    // （属性の型を落とすとクラス側とまったく同じ fail-open になる）
+                    if (seen.Add($"method:{declaredOn}({method}):{attribute.GetType().FullName}"))
                     {
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
@@ -211,6 +220,24 @@ public static class ResponseCachePolicy
             }
         }
     }
+
+    /// <summary>
+    /// 「拾う条件を満たし、かつ<b>この属性と同じ型</b>」という条件を作る。
+    /// </summary>
+    /// <remarks>
+    /// <b>宣言元をたどるときは、種類まで絞らないと別の属性で止まる。</b>
+    /// <c>matches</c> が 2 種類以上に一致する述語（3 つ目のキャッシュ指示を見るように
+    /// なるときの自然な形）だと、基底が A・派生が B を宣言している場合に
+    /// <c>DeclaringTypeOf</c> は A についても「派生が宣言している」と答える ——
+    /// 名指しされたファイルを開いても A が無く、直すべき 1 か所が出てこない。
+    /// これは基底へ引き上げた宣言で一度直した形そのものなので、同じ轍を踏まない。
+    /// </remarks>
+    /// <param name="attribute">宣言元をたどりたい属性。</param>
+    /// <param name="matches">呼び出し側が渡した、拾う属性かどうかの条件。</param>
+    /// <returns>同じ型の属性だけを通す条件。</returns>
+    private static Func<object, bool> SameKindAs(object attribute, Func<object, bool> matches) =>
+        // 元の条件を満たし、かつ型が同じものだけを「同じ宣言」と見なす
+        candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
