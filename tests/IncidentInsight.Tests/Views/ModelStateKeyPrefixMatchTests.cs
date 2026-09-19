@@ -696,12 +696,9 @@ public class ModelStateKeyPrefixMatchTests
         if (CSharpLiteral.QuoteRunLength(source, quoteIndex) >= CSharpLiteral.RawStringFenceLength)
             // 生のフェンスなら補間文字列としては扱わない(上の説明のとおり)
             return false;
-        // 引用符の手前にある $ と @ の並びを遡って見る
-        for (var k = quoteIndex - 1; k >= 0 && (source[k] == '$' || source[k] == '@'); k--)
-            // $ が含まれていれば補間文字列
-            if (source[k] == '$') return true;
-        // $ が無ければふつうの（または逐語的な）文字列
-        return false;
+        // 接頭辞の遡り方は共有の規則を使う（IsVerbatim と同じ遡り方でなければ、
+        // @$" の扱いが「逐語的か」と「補間か」で 2 つの答えに割れる。§6 DRY）
+        return CSharpLiteral.IsInterpolated(source, quoteIndex);
     }
 
     /// <summary>

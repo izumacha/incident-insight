@@ -79,6 +79,52 @@ public class CSharpLiteralTests
         Assert.True(
             end > source.IndexOf('\n'),
             "改行の手前で打ち切っています。逐語的リテラルと生文字列は改行をまたげます。");
+
+        // <b>返すのは閉じ引用符「の」位置（その次ではない）。</b> 利用側はこの規約に
+        // 合わせて +1 したり、そのまま位置として使ったりしている ——1 つずれると
+        // 片方はリテラルの外を 1 文字飛ばし、もう片方は閉じ引用符を潰す。
+        // ここを押さえないと、その off-by-one がこのファイルでは緑のまま通る
+        Assert.Equal('"', source[end]);
+        Assert.Equal(source.LastIndexOf('"'), end);
+    }
+
+    // CR だけで改行するソースでも、またげないリテラルを打ち切ること。
+    //
+    // <b>\n だけを見ると効かない。</b> CRLF は \r の次が \n なので \n だけでも止まるが、
+    // CR だけのファイルは止まらず、<b>次の行の引用符を終端として拾う</b>（実測）。
+    // 姉妹（文字リテラル側）も同じなので、両方を押さえる。
+    [Fact]
+    public void FindLiteralEnd_StopsAtALoneCarriageReturn()
+    {
+        // 文字列リテラル側
+        Assert.Equal(-1, CSharpLiteral.FindStringLiteralEnd("a = \"x\ry = \"z\";", 4));
+
+        // 文字リテラル側（片方だけ直す変更を防ぐ）
+        Assert.Equal(-1, CSharpLiteral.FindCharLiteralEnd("a = 'x\ry = 'z';", 4));
+    }
+
+    // 接頭辞の遡り方が、「逐語的か」と「補間か」で同じであること。
+    //
+    // <b>@$" は両方に当てはまる。</b> 遡り方を片方だけ直すと、この綴りの扱いが
+    // 2 つの答えに割れ、エスケープの規則をどちらで読むかがずれる。
+    [Theory]
+    // どちらでもない
+    [InlineData("x = \"a\"", 4, false, false)]
+    // 逐語的だけ
+    [InlineData("x = @\"a\"", 5, true, false)]
+    // 補間だけ
+    [InlineData("x = $\"a\"", 5, false, true)]
+    // 両方（順序を変えても同じ）
+    [InlineData("x = @$\"a\"", 6, true, true)]
+    [InlineData("x = $@\"a\"", 6, true, true)]
+    public void IsVerbatimAndIsInterpolated_ReadTheSamePrefix(
+        string source, int quoteIndex, bool expectedVerbatim, bool expectedInterpolated)
+    {
+        // 逐語的かの判定
+        Assert.Equal(expectedVerbatim, CSharpLiteral.IsVerbatim(source, quoteIndex));
+
+        // 補間かの判定（同じ接頭辞を同じ遡り方で読む）
+        Assert.Equal(expectedInterpolated, CSharpLiteral.IsInterpolated(source, quoteIndex));
     }
 
     // 接頭辞を遡って逐語的かを判定すること（直前 1 文字だけ見る版に戻さない）。

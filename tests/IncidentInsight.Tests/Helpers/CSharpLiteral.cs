@@ -42,7 +42,7 @@ public static class CSharpLiteral
         for (var i = quoteIndex + 1; i < source.Length; i++)
         {
             // 文字リテラルは改行をまたがないので、改行に出会ったら誤検出として打ち切る
-            if (source[i] == '\n') return -1;
+            if (IsLineBreak(source[i])) return -1;
             // エスケープなら次の 1 文字を読み飛ばす
             if (source[i] == '\\')
             {
@@ -50,7 +50,7 @@ public static class CSharpLiteral
                 // 行末が \ のときに改行そのものが飛ばされて上の打ち切りが一度も効かず、
                 // <b>次の行のアポストロフィを終端として拾う</b>（実測）。
                 // 姉妹の FindStringLiteralEnd と同じ手当て ——片方だけ直さない
-                if (i + 1 < source.Length && source[i + 1] == '\n') return -1;
+                if (i + 1 < source.Length && IsLineBreak(source[i + 1])) return -1;
                 // エスケープされた 1 文字を飛ばす
                 i++;
                 // 続きを見る
@@ -80,16 +80,63 @@ public static class CSharpLiteral
     /// <param name="source">走査するソース。</param>
     /// <param name="quoteIndex">開きの二重引用符の位置。</param>
     /// <returns>逐語的リテラルの開きなら <c>true</c>。</returns>
-    public static bool IsVerbatim(string source, int quoteIndex)
+    public static bool IsVerbatim(string source, int quoteIndex) =>
+        // 接頭辞に @ が含まれていれば逐語的リテラル（遡り方は PrefixContains が持つ）
+        PrefixContains(source, quoteIndex, '@');
+
+    /// <summary>
+    /// その引用符が<b>補間文字列</b>（<c>$"</c> ・ <c>@$"</c> ・ <c>$@"</c>）の開きかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b><see cref="IsVerbatim"/> と同じ遡り方で答える必要がある。</b>
+    /// 「逐語的か」と「補間か」は <c>@$"…"</c> について<b>同時に成り立つ</b>ので、
+    /// 片方だけ遡り方を直すと <c>@$"…"</c> の扱いが 2 つの答えに割れ、
+    /// エスケープの規則をどちらで読むかがずれる。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <returns>補間文字列の開きなら <c>true</c>。</returns>
+    public static bool IsInterpolated(string source, int quoteIndex) =>
+        // 接頭辞に $ が含まれていれば補間文字列
+        PrefixContains(source, quoteIndex, '$');
+
+    /// <summary>
+    /// 引用符の手前にある接頭辞（<c>@</c> と <c>$</c> の並び）に、その印があるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>直前 1 文字だけを見ないこと。</b> <c>@$"</c> / <c>$@"</c> のように 2 つ並ぶので、
+    /// 直前 1 文字だけ見る版は <c>@$"</c> を逐語的と判定できず、バックスラッシュを
+    /// エスケープ扱いして<b>末尾のバックスラッシュで閉じ引用符を飲み込んで暴走した</b>。
+    /// </remarks>
+    /// <param name="source">走査するソース。</param>
+    /// <param name="quoteIndex">開きの二重引用符の位置。</param>
+    /// <param name="marker">探す印（<c>@</c> か <c>$</c>）。</param>
+    /// <returns>接頭辞にその印があれば <c>true</c>。</returns>
+    public static bool PrefixContains(string source, int quoteIndex, char marker)
     {
         // 接頭辞（@ と $ の並び）を遡って見る
         for (var k = quoteIndex - 1; k >= 0 && (source[k] == '@' || source[k] == '$'); k--)
-            // @ が含まれていれば逐語的リテラル
-            if (source[k] == '@') return true;
+            // 探している印が見つかった
+            if (source[k] == marker) return true;
 
-        // 接頭辞に @ が無いので逐語的ではない
+        // 接頭辞にその印は無い
         return false;
     }
+
+    /// <summary>
+    /// その文字が行の終わりを表すかを返す（<c>\n</c> と、単独の <c>\r</c> の両方）。
+    /// </summary>
+    /// <remarks>
+    /// <b><c>\n</c> だけを見てはいけない。</b> CR だけで改行するファイルでは打ち切りが
+    /// 効かず、またげないリテラルが<b>次の行の引用符を終端として拾う</b>
+    /// （実測で確認）。CRLF は <c>\r</c> の次が <c>\n</c> なので <c>\n</c> だけでも
+    /// 止まるが、CR だけのファイルは止まらない。
+    /// </remarks>
+    /// <param name="c">調べる文字。</param>
+    /// <returns>行の終わりなら <c>true</c>。</returns>
+    private static bool IsLineBreak(char c) =>
+        // 改行と復帰のどちらも行の終わりとして扱う
+        c is '\n' or '\r';
 
     /// <summary>
     /// その位置から続く二重引用符の<b>連なりの長さ</b>を返す。
@@ -180,7 +227,7 @@ public static class CSharpLiteral
             // 丸ごとリテラルの中身として潰される（ModelState 側は潰した範囲を空白で埋めるので、
             // そこにある StartsWith( の検査漏れが報告されなくなる＝静かな fail-open）
             // 生文字列は上で処理済みなので、ここでまたげるのは逐語的リテラルだけ
-            if (!isVerbatim && source[i] == '\n') return -1;
+            if (!isVerbatim && IsLineBreak(source[i])) return -1;
             // 通常のリテラルだけバックスラッシュをエスケープとして扱う
             if (!isVerbatim && source[i] == '\\')
             {
@@ -188,7 +235,7 @@ public static class CSharpLiteral
                 // 次の 1 文字を無条件に飛ばすと<b>改行そのものが飛ばされて一度も効かない</b>
                 // （実測: 行末が \ のリテラルで、次の行の引用符を終端として拾った）
                 // ここは !isVerbatim の中なので、またげないことは確定している
-                if (i + 1 < source.Length && source[i + 1] == '\n') return -1;
+                if (i + 1 < source.Length && IsLineBreak(source[i + 1])) return -1;
                 // エスケープされた 1 文字を飛ばす
                 i++;
                 // 続きを見る

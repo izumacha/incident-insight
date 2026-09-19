@@ -181,6 +181,11 @@ public static class ResponseCachePolicy
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
                 }
+                else
+                {
+                    // 畳んだので、それが「失って良い重複」だったことを確かめる
+                    EnsureNothingWasLost(attribute);
+                }
             }
 
             // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
@@ -210,6 +215,11 @@ public static class ResponseCachePolicy
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
                     }
+                    else
+                    {
+                        // クラス側と同じ理由で、畳んだ 1 件が重複だったことを確かめる
+                        EnsureNothingWasLost(attribute);
+                    }
                 }
             }
         }
@@ -238,8 +248,7 @@ public static class ResponseCachePolicy
     /// 「登録するだけで黙らせられる口」になった実例を記録している）。</para>
     ///
     /// <para><b>代わりに fail-closed にしてある。</b> 黙って落とすと静かな fail-open になるので、
-    /// <see cref="EnsureDedupKeyCanSeparate"/> が「複数付けられる属性」を見つけた時点で
-    /// <b>落とす</b>。実際にそういう属性を足す人は、そこで必ず一度手を止めることになる
+    /// <see cref="EnsureNothingWasLost"/> が<b>実際に畳んで 1 件失った時点で落とす</b>。実際にそういう属性を足す人は、そこで必ず一度手を止めることになる
     /// （§9 fail-closed: 不明なら拒否）。</para>
     /// </remarks>
     /// <param name="site">宣言元を表すキーの前半（クラス側 / アクション側で綴りが違う）。</param>
@@ -247,21 +256,24 @@ public static class ResponseCachePolicy
     /// <returns>重複除去に使うキー。</returns>
     private static string DeclarationKey(string site, object attribute)
     {
-        // 複数付けられる属性は、この畳み方では 2 個目以降を落としてしまうので先に落とす
-        EnsureDedupKeyCanSeparate(attribute);
-
         // 宣言元と属性の種類でキーを作る
         return $"{site}:{attribute.GetType().FullName}";
     }
 
     /// <summary>
-    /// その属性が「同じ宣言元へ複数付けられる」種類なら、走査を<b>落とす</b>。
+    /// 畳んだ 1 件が「失って良い重複」だったことを確かめ、そうでなければ<b>落とす</b>。
     /// </summary>
     /// <remarks>
     /// <b>黙って畳まないための門番。</b> <see cref="DeclarationKey"/> は (宣言元, 種類) で
     /// 畳むので、<c>AllowMultiple = true</c> の属性が同じ宣言元に 2 つ付いていると
     /// 2 個目以降が消える。許す側の宣言がたまたま 2 個目だと<b>検査は緑のまま出荷される</b>ので、
-    /// 消す代わりにここで止める。<b>直し方は「キーを位置まで含む形にする」だが、
+    /// 消す代わりにここで止める。
+    ///
+    /// <para><b>「その属性を見かけたら」ではなく「実際に畳んだら」で鳴らす。</b>
+    /// 前者だと、複数付けられる属性が<b>1 つしか付いていなくても</b>走査全体が落ち、
+    /// アセンブリ中の本物の違反が 1 件も報告されなくなる（しかも失敗文言は違反ではなく
+    /// キーの話をする）。畳んだ瞬間＝実際に 1 件失った瞬間に鳴らせば、
+    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para><b>直し方は「キーを位置まで含む形にする」だが、
     /// それだけでは足りない</b> ——宣言元をたどる
     /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
     /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
@@ -269,7 +281,7 @@ public static class ResponseCachePolicy
     /// </remarks>
     /// <param name="attribute">確かめる属性。</param>
     /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
-    private static void EnsureDedupKeyCanSeparate(object attribute)
+    private static void EnsureNothingWasLost(object attribute)
     {
         // その属性の型が「同じ対象へ複数付けてよい」と名乗っているかを読む
         var allowsMultiple = attribute
@@ -277,10 +289,11 @@ public static class ResponseCachePolicy
             .GetCustomAttribute<AttributeUsageAttribute>(inherit: true)?
             .AllowMultiple ?? false;
 
-        // 複数付けられないなら、(宣言元, 種類) で畳んで取りこぼしは起きない
+        // 複数付けられない属性が同じキーで重なるのは、基底の 1 つの宣言を
+        // 派生の数だけ見ているだけ ——畳むのが正しいので、何も失われていない
         if (!allowsMultiple) return;
 
-        // 取りこぼしうる形なので、黙って畳まずに落とす(§9 fail-closed)
+        // 複数付けられる属性が畳まれた＝2 個目以降が違反の一覧へ到達しないので落とす(§9 fail-closed)
         throw new NotSupportedException(
             $"{attribute.GetType().FullName} は AllowMultiple = true です。"
                 + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "

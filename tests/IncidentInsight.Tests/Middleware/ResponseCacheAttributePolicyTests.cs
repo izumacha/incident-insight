@@ -1436,9 +1436,13 @@ public class ResponseCacheAttributePolicyTests
                 a => a is ResponseCacheAttribute or SecondKindProbeAttribute)
             .ToList();
 
-        // クラス側の宣言だけを取り出す（アクション側は名前が ".Probe" で終わる）
+        // クラス側の宣言は、宣言元の表示名が<b>型の完全修飾名そのもの</b>になる。
+        // <b>".Probe で終わるか" で切らない</b> ——合成型の名前が Probe で終わるように
+        // 変わっただけで、クラス側の宣言がアクション側として数えられ、
+        // 「本物の退行なのに緑」にも「正しいのに赤」にも振れる
+        var classLevelName = typeof(TwoKindsProbeController).FullName;
         var classLevel = declarations
-            .Where(d => !d.DeclaredOn.EndsWith(".Probe", StringComparison.Ordinal))
+            .Where(d => string.Equals(d.DeclaredOn, classLevelName, StringComparison.Ordinal))
             .ToList();
 
         // クラス側の 1 種類目（キーが宣言元だけ＝型も通し番号も無い版では、
@@ -1447,9 +1451,9 @@ public class ResponseCacheAttributePolicyTests
         // クラス側の 2 種類目
         Assert.Single(classLevel, d => d.Attribute is SecondKindProbeAttribute);
 
-        // アクション側の宣言だけを取り出す
+        // アクション側の宣言は、その名前にアクション名が続く
         var actionLevel = declarations
-            .Where(d => d.DeclaredOn.EndsWith(".Probe", StringComparison.Ordinal))
+            .Where(d => !string.Equals(d.DeclaredOn, classLevelName, StringComparison.Ordinal))
             .ToList();
 
         // アクション側の 1 種類目（キーがシグネチャだけだと、こちらも 1 件に畳まれる）
@@ -1579,6 +1583,30 @@ public class ResponseCacheAttributePolicyTests
 
         // 直し方まで案内していること（キーだけ直して DeclaringTypeOf を放置させない）
         Assert.Contains("DeclaringTypeOf", error.Message, StringComparison.Ordinal);
+    }
+
+    // 複数付けられる属性が<b>1 つしか付いていない</b>ときは、走査を止めないこと。
+    //
+    // <b>門番は「その属性を見かけたら」ではなく「実際に畳んだら」鳴らす。</b>
+    // 前者だと、複数付けられる指示を 1 つ足しただけでアセンブリ全体の走査が落ち、
+    // <b>本物の違反が 1 件も報告されなくなる</b>（しかも失敗文言は違反ではなくキーの話をする）。
+    // fail-closed は保ったまま、正しくできる仕事は止めない。
+    [Fact]
+    public void AttributeScan_StillWorks_WhenARepeatableAttributeAppearsOnlyOnce()
+    {
+        // 複数付けられる属性が 1 つだけ付いた合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SingleRepeatableProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 落ちずに 1 件返ること
+        var declared = Assert.Single(declarations);
+
+        // 中身も読めること
+        Assert.Equal("only", ((RepeatableProbeAttribute)declared.Attribute).Policy);
     }
 
     // 門番が<b>アクション側でも</b>効いていること。
@@ -1856,6 +1884,10 @@ public class ResponseCacheAttributePolicyTests
     [RepeatableProbe("a")]
     [RepeatableProbe("b")]
     private sealed class RepeatedKindProbeController : ControllerBase;
+
+    /// <summary>複数付けられる属性を<b>1 つだけ</b>宣言する合成コントローラ。</summary>
+    [RepeatableProbe("only")]
+    private sealed class SingleRepeatableProbeController : ControllerBase;
 
     /// <summary>同じ種類の属性を<b>アクション側</b>へ 2 つ宣言する合成コントローラ。</summary>
     private sealed class RepeatedKindOnActionProbeController : ControllerBase
