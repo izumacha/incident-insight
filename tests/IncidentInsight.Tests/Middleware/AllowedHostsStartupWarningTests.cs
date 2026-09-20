@@ -210,6 +210,30 @@ public class AllowedHostsStartupWarningTests
         Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(allowedHosts), warning);
     }
 
+    // <b>設定値と同じ理由で、環境名も生のままでは載せない（レビュー指摘）。</b>
+    // ASPNETCORE_ENVIRONMENT は AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、
+    // 同じテンプレート展開やコピー & ペーストで改行が紛れうる。片方だけ可視化しても、
+    // もう片方が 1 本の警告を複数レコードへ割る（issue #258 が塞いだはずの穴が残る）。
+    [Fact]
+    public void ControlCharactersInTheEnvironmentName_DoNotSplitTheWarningAcrossLogRecords()
+    {
+        // 改行を含む環境名で、1 本目の警告が出る設定（未設定＝全許可）のまま起動する
+        const string environmentName = "Staging\r\nINJECTED";
+
+        // その環境名で起動する
+        using var fixture = new WarningCapturingFixture("*", environmentName);
+
+        // 1 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 警告の文面に改行が 1 つも残っていないこと
+        Assert.DoesNotContain('\r', warning);
+        Assert.DoesNotContain('\n', warning);
+
+        // 環境名は（可視化された形で）載ること ——どの環境の話かが読めなくならないように
+        Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
+    }
+
     /// <summary>
     /// <c>Staging</c> としてアプリを起動し、起動中に出た警告を溜めておくフィクスチャ。
     /// </summary>
@@ -224,7 +248,7 @@ public class AllowedHostsStartupWarningTests
 
         /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
         /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
-        public WarningCapturingFixture(string allowedHosts)
+        public WarningCapturingFixture(string allowedHosts, string environmentName = "Staging")
             // <b>溜め込み先はインスタンスごとに作り、ここから配る。</b>
             // 基底のコンストラクタ引数はインスタンスのフィールドを参照できないので、
             // 以前は static なキューを共有していた ——ところがホストは Dispose() まで
@@ -234,19 +258,22 @@ public class AllowedHostsStartupWarningTests
             // Assert.Empty(...) のような検査を足した瞬間に<b>非決定的に落ち、
             // しかも無関係なテストを名指しする</b>。private なコンストラクタへ
             // 1 度渡せば、共有そのものが無くなる
-            : this(allowedHosts, new ConcurrentQueue<string>())
+            : this(allowedHosts, environmentName, new ConcurrentQueue<string>())
         {
         }
 
         /// <summary>溜め込み先を受け取って起動する（共有しないための経路）。</summary>
         /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
+        /// <param name="environmentName">起動する環境名（既定は <c>Staging</c>）。</param>
         /// <param name="captured">このインスタンス専用の溜め込み先。</param>
-        private WarningCapturingFixture(string allowedHosts, ConcurrentQueue<string> captured)
+        private WarningCapturingFixture(
+            string allowedHosts, string environmentName, ConcurrentQueue<string> captured)
             : base(
                 "ii-hostwarn",
                 new Dictionary<string, string?> { ["AllowedHosts"] = allowedHosts },
-                // 警告の分岐（!IsDevelopment()）へ入るために Staging を使う
-                "Staging",
+                // 警告の分岐（!IsDevelopment()）へ入るために既定は Staging。
+                // 環境名そのものを検証したいときだけ、呼び出し側が差し替える
+                environmentName,
                 // 起動前に、溜め込むだけのプロバイダを登録する
                 logging => logging.AddProvider(new CapturingLoggerProvider(captured)))
         {

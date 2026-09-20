@@ -379,8 +379,11 @@ if (!app.Environment.IsDevelopment())
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
             "behind a reverse proxy (issue #64).",
             // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
-            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える
-            app.Environment.EnvironmentName,
+            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える。
+            // <b>こちらも生のままでは載せない。</b> 環境名は ASPNETCORE_ENVIRONMENT 由来＝
+            // AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、同じ
+            // テンプレート展開やコピー & ペーストで改行が紛れうる(issue #258)
+            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
             // 値を載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
             // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)。
             // <b>生のままでは載せない。</b> UnparsableEntry という分類がある時点でこの値には
@@ -453,8 +456,8 @@ if (!app.Environment.IsDevelopment())
             "in the {Environment} environment: {NeverMatchingEntries}. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
-            // どの環境の話かを添える(上の警告と同じ理由)
-            app.Environment.EnvironmentName,
+            // どの環境の話かを添える(可視化を通す理由も上の警告と同じ)
+            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
             // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
             // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない。
             // 囲み方は AllowedHostsPolicy が持つ ——ここは if (!IsDevelopment()) の中で
