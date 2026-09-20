@@ -901,21 +901,13 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("        Response.Headers[\"cache-control\"] = \"public\";", true)]
     // すべて大文字の綴りも拾う
     [InlineData("        Response.Headers[\"CACHE-CONTROL\"] = \"public\";", true)]
-    // 日本語コメントで規則を説明する行は拾わない(§5 が求める書き方で赤くしない)
-    [InlineData("    // エラーページ。Cache-Control は属性側で no-store を宣言する", false)]
-    // XML ドキュメントコメントも同じ扱い
-    [InlineData("    /// <c>Cache-Control</c> をここでは書かない。", false)]
     // Razor のコメントも同じ扱い
     [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
     // <b>同じ行で閉じたコメントの後ろの実コードは拾う</b>(綴りを変えただけの抜け道にしない)
     [InlineData("    @* メモ *@ @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
-    // C# のブロックコメントを閉じた後ろの実コードも同じく拾う
-    [InlineData("    /* メモ */ Response.Headers.CacheControl = \"public\";", true)]
-    // 行コメントの<b>前</b>に実コードがある行も拾う
-    [InlineData("        Response.Headers.CacheControl = \"public\"; // 速くするため", true)]
-    // 文字列の中の "/*" でコメントが始まったと読まない(実測でファイル全体が盲になった形)
-    [InlineData("        private const string GlobPattern = \"Models/*.cs\";", false)]
-    // URL の "//" を行コメントと読まない(その後ろの実コードを取りこぼさないため)
+    // <b>マークアップ中の裸の URL の "//" を行コメントと読まない。</b>
+    // ビューは @* *@ しかコメントとして扱わないので、この形はそもそも起きない
+    // (以前は // を行コメントとして扱っており、実測でこの行が素通りした)
     [InlineData("    <a href=\"https://example.com\">x</a> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // 文字列の中の "@*" でもコメントが始まったと読まない
     [InlineData("        private const string Odd = \"a@*b\";", false)]
@@ -949,6 +941,39 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(expected, MentionsCacheControl(line));
     }
 
+    // C# の 1 行では、C# のコメントだけがコメントとして落ちること。
+    //
+    // <b>言語ごとに走査が分かれたので、検査も分ける。</b> .cs は字句解析が読むので
+    // // ・ /* */ ・ /// が正しくコメントになる。ビュー側の [Theory] へこれらの行を
+    // 混ぜると、<b>ビューでは扱わない綴り</b>を「ビューの規則」として固定することになり、
+    // どちらの規則を直しても片方の答えが黙って変わる。
+    [Theory]
+    // 日本語コメントで規則を説明する行は拾わない(§5 が求める書き方で赤くしない)
+    [InlineData("    // エラーページ。Cache-Control は属性側で no-store を宣言する", false)]
+    // XML ドキュメントコメントも同じ扱い
+    [InlineData("    /// <c>Cache-Control</c> をここでは書かない。", false)]
+    // 閉じたブロックコメントの後ろの実コードは拾う(綴りを変えただけの抜け道にしない)
+    [InlineData("    /* メモ */ Response.Headers.CacheControl = \"public\";", true)]
+    // 行コメントの<b>前</b>に実コードがある行も拾う
+    [InlineData("        Response.Headers.CacheControl = \"public\"; // 速くするため", true)]
+    // 文字列の中の "/*" でコメントが始まったと読まない(実測でファイル全体が盲になった形)
+    [InlineData("        private const string GlobPattern = \"Models/*.cs\";", false)]
+    // <b>issue #249 の形</b>: return の後ろのリテラルに // があっても、行の残りが落ちない
+    [InlineData("        string Url() { return \"https://example.test\"; } void F() { Response.Headers.CacheControl = \"public\"; }", true)]
+    // ふつうの書き込みは今までどおり拾う
+    [InlineData("        Response.Headers[\"Cache-Control\"] = \"no-store\";", true)]
+    // 無関係な行は拾わない
+    [InlineData("        var incidents = await _db.Incidents.ToListAsync();", false)]
+    public void CSharpLine_MentionsCacheControl_MatchesOnlyCacheControlWrites(string line, bool expected)
+    {
+        // C# の経路(字句解析)を通して判定する
+        var scanned = CSharpCommentScanner.CodeLines(line);
+        // 1 行しか渡していないので、実コードもちょうど 1 行
+        var code = Assert.Single(scanned).Code;
+        // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
+        Assert.Equal(expected, CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase)));
+    }
+
     // 複数行にまたがるコメントの中身を、実コードと取り違えないこと。
     //
     // <b>なぜ行単位の検査では足りないのか。</b> @*…*@ も /*…*/ も複数行にまたがれる。
@@ -964,11 +989,16 @@ public class ResponseCacheAttributePolicyTests
             "  この画面は Cache-Control をミドルウェアの既定に任せる",
             "*@"));
 
-        // C# の複数行コメントも同じ
-        Assert.Empty(ScanLines(
-            "/*",
-            "  Cache-Control はここでは書かない",
-            "*/"));
+        // <b>C# のブロックコメントはビューでは扱わない。</b> Razor では文字列を最後まで
+        // 追えないので、/* をコメントの開始として読むと表示テキスト(incident_/*.csv)が
+        // 閉じないコメントを開き、正しいビューで走査が落ちる(実測)。綴りが一意な
+        // @* *@ だけを扱うので、この 3 行は実コードとして読まれる
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "/*",
+                "  Cache-Control はここでは書かない",
+                "*/"));
 
         // コメントが閉じたあとの実コードは、行をまたいでいても拾う
         Assert.Equal(
@@ -978,13 +1008,13 @@ public class ResponseCacheAttributePolicyTests
                 "  メモ",
                 "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // <b>閉じていないコメントの中で終わったら、黙って拾わないのではなく落ちる。</b>
+        // <b>閉じていない Razor コメントの中で終わったら、黙って拾わないのではなく落ちる。</b>
         // 以前はここで Assert.Empty を期待していたが、それは「以降の行が走査から落ちた」
         // 状態をそのまま正常として受け入れる形だった ——実際にはこの状態は、
         // リテラルの中身をコメントの開始と読み違えたときにも起き、そのとき
         // <b>本物のキャッシュ指示が黙って見逃される</b>(CodeLines の解説が正本)
         Assert.Throws<InvalidOperationException>(() => ScanLines(
-            "/*",
+            "@*",
             "  Response.Headers.CacheControl = \"public\";"));
     }
 
@@ -1182,11 +1212,12 @@ public class ResponseCacheAttributePolicyTests
     public void RazorScan_FailsLoudlyWhenAMisreadLiteralWouldSwallowTheRestOfTheFile()
     {
         // 生文字列の開きを取り違える形(直前が n なので開きと見なされない)。
-        // 以前はここで 5 行目の本物の書き込みが<b>黙って見逃されていた</b>
+        // 中身の @* が Razor コメントを開き、閉じ綴りはリテラルの中にしか無いので、
+        // 以前はここで 6 行目の本物の書き込みが<b>黙って見逃されていた</b>
         var swallowed = Assert.Throws<InvalidOperationException>(() => ScanLines(
             "@functions {",
             "  string Sql() { return \"\"\"",
-            "    SELECT /* inner",
+            "    SELECT @* inner",
             "    \"\"\"; }",
             "}",
             "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }"));
@@ -1197,9 +1228,18 @@ public class ResponseCacheAttributePolicyTests
         // ふつうの文字列リテラルでも同じ形になる(生文字列だけの話ではない)
         Assert.Throws<InvalidOperationException>(() => ScanLines(
             "@functions {",
-            "  string Note() { return \"a /* b\"; }",
+            "  string Note() { return \"a @* b\"; }",
             "}",
             "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // <b>表示テキストの /* で落ちないこと(誤検知側へ倒れていないこと)。</b>
+        // 実測: // と /* をコメントとして扱っていた版では、この行だけで走査が落ち、
+        // しかも「C# のリテラルを書くな」という<b>当てはまらない原因</b>を名指ししていた
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "<p>CSV の命名規則: incident_/*.csv を使います</p>",
+                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
         // <b>正しく閉じているビューは今までどおり通ること</b>(落ちる側へ寄せすぎていないこと)
         Assert.Equal(
@@ -1635,12 +1675,23 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
-            // 行コメントが始まったら、そこから先は読まない
-            if (StartsWithAt(line, i, "//")) break;
-            // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
+            // <b>ビューで扱うコメントは Razor の @* *@ だけ。</b> C# の // と /* */ は扱わない。
+            //
+            // <b>なぜか(両向きの実測)。</b> Razor では文字列を最後まで追えない
+            // (HTML 属性の引用符と地の文の引用符を区別できない)ので、リテラルの外に見える
+            // // や /* をコメントの開始として読むと両方向に壊れる。
+            // <b>見逃す側</b>: マークアップ中の裸の URL(<c>詳しくは https://example.test を参照</c>)を
+            // 行コメントと誤認し、<b>同じ行に書かれたキャッシュ指示が落ちる</b>(実測で素通りした)。
+            // <b>誤検知側</b>: 表示テキストの <c>incident_/*.csv</c> が閉じないブロックコメントを開き、
+            // 下の fail-closed が<b>存在しない原因を名指しして落ちる</b>(実測。直し方も示せない)。
+            // Razor のコメントは綴りが一意なので、@* *@ だけならどちらも起きない。
+            //
+            // <b>姉妹の走査(Views.ModelStateKeyPrefixMatchTests.Neutralize)が同じ判断を
+            // 同じ実測から先に下している</b> ——ビューを読む 2 つの走査で答えが割れないように、
+            // こちらも同じ規則にそろえる(§6 DRY)。代償は「ビューの @{ } の中に書いた
+            // // コメントが実コードとして読まれる」ことだが、倒れる向きは<b>誤検知</b>
+            // (気づける側)で、実測でもビューのコメントに走査対象の綴りを書いている箇所は無い
             if (StartsWithAt(line, i, "@*")) { pendingCloser = "*@"; i += 2; continue; }
-            // C# のブロックコメントも同様
-            if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
 
             // ここまで来た文字は実コードなので貯める
             code.Append(line[i]);
