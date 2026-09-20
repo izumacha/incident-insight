@@ -171,9 +171,14 @@ public abstract class TempDatabaseAppFixture : IDisposable
                 // 接続プールを解放して、ファイルハンドルを手放す
                 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
             }
-            catch (Exception)
+            catch (Exception ex)
             {
-                // 解放できなくても削除は試みる(掴まれたままなら下の catch が受ける)
+                // <b>握り潰さない(§6)。</b> 解放できなくても削除は試みるが、
+                // 黙って捨てると「プロバイダの初期化が壊れている」ような本当の不具合が
+                // 一時ファイルの溜まりとしてしか現れなくなる。後始末の失敗で検証結果を
+                // 赤くはしない代わりに、文脈を付けて標準エラーへ残す
+                Console.Error.WriteLine(
+                    $"[TempDatabaseAppFixture] SQLite の接続プールを解放できませんでした: {ex}");
             }
 
             // 本体と補助ファイルをまとめて消す
