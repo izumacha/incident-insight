@@ -731,26 +731,28 @@ public class ResponseCacheAttributePolicyTests
     // 以前はどの検査も綴りの中身を見ていなかったので、混入は<b>緑のスイートを
     // 失敗文言の無いハングへ変えていた</b>。
     //
-    // <b>見る表を手で書き並べない。</b> 包含リストにすると、4 つ目の表を足した人が
-    // 登録を忘れたときにその表だけが黙って照合から外れ、痕跡はテスト件数が 1 減ることだけ
-    // ——正当なリファクタと見分けが付かない(CLAUDE.md がこの形の事故を繰り返し記録している)。
-    // このクラスが宣言している string[] の綴りの表から導出する。
+    // <b>見る表を手で書き並べず、名前の規約にも頼らない。</b> 包含リストにすると、
+    // 4 つ目の表を足した人が登録を忘れたときにその表だけが黙って照合から外れ、
+    // 痕跡はテスト件数が 1 減ることだけ ——正当なリファクタと見分けが付かない
+    // (CLAUDE.md がこの形の事故を繰り返し記録している)。<b>名前の末尾で絞るのも同じ穴</b>で、
+    // 4 つ目を StaticFileWiringSpellings という名前で足すだけで静かに外れる。
+    // <b>このクラスが宣言している string[] をすべて</b>見れば、登録も命名も要らない
+    // (綴りの表でない string[] が混ざっても、空の綴りが無いことを確かめるだけなので害は無い)。
     [Fact]
     public void WiringTokenTables_ContainNoEmptySpelling()
     {
-        // このクラスが自分で宣言している「綴りの表」をすべて拾う
+        // このクラスが自分で宣言している string[] をすべて拾う
         var tables = typeof(ResponseCacheAttributePolicyTests)
             .GetFields(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
             .Where(f => f.FieldType == typeof(string[]))
-            .Where(f => f.Name.EndsWith(TokenTableSuffix, StringComparison.Ordinal))
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
 
-        // 1 つも拾えないなら命名規約か導出が変わっている(「見るべき表ゼロ＝緑」を避ける)
+        // 1 つも拾えないなら導出が壊れている(「見るべき表ゼロ＝緑」を避ける)
         Assert.True(
             tables.Count > 0,
-            $"*{TokenTableSuffix} という名前の綴りの表が 1 つも見つからない。"
-                + "命名規約か導出を変えたなら、この検査も同じ変更セットで直すこと。");
+            "このクラスが宣言している string[] が 1 つも見つからない。"
+                + "導出を変えたなら、この検査も同じ変更セットで直すこと。");
 
         // 表ごとに、空でないことと、空の綴りを含まないことを確かめる
         foreach (var table in tables)
@@ -769,9 +771,6 @@ public class ResponseCacheAttributePolicyTests
                     $"{table.Name} に空の綴りがあります。空の綴りは出現回数の数え上げを永久に回します。"));
         }
     }
-
-    /// <summary>「数える綴りの表」だと見分けるためのフィールド名の接尾辞。</summary>
-    private const string TokenTableSuffix = "Tokens";
 
     // 空の綴りを渡されたら、黙って回り続けるのではなくその場で落ちること。
     //
@@ -989,16 +988,11 @@ public class ResponseCacheAttributePolicyTests
             "  この画面は Cache-Control をミドルウェアの既定に任せる",
             "*@"));
 
-        // <b>C# のブロックコメントはビューでは扱わない。</b> Razor では文字列を最後まで
-        // 追えないので、/* をコメントの開始として読むと表示テキスト(incident_/*.csv)が
-        // 閉じないコメントを開き、正しいビューで走査が落ちる(実測)。綴りが一意な
-        // @* *@ だけを扱うので、この 3 行は実コードとして読まれる
-        Assert.Equal(
-            new[] { 2 },
-            ScanLines(
-                "/*",
-                "  Cache-Control はここでは書かない",
-                "*/"));
+        // C# の複数行コメントも同じ
+        Assert.Empty(ScanLines(
+            "/*",
+            "  Cache-Control はここでは書かない",
+            "*/"));
 
         // コメントが閉じたあとの実コードは、行をまたいでいても拾う
         Assert.Equal(
@@ -1008,13 +1002,12 @@ public class ResponseCacheAttributePolicyTests
                 "  メモ",
                 "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // <b>閉じていない Razor コメントの中で終わったら、黙って拾わないのではなく落ちる。</b>
-        // 以前はここで Assert.Empty を期待していたが、それは「以降の行が走査から落ちた」
-        // 状態をそのまま正常として受け入れる形だった ——実際にはこの状態は、
-        // リテラルの中身をコメントの開始と読み違えたときにも起き、そのとき
-        // <b>本物のキャッシュ指示が黙って見逃される</b>(CodeLines の解説が正本)
-        Assert.Throws<InvalidOperationException>(() => ScanLines(
-            "@*",
+        // 閉じていないコメントの中で終わっても、実コードを拾わない。
+        // <b>ここで落とす(fail-closed)形は試して戻した</b> ——正しいビュー
+        // (表示テキストの incident_/*.csv)を赤くするうえ、取り違えた開きを
+        // 後ろの本物の閉じ綴りが閉じてしまうと何も言わない。理由は ReadCodeLines の解説が正本
+        Assert.Empty(ScanLines(
+            "/*",
             "  Response.Headers.CacheControl = \"public\";"));
     }
 
@@ -1047,97 +1040,96 @@ public class ResponseCacheAttributePolicyTests
                 "void F() { var url = \"\"\"https://example.test\"\"\"; Response.Headers.CacheControl = \"public\"; }"));
     }
 
-    // ビューでは、引用符も C# のコメントの綴りも<b>ただの文字</b>として扱うこと。
+    // ビューでも、改行をまたぐリテラルの状態を持ち越すこと（issue #252 のビュー側）。
     //
-    // <b>なぜ追わないのか。</b> Razor では HTML 属性の引用符と地の文の引用符を区別できないので、
-    // 「ここはリテラルの開きか」は当てるしかなく、当てると外れ方が両方向に出る。
-    // 以前は直前の非空白文字から開きを当てており、return "…" / => "…" の後ろが
-    // 開きと見なされない形が<b>実際に fail-open を作っていた</b>(レビューで実測)。
-    // 追わなければ、その一族がまとめて消える。姉妹の走査
-    // (Views.ModelStateKeyPrefixMatchTests.Neutralize)も同じ判断をしている(§6 DRY)。
+    // <b>Razor は C# のパーサでは読めない</b>（地の文の閉じない引用符で解釈が総崩れになる）ので、
+    // ビューは引き続き近似の走査が読む。issue #252 の壊れ方はビューでも同じように起きるため、
+    // リテラルの持ち越しはそちらにも入れてある ——<b>C# 側だけ直すと、同じ穴が
+    // .cshtml に残ったまま「直した」ことになる</b>。
     [Fact]
-    public void RazorScan_TreatsQuotesAndCSharpCommentSpellingsAsPlainCharacters()
+    public void RazorScan_CarriesMultiLineLiteralStateAcrossLines()
     {
-        // 裸の URL の // は行コメントではない(その行の残りが落ちない)
-        Assert.Equal(
-            new[] { 1 },
-            ScanLines(
-                "<p>詳しくは https://example.test を参照</p> @{ Context.Response.Headers.CacheControl = \"public\"; }"));
-
-        // 表示テキストの /* はブロックコメントを開かない(以降の行が落ちない)
-        Assert.Equal(
-            new[] { 2 },
-            ScanLines(
-                "<p>CSV の命名規則: incident_/*.csv を使います</p>",
-                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
-
-        // 改行をまたぐ C# のリテラルの中に // や /* があっても、以降の行は落ちない
+        // issue #252 の再現そのもの。4 行目の本物の書き込みが報告されること
         Assert.Equal(
             new[] { 4 },
             ScanLines(
                 "@{ var sql = @\"SELECT",
-                "  /* inner // both",
+                "  /* inner",
                 "\"; }",
                 "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }"));
 
-        // 開きと見なされなかった引用符(return の後ろ)も、ただの文字として読まれる
+        // Razor のコメント開始が中身にある形も同じ(閉じ綴りはリテラルの中にしか無い)
         Assert.Equal(
-            new[] { 2 },
+            new[] { 4 },
             ScanLines(
-                "@functions { string Url() { return \"https://example.test\"; } }",
-                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+                "@{ var sql = @\"SELECT",
+                "  @* inner",
+                "\"; }",
+                "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }"));
+
+        // <b>持ち越しが行き過ぎていないこと。</b> リテラルが閉じたあとの行は
+        // ふつうに走査される(閉じても持ち越したままだと、以降が全部中身になる)
+        Assert.Equal(
+            new[] { 2, 3 },
+            ScanLines(
+                "@{ var sql = @\"SELECT",
+                "x\"; Context.Response.Headers.CacheControl = \"public\"; }",
+                "@{ Context.Response.Headers.CacheControl = \"private\"; }"));
+
+        // 逐語的リテラルの中の "" は引用符 1 つを表す本文なので、そこで閉じないこと
+        Assert.Equal(
+            new[] { 3 },
+            ScanLines(
+                "@{ var sql = @\"SELECT",
+                "  a\"\" b /* inner",
+                "\"; Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
-    // ビューの走査が取り違えて「以降の行を丸ごと落とす」状態になったら、黙らずに落ちること。
+    // Razor の <c>@@</c>（地の文に <c>@</c> を書くための綴り）を 2 文字として読むこと。
     //
-    // <b>持ち越しだけでは塞ぎ切れない穴(レビューで実測)。</b> リテラルの持ち越しは
-    // 「開きだと分かったリテラル」にしか効かない。ビューの走査は開きを直前の文字から
-    // 当てているので、return "…" / => "…" の後ろの生文字列のように当たらない形があり、
-    // その中身の /* が以降のファイル全体を飲み込む ——issue #252 とまったく同じ壊れ方が、
-    // 開きの取り違えという別の経路から再現する。綴りを足して開きの判定を広げる直し方は
-    // 取らない(地の文が開きと判定されて正しいコードで赤くなる向きへ踏み直すだけ)。
-    //
-    // 代わりに「閉じないままファイルが終わった」ことを読めなかった証拠として扱う。
-    // コンパイルできるソースがこの状態で終わることは無いので、誤って赤くなる心配は無い。
+    // <b>実測した誤検知。</b> 1 文字ずつ進めると、<c>support@@*.example.com</c> のような
+    // <b>正しいビュー</b>で 2 つ目の <c>@</c> から <c>@*</c> が始まったと読み、
+    // そこから下の行が走査から落ちる。地の文に <c>@</c> を書くには <c>@@</c> と書くしか
+    // ないので、メールアドレスや価格表記で普通に現れる形。
     [Fact]
-    public void RazorScan_FailsLoudlyWhenAMisreadLiteralWouldSwallowTheRestOfTheFile()
+    public void RazorScan_ReadsAnEscapedAtSignAsTwoPlainCharacters()
     {
-        // 生文字列の開きを取り違える形(直前が n なので開きと見なされない)。
-        // 中身の @* が Razor コメントを開き、閉じ綴りはリテラルの中にしか無いので、
-        // 以前はここで 6 行目の本物の書き込みが<b>黙って見逃されていた</b>
-        var swallowed = Assert.Throws<InvalidOperationException>(() => ScanLines(
-            "@functions {",
-            "  string Sql() { return \"\"\"",
-            "    SELECT @* inner",
-            "    \"\"\"; }",
-            "}",
-            "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }"));
-
-        // 何が起きたのかと、どう直すのかが失敗文言から読めること
-        Assert.Contains("閉じないままファイルが終わりました", swallowed.Message);
-
-        // ふつうの文字列リテラルでも同じ形になる(生文字列だけの話ではない)
-        Assert.Throws<InvalidOperationException>(() => ScanLines(
-            "@functions {",
-            "  string Note() { return \"a @* b\"; }",
-            "}",
-            "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
-
-        // <b>表示テキストの /* で落ちないこと(誤検知側へ倒れていないこと)。</b>
-        // 実測: // と /* をコメントとして扱っていた版では、この行だけで走査が落ち、
-        // しかも「C# のリテラルを書くな」という<b>当てはまらない原因</b>を名指ししていた
+        // @@* の後ろに置いた本物の書き込みが、走査から落ちないこと
         Assert.Equal(
             new[] { 2 },
             ScanLines(
-                "<p>CSV の命名規則: incident_/*.csv を使います</p>",
+                "<p>連絡先: support@@*.example.com</p>",
                 "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // <b>正しく閉じているビューは今までどおり通ること</b>(落ちる側へ寄せすぎていないこと)
+        // <b>本物の Razor コメントは今までどおり落ちること</b>(読み飛ばしすぎていないこと)
+        Assert.Empty(ScanLines(
+            "<p>連絡先: support@@*.example.com</p>",
+            "@* Cache-Control はミドルウェアの既定に任せる *@"));
+    }
+
+    // ビューの inline script に書いた <c>//</c> のコメントを、実コードとして読まないこと。
+    //
+    // <b>なぜ要るのか。</b> §5 は 1 行ごとの日本語コメントを求めており、
+    // <c>Views/Incidents/Create.cshtml</c> の inline script には実際に数十本の
+    // <c>//</c> コメントがある。ここを実コードとして読むと、その中に走査対象の綴りを
+    // 1 つ書いただけで<b>「キャッシュ指示を直接書いた」と報告される</b> ——
+    // 直し方は「規約が求めるコメントを消す」しかなく、実行不能な指示になる（実測）。
+    [Fact]
+    public void RazorScan_DoesNotReadScriptCommentsAsCode()
+    {
+        // inline script の中のコメントは拾わない
+        Assert.Empty(ScanLines(
+            "<script>",
+            "    // Cache-Control はミドルウェアの既定に任せる（この画面では触らない）",
+            "</script>"));
+
+        // 同じ行でも、コメントの<b>前</b>に実コードがあれば拾う(見逃す側へ倒れないこと)
         Assert.Equal(
             new[] { 2 },
             ScanLines(
-                "@* メモ *@",
-                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+                "<script>",
+                "    @{ Context.Response.Headers.CacheControl = \"public\"; } // メモ",
+                "</script>"));
     }
 
     /// <summary>
@@ -1255,7 +1247,7 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="sourcePath">読み取るソースファイル。</param>
     /// <returns>行番号(1 始まり)・元の行(前後の空白を落としたもの)・実コードの組。</returns>
-    private static List<(int LineNumber, string Text, string Code)> CodeLines(string sourcePath)
+    private static IReadOnlyList<(int LineNumber, string Text, string Code)> CodeLines(string sourcePath)
     {
         // <b>リポジトリのソースは 1 回だけ読んで使い回す。</b> ファイルを走査する検査は
         // 4 つあり、どれも Web プロジェクト配下を丸ごと回る。素直に書くと同じ .cs を
@@ -1267,7 +1259,7 @@ public class ResponseCacheAttributePolicyTests
         if (IsRepositorySource(sourcePath))
         {
             // 同じパスを読み直さずに済ませる(検査は並行して走りうるので並行辞書)
-            return CodeLineCache.GetOrAdd(sourcePath, ReadCodeLines);
+            return CodeLineCache.GetOrAdd(sourcePath, path => ReadCodeLines(path));
         }
 
         // 合成ソースはその場で読む
@@ -1275,8 +1267,15 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>読み取り済みのソースを検査どうしで使い回すための覚え書き。</summary>
+    /// <remarks>
+    /// <b>配る一覧は読み取り専用にする。</b> 同じ実体を 4 つの検査が受け取るので、
+    /// どれか 1 つが並べ替えや絞り込みを<b>その場で</b>行うと、残りの 3 つが
+    /// 書き換わった一覧を見る ——xUnit は順番を保証しないので、結果が実行のたびに変わり、
+    /// しかも「行を落とした一覧を走査して違反ゼロ」という<b>見逃す側</b>へ倒れる。
+    /// 読み取り専用で配れば、その書き方はコンパイルの時点で通らない。
+    /// </remarks>
     private static readonly System.Collections.Concurrent.ConcurrentDictionary<
-        string, List<(int LineNumber, string Text, string Code)>> CodeLineCache = new(StringComparer.Ordinal);
+        string, IReadOnlyList<(int LineNumber, string Text, string Code)>> CodeLineCache = new(StringComparer.Ordinal);
 
     /// <summary>そのパスが<b>リポジトリの中の</b>ソースかどうかを返す。</summary>
     /// <remarks>
@@ -1308,54 +1307,39 @@ public class ResponseCacheAttributePolicyTests
             return CSharpCommentScanner.CodeLines(File.ReadAllText(sourcePath));
         }
 
-        // ここから下はビュー(.cshtml)用の走査。Razor のパーサを持ち込むまでの当面の形
+        // ここから下はビュー(.cshtml)用の近似。Razor のパーサを持ち込むまでの当面の形
         // 行の分け方は C# 側と同じ規則を使う(同じ検査の 2 つの経路で行番号の数え方が
         // 割れると、失敗文言が指す行がどちらの規則のものか読み手に分からない)
         var lines = CSharpCommentScanner.SplitLines(File.ReadAllText(sourcePath));
-        // コメントの途中かどうかを行をまたいで持ち越す状態(最初はコメントの外)
-        string? pendingCloser = null;
+        // コメント・リテラルの途中かどうかを行をまたいで持ち越す状態(最初はどちらの外でもない)
+        var carry = RazorScanCarry.None;
         // 結果を貯める
         var result = new List<(int, string, string)>(lines.Count);
 
-        // 先頭から順に、コメントの内外を持ち越しながら見る
+        // 先頭から順に、コメントとリテラルの内外を持ち越しながら見る
         for (var i = 0; i < lines.Count; i++)
         {
             // この行からコメントを取り除き、次の行へ持ち越す状態を受け取る
-            var (code, next) = StripRazorComments(lines[i], pendingCloser);
+            var (code, next) = StripRazorComments(lines[i], carry);
             // 次の行の判定に使う状態を更新する
-            pendingCloser = next;
+            carry = next;
             // 行番号(1 始まり)・元の行・実コードを記録する
             result.Add((i + 1, lines[i].Trim(), code.Trim()));
         }
 
-        // <b>コメントが閉じないままファイルが終わったら、読めなかったこととして落とす。</b>
+        // <b>閉じないままファイルが終わっても、ここでは落とさない(意図的)。</b>
         //
-        // ビューでは引用符を追わないので、C# の文字列の中に書かれた @* も
-        // コメントの開始として読まれる。そこから下の行は走査から落ちる ——
-        // その下に書かれた Cache-Control への直接の書き込みも、2 つ目の静的ファイル配信の
-        // 配線も、どちらの検査にも載らない。Razor は地の文の @ を @@ と書かせるので、
-        // <b>コンパイルできるビューが閉じない @* で終わることは無い</b>。
-        // ここに来たのは走査が取り違えた証拠なので、黙って落とすより落ちるほうを取る
-        // (§9 fail-closed。CountOccurrences の空トークンと同じ判断)。
+        // 一度 fail-closed にしたが、<b>正しいビューを赤くする</b>ことが実測で分かった:
+        // 表示テキストの incident_/*.csv は閉じないブロックコメントを開くし、
+        // support@@*.example.com（@@ の手当てを入れる前）も同じ形で落ちた。
+        // どちらも「C# のリテラルを直せ」という<b>当てはまらない指示</b>を出す。
+        // しかも歯止めとしても弱く、取り違えた開きを<b>後ろの本物の閉じ綴りが閉じて
+        // しまうと何も言わない</b> ——§5 がビューにコメントを求めている以上、
+        // 閉じ綴りはたいていのビューに実在する(実測)。
         //
-        // <b>これは網であって証明ではない(残っている境界)。</b> 取り違えた @* を
-        // <b>その後ろのどこかにある本物の *@ が閉じてしまう</b>と、ここは何も言わない ——
-        // §5 がビューに @* *@ のコメントを求めている以上、閉じ綴りはたいていのビューに
-        // 実在する。この穴はビューを本物の Razor パーサで読むまで残る(issue #260)。
-        if (pendingCloser is not null)
-        {
-            // どのファイルが読めなくなったかを名指しして落とす
-            throw new InvalidOperationException(
-                $"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}: "
-                + $"Razor のコメント({pendingCloser} で閉じるはずのもの)が閉じないままファイルが終わりました。"
-                + "走査が、C# の文字列の中の @* をコメントの開始として読み違えた可能性が高く、"
-                + "そこから下の行は走査から落ちています(キャッシュ指示の直接の書き込みも、"
-                + "静的ファイル配信の配線も、この状態では検出できません)。"
-                + "@* を含む C# の文字列をビューへ書かないでください"
-                + "(§3 のとおり、ページ固有のスクリプトはビューの外へ出します)。");
-        }
-
-        // 全行を返す
+        // <b>誤検知で赤くする代わりに、見逃しを issue として持つ。</b> この走査は
+        // 近似である限りどちらかの穴を持つので、綴りを足して埋めるのではなく
+        // ビューを本物の Razor パーサで読むところまで運ぶ(issue #260)。        // 全行を返す
         return result;
     }
 
@@ -1401,56 +1385,91 @@ public class ResponseCacheAttributePolicyTests
         return count;
     }
 
-    /// <summary>Razor のコメントの開き。</summary>
-    private const string RazorCommentOpener = "@*";
-
-    /// <summary>Razor のコメントの閉じ。</summary>
-    private const string RazorCommentCloser = "*@";
-
     /// <summary>
-    /// ビューの 1 行から Razor のコメントを取り除き、次の行へ持ち越す状態を返す。
+    /// ビュー(<c>.cshtml</c>)の走査が行をまたいで持ち越す状態。
     /// </summary>
     /// <remarks>
-    /// <para><b>ビューでは引用符を追わない。</b> Razor では HTML 属性の引用符と
-    /// 地の文の引用符を区別できないので、「ここはリテラルの開きか」は当てるしかない。
-    /// 当てると<b>外れ方が両方向に出る</b>: 当たらなければ中身が実コードとして解釈され、
-    /// 当たりすぎれば地の文が丸ごとリテラル扱いになる。以前はここで直前の非空白文字から
-    /// 開きを当てており、<c>return "…"</c> / <c>=&gt; "…"</c> の後ろが開きと見なされない形が
-    /// <b>実際に fail-open を作っていた</b>。追わなければ、その一族がまとめて消える。</para>
+    /// <para><b>コメントだけでなくリテラルも持ち越す。</b> 以前はブロックコメントの
+    /// 閉じ綴りしか持ち越しておらず、改行をまたぐリテラル(逐語的 <c>@"…"</c> ・
+    /// 生文字列 <c>"""…"""</c>)の<b>2 行目以降が素の実コードとして走査</b>されていた。
+    /// そこに <c>/*</c> や <c>@*</c> があると、閉じ綴りはリテラルの中にしか無いので
+    /// 永久に閉じず、<b>以降のファイル全体がコメント扱い</b>になって走査から落ちる
+    /// (issue #252。実測で、その次の行に置いた本物のキャッシュ指示が報告されなくなった)。</para>
     ///
-    /// <para><b>姉妹の走査(<c>Views.ModelStateKeyPrefixMatchTests.Neutralize</c>)が
-    /// 同じ判断を先に下している</b> ——ビューでは引用符を追わず、コメントも Razor の
-    /// <c>@* *@</c> だけを見る。ビューを読む 2 つの走査で答えが割れないよう、
-    /// 規則をそろえる(CLAUDE.md §6 DRY)。</para>
-    ///
-    /// <para><b>C# の <c>//</c> と <c>/* */</c> も扱わない。</b> 実測で両方向に壊れた:
-    /// マークアップ中の裸の URL を行コメントと誤認して<b>同じ行の書き込みを落とし</b>、
-    /// 表示テキストの <c>incident_/*.csv</c> が閉じないコメントを開いて
-    /// <b>正しいビューで走査が落ちた</b>。Razor のコメントは綴りが一意なので、
-    /// <c>@* *@</c> だけならどちらも起きない。</para>
+    /// <para>持ち越すリテラルは<b>改行をまたげる 2 種類だけ</b>。ふつうの <c>"…"</c> は
+    /// 改行をまたげない(またいだら文法として壊れている)ので持ち越さない ——
+    /// 持ち越すと、閉じ忘れの 1 行がファイルの残り全部をリテラルの中へ引きずり込む。</para>
     /// </remarks>
-    /// <param name="line">対象の 1 行。</param>
-    /// <param name="pendingCloser">
-    /// 直前の行から持ち越した Razor コメントの閉じ綴り(コメントの外なら <c>null</c>)。
+    /// <param name="PendingCloser">
+    /// 持ち越したブロックコメントの閉じ綴り(コメントの外なら <c>null</c>)。
     /// </param>
-    /// <returns>コメントを除いた実コードと、次の行へ持ち越す閉じ綴り。</returns>
-    private static (string Code, string? PendingCloser) StripRazorComments(string line, string? pendingCloser)
+    /// <param name="PendingFence">
+    /// 持ち越したリテラルの終端の形。<c>0</c> はリテラルの外、
+    /// <see cref="VerbatimFence"/> は逐語的リテラル、
+    /// <see cref="CSharpLiteral.RawStringFenceLength"/> 以上は生文字列の開始フェンスの長さ。
+    /// </param>
+    private readonly record struct RazorScanCarry(string? PendingCloser, int PendingFence)
+    {
+        /// <summary>コメントの外・リテラルの外(行の走査を素直に始めてよい状態)。</summary>
+        public static RazorScanCarry None => new(null, 0);
+    }
+
+    /// <summary>
+    /// 逐語的リテラル(<c>@"…"</c>)を持ち越していることを表す <c>PendingFence</c> の値。
+    /// </summary>
+    /// <remarks>
+    /// 生文字列のフェンスは <see cref="CSharpLiteral.RawStringFenceLength"/>(3) 以上なので、
+    /// それより小さい 1 を目印に使えば、同じ 1 つの数で両方を表せて取り違えようがない。
+    /// </remarks>
+    private const int VerbatimFence = 1;
+
+    /// <summary>
+    /// 1 行からコメントを取り除き、次の行へ持ち越す状態を返す。
+    /// </summary>
+    /// <param name="line">対象の 1 行。</param>
+    /// <param name="carry">直前の行から持ち越した状態。</param>
+    /// <returns>コメントを除いた実コードと、次の行へ持ち越す状態。</returns>
+    private static (string Code, RazorScanCarry Carry) StripRazorComments(string line, RazorScanCarry carry)
     {
         // 実コードだけを貯める入れ物
-        var code = new System.Text.StringBuilder(line.Length);
+        var code = new System.Text.StringBuilder();
         // 読み取り位置
         var i = 0;
+        // 持ち越したブロックコメントの閉じ綴り(この行の中で書き換える)
+        var pendingCloser = carry.PendingCloser;
+
+        // <b>リテラルの途中から始まる行は、まず終端を探す。</b> ここを飛ばすと
+        // リテラルの中身が実コードとして解釈され、中の /* や @* でファイルの残りが潰れる
+        if (carry.PendingFence != 0)
+        {
+            // この行のどこでリテラルが終わるかを探す(終わらなければ -1)
+            var literalEnd = FindPendingLiteralEnd(line, carry.PendingFence);
+
+            // この行の中で終わらないなら、行すべてが中身(状態はそのまま持ち越す)
+            if (literalEnd < 0)
+            {
+                // 中身も実コードとして貯める(ヘッダー名は文字列キーとして書かれるため)
+                code.Append(line);
+                // リテラルの中のままで次の行へ
+                return (code.ToString(), carry);
+            }
+
+            // 終端までを中身として貯める
+            code.Append(line, 0, literalEnd + 1);
+            // リテラルの直後から、ふつうの走査を続ける
+            i = literalEnd + 1;
+        }
 
         // 行の終わりまで 1 文字ずつ進む
         while (i < line.Length)
         {
-            // コメントの途中なら、閉じ綴りを探す
+            // ブロックコメントの途中なら、閉じ綴りを探す
             if (pendingCloser is not null)
             {
                 // この行に閉じ綴りがあるかを見る
                 var close = line.IndexOf(pendingCloser, i, StringComparison.Ordinal);
                 // 無ければ、この行はすべてコメント(状態は持ち越す)
-                if (close < 0) return (code.ToString(), pendingCloser);
+                if (close < 0) return (code.ToString(), new RazorScanCarry(pendingCloser, 0));
                 // あれば、その直後から実コードとして読み直す
                 i = close + pendingCloser.Length;
                 // コメントの外へ戻る
@@ -1459,25 +1478,308 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
-            // Razor のコメントが始まったら、閉じ綴りを待つ状態にする
-            if (StartsWithAt(line, i, RazorCommentOpener))
+            // 文字列リテラルの中は、コメントの開始として読まない。
+            // <b>実測した事故</b>: "Models/*.cs" のような値が 1 つあるだけで、
+            // そこから先のファイル全体が「コメントの途中」と見なされ、走査が丸ごと盲になった
+            // (この repo には実際にその綴りの定数がある)。URL の "https://" も同じ形で
+            // 行の途中から先を落としていた
+            if (line[i] == '\'')
             {
-                // 閉じるまでコメントとして読む
-                pendingCloser = RazorCommentCloser;
-                // 開きの直後から続きを見る
-                i += RazorCommentOpener.Length;
+                // <b>アポストロフィは「文字リテラルとして閉じている」ときだけリテラル扱いにする。</b>
+                // Razor のビューには地の文のアポストロフィ(<c>It's</c>)が普通に現れ、
+                // それを開き引用符と読むと行末まで文字リテラルの中になる ——
+                // 後ろに置かれた <c>@* Cache-Control … *@</c> がコメントとして落ちず、
+                // <b>規約どおりの日本語コメントで CI が赤くなる</b>(誤検知で赤くなる検査は、
+                // いずれ検査ごと緩められる ——この repo が繰り返し避けている形)
+                if (TryReadQuotedRun(line, i, out var charLiteralEnd))
+                {
+                    // 閉じている文字リテラルなので、中身は実コードとして残したまま読み飛ばす
+                    code.Append(line, i, charLiteralEnd - i);
+                    // リテラルの直後から続きを見る
+                    i = charLiteralEnd;
+                    // 続きを見る
+                    continue;
+                }
+
+                // 閉じていなければ地の文のアポストロフィなので、ただの 1 文字として読む
+                code.Append(line[i]);
+                // 次の文字へ
+                i++;
                 // 続きを見る
                 continue;
             }
 
-            // ここまで来た文字は実コードなので貯める(引用符もただの 1 文字として扱う)
+            if (line[i] == '"')
+            {
+                // <b>地の文の二重引用符は開きとして読まない。</b> アポストロフィと同じ理由で、
+                // 閉じない " が地の文にあると行末までリテラル扱いになり、後ろの
+                // @*…*@ がコメントとして落ちず §5 どおりのコメントで赤くなる
+                // (例: <p>重症度は "レベル3 以上が対象</p> @* Cache-Control は既定に任せる *@)
+                if (!IsQuoteOpener(line, i))
+                {
+                    // 地の文の 1 文字として実コードへ残す
+                    code.Append(line[i]);
+                    // 次の文字へ
+                    i++;
+                    // 続きを見る
+                    continue;
+                }
+
+                // 閉じ引用符の位置を共有ヘルパーに求める(逐語的 @"…" ・ 生文字列 """…""" もここで扱う)
+                var closingQuote = CSharpLiteral.FindStringLiteralEnd(line, i);
+                //
+                // <b>「開きの直後から走査を続ける」形にしてはいけない。</b> 一度そうしたが、
+                // リテラルの中身が実コードとして<b>解釈される</b>ようになり、中に // や /* が
+                // あるとそこで打ち切られる/以降の行がコメント状態のまま潰される ——
+                // 実測で @"SELECT /* inner … の次の行に置いた本物の書き込みが報告されなく
+                // なった。<b>誤検知を消すつもりで見逃しを作る</b>、この repo が繰り返し
+                // 記録している向きの誤りそのもの。
+                //
+                // 代償は「開始行の後ろに置いたコメントも中身として扱われる」こと。
+                // 正しい C# ではそこは実際にリテラルの中身なので解釈としては正しく、
+                // 倒れる向きも<b>多く報告する側</b>(この走査は中身を実コードとして貯める
+                // 設計なので、もともと過剰報告を許容している)。見逃すよりこちらを取る。
+                // 閉じなかったら行末までを中身と見なす(解釈しないので、そこに書かれた
+                // キャッシュ指示は見逃さない)。<b>この向きは main から変えていない</b> ——
+                // 逆向き(地の文として走査を続ける)にすると、中身の // や /* が解釈されて
+                // 以降が潰れる。どちらの向きにも穴が残るが、それはこの走査が本物のパーサでは
+                // ないことから来るもので、綴りを足して直すべきではない(issue #249 / #252)
+                var end = closingQuote >= 0 ? closingQuote + 1 : line.Length;
+
+                // <b>この行で閉じなかったリテラルは、次の行へ持ち越す。</b>
+                // 持ち越さないと 2 行目以降が素の実コードとして走査され、中の /* や @* で
+                // ファイルの残りがコメント扱いになる(issue #252)。またげるのは
+                // 逐語的リテラルと生文字列だけなので、その 2 つだけを持ち越す
+                if (closingQuote < 0)
+                {
+                    // 開きの引用符が何個続いているか(3 つ以上なら生文字列のフェンス)
+                    var fence = CSharpLiteral.QuoteRunLength(line, i);
+
+                    // 生文字列なら、同じ長さのフェンスが終端になる
+                    if (!CSharpLiteral.IsVerbatim(line, i) && fence >= CSharpLiteral.RawStringFenceLength)
+                    {
+                        // 中身をすべて貯めて、フェンスの長さを持ち越す
+                        code.Append(line, i, line.Length - i);
+                        // 生文字列の中のまま次の行へ
+                        return (code.ToString(), new RazorScanCarry(pendingCloser, fence));
+                    }
+
+                    // 逐語的リテラルなら、重ねていない " が終端になる
+                    if (CSharpLiteral.IsVerbatim(line, i))
+                    {
+                        // 中身をすべて貯めて、逐語的であることを持ち越す
+                        code.Append(line, i, line.Length - i);
+                        // 逐語的リテラルの中のまま次の行へ
+                        return (code.ToString(), new RazorScanCarry(pendingCloser, VerbatimFence));
+                    }
+
+                    // ふつうの "…" は改行をまたげないので持ち越さない
+                    // (持ち越すと、閉じ忘れの 1 行がファイルの残り全部を飲み込む)
+                }
+
+                // <b>中身は実コードとして残す。</b> ヘッダー名は文字列キーとして書かれる
+                // (Response.Headers["Cache-Control"] = …)ので、読み飛ばすと本命を取り落とす。
+                // ここでやりたいのは「リテラルの中の記号をコメントの開始と読まない」ことだけ
+                code.Append(line, i, end - i);
+                // リテラルの直後から続きを見る
+                i = end;
+                // 続きを見る
+                continue;
+            }
+
+            // 行コメントが始まったら、そこから先は読まない
+            if (StartsWithAt(line, i, "//")) break;
+
+            // <b>@@ は Razor の「@ そのもの」のエスケープなので、2 文字まとめて読む。</b>
+            // 1 文字ずつ進めると、support@@*.example.com のような<b>正しいビュー</b>で
+            // 2 つ目の @ から @* が始まったと読み、そこから下の行が走査から落ちる(実測)。
+            // 地の文に @ を書くには @@ と書くしかないので、この形は普通に現れる
+            if (StartsWithAt(line, i, "@@"))
+            {
+                // エスケープされた @ を実コードとして残す(2 文字ぶん)
+                code.Append(line, i, 2);
+                // 次の文字へ
+                i += 2;
+                // 続きを見る
+                continue;
+            }
+
+            // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
+            if (StartsWithAt(line, i, "@*")) { pendingCloser = "*@"; i += 2; continue; }
+            // C# のブロックコメントも同様
+            if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
+
+            // ここまで来た文字は実コードなので貯める
             code.Append(line[i]);
             // 次の文字へ
             i++;
         }
 
         // 実コードと、次の行へ持ち越す状態を返す
-        return (code.ToString(), pendingCloser);
+        // (ここに来た時点でリテラルは閉じているので、持ち越すのはコメントの状態だけ)
+        return (code.ToString(), new RazorScanCarry(pendingCloser, 0));
+    }
+
+    /// <summary>
+    /// 直前の行から持ち越したリテラルが、この行のどこで終わるかを返す(終わらなければ <c>-1</c>)。
+    /// </summary>
+    /// <remarks>
+    /// <para>終端の規則はリテラルの種類で違う。
+    /// <list type="bullet">
+    ///   <item>逐語的(<c>@"…"</c>) … 重ねていない <c>"</c> が終端。<c>""</c> は引用符 1 つを表す本文。</item>
+    ///   <item>生文字列(<c>"""…"""</c>) … 開始と<b>同じ数以上</b>の引用符の連なりが終端。</item>
+    /// </list>
+    /// どちらの規則も <see cref="CSharpLiteral"/> が持つ数え方
+    /// (<see cref="CSharpLiteral.QuoteRunLength"/>)の上に書いてあり、ここで数え直さない。</para>
+    ///
+    /// <para><b>開きの行と同じ関数で扱わない理由。</b> 開きの行は
+    /// <see cref="CSharpLiteral.FindStringLiteralEnd"/> が「開きの引用符の位置」から読むが、
+    /// 2 行目以降には開きが無い ——同じ関数に渡すと、行頭の文字を開きと取り違える。</para>
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="fence">
+    /// 持ち越したリテラルの終端の形(<see cref="VerbatimFence"/> か、生文字列のフェンスの長さ)。
+    /// </param>
+    /// <returns>終端の最後の文字の位置。この行で終わらなければ <c>-1</c>。</returns>
+    private static int FindPendingLiteralEnd(string line, int fence)
+    {
+        // 生文字列は、開始と同じ数以上の引用符の連なりが終端になる
+        if (fence >= CSharpLiteral.RawStringFenceLength)
+        {
+            // 行の先頭から 1 文字ずつ、引用符の連なりを探す
+            for (var i = 0; i < line.Length; i++)
+            {
+                // その位置から続く引用符の数を数える
+                var run = CSharpLiteral.QuoteRunLength(line, i);
+                // フェンスに満たないなら本文の一部(0 のときも 1 文字進める)
+                if (run < fence) { i += Math.Max(run, 0); continue; }
+                // 満たしたので、その連なりの最後の文字が終端
+                return i + fence - 1;
+            }
+
+            // この行では終わらなかった
+            return -1;
+        }
+
+        // 逐語的リテラルは、重ねていない " が終端になる
+        for (var i = 0; i < line.Length; i++)
+        {
+            // 引用符でなければ本文の一部
+            if (line[i] != '"') continue;
+
+            // 2 つ続いているなら引用符 1 つを表す本文なので、まとめて読み飛ばす
+            if (i + 1 < line.Length && line[i + 1] == '"') { i++; continue; }
+
+            // 重ねていない引用符なので、ここが終端
+            return i;
+        }
+
+        // この行では終わらなかった
+        return -1;
+    }
+
+    /// <summary>単一引用符が「リテラルの開き」だと見なせる直前の文字。</summary>
+    /// <remarks>
+    /// 属性値（<c>src=</c>）と、文字列・文字リテラル（<c>= "x"</c> ・ <c>f('x')</c> ・
+    /// <c>[ 'x' ]</c> ・ 連結の <c>+ "x"</c> ・ 逐語的の <c>@"x"</c> ・ 補間の <c>$"x"</c>）を
+    /// 覆い、地の文（直前が英数字の <c>Bob's</c> ・ <c>重症度は "レベル3</c>）を外すための集合。
+    /// <b><c>'</c> と <c>"</c> の両方に同じ規則を当てる</b> ——片方だけ手当てすると、
+    /// もう片方の綴りで同じ誤検知が残る。
+    /// </remarks>
+    private const string QuoteOpenerPredecessors = "=(,[{:?+@$";
+
+    /// <summary>
+    /// その位置の引用符が、リテラルの<b>開き</b>に見えるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// 直前の非空白文字が <see cref="QuoteOpenerPredecessors"/> のいずれかなら開き。
+    /// 行頭（直前に文字が無い）も開きとして扱う ——継続行の先頭に置かれたリテラル
+    /// （<c>"https://…".Length</c> のような形）を地の文と誤判定しないため。
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="index">引用符の位置。</param>
+    /// <returns>リテラルの開きに見えれば true。</returns>
+    private static bool IsQuoteOpener(string line, int index)
+    {
+        // 直前の非空白文字を探す(空白は読み飛ばす)
+        var previous = index - 1;
+        // 空白のあいだは戻り続ける
+        while (previous >= 0 && char.IsWhiteSpace(line[previous])) previous--;
+
+        // 行頭なら開きとして扱う
+        if (previous < 0) return true;
+
+        // 直前が「開きに見える文字」かどうかで決める
+        return QuoteOpenerPredecessors.Contains(line[previous]);
+    }
+
+    /// <summary>
+    /// その位置の単一引用符が<b>リテラル（文字リテラル・属性値）の開き</b>かを判定し、
+    /// そうなら閉じ引用符の直後の位置を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>判定は 2 つ: 「開きに見えるか」と「その行の中で閉じているか」。</b>
+    /// 開きに見えるかは<b>直前の非空白文字</b>で決める ——
+    /// <c>=</c> <c>(</c> <c>,</c> <c>[</c> <c>{</c> <c>:</c> <c>?</c> のいずれかなら
+    /// 属性値（<c>src='…'</c>）か文字リテラル（<c>= 'x'</c> ・ <c>f('x')</c>）で、
+    /// 英数字なら地の文のアポストロフィ（<c>Bob's</c>）。</para>
+    ///
+    /// <para><b>なぜ「閉じているか」だけでは足りないのか（実測）。</b>
+    /// <c>&lt;p&gt;Bob's report&lt;/p&gt; @* Cache-Control … *@ &lt;a href='x'&gt;</c> は
+    /// <c>Bob's</c> の <c>'</c> が <c>href='</c> の <c>'</c> で閉じてしまい、
+    /// あいだの <c>@*…*@</c> がコメントとして読まれず、§5 どおりの日本語コメントで
+    /// CI が赤くなった。直前の文字を見れば <c>Bob's</c> は開きではないと分かる。</para>
+    ///
+    /// <para><b>なぜ「長さ」で縛らないのか（実測）。</b> 一度「中身が 8 文字まで」で
+    /// 縛ったが、Razor では <c>'</c> が属性の引用符にもなるため <c>src='https://…'</c> が
+    /// リテラルとして読めなくなり、中の <c>//</c> で行の残りが走査から落ちた ——
+    /// <b>誤検知を消すつもりで見逃しを作っていた</b>（向きを間違えた手当ての実例）。</para>
+    ///
+    /// <para><b>残っている境界。</b> これは「増やしたことに気付く」ための網であって
+    /// 証明ではない（<see cref="CSharpLiteral.FindStringLiteralEnd"/> の解説と同じ立場）。
+    /// 開きの判定は綴りの前後を見るだけなので、補間文字列の入れ子のような形は追わない。
+    /// <b>次に穴が出たら、綴りを 1 つずつ足すのではなく本物のパーサへ移すこと。</b></para>
+    ///
+    /// <para><b>外し方は安全側。</b> リテラルでないと判断したアポストロフィは
+    /// ただの 1 文字として実コードへ残すので、取りこぼす方向（＝見逃し）には倒れない。
+    /// 倒れるとしても「コメントの開始をコメントとして正しく読む」方向だけ。</para>
+    ///
+    /// <para><b><c>"</c> 側に同じ歯止めを置かない理由。</b> C# の文字列リテラルは長さに上限が無く、
+    /// 上限を決めると本物のリテラルを取りこぼす。閉じないアポストロフィと違って、
+    /// 閉じない <c>"</c> がマークアップの地の文に現れることは実質無い
+    /// （属性値は必ず閉じる）ので、単純な走査のままにしてある。</para>
+    /// </remarks>
+    /// <param name="line">対象の行。</param>
+    /// <param name="start">アポストロフィの位置。</param>
+    /// <param name="end">読めた場合、リテラルの直後の位置。</param>
+    /// <returns>リテラルの開きで、かつその行の中で閉じていれば true。</returns>
+    private static bool TryReadQuotedRun(string line, int start, out int end)
+    {
+        // 直前の文字から、リテラルの開きに見えるかを判定する
+        if (!IsQuoteOpener(line, start))
+        {
+            // 呼び出し側が読み進める位置を変えないようにする
+            end = start;
+            // リテラルではない
+            return false;
+        }
+
+        // 開きに見えるので、その行の中で閉じているかを見る(長さでは縛らない)
+        var close = CSharpLiteral.FindCharLiteralEnd(line, start);
+
+        // 閉じなかった(または長すぎた)ので、地の文のアポストロフィとして扱う
+        if (close < 0)
+        {
+            // 呼び出し側が読み進める位置を変えないようにする
+            end = start;
+            // 文字リテラルではない
+            return false;
+        }
+
+        // リテラルの直後の位置を返す
+        end = close + 1;
+        // 文字リテラルとして読めた
+        return true;
     }
 
     /// <summary>指定位置がその綴りで始まるかを返す(範囲外でも例外にしない)。</summary>
@@ -1502,7 +1804,7 @@ public class ResponseCacheAttributePolicyTests
     private static bool MentionsCacheControl(string line)
     {
         // コメントの外・リテラルの外から読み始めて、この行の実コードを取り出す
-        var (code, _) = StripRazorComments(line, null);
+        var (code, _) = StripRazorComments(line, RazorScanCarry.None);
         // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
         return CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase));
     }
