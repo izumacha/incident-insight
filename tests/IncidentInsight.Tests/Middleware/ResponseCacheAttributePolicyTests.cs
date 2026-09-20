@@ -1366,6 +1366,47 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>行番号(1 始まり)・元の行(前後の空白を落としたもの)・実コードの組。</returns>
     private static List<(int LineNumber, string Text, string Code)> CodeLines(string sourcePath)
     {
+        // <b>リポジトリのソースは 1 回だけ読んで使い回す。</b> ファイルを走査する検査は
+        // 4 つあり、どれも Web プロジェクト配下を丸ごと回る。素直に書くと同じ .cs を
+        // 4 回 字句解析することになり、CodeLines 自身が掲げている「読み取りは 1 回だけ」
+        // (§8 同じ計算・取得を繰り返さない)が、綴り単位から検査単位へ移っただけになる。
+        //
+        // <b>使い捨ての合成ソースは覚えない。</b> ScanLines が作る一時ファイルは
+        // 毎回名前が違ううえ読み終わったら消えるので、覚えても当たらず溜まるだけ
+        if (IsRepositorySource(sourcePath))
+        {
+            // 同じパスを読み直さずに済ませる(検査は並行して走りうるので並行辞書)
+            return CodeLineCache.GetOrAdd(sourcePath, ReadCodeLines);
+        }
+
+        // 合成ソースはその場で読む
+        return ReadCodeLines(sourcePath);
+    }
+
+    /// <summary>読み取り済みのソースを検査どうしで使い回すための覚え書き。</summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<
+        string, List<(int LineNumber, string Text, string Code)>> CodeLineCache = new(StringComparer.Ordinal);
+
+    /// <summary>そのパスが<b>リポジトリの中の</b>ソースかどうかを返す。</summary>
+    /// <remarks>
+    /// 使い捨ての合成ソース(一時領域)と分けるためだけの判定。覚えてよいのは、
+    /// 1 回の実行のあいだ中身が変わらないリポジトリのファイルだけ。
+    /// </remarks>
+    /// <param name="sourcePath">判定するパス。</param>
+    /// <returns>リポジトリ配下なら true。</returns>
+    private static bool IsRepositorySource(string sourcePath) =>
+        // リポジトリの根から始まっているかで見る
+        Path.GetFullPath(sourcePath).StartsWith(
+            Path.GetFullPath(RepositoryPaths.Root) + Path.DirectorySeparatorChar,
+            StringComparison.Ordinal);
+
+    /// <summary>
+    /// ソースを 1 行ずつ、<b>元の行</b>と<b>コメントを取り除いた実コード</b>の対で読む。
+    /// </summary>
+    /// <param name="sourcePath">読み取るソースファイル。</param>
+    /// <returns>行番号(1 始まり)・元の行・実コードの組。</returns>
+    private static List<(int LineNumber, string Text, string Code)> ReadCodeLines(string sourcePath)
+    {
         // <b>C# は C# のパーサに読ませる。</b> 自前の走査はリテラルとコメントの境目を
         // 綴りの前後から当てる近似なので、外れ方が「見逃す側」へ倒れていた
         // (issue #249 / #252。詳しい壊れ方は CSharpCommentScanner の解説が正本)。
