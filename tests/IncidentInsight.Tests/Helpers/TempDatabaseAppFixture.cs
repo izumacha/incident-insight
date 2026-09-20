@@ -145,32 +145,55 @@ public abstract class TempDatabaseAppFixture : IDisposable
         {
             // 本体と補助ファイルをまとめて消す(対象の一覧は共通ヘルパーが持つ)。
             //
-            // <b>ここで投げさせない。</b> SQLite は接続をプールするので、停止直後は
-            // まだファイルが開いていることがあり、プラットフォームによっては削除が
-            // IOException になる。この finally は「必ず後始末へ到達する」ために置いたのに、
-            // その 1 手順が投げると (a) 本来の停止時の例外を置き換えて原因が読めなくなり、
-            // (b) GC.SuppressFinalize にも到達しない。消せなかったファイルは
-            // プロセス終了後に OS の一時領域の掃除へ委ねる ——後始末の失敗で
-            // 検証結果を赤くすると、本物の不具合と見分けが付かなくなる
+            // <b>この finally の中では何も投げさせない。</b> ここは「必ず後始末へ到達する」
+            // ために置いたのに、その 1 手順が投げると (a) 本来の停止時の例外を置き換えて
+            // 原因が読めなくなり、(b) GC.SuppressFinalize にも到達しない。
+            // 消せなかったファイルはプロセス終了後に OS の一時領域の掃除へ委ねる ——
+            // 後始末の失敗で検証結果を赤くすると、本物の不具合と見分けが付かなくなる。
+
+            // <b>まず接続プールを解放する。</b> Microsoft.Data.Sqlite は接続をプールするので、
+            // ホストを止めただけではファイルハンドルが残る。Linux は開いたままでも
+            // unlink できてしまうため CI では気付けないが、Windows では削除が失敗する。
+            //
+            // <b>削除とは別の try に分ける。</b> 以前は同じ try に並べていたため、
+            // プールの解放が IOException / UnauthorizedAccessException 以外
+            // (プールの状態が壊れているときの InvalidOperationException 等)を投げると
+            // <b>削除そのものが走らなかった</b> ——このクラスが存在する理由(一時ファイルを
+            // 溜めない)が、いちばん解放に失敗している場面で黙って失われる。
+            // 分けたうえで、こちらの catch は種類を絞らない代わりに<b>握り潰さない</b>
+            // (下の Console.Error への記録。§6「エラーを握り潰さない」)
             try
             {
-                // <b>先に接続プールを解放する</b>。Microsoft.Data.Sqlite は接続をプールするので、
-                // ホストを止めただけではファイルハンドルが残る。Linux は開いたままでも
-                // unlink できてしまうため CI では気付けないが、Windows では削除が
-                // IOException になり、下の catch が黙って飲み込む ——
-                // つまり「このクラスが防ぐはずの溜まり続ける状態」が、
-                // 検査がすべて緑のまま特定の環境でだけ起き続ける
+                // 接続プールを解放して、ファイルハンドルを手放す
                 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            }
+            catch (Exception ex)
+            {
+                // <b>握り潰さない(§6)。</b> 解放できなくても削除は試みるが、
+                // 黙って捨てると「プロバイダの初期化が壊れている」ような本当の不具合が
+                // 一時ファイルの溜まりとしてしか現れなくなる。後始末の失敗で検証結果を
+                // 赤くはしない代わりに、文脈を付けて標準エラーへ残す
+                Console.Error.WriteLine(
+                    $"[TempDatabaseAppFixture] SQLite の接続プールを解放できませんでした: {ex}");
+            }
+
+            // 本体と補助ファイルをまとめて消す
+            try
+            {
                 // 生成した一時 DB と補助ファイルを消す
                 SqliteTestFiles.Cleanup(_databasePath);
             }
-            catch (IOException)
+            catch (Exception ex)
             {
-                // 別プロセス・別ハンドルが掴んでいて消せなかった場合(握り潰す理由は上のとおり)
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // 権限が無くて消せなかった場合も同じ扱いにする
+                // <b>種類を絞らない。</b> 別プロセスが掴んでいる(IOException)・権限が無い
+                // (UnauthorizedAccessException)だけを拾っていたが、パスの組み立てが変われば
+                // ArgumentException / NotSupportedException も出る。そこで漏らすと、
+                // 上の段落が (a)(b) として挙げている「本来の停止時の例外を置き換える」
+                // 「GC.SuppressFinalize に到達しない」がそのまま起きる ——
+                // 同じ finally に並ぶ 2 つの手順で契約が食い違わないよう、解放側とそろえる。
+                // 握り潰さず、文脈を付けて標準エラーへ残す(§6)
+                Console.Error.WriteLine(
+                    $"[TempDatabaseAppFixture] 一時 DB を削除できませんでした: {ex}");
             }
 
             // 派生クラスがファイナライザを持たないことを明示する(CA1816)

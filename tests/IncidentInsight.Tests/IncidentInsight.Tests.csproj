@@ -29,6 +29,16 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
+    <!-- Web プロジェクトの .cs を「構造」として読むための C# 字句解析 (ResponseCacheAttributePolicyTests)。
+         自前の 1 文字ずつの走査は、リテラルとコメントの区別を綴りの前後から当てる形だったため
+         fail-open を 2 つ抱えていた (issue #249: return "…//…" のリテラルが開きと見なされず
+         中の // で行の残りが落ちる / issue #252: 改行をまたぐリテラルの状態を持ち越さないため
+         2 行目以降の /* で以降のファイル全体がコメント扱いになる)。どちらも
+         「PHI の応答に public なキャッシュ指示を書いても検査に載らない」向き。
+         CLAUDE.md が「次に穴が出たら綴りを 1 つずつ足すのではなく本物のパーサへ移すこと」と
+         書いているのがまさにこの状況で、YamlDotNet を入れたのと同じ理由・同じ形の対処。
+         MIT ライセンスで、テストプロジェクト限定の依存 (本番アセンブリには入らない)。 -->
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
     <!-- .github/dependabot.yml を「構造」として読むための YAML パーサ (EfCorePackageAlignmentTests)。
          インデントを数える自前の走査では、YAML の同義な書き方 (フロー記法・引用符付きキー・
          行末コメント・キーの並び順・重複キーの後勝ち) を網羅できず、検査が対象を見落とすか

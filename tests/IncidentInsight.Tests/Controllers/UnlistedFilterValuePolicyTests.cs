@@ -2261,8 +2261,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void PolicyTable_CoversEveryActionThatAcceptsADepartmentFilter()
     {
-        // アプリ本体のアセンブリから、MVC のコントローラをすべて拾う
-        var controllers = WebControllers();
+        // アプリ本体のアセンブリから、MVC のコントローラをすべて拾う(走査の「対象」側)
+        var controllers = ControllersUnderTest();
         // 1 つも拾えないなら手がかりが死んでいる(「見るべき対象ゼロ＝緑」を避ける)
         Assert.True(controllers.Count > 0, "コントローラが 1 つも見つからない。");
 
@@ -2833,12 +2833,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 検査対象の (型, プロパティ名) を上の 2 条件で導く
     private static List<(Type Type, string Property)> GovernedOptionProperties()
     {
-        // モデルバインドされる型(＝アクションの引数に現れる型)は対象外にする
-        var modelBound = WebControllers()
-            .SelectMany(ActionMethods)
-            .SelectMany(m => m.GetParameters())
-            .Select(param => param.ParameterType)
-            .ToHashSet();
+        // モデルバインドされる型(＝アクションの引数に現れる型)は対象外にする。
+        // <b>向きが「除外」なので、対象側とは別のアクセサから採る</b>(issue #250)
+        var modelBound = ModelBoundParameterTypes();
 
         // 自分たちのアセンブリで *Options を宣言している型を拾い、モデルバインドされる型を除く。
         // DeclaredOnly にするのは、基底(フレームワーク側)が持つ同名のプロパティを数えないため
@@ -2857,6 +2854,87 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .OrderBy(x => x.Type.FullName, StringComparer.Ordinal)
             .ThenBy(x => x.Property, StringComparer.Ordinal)
             .ToList();
+    }
+
+    /// <summary>
+    /// モデルバインドされるという理由で <c>required</c> の検査から外れている選択肢と、
+    /// それを外してよい理由。
+    /// </summary>
+    /// <remarks>
+    /// <b>これは人が判断するエスケープハッチ</b>(<c>LengthGovernanceExclusions</c> と同じ扱い)。
+    /// エントリが増える差分は、その選択肢が本当にモデルバインドされる型に属していて、
+    /// かつ <c>[BindNever]</c> / <c>[ValidateNever]</c> で守られているかを<b>レビューで必ず確認する</b>。
+    /// </remarks>
+    private static readonly Dictionary<string, string> ModelBoundOptionExclusions = new(StringComparer.Ordinal)
+    {
+        ["IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel.DepartmentOptions"] =
+            "登録ウィザードの POST でモデルバインドされる。required にすると MVC が自動で足す "
+            + "[Required] を満たせず、この画面の POST が全部落ちる。",
+        ["IncidentInsight.Web.Models.ViewModels.IncidentCreateEditViewModel.CauseCategoryOptions"] =
+            "同じ ViewModel なので同じ理由。初期値(= new())で今は通っているが、"
+            + "required にすれば DepartmentOptions と同じ状態になる。",
+        ["IncidentInsight.Web.Models.ViewModels.CauseAnalysisFormViewModel.CauseCategoryOptions"] =
+            "登録ウィザードの入れ子と CauseAnalysesController の単独 POST の両方で"
+            + "モデルバインドされるので、同じ理由で外す。",
+    };
+
+    // モデルバインドを理由に required の検査から外れた選択肢が、表のとおりであること。
+    //
+    // <b>なぜ要るのか。</b> GovernedOptionProperties は「モデルバインドされる型」を
+    // <b>除外</b>に使う。除外は広がるほど検査対象が減る向き(fail-open)なのに、
+    // 外れたことは<b>どこにも現れない</b> ——テスト件数は [MemberData] の件数で決まるので
+    // 1 つ減るだけ、正当なリファクタと見分けが付かない。実際 issue #250 は
+    // 「ControllerBase 直下の API 風コントローラを 1 つ足すと、そのアクションが引数に取る
+    // ViewModel の *Options が黙って required の要求から外れる」形を報告している。
+    //
+    // 表と突き合わせれば、外れた選択肢が増えた差分は<b>必ず 1 行として現れ</b>、
+    // 上の「レビューで理由を確認する」が効く。逆に、表に載っているのに実際には
+    // 外れていない(＝ required を足せる)ものも落とす ——消し忘れた除外は、
+    // その選択肢を「守ったつもり」にしておく口になるため。
+    [Fact]
+    public void ModelBoundOptionProperties_MatchTheDocumentedExclusions()
+    {
+        // 除外に使う集合(向きが「除外」であることは名前が表している)
+        var modelBound = ModelBoundParameterTypes();
+
+        // 1 つも拾えないなら導出が壊れている(「除外ゼロ＝表と不一致」で落ちるが、
+        // 原因が読めるように先に名指ししておく)
+        Assert.True(modelBound.Count > 0, "アクションの引数の型が 1 つも拾えない。導出が壊れている。");
+
+        // 選択肢プロパティのうち、モデルバインドを理由に検査から外れているものを集める
+        var excluded = typeof(IncidentListViewModel).Assembly
+            .GetTypes()
+            .Where(t => t.IsClass && modelBound.Contains(t))
+            .SelectMany(t => t
+                .GetProperties(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
+                .Where(prop => prop.Name.EndsWith(OptionsPropertySuffix, StringComparison.Ordinal))
+                .Where(prop => IsDropdownOptionList(prop.PropertyType))
+                .Select(prop => $"{t.FullName}.{prop.Name}"))
+            // 実行ごとに順番が揺れないよう並びを固定する
+            .OrderBy(name => name, StringComparer.Ordinal)
+            .ToList();
+
+        // 表に載っている綴りも同じ順に並べる
+        var documented = ModelBoundOptionExclusions.Keys.OrderBy(name => name, StringComparer.Ordinal).ToList();
+
+        // 実際に外れているものと、表に書いてあるものが一致すること
+        Assert.True(
+            excluded.SequenceEqual(documented, StringComparer.Ordinal),
+            "モデルバインドを理由に required の検査から外れる選択肢が、確認済みの一覧と違います。"
+                + "外れる選択肢が増えたなら、その型が本当に POST でモデルバインドされるのか、"
+                + "[BindNever] / [ValidateNever] で守られているのかを確かめ、"
+                + "理由を添えて ModelBoundOptionExclusions へ登録してください。"
+                + Environment.NewLine
+                + "実際: " + string.Join(", ", excluded)
+                + Environment.NewLine
+                + "表: " + string.Join(", ", documented));
+
+        // 表の理由が空でも空白だけでもないこと(値を誰も読んでいないと、空白で黙らせられる)
+        Assert.All(
+            ModelBoundOptionExclusions,
+            entry => Assert.False(
+                string.IsNullOrWhiteSpace(entry.Value),
+                $"モデルバインド除外の理由がありません: {entry.Key}。"));
     }
 
     // 「ドロップダウンへ並べる選択肢のリスト」かどうかを型で判定する。
@@ -3489,28 +3567,56 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
-    /// アプリ本体のアセンブリにある MVC のコントローラをすべて返す。
+    /// 走査の<b>対象</b>にするコントローラ(アプリ本体のアセンブリにある MVC のコントローラ)。
     /// </summary>
     /// <remarks>
-    /// 「?department= を受けるアクション」の照合と、「モデルバインドされる型」の判定
-    /// (選択肢プロパティの required 検査)が同じ走査を必要とする。写しを持つと、
-    /// 片方だけ拾い方を直したときにもう片方が古い基準のまま緑になる(§6 DRY)。
+    /// <para><b>名前が「対象」であることを表している。</b> この集合が広がると
+    /// 検査するアクションが<b>増える</b>＝安全側。<see cref="ModelBoundParameterTypes"/> とは
+    /// 向きが逆なので、<b>同じアクセサを共有しない</b>(共有していた頃の事故は向こうの解説にある)。</para>
+    ///
+    /// <para>絞り込みは <see cref="AppControllerScan"/> が唯一の源。以前はここに 2 つ目の写しがあり、
+    /// しかも <c>ControllerBase</c> ではなく <c>Controller</c> で狭めていたため、ビューを返さない
+    /// コントローラが <c>?department=</c> の網羅ガードから丸ごと外れていた ——実測でも、
+    /// その形の画面を足すと全件緑のままテスト件数すら変わらずに通った。写しを消せば
+    /// <c>ControllerScan_ReachesEveryControllerFile</c> の射程に入る。</para>
     /// </remarks>
-    private static List<Type> WebControllers() =>
-        // 絞り込みは共有ヘルパーが唯一の源。以前はここに 2 つ目の写しがあり、しかも
-        // ControllerBase ではなく Controller で狭めていたため、ビューを返さない
-        // (ControllerBase 派生の)コントローラが department 絞り込みの網羅ガードから
-        // 丸ごと外れていた ——実測でも、その形の画面を足すと全件緑のまま
-        // テスト件数すら変わらずに通った。写しを消せば ControllerScan_ReachesEveryControllerFile
-        // の射程に入る。
-        //
-        // <b>広がる向きが利用側で逆になる点に注意</b>: 網羅ガード側(?department= を受ける
-        // アクションの照合)では対象が広がる＝安全側だが、GovernedOptionProperties は
-        // この集合を<b>除外</b>に使っており、そちらでは広がる＝検査対象が減る。
-        // 現時点でアプリの全コントローラは Controller 派生なので集合は同一だが、
-        // ControllerBase 直下の API 風コントローラを足す人は、その ViewModel が
-        // *Options の required 検査から静かに外れないかを確かめること
+    /// <returns>走査対象のコントローラ。</returns>
+    private static List<Type> ControllersUnderTest() =>
+        // 共有ヘルパーの導出をそのまま使う(ここで狭めない)
         AppControllerScan.Controllers().ToList();
+
+    /// <summary>
+    /// MVC が<b>モデルバインドする型</b>(＝アクションの引数に現れる型)を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>これは「検査から外す」ために使う集合で、向きが <see cref="ControllersUnderTest"/> と
+    /// 逆になる。</b> こちらは広がると検査対象が<b>減る</b>(fail-open)。1 つのアクセサを
+    /// 両方に使い回していた頃は、導出を広げたときに片方の網が黙って狭まる形になっていた
+    /// ——「1 つの導出を広げたら、それを読む全部が同じ方向に広がる」という前提が
+    /// 成り立っていなかった(issue #250)。</para>
+    ///
+    /// <para><b>ただし名前を分けただけでは何も防げない。</b> 2 つのアクセサは今どちらも
+    /// <see cref="AppControllerScan.Controllers"/> を読んでいるので、そこが広がれば
+    /// 両方が同時に広がる ——向きの違いを<b>読む人に伝える</b>のがこの分割の役目で、
+    /// <b>機械的な歯止めは
+    /// <c>ModelBoundOptionProperties_MatchTheDocumentedExclusions</c> だけ</b>。
+    /// あちらを消すと、除外が広がったことがどこにも現れなくなる。</para>
+    ///
+    /// <para><b>それでも導出そのものは狭めない。</b> <c>ControllerBase</c> 直下の
+    /// API 風コントローラが引数に取る型も、MVC は同じようにモデルバインドする ——
+    /// 外し忘れると <c>required</c> を要求して<b>その画面の POST が全部落ちる</b>ので、
+    /// 狭めるほうが実行不能な指示を生む。代わりに、この除外で実際に外れた選択肢を
+    /// <c>ModelBoundOptionProperties_MatchTheDocumentedExclusions</c> が表と突き合わせ、
+    /// <b>外れたことが差分に現れる</b>ようにしてある。</para>
+    /// </remarks>
+    /// <returns>アクションの引数に現れる型の集合。</returns>
+    private static HashSet<Type> ModelBoundParameterTypes() =>
+        // 対象側と同じ導出から出発するが、使い道(除外)が違うので入り口を分けてある
+        AppControllerScan.Controllers()
+            .SelectMany(ActionMethods)
+            .SelectMany(m => m.GetParameters())
+            .Select(param => param.ParameterType)
+            .ToHashSet();
 
     /// <summary>
     /// 指定したコントローラが<b>自分で宣言している</b>アクションメソッドを返す。
