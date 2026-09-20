@@ -183,13 +183,17 @@ public abstract class TempDatabaseAppFixture : IDisposable
                 // 生成した一時 DB と補助ファイルを消す
                 SqliteTestFiles.Cleanup(_databasePath);
             }
-            catch (IOException)
+            catch (Exception ex)
             {
-                // 別プロセス・別ハンドルが掴んでいて消せなかった場合(握り潰す理由は上のとおり)
-            }
-            catch (UnauthorizedAccessException)
-            {
-                // 権限が無くて消せなかった場合も同じ扱いにする
+                // <b>種類を絞らない。</b> 別プロセスが掴んでいる(IOException)・権限が無い
+                // (UnauthorizedAccessException)だけを拾っていたが、パスの組み立てが変われば
+                // ArgumentException / NotSupportedException も出る。そこで漏らすと、
+                // 上の段落が (a)(b) として挙げている「本来の停止時の例外を置き換える」
+                // 「GC.SuppressFinalize に到達しない」がそのまま起きる ——
+                // 同じ finally に並ぶ 2 つの手順で契約が食い違わないよう、解放側とそろえる。
+                // 握り潰さず、文脈を付けて標準エラーへ残す(§6)
+                Console.Error.WriteLine(
+                    $"[TempDatabaseAppFixture] 一時 DB を削除できませんでした: {ex}");
             }
 
             // 派生クラスがファイナライザを持たないことを明示する(CA1816)

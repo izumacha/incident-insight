@@ -742,10 +742,14 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void WiringTokenTables_ContainNoEmptySpelling()
     {
-        // このクラスが自分で宣言している string[] をすべて拾う
+        // このクラスが自分で宣言している「文字列の並び」をすべて拾う。
+        // <b>型でも絞らない</b> ——string[] だけを見ると、4 つ目の表を
+        // IReadOnlyList<string> で宣言した瞬間に黙って外れる(このファイルは
+        // CodeLinesContaining の引数型に既に IReadOnlyList<string> を使っているので、
+        // そう書くのはごく自然)。名前でも型でも絞らなければ、登録も命名も要らない
         var tables = typeof(ResponseCacheAttributePolicyTests)
             .GetFields(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
-            .Where(f => f.FieldType == typeof(string[]))
+            .Where(f => typeof(IEnumerable<string>).IsAssignableFrom(f.FieldType))
             .OrderBy(f => f.Name, StringComparer.Ordinal)
             .ToList();
 
@@ -759,7 +763,7 @@ public class ResponseCacheAttributePolicyTests
         foreach (var table in tables)
         {
             // 実際の値を読む(static なのでインスタンスは要らない)
-            var tokens = (string[]?)table.GetValue(null);
+            var tokens = (IEnumerable<string>?)table.GetValue(null);
 
             // <b>null は「空の綴り」より先に落とす。</b> そのまま長さを読むと
             // NullReferenceException になり、どの表が壊れているかを名指しする
@@ -913,6 +917,11 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
     // <b>同じ行で閉じたコメントの後ろの実コードは拾う</b>(綴りを変えただけの抜け道にしない)
     [InlineData("    @* メモ *@ @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
+    // <b>ビューも C# のブロックコメントを扱う</b>ので、閉じた後ろの実コードは拾う
+    // (inline script / style のために残している扱い。経路ごとに固定する)
+    [InlineData("    /* メモ */ Response.Headers.CacheControl = \"public\";", true)]
+    // 行コメントの<b>前</b>にある実コードも、ビューの経路で拾えること
+    [InlineData("        Response.Headers.CacheControl = \"public\"; // 速くするため", true)]
     // <b>属性値の中の URL の "//" を行コメントと読まない。</b> href=" の二重引用符が
     // リテラルの開きと判定され、中身ごと読み飛ばされるので // に行き当たらない。
     // <b>裸の URL(引用符の外)は別の話で、そちらは行が切れる</b> ——
@@ -979,8 +988,8 @@ public class ResponseCacheAttributePolicyTests
         var scanned = CSharpCommentScanner.CodeLines(line);
         // 1 行しか渡していないので、実コードもちょうど 1 行
         var code = Assert.Single(scanned).Code;
-        // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
-        Assert.Equal(expected, CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase)));
+        // 照合の規則は 1 か所が持つ(言語ごとの経路で答えが割れないようにする)
+        Assert.Equal(expected, ContainsCacheControlToken(code));
     }
 
     // 複数行にまたがるコメントの中身を、実コードと取り違えないこと。
@@ -1228,6 +1237,25 @@ public class ResponseCacheAttributePolicyTests
         Assert.Empty(ScanLines(
             "<p>連絡先: support@@*.example.com</p>",
             "@* Cache-Control はミドルウェアの既定に任せる *@"));
+
+        // <b>@@ の直後の引用符を「逐語的リテラルの開き」と読まないこと。</b>
+        // 読むと、閉じないリテラルが持ち越されて<b>以降の行まで実コード扱い</b>になり、
+        // §5 どおりの Razor コメントが「キャッシュ指示の書き込み」として報告される
+        // (実測。持ち越しを足すまでは被害がその行に留まっていた)
+        Assert.Equal(
+            new[] { 3 },
+            ScanLines(
+                "<p>表記: support@@\"x</p>",
+                "@* Cache-Control はミドルウェアの既定に任せる *@",
+                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // 単一引用符でも同じ(片方だけ手当てすると、もう片方の綴りで同じ誤検知が残る)
+        Assert.Equal(
+            new[] { 3 },
+            ScanLines(
+                "<p>表記: support@@'x</p>",
+                "@* Cache-Control はミドルウェアの既定に任せる *@",
+                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
     // ビューの inline script に書いた <c>//</c> のコメントを、実コードとして読まないこと。
@@ -1725,6 +1753,23 @@ public class ResponseCacheAttributePolicyTests
                 code.Append(line, i, 2);
                 // 次の文字へ
                 i += 2;
+
+                // <b>直後の引用符は「逐語的リテラルの開き」ではない。</b>
+                // 開きの判定は直前の非空白文字を見るので、@@ の 2 つ目の @ を
+                // <c>@"</c> の接頭辞と取り違える ——地の文の <c>support@@"x</c>
+                // (Razor として正しく、@ を 1 つ表示する)が閉じない逐語的リテラルを開き、
+                // <b>持ち越しによって以降の行まで実コード扱い</b>になって、
+                // §5 どおりの Razor コメントが「キャッシュ指示の書き込み」として
+                // 報告される(実測。持ち越しを足すまでは被害がその行に留まっていた)。
+                // エスケープされた @ は接頭辞になりえないので、ここで 1 文字進めて断ち切る
+                if (i < line.Length && (line[i] == '"' || line[i] == '\''))
+                {
+                    // 引用符をただの 1 文字として残す
+                    code.Append(line[i]);
+                    // その次から続きを見る
+                    i++;
+                }
+
                 // 続きを見る
                 continue;
             }
@@ -1777,7 +1822,7 @@ public class ResponseCacheAttributePolicyTests
                 // その位置から続く引用符の数を数える
                 var run = CSharpLiteral.QuoteRunLength(line, i);
                 // フェンスに満たないなら本文の一部(0 のときも 1 文字進める)
-                if (run < fence) { i += Math.Max(run, 0); continue; }
+                if (run < fence) { i += run; continue; }
                 // 満たしたので、その連なりの最後の文字が終端
                 return i + fence - 1;
             }
@@ -1930,9 +1975,23 @@ public class ResponseCacheAttributePolicyTests
     {
         // コメントの外・リテラルの外から読み始めて、この行の実コードを取り出す
         var (code, _) = StripRazorComments(line, RazorScanCarry.None);
-        // 大文字小文字を無視して照合する(HTTP のヘッダー名は区別しないため)
-        return CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase));
+        // 照合の規則は 1 か所が持つ
+        return ContainsCacheControlToken(code);
     }
+
+    /// <summary>
+    /// その実コードが <c>Cache-Control</c> ヘッダーを名指ししているかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>照合の規則を 1 か所に置く。</b> ビューの経路と C# の経路で同じ問いを立てるので、
+    /// 書き写すと綴りを足したときに片方だけが新しい規則で答える(§6 DRY)。
+    /// 大文字小文字は無視する ——HTTP のヘッダー名は区別しない。
+    /// </remarks>
+    /// <param name="code">コメントを取り除いた実コード。</param>
+    /// <returns>ヘッダー名を含んでいれば true。</returns>
+    private static bool ContainsCacheControlToken(string code) =>
+        // 見張っている綴りのどれかを含むか
+        CacheControlTokens.Any(t => code.Contains(t, StringComparison.OrdinalIgnoreCase));
 
 
     // クラスに付いた属性が、基底で宣言されていれば<b>基底の名前で 1 件だけ</b>報告されること。

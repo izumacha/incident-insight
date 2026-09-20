@@ -3593,8 +3593,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 逆になる。</b> こちらは広がると検査対象が<b>減る</b>(fail-open)。1 つのアクセサを
     /// 両方に使い回していた頃は、導出を広げたときに片方の網が黙って狭まる形になっていた
     /// ——「1 つの導出を広げたら、それを読む全部が同じ方向に広がる」という前提が
-    /// 成り立っていなかった(issue #250)。名前とアクセサを分けて、読む側が向きを
-    /// 取り違えられないようにしている。</para>
+    /// 成り立っていなかった(issue #250)。</para>
+    ///
+    /// <para><b>ただし名前を分けただけでは何も防げない。</b> 2 つのアクセサは今どちらも
+    /// <see cref="AppControllerScan.Controllers"/> を読んでいるので、そこが広がれば
+    /// 両方が同時に広がる ——向きの違いを<b>読む人に伝える</b>のがこの分割の役目で、
+    /// <b>機械的な歯止めは
+    /// <c>ModelBoundOptionProperties_MatchTheDocumentedExclusions</c> だけ</b>。
+    /// あちらを消すと、除外が広がったことがどこにも現れなくなる。</para>
     ///
     /// <para><b>それでも導出そのものは狭めない。</b> <c>ControllerBase</c> 直下の
     /// API 風コントローラが引数に取る型も、MVC は同じようにモデルバインドする ——
