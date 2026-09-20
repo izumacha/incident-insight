@@ -256,6 +256,45 @@ public class ResponseCacheHeaderIntegrationTests
             response.Headers.NonValidated["Cache-Control"].ToString());
     }
 
+    // <b>静的アセットにもセキュリティヘッダーが付くこと＝ミドルウェアが
+    // UseStaticFiles より前にいることを固定する（issue #257）。</b>
+    //
+    // UseStaticFiles は一致したファイルに対して<b>終端</b>なので、
+    // app.UseMiddleware&lt;SecurityHeadersMiddleware&gt;() がそれより後ろへ動くと、
+    // wwwroot 配下のすべての資産が X-Content-Type-Options / X-Frame-Options /
+    // Referrer-Policy を一斉に失う。実測でもその行を UseRouting の直前へ移すと
+    // <b>全件緑のまま通り</b>、/css/site.css の応答から X-Content-Type-Options が消えた ——
+    // つまりこの順序は<b>どの検査にも守られていなかった</b>。
+    //
+    // <b>行の位置ではなく、配信された応答のヘッダーを見る。</b> ソースの並びを見る検査は
+    // 書き方に弱い（このリポジトリが繰り返し避けている形）。しかもこの行の周りには
+    // 「もう 1 度登録する」「リダイレクトをこの行より後ろへ出す」といった
+    // <b>この行を動かす案内</b>が並んでおり、動かす動機のある場所にあたる。
+    //
+    // <b>見るのは 1 つのヘッダーだけでよい。</b> 守りたいのは「ミドルウェアがこの応答を
+    // 通ったか」であって、どのヘッダーを付けるかは SecurityHeadersMiddlewareTests の
+    // 担当。3 つを並べると、ヘッダーの構成を意図して変えたときにこの検査が
+    // <b>順序とは無関係な理由で</b>落ち、失敗文言が間違った場所を指す。
+    [Fact]
+    public async Task StaticAsset_StillGetsTheSecurityHeaders()
+    {
+        // リダイレクトを追わないクライアントを作る
+        var client = CreateClient();
+
+        // 静的ファイル(アプリ本体のスタイルシート)を取得する
+        var response = await client.GetAsync("/css/site.css");
+
+        // 静的ファイルが実際に配信されていることを確認する
+        // (配信されていないと、ヘッダーの検査が「別の応答」を見て緑になる)
+        Assert.True(response.IsSuccessStatusCode);
+
+        // <b>本命。</b> セキュリティヘッダーが付いている＝この応答が
+        // SecurityHeadersMiddleware を通っている
+        Assert.Equal(
+            "nosniff",
+            response.Headers.NonValidated["X-Content-Type-Options"].ToString());
+    }
+
     [Fact]
     public async Task HealthCheck_KeepsItsOwnCacheDirectives()
     {
@@ -539,6 +578,55 @@ public class HostFilteringShortCircuitTests
         // （実測とコードの主張がここで結び付く）
         Assert.Equal(
             $" {SecondHost}",
+            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts)));
+
+        // 絞り込み自体は効いているので、1 本目の警告は出ない
+        // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // <b>「一致しえない項目」のもう 1 つの形を、実際の HTTP で固定する（issue #256）。</b>
+    // HostString.MatchesAny はリクエスト側の値から<b>ポートを落として</b>から許可リストの
+    // 項目と<b>そのまま</b>比べるので、ポートを書いた項目はどの Host とも一致しない ——
+    // <b>ポートを付けて送っても一致しない</b>のが要点で、ここを実測で押さえておかないと
+    // 「ポート付きで送れば通るはず」という直感のまま判定を緩める差分が通ってしまう。
+    //
+    // 上の空白の検査と同じく、<b>片方のホストを見るだけでは足りない</b> ——
+    // 200 側と 400 側が揃ってはじめて「サイトは生きたまま特定のホスト名だけが
+    // 静かに落ちる」という主張になり、それが 2 本目の警告を足した理由そのもの。
+    [Fact]
+    public async Task PortInAnEntry_KillsOnlyThatEntry()
+    {
+        // ASPNETCORE_URLS からホスト名を写すと自然に生まれる形（2 件目にポートが付く）。
+        // 起動する設定と判定へ渡す設定がずれないよう、1 つの定数にまとめる
+        const string entryWithPort = $"{SecondHost}:8080";
+        const string allowedHosts = $"{AllowedHost};{entryWithPort}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 1 件目（ポートの付いていない側）は、これまでどおり受け付けられること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+        // 2 件目は、ホスト名だけで送っても弾かれること（項目側にポートが残っているため）
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, SecondHost)).StatusCode);
+
+        // <b>本命。</b> 書いたとおりポートまで付けて送っても弾かれること ——
+        // 突き合わせの前に Host 側のポートが落とされるので、項目とは決して等しくならない
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, entryWithPort)).StatusCode);
+
+        // 判定側もその項目を「一致しえない項目」として名指しできること
+        // （実測とコードの主張がここで結び付く）
+        Assert.Equal(
+            entryWithPort,
             Assert.Single(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts)));
 
         // 絞り込み自体は効いているので、1 本目の警告は出ない

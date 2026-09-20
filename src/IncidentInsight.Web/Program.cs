@@ -379,11 +379,19 @@ if (!app.Environment.IsDevelopment())
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
             "behind a reverse proxy (issue #64).",
             // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
-            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える
-            app.Environment.EnvironmentName,
-            // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
-            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
-            allowedHosts,
+            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える。
+            // <b>こちらも生のままでは載せない。</b> 環境名は ASPNETCORE_ENVIRONMENT 由来＝
+            // AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、同じ
+            // テンプレート展開やコピー & ペーストで改行が紛れうる(issue #258)
+            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
+            // 値を載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
+            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)。
+            // <b>生のままでは載せない。</b> UnparsableEntry という分類がある時点でこの値には
+            // 制御文字が入りうるので、CR / LF が混ざると 1 本の警告がログ上は複数の
+            // レコードに見える ——docs/security.md が案内する「警告が出ていないことの確認」が
+            // 偽の継続行で破れ、ログの収集・解析がまさにその設定ミスのときに壊れる。
+            // 可視化の規則は AllowedHostsPolicy に置く(2 本の警告で書き写さないため。issue #258)
+            AllowedHostsPolicy.DescribeValueForLog(allowedHosts),
             // その設定に合った原因の説明(直し方は原因によらず同じなので次の文で共通)
             AllowedHostsPolicy.PermissiveCauseMessage(permissiveReason));
     }
@@ -396,6 +404,10 @@ if (!app.Environment.IsDevelopment())
     // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
     // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
     // そのまま誤った安心になる。
+    // <b>同じ形がもう 1 つある: ポート付きの項目</b>（"incident.example.test:8080"）。
+    // 突き合わせのとき Host ヘッダー側はポートを落とされる一方、許可リストの項目は
+    // そのまま比べられるので、実測ではポートを付けて送っても一致せず毎リクエスト 400 になる。
+    // ASPNETCORE_URLS を写すとポートごと持ってくるのは自然な形なので、こちらも拾う（issue #256）。
     // <b>判定は正規化後の綴りに対して行う。</b> 生の綴りを見ると、正規化で消える文字
     // (角括弧 IPv6 の "]" より後ろ)を持つ項目を誤って名指しする ——実測では
     // "[::1] " は Host: [::1] を 200 で受けるのに「消してよい」と案内し(消した運用者が
@@ -432,18 +444,25 @@ if (!app.Environment.IsDevelopment())
         var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(deletionOutcome);
 
         // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
+        // <b>理由は項目ごとに添える（1 文にまとめない）。</b> 一致しえない理由は 1 つではなく
+        // (a) 前後の空白が残っている (b) ポートを含んでいる の 2 つがあり、混在した一覧
+        // ("a.example.test; b.example.test;c.example.test:8080") で 1 つの文面しか出せないと、
+        // <b>どの項目がなぜ落ちているか</b>を運用者が追えない。しかも文面を 1 つに決め打つと、
+        // 理由を足した瞬間にその文が<b>名指しした項目について事実と違うこと</b>を言い出す
+        // （実際この行は「これらの項目は前後に空白が残っている」と断定していた。issue #256）。
+        // 理由ごとの文面は AllowedHostsPolicy.DeadEntryCauseMessage が持つ
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
-            "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so these entries keep surrounding whitespace " +
-            "after normalisation and no Host header can ever equal them. {HowToFix} (issue #64).",
+            "in the {Environment} environment: {NeverMatchingEntries}. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
-            // どの環境の話かを添える(上の警告と同じ理由)
-            app.Environment.EnvironmentName,
+            // どの環境の話かを添える(可視化を通す理由も上の警告と同じ)
+            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
             // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
-            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない
-            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")),
+            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない。
+            // 囲み方は AllowedHostsPolicy が持つ ——ここは if (!IsDevelopment()) の中で
+            // テストから 1 行も走らないので、整形を置いたままだと誰にも見られない(issue #258)
+            AllowedHostsPolicy.DescribeEntriesForLog(neverMatching),
             // その設定に合った直し方(消してよいかどうかで文面が変わる)
             howToFix);
     }
@@ -471,6 +490,12 @@ if (!app.Environment.IsDevelopment())
 //      フレームワークの定型ページ("Bad Request - Invalid Hostname")が返る。
 //      安全な理由は「空だから」ではなく「定型文で、要求元のホスト名も業務データも
 //      含まないから」で、その 2 点は HostFilteringShortCircuitTests が固定している。
+//
+// <b>この行が UseStaticFiles より前にいることは、配信された応答のヘッダーで固定してある</b>
+// (ResponseCacheHeaderIntegrationTests.StaticAsset_StillGetsTheSecurityHeaders)。
+// UseStaticFiles は一致したファイルに対して終端なので、この行をその後ろへ動かすと
+// wwwroot 配下のすべての資産がこのヘッダー群を一斉に失う ——
+// 以前はそれを守るものが何も無く、実測で全件緑のまま通った(issue #257)。
 //
 // 覆いたくなったときに「この行を移す」で済ませないこと。 UseExceptionHandler /
 // UseHsts / UseHttpsRedirection は上の if (!IsDevelopment()) の中にあるので、

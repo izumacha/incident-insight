@@ -141,6 +141,99 @@ public class AllowedHostsStartupWarningTests
             warning);
     }
 
+    // <b>ポート付きの項目でも 2 本目の警告が出ること（issue #256）。</b>
+    // 以前は「一致しえない」の定義が前後の空白だけだったため、ポートを書いた項目は
+    // <b>毎リクエスト 400 になるのに警告が 1 本も出なかった</b> ——
+    // docs/security.md が案内する「警告が出ていないことの確認」がそのまま誤った安心になる。
+    [Fact]
+    public void PortInAnEntry_WarnsWithThePortCause()
+    {
+        // ASPNETCORE_URLS からホスト名を写すと自然に生まれる形
+        const string allowedHosts = "incident.example.test;www.example.test:8080";
+
+        // その設定で起動する
+        using var fixture = new WarningCapturingFixture(allowedHosts);
+
+        // <b>1 本目は出ないこと。</b> 絞り込み自体は効いているので、
+        // この警告だけを見ていると設定ミスに気づけない（2 本目を足した理由そのもの）
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 2 本目が出ること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // ポートの付いた項目が "[ ]" で囲まれて名指しされること
+        Assert.Contains("[www.example.test:8080]", warning);
+
+        // <b>本命。</b> その項目に<b>ポートの理由</b>が添えられていること ——
+        // 以前は文面が「前後の空白が残っている」と決め打ちだったので、
+        // ここを見ないと事実と違う理由を添えたまま緑になる
+        Assert.Contains(
+            AllowedHostsPolicy.DeadEntryCauseMessage(
+                AllowedHostsPolicy.DeadEntryReason.PortSuffix),
+            warning);
+
+        // 空白の理由のほうは、この設定には当てはまらないので出ないこと
+        Assert.DoesNotContain(
+            AllowedHostsPolicy.DeadEntryCauseMessage(
+                AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace),
+            warning);
+    }
+
+    // <b>警告がログの 1 レコードに収まること。</b> 設定値をそのまま埋め込むと、
+    // CR / LF を含む値で<b>1 本の警告がログ上は複数のレコードに見える</b> ——
+    // docs/security.md が案内する「この警告が出ていないことを確認する」という運用手順が
+    // 偽の継続行で破れ、ログの収集・解析が<b>まさにその設定ミスのときに</b>壊れる（issue #258）。
+    //
+    // <b>可視化の単体テストだけでは足りない。</b> あちらは
+    // AllowedHostsPolicy.DescribeValueForLog を直接呼ぶので、Program.cs が
+    // その呼び出しをやめて生の値へ戻しても 1 件も落ちない
+    // （警告は if (!IsDevelopment()) の中にあり、この配線はここでしか走らない）。
+    [Fact]
+    public void ControlCharactersInTheValue_DoNotSplitTheWarningAcrossLogRecords()
+    {
+        // 改行が紛れ込んだ設定値（テンプレート展開やコピー & ペーストで自然に生まれる形）。
+        // 制御文字は正規化に失敗するので、1 本目（全許可）の警告が出る経路に入る
+        const string allowedHosts = "incident.example.test;0.0\r\n.0.0";
+
+        // その設定で起動する
+        using var fixture = new WarningCapturingFixture(allowedHosts);
+
+        // 1 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 警告の文面に改行が 1 つも残っていないこと＝レコードが分断されない
+        Assert.DoesNotContain('\r', warning);
+        Assert.DoesNotContain('\n', warning);
+
+        // 値そのものは（可視化された形で）載ること ——運用者が自分の設定だと気づけるように。
+        // 期待値は判定側の関数から取る（文面の綴りをテストへ書き写さないため）
+        Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(allowedHosts), warning);
+    }
+
+    // <b>設定値と同じ理由で、環境名も生のままでは載せない（レビュー指摘）。</b>
+    // ASPNETCORE_ENVIRONMENT は AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、
+    // 同じテンプレート展開やコピー & ペーストで改行が紛れうる。片方だけ可視化しても、
+    // もう片方が 1 本の警告を複数レコードへ割る（issue #258 が塞いだはずの穴が残る）。
+    [Fact]
+    public void ControlCharactersInTheEnvironmentName_DoNotSplitTheWarningAcrossLogRecords()
+    {
+        // 改行を含む環境名で、1 本目の警告が出る設定（未設定＝全許可）のまま起動する
+        const string environmentName = "Staging\r\nINJECTED";
+
+        // その環境名で起動する
+        using var fixture = new WarningCapturingFixture("*", environmentName);
+
+        // 1 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 警告の文面に改行が 1 つも残っていないこと
+        Assert.DoesNotContain('\r', warning);
+        Assert.DoesNotContain('\n', warning);
+
+        // 環境名は（可視化された形で）載ること ——どの環境の話かが読めなくならないように
+        Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
+    }
+
     /// <summary>
     /// <c>Staging</c> としてアプリを起動し、起動中に出た警告を溜めておくフィクスチャ。
     /// </summary>
@@ -155,7 +248,7 @@ public class AllowedHostsStartupWarningTests
 
         /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
         /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
-        public WarningCapturingFixture(string allowedHosts)
+        public WarningCapturingFixture(string allowedHosts, string environmentName = "Staging")
             // <b>溜め込み先はインスタンスごとに作り、ここから配る。</b>
             // 基底のコンストラクタ引数はインスタンスのフィールドを参照できないので、
             // 以前は static なキューを共有していた ——ところがホストは Dispose() まで
@@ -165,19 +258,22 @@ public class AllowedHostsStartupWarningTests
             // Assert.Empty(...) のような検査を足した瞬間に<b>非決定的に落ち、
             // しかも無関係なテストを名指しする</b>。private なコンストラクタへ
             // 1 度渡せば、共有そのものが無くなる
-            : this(allowedHosts, new ConcurrentQueue<string>())
+            : this(allowedHosts, environmentName, new ConcurrentQueue<string>())
         {
         }
 
         /// <summary>溜め込み先を受け取って起動する（共有しないための経路）。</summary>
         /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
+        /// <param name="environmentName">起動する環境名（既定は <c>Staging</c>）。</param>
         /// <param name="captured">このインスタンス専用の溜め込み先。</param>
-        private WarningCapturingFixture(string allowedHosts, ConcurrentQueue<string> captured)
+        private WarningCapturingFixture(
+            string allowedHosts, string environmentName, ConcurrentQueue<string> captured)
             : base(
                 "ii-hostwarn",
                 new Dictionary<string, string?> { ["AllowedHosts"] = allowedHosts },
-                // 警告の分岐（!IsDevelopment()）へ入るために Staging を使う
-                "Staging",
+                // 警告の分岐（!IsDevelopment()）へ入るために既定は Staging。
+                // 環境名そのものを検証したいときだけ、呼び出し側が差し替える
+                environmentName,
                 // 起動前に、溜め込むだけのプロバイダを登録する
                 logging => logging.AddProvider(new CapturingLoggerProvider(captured)))
         {

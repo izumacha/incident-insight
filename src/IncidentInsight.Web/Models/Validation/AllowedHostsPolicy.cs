@@ -1,5 +1,7 @@
 // フレームワークと同じホスト名の正規化を通すために使う
 using Microsoft.AspNetCore.Http;
+// ログ用に制御文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
+using System.Text;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -326,8 +328,9 @@ public static class AllowedHostsPolicy
     /// <returns>一致しえない項目（無ければ空）。運用者へそのまま見せる想定。</returns>
     public static IReadOnlyList<string> NeverMatchingEntries(string? allowedHosts) =>
         // 振り分けは 1 か所（PartitionEntries）だけが行う。ここで自前に振り分け直すと、
-        // 分類側（ClassifyDeadEntryDeletion）と「同じ項目を見ている」保証が構造から外れる
-        PartitionEntries(allowedHosts).Dead;
+        // 分類側（ClassifyDeadEntryDeletion）と「同じ項目を見ている」保証が構造から外れる。
+        // 理由まで要る呼び出し側は InspectNeverMatchingEntries を使う（こちらは綴りだけ）
+        [.. PartitionEntries(allowedHosts).Dead.Select(dead => dead.Value)];
 
     /// <summary>
     /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
@@ -364,10 +367,151 @@ public static class AllowedHostsPolicy
     /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
     /// <returns>どの <c>Host</c> とも一致しえないなら <c>true</c>。</returns>
     private static bool IsNeverMatchingEntry(string entry) =>
+        // 規則そのものは ClassifyDeadEntry が 1 つだけ持つ（ここは「理由があるか」だけを見る）
+        ClassifyDeadEntry(entry) is not null;
+
+    /// <summary>
+    /// その項目 1 件が、どの <c>Host</c> とも一致しえないか、そうなら<b>なぜか</b>を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>ここが「一致しえない」の唯一の定義。</b> 「一致しえないか」（<c>bool</c>）と
+    /// 「なぜ一致しえないか」（運用者へ出す文面）を別々の式で書くと、条件を広げたときに
+    /// 片方だけが取り残され、<b>名指しした項目に付く理由が事実と違う</b>状態になる。
+    /// <see cref="IsNeverMatchingEntry"/> も <see cref="DeadEntryCauseMessage"/> も
+    /// ここから導く。</para>
+    ///
+    /// <para><b>理由が 2 つあるのは、突き合わせ方が 2 段階だから。</b>
+    /// <c>HostString.MatchesAny</c> は (1) リクエスト側の値から<b>ポートを落とし</b>、
+    /// (2) 残ったホスト名を<b>許可リストの項目とそのまま</b>比べる。つまり項目の側は
+    /// トリムもされずポートも落とされないので、<b>前後に空白が残る項目</b>も
+    /// <b>ポートを含む項目</b>も、どの <c>Host</c> とも等しくなりえない。
+    /// 実測でも <c>incident.example.test:8080</c> は
+    /// <c>Host: incident.example.test:8080</c> を送っても一致せず毎リクエスト 400 になる
+    /// のに、<see cref="IsPermissive"/> は <c>false</c>・ここも空を返していたため
+    /// <b>警告が 1 本も出なかった</b>（issue #256）。
+    /// <c>ASPNETCORE_URLS</c> からホスト名を写すときポートごと持ってくるのは
+    /// <c>0.0.0.0</c> を写してしまうのと同じくらい自然な形で、しかも
+    /// <c>a.example.test;b.example.test:8080</c> のように混ざると
+    /// <b>サイトは生きたまま特定のホスト名だけが静かに 400 になる</b> ——
+    /// 2 本目の警告を足した理由そのものの形。</para>
+    ///
+    /// <para><b>ポートの判定は「コロンがあるか」では書かない。</b>
+    /// 角括弧の IPv6 リテラル（<c>[::1]</c> ・ <c>[::]</c>）はコロンを含むが
+    /// ポートは持たず、実測でも <c>Host: [::1]</c> と正しく一致する。
+    /// フレームワーク自身の分け方（<c>HostString</c> のホスト部とポート部）へ委ね、
+    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でポートの有無を見る。
+    /// <c>HostString.Port</c> を見る形では足りない ——実測で <c>a.test:abc</c> ・
+    /// <c>a.test:</c> はポート部が数値として読めないため <c>Port</c> が <c>null</c> になるが、
+    /// 項目としては依然としてどの <c>Host</c> とも一致しない。</para>
+    ///
+    /// <para><b>生の綴りではなく<see cref="TryNormalizeEntry">正規化後</see>を見る。</b>
+    /// 理由は <see cref="IsNeverMatchingEntry"/> の docstring が正本。
+    /// 正規化できない綴りはここでは死んだ項目に数えず、
+    /// <see cref="PermissiveReason.UnparsableEntry"/> 側（1 本目の警告）へ任せる。</para>
+    ///
+    /// <para><b>両方に当たる項目（<c>" a.test:8080"</c>）は空白側を名乗る。</b>
+    /// どちらの理由でも運用者がすることは同じ（その項目を実ホスト名だけに書き直す）で、
+    /// 1 項目に 2 つの理由を並べても読み手の判断は変わらないため。</para>
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
+    /// <returns>一致しえないならその理由、一致しうるなら <c>null</c>。</returns>
+    private static DeadEntryReason? ClassifyDeadEntry(string entry)
+    {
         // 正規化できない綴りは別の警告の担当なので、ここでは死んだ項目に数えない
-        TryNormalizeEntry(entry, out var normalized)
+        if (!TryNormalizeEntry(entry, out var normalized)) return null;
+
+        // フレームワークが Host と突き合わせるときに使う綴り（ホスト部だけ）を取り出す
+        var comparable = ComparableSpelling(normalized);
+
+        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致するなら、その項目は一致しうる
+        if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
+            && string.Equals(normalized, comparable, StringComparison.Ordinal))
+        {
+            // 生きている項目なので理由は無い
+            return null;
+        }
+
+        // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
+        // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
+        if (Wildcards.Contains(RepairedSpelling(normalized), StringComparer.Ordinal))
+        {
+            // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
+            return DeadEntryReason.WildcardOnceRepaired;
+        }
+
         // 正規化後にまだ前後の空白が残る項目は、Host ヘッダーと綴りが一致しえない
-        && !string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal);
+        if (!string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal))
+        {
+            // 空白が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.SurroundingWhitespace;
+        }
+
+        // 突き合わせ相手が「角括弧を足したもの」なら、原因は括弧の無い IPv6 リテラル
+        return string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
+            ? DeadEntryReason.UnbracketedIpv6Literal
+            // そうでなければ、落とされたのはポート部
+            : DeadEntryReason.PortSuffix;
+    }
+
+    /// <summary>
+    /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>自前でコロンを数えない。</b> 角括弧の IPv6 リテラルはコロンを含むがポートを持たず、
+    /// 逆に括弧の無い IPv6 リテラルは括弧を補われる。どちらも
+    /// <c>HostString</c> のホスト部の切り出しが正しく分けてくれるので、そこへ委ねる。
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>ホスト部の綴り。</returns>
+    private static string ComparableSpelling(string normalized) => new HostString(normalized).Host;
+
+    /// <summary>
+    /// その項目を案内どおりに直したときに残る綴り（＝実際に突き合わされることになる綴り）を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>「消したら何が起きるか」だけでは足りない。</b>
+    /// <see cref="ClassifyDeadEntryDeletion"/> は<b>消す</b>操作しか見ていないが、
+    /// 2 本目の警告が実際に勧めるのは<b>書き直す</b>操作のほう。
+    /// <c>"incident.example.com;0.0.0.0:8080"</c>（<c>ASPNETCORE_URLS</c> を写すと自然に生まれる形）は
+    /// 消せば実ホスト名だけが残るので「消してよい」＝<c>Safe</c> と分類されるが、
+    /// 案内どおり<b>ポートを外して書き直す</b>と <c>0.0.0.0</c> になり、
+    /// <b>ホスト名の絞り込みが丸ごと無効になる</b>（issue #64 へ移る）。
+    /// 前後の空白でも同じで、<c>"incident.example.com; 0.0.0.0"</c> ・
+    /// <c>"incident.example.com; *"</c> は<b>以前から</b>この形だった。</para>
+    ///
+    /// <para><b>だから直した結果も見る。</b> 直すとは「前後の空白を落とし、
+    /// 突き合わせに使われるホスト部だけにする」こと。その結果がワイルドカードなら、
+    /// その項目は <see cref="DeadEntryReason.WildcardOnceRepaired"/> として
+    /// 専用の文面で名指しする。</para>
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>案内どおりに直したあとの綴り。</returns>
+    private static string RepairedSpelling(string normalized) =>
+        // 前後の空白を落としてからホスト部を取る（空白とポートの両方を一度に外した形）
+        ComparableSpelling(normalized.Trim());
+
+    /// <summary>
+    /// その項目が、どの <c>Host</c> とも一致しえない理由。
+    /// </summary>
+    /// <remarks>
+    /// 理由ごとに文面を分けるのは <see cref="PermissiveReason"/> と同じ趣旨 ——
+    /// 混在した一覧（<c>"a.example.test; b.example.test;c.example.test:8080"</c>）で
+    /// 1 つの文面しか出せないと、<b>どの項目がなぜ落ちているか</b>を運用者が追えない。
+    /// </remarks>
+    public enum DeadEntryReason
+    {
+        /// <summary>正規化後も前後に空白が残っている（項目はトリムされない）。</summary>
+        SurroundingWhitespace,
+
+        /// <summary>ポートを含んでいる（<c>Host</c> 側はポートを落としてから比べられる）。</summary>
+        PortSuffix,
+
+        /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
+        UnbracketedIpv6Literal,
+
+        /// <summary>直すとワイルドカードになる（＝書き直すと全ホスト許可になる）。</summary>
+        WildcardOnceRepaired,
+    }
 
     /// <summary>
     /// 一致しえない項目を<b>消すだけ</b>にしたら何が起きるかの分類。
@@ -444,7 +588,7 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>一致しえない項目（無ければ空）と、それを消したときに何が起きるかの分類。</returns>
-    public static (IReadOnlyList<string> Entries, DeadEntryDeletionOutcome Outcome)
+    public static (IReadOnlyList<DeadEntry> Entries, DeadEntryDeletionOutcome Outcome)
         InspectNeverMatchingEntries(string? allowedHosts)
     {
         // 設定値を 1 度だけ分割し、1 度だけ「死んだ項目」と「残る項目」へ振り分ける
@@ -459,9 +603,24 @@ public static class AllowedHostsPolicy
     /// <summary>
     /// 設定値を<b>1 度だけ</b>分割し、「一致しえない項目」と「残る項目」へ振り分けた結果。
     /// </summary>
-    /// <param name="Dead">どの <c>Host</c> とも一致しえない項目（書かれた順）。</param>
+    /// <param name="Dead">どの <c>Host</c> とも一致しえない項目（書かれた順・理由つき）。</param>
     /// <param name="Survivors">それらを消したあとに残る項目（書かれた順）。</param>
-    private readonly record struct EntryPartition(string[] Dead, string[] Survivors);
+    private readonly record struct EntryPartition(DeadEntry[] Dead, string[] Survivors);
+
+    /// <summary>
+    /// どの <c>Host</c> とも一致しえない項目 1 件と、その理由。
+    /// </summary>
+    /// <remarks>
+    /// <b>理由を項目と一緒に運ぶ。</b> 名指しする側（警告の文面）が理由を
+    /// <see cref="ClassifyDeadEntry"/> から導き直すと、<see cref="PartitionEntries"/> が
+    /// docstring で約束している「項目ごとに正規化を 1 回で済ませる」が崩れる ——
+    /// あの約束は速度の話ではなく<b>契約</b>で、あとから判定へ副作用（メモ化・計測・
+    /// 1 回だけのログ）を足した人がそれを静かに 2 回走らせることになる。
+    /// 振り分けの時点で分かっている値なので、そのまま持たせる。
+    /// </remarks>
+    /// <param name="Value">項目の綴り（生の値）。</param>
+    /// <param name="Reason">その項目が一致しえない理由。</param>
+    public readonly record struct DeadEntry(string Value, DeadEntryReason Reason);
 
     /// <summary>
     /// 設定値を分割し、<see cref="IsNeverMatchingEntry"/> で 1 度だけ振り分ける。
@@ -492,14 +651,17 @@ public static class AllowedHostsPolicy
         var entries = SplitEntries(allowedHosts);
 
         // 死んだ項目と残る項目を作る。ここが振り分けの唯一の場所
-        var dead = new List<string>();
+        var dead = new List<DeadEntry>();
         var survivors = new List<string>();
 
         // 書かれた順のまま 1 件ずつ振り分ける（並び順は分類の判定に効くので崩さない）
         foreach (var entry in entries)
         {
-            // 判定は 1 項目につき 1 回だけ呼ぶ（規則は IsNeverMatchingEntry が持つ）
-            if (IsNeverMatchingEntry(entry)) dead.Add(entry);
+            // 判定は 1 項目につき 1 回だけ呼ぶ（規則は ClassifyDeadEntry が持つ）
+            var reason = ClassifyDeadEntry(entry);
+
+            // 理由が付いた項目は、理由ごと「死んだ側」へ入れる（あとで導き直さない）
+            if (reason is not null) dead.Add(new DeadEntry(entry, reason.Value));
             // 一致しうる項目は「消したあとに残る側」へ入れる
             else survivors.Add(entry);
         }
@@ -550,7 +712,7 @@ public static class AllowedHostsPolicy
     /// 一覧をどう書くかの共通の一言（どの案内にも同じものを添える）。
     /// </summary>
     private const string ListFormatHint =
-        " Write the list as 'a.example;b.example', with no spaces.";
+        " Write the list as 'a.example;b.example', with no spaces and no port numbers.";
 
     /// <summary>
     /// 一覧全体を作り直すよう促す一言（断定できない場合に共通で使う）。
@@ -609,11 +771,12 @@ public static class AllowedHostsPolicy
             // Safe が保証するのは「絞り込みが開かないこと」だけで、
             // その項目が要らないことまでは言っていない
             DeadEntryDeletionOutcome.Safe =>
-                "Fix each listed entry by removing the surrounding whitespace, so the hostname "
-                + "is matched again. Only delete an entry if it contains no hostname you actually "
-                + "serve (an unset ${VARIABLE} leaves a blank entry like this) — deleting these "
-                + "entries does not leave a list that accepts every Host, but it does mean the "
-                + "hostname stays rejected." + ListFormatHint,
+                "Fix each listed entry so that it is exactly the hostname you serve (the reason "
+                + "is given next to each entry above), so the hostname is matched again. Only "
+                + "delete an entry if it contains no hostname you actually serve (an unset "
+                + "${VARIABLE} leaves a blank entry like this) — deleting these entries does not "
+                + "leave a list that accepts every Host, but it does mean the hostname stays "
+                + "rejected." + ListFormatHint,
 
             // 名指しする項目が無いときと、分類が増えたのに足し忘れたとき。
             // どちらも断定せず、一覧全体を見直してもらう（上記のとおり fail-closed）
@@ -686,19 +849,193 @@ public static class AllowedHostsPolicy
     /// 専用の説明を持たない原因へ返す既定の文面。
     /// </summary>
     /// <remarks>
-    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// <para><b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
     /// 理由は <see cref="FallbackFixAdvice"/> と同じで、
     /// 既定の文面を <c>PermissiveCauseMessage(NotPermissive)</c> で求めると
-    /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。
-    /// </remarks>
-    /// <remarks>
-    /// <b>原因を名乗らない文面にしてある。</b> この関数は <c>public</c> なので、
+    /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。</para>
+    ///
+    /// <para><b>原因を名乗らない文面にしてある。</b> この関数は <c>public</c> なので、
     /// <see cref="PermissiveReason.NotPermissive"/>（＝正しく絞れている設定）を
     /// そのまま渡す呼び出し側が将来現れうる。以前の文面は
     /// 「絞れていない」と断定していたため、そのとき<b>正しい設定に対して
     /// 事実と逆の説明</b>を出すことになっていた（しかもテストがその対応を固定していた）。
     /// 分類が増えたときの既定としても、断定しないほうが安全側（fail-closed）。
+    /// <b>この 2 段落を別々の <c>&lt;remarks&gt;</c> に分けない</b> ——XML ドキュメントの
+    /// 利用側（IDE のクイック情報・doc 生成）は最初の 1 つしか描画しないので、
+    /// 2 つ目は読み手に届かない。届かなくなるのは「この文面を断定的な向きへ
+    /// 書き換えてはいけない」という唯一の歯止めで、<c>AllowedHostsPolicyTests</c> は
+    /// enum からの網羅しか見ていないため<b>文面の向きが逆でも緑のまま</b>通る
+    /// （issue #259）。</para>
     /// </remarks>
     public const string FallbackPermissiveCauseMessage =
         "No specific cause is available for this value; inspect the value itself.";
+
+    /// <summary>設定値が未設定だったときにログへ出す代わりの綴り。</summary>
+    /// <remarks>
+    /// 構造化ログの既定は <c>null</c> を <c>(null)</c> と描くが、運用者にとっては
+    /// 「設定していない」と「空文字を設定した」は別の出来事なので、前者だけを名乗る。
+    /// </remarks>
+    public const string UnsetValueForLog = "(not set)";
+
+    /// <summary>
+    /// 設定値を、ログの 1 レコードへそのまま載せられる形に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>生の値をログへ埋め込まない。</b> <see cref="PermissiveReason.UnparsableEntry"/>
+    /// という分類が存在すること自体が、この値に制御文字が入りうることを前提にしている
+    /// （<c>"0.0\t.0.0"</c> のような綴りのためにある）。CR / LF が混ざっていると
+    /// <b>1 本の警告がログ上は複数のレコードに見え</b>、(a) <c>docs/security.md</c> が案内する
+    /// 「この警告が出ていないことを確認する」という運用手順が偽の継続行で破れ、
+    /// (b) ログの収集・解析が<b>まさにその警告が指している設定ミスのときに</b>壊れる
+    /// （issue #258）。</para>
+    ///
+    /// <para><b>置き換えの規則はこの 1 か所だけに置く。</b> 2 本の警告（全許可・一致しえない項目）で
+    /// 書き写すと、片方だけ直る形になる。</para>
+    /// </remarks>
+    /// <param name="value"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>目に見えない文字を可視化した綴り（未設定なら <see cref="UnsetValueForLog"/>）。</returns>
+    public static string DescribeValueForLog(string? value) =>
+        // 未設定は「空文字を設定した」と区別して名乗る
+        value is null ? UnsetValueForLog : MakeInvisibleCharactersVisible(value);
+
+    /// <summary>
+    /// 一致しえない項目の一覧を、ログの 1 レコードへそのまま載せられる形に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>囲みと可視化を <c>Program.cs</c> から引き取っている。</b> あちらは
+    /// <c>if (!IsDevelopment())</c> の中なのでテストから 1 行も走らず、整形を置いたままだと
+    /// 「項目ごとに可視化を通す」という保証が<b>誰にも見られない場所</b>に残る。</para>
+    ///
+    /// <para><b><c>[ ]</c> で囲むのは、前後の空白が目で見えないから。</b> 囲まないと
+    /// 「なぜこれが一致しないのか」が運用者に伝わらない。</para>
+    ///
+    /// <para><b>囲みの内側にも <see cref="DescribeValueForLog"/> と同じ規則を通す。</b>
+    /// <b>いまの規則では、ここへ制御文字を含む項目は来ない</b> ——実測でも、制御文字を
+    /// 含む項目は正規化そのものに失敗して <see cref="PermissiveReason.UnparsableEntry"/> 側
+    /// （1 本目の警告）へ回るので、「一致しえない項目」として名指しされる綴りに
+    /// 制御文字が残る組み合わせは 1 つも無い。それでも同じ規則を通すのは、
+    /// <b>「一致しえない」の定義が広がるのはこれからも起きる</b>から
+    /// （実際 issue #256 がその 1 つ）。規則を片方だけに掛けておくと、
+    /// 定義を広げた人が<b>ログの分断まで一緒に持ち込む</b>ことになる ——
+    /// 綴りがそのままなら <see cref="DescribeValueForLog"/> は元の文字列を返すので、
+    /// 通しておく代償は無い。</para>
+    /// </remarks>
+    /// <param name="entries">一致しえない項目（<see cref="InspectNeverMatchingEntries"/> の結果）。</param>
+    /// <returns>ログへそのまま載せられる 1 本の文字列。</returns>
+    public static string DescribeEntriesForLog(IReadOnlyList<DeadEntry> entries) =>
+        // 1 件ずつ「可視化して "[ ]" で囲み、その項目の理由を添える」形にして ", " でつなぐ
+        string.Join(", ", entries.Select(DescribeEntryForLog));
+
+    /// <summary>
+    /// 一致しえない項目 1 件を、囲み・可視化・理由の 3 点セットにする。
+    /// </summary>
+    /// <remarks>
+    /// <b>理由は振り分けの時点で決まっているものを使い、ここで導き直さない。</b>
+    /// 導き直すと <see cref="PartitionEntries"/> が docstring で約束している
+    /// 「項目ごとに正規化を 1 回で済ませる」が崩れる。名指しした項目と添えた理由が
+    /// 食い違わないことは、<see cref="DeadEntry"/> が 1 つの値として運ぶことで担保する。
+    /// </remarks>
+    /// <param name="entry">一致しえない項目 1 件（理由つき）。</param>
+    /// <returns>ログへ載せる 1 件分の綴り。</returns>
+    private static string DescribeEntryForLog(DeadEntry entry) =>
+        // 空白が目で見えるよう "[ ]" で囲み、そのうしろへその項目自身の理由を添える
+        $"[{MakeInvisibleCharactersVisible(entry.Value)}] ({DeadEntryCauseMessage(entry.Reason)})";
+
+    /// <summary>
+    /// 項目が一致しえない理由を、そのままログに載せられる文に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>対応表を <c>Program.cs</c> に置かない理由は
+    /// <see cref="DeadEntryFixAdvice"/> と同じ。</b> あちらは
+    /// <c>if (!IsDevelopment())</c> の中なので、書くとテストから 1 行も走らない。</para>
+    ///
+    /// <para><b>直し方ではなく理由だけを言う。</b> 直し方は「消してよいかどうか」で変わるので
+    /// <see cref="DeadEntryFixAdvice"/> が 1 本だけ出す。ここで直し方まで分岐させると、
+    /// 同じ 1 文が理由 × 分類の通り数に増えて食い違う口が増える。</para>
+    ///
+    /// <para><b>既定は断定しない側へ倒す。</b> 理由に値が増えたとき <c>switch</c> の
+    /// <c>_</c> は何も言わずに既定の文面を返す（<c>CS8509</c> は出ない）。
+    /// <b>足し忘れ自体は <c>AllowedHostsPolicyTests</c> が enum から導いて落とす。</b></para>
+    /// </remarks>
+    /// <param name="reason">その項目が一致しえない理由。</param>
+    /// <returns>ログにそのまま載せる理由の説明（英語。ログの他の文面とそろえる）。</returns>
+    public static string DeadEntryCauseMessage(DeadEntryReason reason) =>
+        // 理由ごとに、運用者がその項目のどこを見ればよいかを示す
+        reason switch
+        {
+            // 項目はトリムされないので、前後の空白がそのまま綴りの一部になっている
+            DeadEntryReason.SurroundingWhitespace =>
+                "host filtering does not trim entries, so the surrounding whitespace is part of "
+                + "the entry and no Host header can ever equal it",
+
+            // Host ヘッダー側はポートを落としてから比べられるので、ポート付きは一致しえない
+            DeadEntryReason.PortSuffix =>
+                "host filtering strips the port from the Host header before comparing, so an "
+                + "entry that carries a port can never be equal — list the hostname on its own",
+
+            // Host ヘッダーの IPv6 リテラルは必ず角括弧付きで届くので、括弧なしは一致しえない
+            DeadEntryReason.UnbracketedIpv6Literal =>
+                "this is an IPv6 literal without brackets, but a Host header always carries one "
+                + "in brackets, so the two can never be equal — write it as '[::1]'",
+
+            // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
+            DeadEntryReason.WildcardOnceRepaired =>
+                "this entry does not match as written, and the hostname inside it is a wildcard "
+                + "('*', '[::]' or '0.0.0.0') — do NOT just strip the whitespace or the port, "
+                + "because the repaired entry would disable host filtering entirely (issue #64). "
+                + "Replace it with a real hostname, or delete it",
+
+            // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
+            _ => FallbackDeadEntryCauseMessage,
+        };
+
+    /// <summary>
+    /// 専用の説明を持たない理由へ返す既定の文面。
+    /// </summary>
+    /// <remarks>
+    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// 理由は <see cref="FallbackFixAdvice"/> と同じで、既定の文面を
+    /// <c>DeadEntryCauseMessage(...)</c> で求めると比較が<b>自分自身との照合</b>になり、
+    /// 足し忘れを 1 件も検出しなくなる。
+    /// </remarks>
+    public const string FallbackDeadEntryCauseMessage =
+        "no Host header can ever equal this entry; inspect the entry itself";
+
+    /// <summary>
+    /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>制御文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
+    /// 名前付きにして残りを別扱いにすると、表と実際の文字集合が少しずつずれていく。
+    /// <c>\uXXXX</c> の 1 規則なら、どの制御文字でも同じ読み方で済む。</para>
+    ///
+    /// <para><b>逆斜線そのものも置き換える。</b> そうしないと、値に文字どおり
+    /// <c>\u0009</c> と書いた場合と、タブが 1 文字入っている場合が<b>同じ見た目</b>になり、
+    /// 運用者は自分の設定のどちらなのかを判別できない。ホスト名に逆斜線が
+    /// 正当に現れることは無いので、読みにくくなる実害も無い。</para>
+    /// </remarks>
+    /// <param name="value">可視化したい文字列。</param>
+    /// <returns>制御文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    private static string MakeInvisibleCharactersVisible(string value)
+    {
+        // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
+        if (!value.Any(ch => char.IsControl(ch) || ch == '\\')) return value;
+
+        // 置き換えが要るときだけ組み立てる
+        var builder = new StringBuilder(value.Length);
+
+        // 1 文字ずつ見て、読めない文字だけを置き換える
+        foreach (var ch in value)
+        {
+            // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
+            if (ch == '\\') builder.Append("\\\\");
+            // 制御文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
+            else if (char.IsControl(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
+            // それ以外はそのまま（ホスト名として読める文字）
+            else builder.Append(ch);
+        }
+
+        // 可視化した綴りを返す
+        return builder.ToString();
+    }
 }
