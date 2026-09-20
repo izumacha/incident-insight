@@ -488,6 +488,12 @@ if (!app.Environment.IsDevelopment())
 //      安全な理由は「空だから」ではなく「定型文で、要求元のホスト名も業務データも
 //      含まないから」で、その 2 点は HostFilteringShortCircuitTests が固定している。
 //
+// <b>この行が UseStaticFiles より前にいることは、配信された応答のヘッダーで固定してある</b>
+// (ResponseCacheHeaderIntegrationTests.StaticAsset_StillGetsTheSecurityHeaders)。
+// UseStaticFiles は一致したファイルに対して終端なので、この行をその後ろへ動かすと
+// wwwroot 配下のすべての資産がこのヘッダー群を一斉に失う ——
+// 以前はそれを守るものが何も無く、実測で全件緑のまま通った(issue #257)。
+//
 // 覆いたくなったときに「この行を移す」で済ませないこと。 UseExceptionHandler /
 // UseHsts / UseHttpsRedirection は上の if (!IsDevelopment()) の中にあるので、
 // この行をそこへ移すと Development ではミドルウェアが 1 度も登録されず、

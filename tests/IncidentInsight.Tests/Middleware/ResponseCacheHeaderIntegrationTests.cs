@@ -256,6 +256,45 @@ public class ResponseCacheHeaderIntegrationTests
             response.Headers.NonValidated["Cache-Control"].ToString());
     }
 
+    // <b>静的アセットにもセキュリティヘッダーが付くこと＝ミドルウェアが
+    // UseStaticFiles より前にいることを固定する（issue #257）。</b>
+    //
+    // UseStaticFiles は一致したファイルに対して<b>終端</b>なので、
+    // app.UseMiddleware&lt;SecurityHeadersMiddleware&gt;() がそれより後ろへ動くと、
+    // wwwroot 配下のすべての資産が X-Content-Type-Options / X-Frame-Options /
+    // Referrer-Policy を一斉に失う。実測でもその行を UseRouting の直前へ移すと
+    // <b>全件緑のまま通り</b>、/css/site.css の応答から X-Content-Type-Options が消えた ——
+    // つまりこの順序は<b>どの検査にも守られていなかった</b>。
+    //
+    // <b>行の位置ではなく、配信された応答のヘッダーを見る。</b> ソースの並びを見る検査は
+    // 書き方に弱い（このリポジトリが繰り返し避けている形）。しかもこの行の周りには
+    // 「もう 1 度登録する」「リダイレクトをこの行より後ろへ出す」といった
+    // <b>この行を動かす案内</b>が並んでおり、動かす動機のある場所にあたる。
+    //
+    // <b>見るのは 1 つのヘッダーだけでよい。</b> 守りたいのは「ミドルウェアがこの応答を
+    // 通ったか」であって、どのヘッダーを付けるかは SecurityHeadersMiddlewareTests の
+    // 担当。3 つを並べると、ヘッダーの構成を意図して変えたときにこの検査が
+    // <b>順序とは無関係な理由で</b>落ち、失敗文言が間違った場所を指す。
+    [Fact]
+    public async Task StaticAsset_StillGetsTheSecurityHeaders()
+    {
+        // リダイレクトを追わないクライアントを作る
+        var client = CreateClient();
+
+        // 静的ファイル(アプリ本体のスタイルシート)を取得する
+        var response = await client.GetAsync("/css/site.css");
+
+        // 静的ファイルが実際に配信されていることを確認する
+        // (配信されていないと、ヘッダーの検査が「別の応答」を見て緑になる)
+        Assert.True(response.IsSuccessStatusCode);
+
+        // <b>本命。</b> セキュリティヘッダーが付いている＝この応答が
+        // SecurityHeadersMiddleware を通っている
+        Assert.Equal(
+            "nosniff",
+            response.Headers.NonValidated["X-Content-Type-Options"].ToString());
+    }
+
     [Fact]
     public async Task HealthCheck_KeepsItsOwnCacheDirectives()
     {
