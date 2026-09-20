@@ -38,7 +38,7 @@
          CLAUDE.md が「次に穴が出たら綴りを 1 つずつ足すのではなく本物のパーサへ移すこと」と
          書いているのがまさにこの状況で、YamlDotNet を入れたのと同じ理由・同じ形の対処。
          MIT ライセンスで、テストプロジェクト限定の依存 (本番アセンブリには入らない)。 -->
-    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="4.14.0" />
+    <PackageReference Include="Microsoft.CodeAnalysis.CSharp" Version="5.9.0" />
     <!-- .github/dependabot.yml を「構造」として読むための YAML パーサ (EfCorePackageAlignmentTests)。
          インデントを数える自前の走査では、YAML の同義な書き方 (フロー記法・引用符付きキー・
          行末コメント・キーの並び順・重複キーの後勝ち) を網羅できず、検査が対象を見落とすか
