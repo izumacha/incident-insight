@@ -262,7 +262,7 @@ public class ResponseCacheAttributePolicyTests
     /// ファイルごと外すと、許可した 2 つの書き込み以外も同じファイルの中では自由になる ——
     /// たとえば <c>Program.cs</c> へ 2 つ目の <c>UseStaticFiles</c>（<c>wwwroot</c> の外を
     /// <c>/attachments</c> として配り、<c>public,max-age=86400</c> を名乗る）を足すと、
-    /// この検査も <see cref="StaticFileRoots_AreOnlyKnownPublicAssets"/>（<c>wwwroot</c> 直下しか
+    /// この検査も <see cref="StaticAssets_AreOnlyApprovedPublicAssets"/>（<c>wwwroot</c> の外は
     /// 見ない）も素通りする。</para>
     ///
     /// <para><b>行の内容だけでは足りない（ここが要点）。</b> 以前この解説は「行の内容まで表に
@@ -605,7 +605,7 @@ public class ResponseCacheAttributePolicyTests
     ///     <c>OnPrepareResponse</c> をそのまま代入する。</description></item>
     /// </list>
     /// <para>どちらも許可済みの行は 1 回しか現れないので回数の照合を通り、
-    /// <see cref="StaticFileRoots_AreOnlyKnownPublicAssets"/> は <c>wwwroot</c> 直下しか見ないため
+    /// <see cref="StaticAssets_AreOnlyApprovedPublicAssets"/> は <c>wwwroot</c> の外を見ないため
     /// <c>/attachments/&lt;id&gt;/report.pdf</c> が <c>public,max-age=3600</c> で返る差分が
     /// <b>全件緑のまま通った</b>。しかも括り出しは §6 が要求する書き方そのもの。</para>
     ///
@@ -818,7 +818,7 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(expected, IsOutputCacheAttributeTypeName(typeFullName));
     }
 
-    // wwwroot の直下が、キャッシュ可能にしてよいと確認済みの入れ物だけであること。
+    // wwwroot 配下が、キャッシュ可能にしてよいと確認済みの入れ物・資産だけであること。
     //
     // <b>なぜ要るのか。</b> 静的ファイル配信の OnPrepareResponse は wwwroot 配下の
     // <b>すべて</b>に public,max-age=3600 を名乗らせる。つまり wwwroot に新しい入れ物を
@@ -826,42 +826,283 @@ public class ResponseCacheAttributePolicyTests
     // 添付画像やエクスポートした CSV を wwwroot/attachments や wwwroot/exports へ置くと、
     // 共有キャッシュと共用端末のディスクにログアウト後 1 時間残る。
     // 属性・MvcOptions・直接書き込みのどの検査にも現れない(Program.cs は許可表に載っている)。
+    //
+    // <b>直下だけを見てはいけない(issue #254)。</b> 以前は wwwroot の<b>直下</b>だけを
+    // 列挙していたため、<b>承認済みの入れ物の中に新しい入れ物を作ると素通りした</b> ——
+    // wwwroot/js/exports/patient-report.pdf も wwwroot/lib/reports/… も、直下のエントリを
+    // 1 つも増やさないので検査は緑のままだった。配信されるのは配下のすべてなので、
+    // 走査もそこへ合わせる。ファイルは<b>種類(拡張子)</b>で見る —— 入れ物を増やさずに
+    // wwwroot/css/patient-report.pdf と置く形が、同じ理由で素通りするため。
+    //
+    // <b>ただし「中を見ない」入れ物が要る。</b> wwwroot/lib は CDN 由来の取得物が数百件入り、
+    // 1 件ずつ承認しても中身はこちらが書いたものではない。OpaqueStaticDirectories に
+    // 理由付きで登録した入れ物だけは中へ降りない —— 降りないという判断そのものが、
+    // 表の 1 行としてレビューに現れる。
+    //
+    // <b>残っている境界。</b> 種類での判定なので、承認済みの拡張子を名乗る PHI
+    // (例: 患者一覧を .js として書き出す)は拾えない。拡張子の表を広げる差分が
+    // レビューに現れることと、配信ルート自体を見張る OnlyIntendedPlacesWireUpStaticFileServing
+    // が対になって支えている。
     [Fact]
-    public void StaticFileRoots_AreOnlyKnownPublicAssets()
+    public void StaticAssets_AreOnlyApprovedPublicAssets()
     {
-        // wwwroot の直下にある入れ物(ファイル・ディレクトリ)の名前を集める
-        var entries = Directory
-            .EnumerateFileSystemEntries(Path.Combine(RepositoryPaths.WebProject, "wwwroot"))
-            .Select(Path.GetFileName)
-            .Where(name => !string.IsNullOrEmpty(name))
-            .Select(name => name!)
-            .ToList();
+        // wwwroot(静的ファイル配信の根)の絶対パスを組み立てる
+        var root = Path.Combine(RepositoryPaths.WebProject, "wwwroot");
+
+        // 配下を再帰で列挙する(中を見ない入れ物の内側へは降りない)
+        var entries = EnumerateStaticAssets(root);
 
         // 1 つも読めないなら走査が壊れている(「見るべき対象ゼロ＝緑」を避ける)
         Assert.NotEmpty(entries);
 
-        // 確認済みの入れ物に含まれないものを集める
-        var unexpected = entries
-            .Where(name => !PubliclyCacheableStaticRoots.ContainsKey(name))
-            .ToList();
+        // 承認済みの表に無いものを集める
+        var unapproved = FindUnapprovedStaticAssets(entries);
 
-        // 想定外の入れ物が無いことを、名指しの一覧付きで確認する
+        // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する
         Assert.True(
-            unexpected.Count == 0,
-            "wwwroot に、キャッシュ可能にしてよいと確認していない入れ物があります: "
-                + string.Join(", ", unexpected)
+            unapproved.Count == 0,
+            "wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: "
+                + string.Join(", ", unapproved.Select(item => $"{item.RelativePath}({item.Cause})"))
                 + "。静的ファイル配信は wwwroot 配下のすべてに "
                 + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
                 + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
                 + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
                 + "認可を通すアクションから返してください。"
-                + "公開して問題ない資産なら、理由を添えて PubliclyCacheableStaticRoots へ登録します。");
+                + $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
+                + $"ファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ理由を添えて登録します。");
+    }
+
+    // 走査が「承認済みの入れ物の中へ実際に降りている」ことと、
+    // 「中を見ない入れ物の手前で止まっている」ことを、実在のツリーで確かめる。
+    //
+    // <b>なぜ別に要るのか。</b> 上の検査は<b>違反が 0 件なら緑</b>なので、走査が降りるのを
+    // やめても(＝直下しか見なかった頃へ戻っても)全件緑のまま通る —— issue #254 の
+    // fail-open がそのまま復活し、痕跡はどこにも出ない。降りたこと自体を固定する。
+    //
+    // 手がかりは判定とは独立に選ぶ: css/site.css は Git が追跡している実ファイルで、
+    // 承認済みの入れ物の 1 階層下にある(降りなければ絶対に現れない)。
+    [Fact]
+    public void EnumerateStaticAssets_DescendsIntoApprovedDirectories_ButStopsAtOpaqueOnes()
+    {
+        // wwwroot の絶対パスを組み立てる
+        var root = Path.Combine(RepositoryPaths.WebProject, "wwwroot");
+
+        // 配下を再帰で列挙する
+        var entries = EnumerateStaticAssets(root);
+
+        // 承認済みの入れ物の中へ降りていること(1 階層下の実ファイルが現れる)
+        Assert.Contains(entries, entry => entry.RelativePath == "css/site.css");
+
+        // 中を見ない入れ物そのものは 1 件として現れること
+        Assert.Contains(entries, entry => entry is { RelativePath: "lib", IsDirectory: true });
+
+        // その内側へは降りていないこと(数百件の取得物を列挙していない)
+        Assert.DoesNotContain(entries, entry => entry.RelativePath.StartsWith("lib/", StringComparison.Ordinal));
+    }
+
+    // 判定(承認済みかどうかの突き合わせ)が、拾う側と見逃さない側の両方で働くこと。
+    //
+    // 実在のツリーには違反が 1 件も無いので、判定を「常に空を返す」へ潰しても上の検査は
+    // 緑のまま通る。合成した入力で判定そのものを固定する。
+    [Fact]
+    public void FindUnapprovedStaticAssets_ReportsNestedContainersAndUnexpectedFileTypes()
+    {
+        // 合成の承認表(実在の表に依存しないので、表を書き換えてもこの検査の意味は変わらない)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の入れ物を 1 つだけ承認しておく
+            ["js"] = "テスト用の承認済みの入れ物。",
+        };
+
+        // 合成の拡張子表(こちらも 1 種類だけ承認しておく)
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 検査用のファイル種別を 1 つだけ承認しておく
+            [".js"] = "テスト用の承認済みの種類。",
+        };
+
+        // 承認済み・未承認を混ぜた入力を組み立てる
+        var entries = new[]
+        {
+            // 承認済みの入れ物(通る)
+            new StaticAssetEntry("js", IsDirectory: true),
+            // 承認済みの種類のファイル(通る)
+            new StaticAssetEntry("js/site.js", IsDirectory: false),
+            // 大文字で綴った同じ種類(URL の配信は綴りの大小を区別しないので通す)
+            new StaticAssetEntry("js/SITE.JS", IsDirectory: false),
+            // 承認済みの入れ物の中に作った新しい入れ物(issue #254 の本体。落とす)
+            new StaticAssetEntry("js/exports", IsDirectory: true),
+            // その中のエクスポート(種類も承認されていないので落とす)
+            new StaticAssetEntry("js/exports/patient-report.pdf", IsDirectory: false),
+            // 拡張子を持たないファイル(種類が判断できないので落とす)
+            new StaticAssetEntry("js/LICENSE", IsDirectory: false),
+        };
+
+        // 合成の表で判定する
+        var unapproved = FindUnapprovedStaticAssets(entries, approvedDirectories, approvedExtensions);
+
+        // 落ちるのは 3 件で、入力の順に並ぶこと
+        Assert.Equal(
+            new[] { "js/exports", "js/exports/patient-report.pdf", "js/LICENSE" },
+            unapproved.Select(item => item.RelativePath).ToArray());
+
+        // 入れ物とファイルで理由が分かれていること(失敗文言が直し方を取り違えないため)
+        Assert.Equal(UnapprovedDirectoryCause, unapproved[0].Cause);
+        Assert.Equal(UnapprovedExtensionCause, unapproved[1].Cause);
+        Assert.Equal(UnapprovedExtensionCause, unapproved[2].Cause);
+    }
+
+    // 承認済みだけの入力では 1 件も落とさないこと(「常に落とす」判定への退行を止める)。
+    [Fact]
+    public void FindUnapprovedStaticAssets_ReportsNothingWhenEverythingIsApproved()
+    {
+        // 合成の承認表(入れ物 1 つ)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の入れ物
+            ["js"] = "テスト用の承認済みの入れ物。",
+        };
+
+        // 合成の拡張子表(種類 1 つ)
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 検査用のファイル種別
+            [".js"] = "テスト用の承認済みの種類。",
+        };
+
+        // 承認済みだけを並べた入力
+        var entries = new[]
+        {
+            // 承認済みの入れ物
+            new StaticAssetEntry("js", IsDirectory: true),
+            // 承認済みの種類のファイル
+            new StaticAssetEntry("js/site.js", IsDirectory: false),
+        };
+
+        // 1 件も落ちないこと
+        Assert.Empty(FindUnapprovedStaticAssets(entries, approvedDirectories, approvedExtensions));
+    }
+
+    // 「中を見ない入れ物か」の判定が、登録した入れ物だけに当たること。
+    [Theory]
+    // 登録済みの入れ物(降りない)
+    [InlineData("lib", true)]
+    // 承認済みだが登録していない入れ物(降りる)
+    [InlineData("css", false)]
+    // 登録済みの入れ物の配下(そもそも列挙されないが、完全一致だけで判定していることを固定する)
+    [InlineData("lib/jquery", false)]
+    // 綴りが前方一致するだけの別の入れ物(降りる)
+    [InlineData("library", false)]
+    public void IsOpaqueStaticDirectory_MatchesOnlyRegisteredContainers(string relativePath, bool expected)
+    {
+        // 完全一致でのみ「中を見ない」と判断していることを確かめる
+        Assert.Equal(expected, IsOpaqueStaticDirectory(relativePath));
+    }
+
+    // 「中を見ない」入れ物は、承認済みの入れ物でもあること。
+    //
+    // 片方だけに載せると、<b>中へ降りないのに入れ物自身は未承認</b>(＝毎回落ちる)か、
+    // その逆で<b>承認したつもりの入れ物の中を誰も見ない</b>状態になる。
+    [Fact]
+    public void OpaqueStaticDirectories_AreAlsoApproved()
+    {
+        // 承認表に載っていない「中を見ない入れ物」を集める
+        var missing = OpaqueStaticDirectories.Keys
+            .Where(name => !ApprovedStaticDirectories.ContainsKey(name))
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            missing.Count == 0,
+            $"{nameof(OpaqueStaticDirectories)} に載せた入れ物は "
+                + $"{nameof(ApprovedStaticDirectories)} にも載せてください: "
+                + string.Join(", ", missing));
+    }
+
+    // 3 つの表のすべてに、空でない理由が書かれていること。
+    //
+    // 理由を誰も読まないままにすると、空文字を入れるだけで検査を黙らせられる
+    // (LengthGovernanceExclusions_AllHaveAReason と同じ扱い)。
+    [Fact]
+    public void StaticAssetTables_AllHaveAReason()
+    {
+        // 3 つの表を「表の名前 → 中身」の組にして順に見る
+        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
+        {
+            // 承認済みの入れ物
+            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
+            // 中を見ない入れ物
+            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
+            // 承認済みのファイル種別
+            (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
+        };
+
+        // 理由が空・空白のエントリを、表の名前付きで集める
+        var blank = tables
+            .SelectMany(table => table.Entries
+                .Where(entry => string.IsNullOrWhiteSpace(entry.Value))
+                .Select(entry => $"{table.Name}[{entry.Key}]"))
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            blank.Count == 0,
+            "理由の書かれていない登録があります: " + string.Join(", ", blank)
+                + "。理由を書かない登録は、検査を黙らせるためだけの 1 行と区別が付きません。");
+    }
+
+    // 承認済みのファイル種別が、拡張子の綴り(先頭が . の小文字)で登録されていること。
+    //
+    // "css" や ".CSS" と書いても突き合わせ相手(Path.GetExtension の戻り値)と形が合わず、
+    // <b>その 1 行だけが何にも当たらない</b>まま表に残る(登録したつもりの種別が通らない)。
+    [Fact]
+    public void ApprovedStaticFileExtensions_AreSpelledAsExtensions()
+    {
+        // 拡張子の綴りになっていないキーを集める
+        var malformed = ApprovedStaticFileExtensions.Keys
+            .Where(extension =>
+                !extension.StartsWith('.')
+                || extension.Length < 2
+                || extension != extension.ToLowerInvariant())
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            malformed.Count == 0,
+            $"{nameof(ApprovedStaticFileExtensions)} のキーは先頭が . の小文字(例: .css)で"
+                + "書いてください: " + string.Join(", ", malformed));
     }
 
     /// <summary>
-    /// <c>wwwroot</c> 直下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
+    /// <c>wwwroot</c> 配下で見つけた 1 件（走査の結果を判定へ渡すための入れ物）。
     /// </summary>
-    private static readonly IReadOnlyDictionary<string, string> PubliclyCacheableStaticRoots =
+    /// <param name="RelativePath"><c>wwwroot</c> からの相対パス（区切りは <c>/</c> に正規化済み）。</param>
+    /// <param name="IsDirectory">入れ物（ディレクトリ）なら true、ファイルなら false。</param>
+    private readonly record struct StaticAssetEntry(string RelativePath, bool IsDirectory);
+
+    /// <summary>
+    /// 承認されていない 1 件と、その理由（失敗文言に名指しで出す）。
+    /// </summary>
+    /// <param name="RelativePath"><c>wwwroot</c> からの相対パス。</param>
+    /// <param name="Cause">入れ物として未承認か、種類として未承認か。</param>
+    private readonly record struct UnapprovedStaticAsset(string RelativePath, string Cause);
+
+    /// <summary>入れ物そのものが承認されていないときの理由。</summary>
+    private const string UnapprovedDirectoryCause = "承認されていない入れ物";
+
+    /// <summary>ファイルの種類が承認されていないときの理由。</summary>
+    private const string UnapprovedExtensionCause = "承認されていない種類のファイル";
+
+    /// <summary>
+    /// <c>wwwroot</c> 配下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
+    /// キーは <c>wwwroot</c> からの相対パス（区切りは <c>/</c>）。
+    ///
+    /// <para><b>「実在するか」は検査しない。</b> <c>js</c> は TypeScript の出力先で
+    /// <c>.gitignore</c> 済みのため、ビルド前のツリーには存在しない。実在を要求すると
+    /// 「ビルドしていない手元でだけ落ちる」検査になり、直し方が「ビルドする」しか
+    /// 無くなる（この repo が繰り返し避けている、直しようの無い要求）。</para>
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ApprovedStaticDirectories =
         new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // アプリ自身のスタイルシート
@@ -870,9 +1111,156 @@ public class ResponseCacheAttributePolicyTests
             ["js"] = "アプリのスクリプト(TypeScript の出力)。利用者ごとの内容を持たない。",
             // 第三者ライブラリ
             ["lib"] = "第三者ライブラリ(jQuery 等)。版付き URL でないため期間を短く保つ。",
-            // ブラウザのタブに出るアイコン
-            ["favicon.ico"] = "ブラウザのアイコン。公開情報。",
         };
+
+    /// <summary>
+    /// 中を見ない（走査が降りない）入れ物と、その理由。
+    /// <see cref="ApprovedStaticDirectories"/> にも載っている必要がある。
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> OpaqueStaticDirectories =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 第三者ライブラリの取得物(数百件)。1 件ずつ承認しても中身はこちらが書いたものではない
+            ["lib"] = "CDN 由来の取得物が数百件入る。中身はこちらが書いたものではなく、1 件ずつ承認しても意味が無い。",
+        };
+
+    /// <summary>
+    /// <c>wwwroot</c> 配下（中を見ない入れ物の外）に置いてよいファイルの種類と、その理由。
+    /// キーは先頭が <c>.</c> の小文字（<c>Path.GetExtension</c> の戻り値と同じ形）。
+    ///
+    /// <para><b>先回りで足さない。</b> 実際に置いてある種類だけを載せる。使う予定の無い
+    /// 種類を先に承認すると、その分だけ検出網が黙って広がる（§6 の「将来を見越した
+    /// 過度な抽象化を避ける」）。ソースマップ等を出すようにしたときは、
+    /// その変更と同じ差分でここへ 1 行足す。</para>
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ApprovedStaticFileExtensions =
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // スタイルシート
+            [".css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
+            // スクリプト(TypeScript の出力)
+            [".js"] = "アプリのスクリプト(TypeScript の出力)。利用者ごとの内容を持たない。",
+            // ブラウザのタブに出るアイコン
+            [".ico"] = "ブラウザのアイコン。公開情報。",
+        };
+
+    /// <summary>
+    /// <c>wwwroot</c> 配下を再帰的に列挙する。
+    /// <see cref="OpaqueStaticDirectories"/> に登録した入れ物の中へは降りない
+    /// （その入れ物自身は 1 件として返す）。
+    /// </summary>
+    /// <param name="root"><c>wwwroot</c> の絶対パス。</param>
+    /// <returns>見つかった入れ物・ファイル（相対パスと種別）の一覧。</returns>
+    private static IReadOnlyList<StaticAssetEntry> EnumerateStaticAssets(string root)
+    {
+        // 見つけたものを順に積む入れ物
+        var found = new List<StaticAssetEntry>();
+
+        // これから中を見るディレクトリの待ち行列(再帰ではなく反復で辿る)
+        var pending = new Stack<string>();
+
+        // 出発点は wwwroot 自身
+        pending.Push(root);
+
+        // 待ち行列が空になるまで辿り続ける
+        while (pending.Count > 0)
+        {
+            // 次に中を見るディレクトリを取り出す
+            var directory = pending.Pop();
+
+            // その直下にあるものを 1 件ずつ見る
+            foreach (var path in Directory.EnumerateFileSystemEntries(directory))
+            {
+                // 入れ物(ディレクトリ)かどうかを調べる
+                var isDirectory = Directory.Exists(path);
+
+                // wwwroot からの相対パスにし、区切りを / に揃える(OS 差を持ち込まない)
+                var relativePath = Path.GetRelativePath(root, path).Replace(Path.DirectorySeparatorChar, '/');
+
+                // 見つけた 1 件として記録する
+                found.Add(new StaticAssetEntry(relativePath, isDirectory));
+
+                // 入れ物で、かつ「中を見ない」登録が無ければ、その中も辿る
+                if (isDirectory && !IsOpaqueStaticDirectory(relativePath))
+                {
+                    // 後で中を見るために待ち行列へ積む
+                    pending.Push(path);
+                }
+            }
+        }
+
+        // 見つかったものをそのまま返す
+        return found;
+    }
+
+    /// <summary>
+    /// その入れ物が「中を見ない」登録を持つかを返す（判定の純粋関数）。
+    /// </summary>
+    /// <param name="relativePath"><c>wwwroot</c> からの相対パス。</param>
+    /// <returns>中を見ない入れ物なら true。</returns>
+    private static bool IsOpaqueStaticDirectory(string relativePath) =>
+        // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)
+        OpaqueStaticDirectories.ContainsKey(relativePath);
+
+    /// <summary>
+    /// 承認されていない入れ物・ファイルを集める（実在の表を使う入口）。
+    /// </summary>
+    /// <param name="entries">走査で見つかった一覧。</param>
+    /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
+    private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
+        IEnumerable<StaticAssetEntry> entries) =>
+        // 実在の 2 つの表を渡して、判定そのものは下の純粋関数に任せる
+        FindUnapprovedStaticAssets(entries, ApprovedStaticDirectories, ApprovedStaticFileExtensions);
+
+    /// <summary>
+    /// 承認されていない入れ物・ファイルを集める（判定の純粋関数）。
+    ///
+    /// <para>表を引数で受けるのは、実在のツリーに違反が 1 件も無いため
+    /// 合成入力で判定そのものを固定する必要があるから。</para>
+    /// </summary>
+    /// <param name="entries">走査で見つかった一覧。</param>
+    /// <param name="approvedDirectories">承認済みの入れ物の表。</param>
+    /// <param name="approvedExtensions">承認済みのファイル種別の表。</param>
+    /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
+    private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
+        IEnumerable<StaticAssetEntry> entries,
+        IReadOnlyDictionary<string, string> approvedDirectories,
+        IReadOnlyDictionary<string, string> approvedExtensions)
+    {
+        // 承認されていなかったものを順に積む入れ物
+        var unapproved = new List<UnapprovedStaticAsset>();
+
+        // 見つかったものを 1 件ずつ順に判定する
+        foreach (var entry in entries)
+        {
+            // 入れ物(ディレクトリ)は、相対パスが承認表にあるかで判断する
+            if (entry.IsDirectory)
+            {
+                // 表に無ければ「承認されていない入れ物」として記録する
+                if (!approvedDirectories.ContainsKey(entry.RelativePath))
+                {
+                    // 相対パスと理由を添えて積む
+                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedDirectoryCause));
+                }
+
+                // 入れ物の判定はここで終わり(拡張子では見ない)
+                continue;
+            }
+
+            // ファイルは種類(拡張子)で判断する。拡張子が無ければ空文字になり、表にも無い
+            var extension = Path.GetExtension(entry.RelativePath);
+
+            // 表に無ければ「承認されていない種類のファイル」として記録する
+            if (!approvedExtensions.ContainsKey(extension))
+            {
+                // 相対パスと理由を添えて積む
+                unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedExtensionCause));
+            }
+        }
+
+        // 入力の順を保ったまま返す
+        return unapproved;
+    }
 
     /// <summary>
     /// その属性インスタンスが出力キャッシュの属性かを返す。
