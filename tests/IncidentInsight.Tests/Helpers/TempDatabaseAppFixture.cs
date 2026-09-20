@@ -152,15 +152,33 @@ public abstract class TempDatabaseAppFixture : IDisposable
             // (b) GC.SuppressFinalize にも到達しない。消せなかったファイルは
             // プロセス終了後に OS の一時領域の掃除へ委ねる ——後始末の失敗で
             // 検証結果を赤くすると、本物の不具合と見分けが付かなくなる
+            // <b>先に接続プールを解放する</b>。Microsoft.Data.Sqlite は接続をプールするので、
+            // ホストを止めただけではファイルハンドルが残る。Linux は開いたままでも
+            // unlink できてしまうため CI では気付けないが、Windows では削除が
+            // IOException になり、下の catch が黙って飲み込む ——
+            // つまり「このクラスが防ぐはずの溜まり続ける状態」が、
+            // 検査がすべて緑のまま特定の環境でだけ起き続ける。
+            //
+            // <b>削除とは別の try に分ける。</b> 以前は同じ try に並べていたため、
+            // プールの解放が IOException / UnauthorizedAccessException 以外
+            // (プールの状態が壊れているときの InvalidOperationException 等)を投げると
+            // <b>削除そのものが走らなかった</b> ——このクラスが存在する理由(一時ファイルを
+            // 溜めない)が、いちばん解放に失敗している場面で黙って失われる。
+            // 同じ理由で catch は種類を絞らない: ここで拾い損ねた例外は
+            // 下の後始末ごと飛ばしてしまい、Factory.Dispose() の本当のエラーも置き換える
             try
             {
-                // <b>先に接続プールを解放する</b>。Microsoft.Data.Sqlite は接続をプールするので、
-                // ホストを止めただけではファイルハンドルが残る。Linux は開いたままでも
-                // unlink できてしまうため CI では気付けないが、Windows では削除が
-                // IOException になり、下の catch が黙って飲み込む ——
-                // つまり「このクラスが防ぐはずの溜まり続ける状態」が、
-                // 検査がすべて緑のまま特定の環境でだけ起き続ける
+                // 接続プールを解放して、ファイルハンドルを手放す
                 Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            }
+            catch (Exception)
+            {
+                // 解放できなくても削除は試みる(掴まれたままなら下の catch が受ける)
+            }
+
+            // 本体と補助ファイルをまとめて消す
+            try
+            {
                 // 生成した一時 DB と補助ファイルを消す
                 SqliteTestFiles.Cleanup(_databasePath);
             }

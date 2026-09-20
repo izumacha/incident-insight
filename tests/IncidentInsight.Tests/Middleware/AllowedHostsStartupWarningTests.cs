@@ -150,22 +150,36 @@ public class AllowedHostsStartupWarningTests
     /// </remarks>
     private sealed class WarningCapturingFixture : TempDatabaseAppFixture
     {
-        // 起動中に出た Warning 以上のメッセージ（並行して書かれうるので並行コレクション）
-        private static readonly ConcurrentQueue<string> Captured = new();
-
         // このインスタンスが起動したときに溜まった分だけを見せる
         private readonly string[] _warnings;
 
         /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
         /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
         public WarningCapturingFixture(string allowedHosts)
+            // <b>溜め込み先はインスタンスごとに作り、ここから配る。</b>
+            // 基底のコンストラクタ引数はインスタンスのフィールドを参照できないので、
+            // 以前は static なキューを共有していた ——ところがホストは Dispose() まで
+            // 生きたまま同じキューへ書き続けるので、<b>停止時に出た Warning
+            // （EF Core / Identity / ホステッドサービス）が次のフィクスチャの
+            // 読み出しに混ざる</b>。いまは各アサーションが目印で絞っているので無害だが、
+            // Assert.Empty(...) のような検査を足した瞬間に<b>非決定的に落ち、
+            // しかも無関係なテストを名指しする</b>。private なコンストラクタへ
+            // 1 度渡せば、共有そのものが無くなる
+            : this(allowedHosts, new ConcurrentQueue<string>())
+        {
+        }
+
+        /// <summary>溜め込み先を受け取って起動する（共有しないための経路）。</summary>
+        /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
+        /// <param name="captured">このインスタンス専用の溜め込み先。</param>
+        private WarningCapturingFixture(string allowedHosts, ConcurrentQueue<string> captured)
             : base(
                 "ii-hostwarn",
                 new Dictionary<string, string?> { ["AllowedHosts"] = allowedHosts },
                 // 警告の分岐（!IsDevelopment()）へ入るために Staging を使う
                 "Staging",
                 // 起動前に、溜め込むだけのプロバイダを登録する
-                logging => logging.AddProvider(new CapturingLoggerProvider(Captured)))
+                logging => logging.AddProvider(new CapturingLoggerProvider(captured)))
         {
             // <b>アプリの起動をここで強制する。</b> WebApplicationFactory は遅延生成で、
             // Services / CreateClient に触れるまでパイプラインを組み立てない ——
@@ -174,9 +188,7 @@ public class AllowedHostsStartupWarningTests
 
             // 起動が済んだ時点で溜まっている分を切り出して持つ
             // （読み出しは 1 度きりにして、あとから増えた分に依存しない）
-            _warnings = [.. Captured];
-            // 次のフィクスチャへ持ち越さないよう空にする
-            Captured.Clear();
+            _warnings = [.. captured];
         }
 
         /// <summary>起動中に出た警告（新しい順ではなく、出た順）。</summary>

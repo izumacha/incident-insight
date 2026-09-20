@@ -718,6 +718,58 @@ public class ResponseCacheAttributePolicyTests
         }
     }
 
+    // 数える綴りの表に、空の綴りが 1 つも無いこと。
+    //
+    // <b>なぜ「落ちる」より手前で止めるのか。</b> 空の綴りは CountOccurrences を
+    // 永久に回す(進める幅が 0 になる)。呼ばれた側でも落ちるようにしたが、そこで出るのは
+    // 「綴りが空です」だけで、<b>どの表が壊れているか</b>は読み手に伝わらない。
+    // 表ごとに名指しして落とせば、直す場所がそのまま失敗文言に出る。
+    //
+    // 空が紛れ込む経路は実在する(綴りを文字列連結や定数の参照で組み立てたときのタイポ)。
+    // 以前はどの検査も綴りの中身を見ていなかったので、混入は<b>緑のスイートを
+    // 失敗文言の無いハングへ変えていた</b>。
+    [Theory]
+    [InlineData(nameof(StaticFileWiringTokens))]
+    [InlineData(nameof(OutputCacheWiringTokens))]
+    [InlineData(nameof(CacheControlTokens))]
+    public void WiringTokenTables_ContainNoEmptySpelling(string tableName)
+    {
+        // 名前から実際の表を選ぶ(表を足したらここにも 1 行足すことになる)
+        var tokens = tableName switch
+        {
+            nameof(StaticFileWiringTokens) => StaticFileWiringTokens,
+            nameof(OutputCacheWiringTokens) => OutputCacheWiringTokens,
+            nameof(CacheControlTokens) => CacheControlTokens,
+            // 名前の付け替えで表が静かに検査から外れないよう、知らない名前は落とす
+            _ => throw new ArgumentOutOfRangeException(nameof(tableName), tableName, "知らない綴りの表です。"),
+        };
+
+        // 表そのものが空なら、その綴りを使う検査は「違反ゼロ＝緑」で無力化されている
+        Assert.NotEmpty(tokens);
+
+        // 1 つずつ、空でも空白だけでもないことを確かめる
+        Assert.All(
+            tokens,
+            token => Assert.False(
+                string.IsNullOrWhiteSpace(token),
+                $"{tableName} に空の綴りがあります。空の綴りは出現回数の数え上げを永久に回します。"));
+    }
+
+    // 空の綴りを渡されたら、黙って回り続けるのではなくその場で落ちること。
+    //
+    // <b>上の表の検査だけでは足りない。</b> あちらは実在する表しか見ないので、
+    // 数え上げ側の歯止めを外しても(表が正しい限り)全件緑のまま通る。
+    // 「黙って止まる」を「落ちる」へ変えたことそのものを、合成入力で固定する。
+    [Fact]
+    public void CountOccurrences_RejectsAnEmptyToken_RatherThanLoopingForever()
+    {
+        // 空文字はその場で落ちること(戻ってこない代わりに例外で知らせる)
+        Assert.Throws<ArgumentException>(() => CountOccurrences("UseStaticFiles", string.Empty));
+
+        // 普通の綴りは今までどおり数えられること(歯止めが数え上げを壊していないこと)
+        Assert.Equal(2, CountOccurrences("UseStaticFiles(a); UseStaticFiles(b);", "UseStaticFiles"));
+    }
+
     // 判定(属性の型名の照合)が、拾う側と見逃さない側の両方で働くこと。
     //
     // 実在の宣言が 0 件なので、判定を「常に false」へ潰しても上の検査は緑のまま通る。
@@ -1098,10 +1150,22 @@ public class ResponseCacheAttributePolicyTests
     /// 配線が増えたことが差分に現れない（実測でこの形が素通りした）。
     /// </remarks>
     /// <param name="text">走査する文字列。</param>
-    /// <param name="token">数える綴り。</param>
+    /// <param name="token">数える綴り(空は不可)。</param>
     /// <returns>現れた回数。</returns>
+    /// <exception cref="ArgumentException">綴りが空のとき。</exception>
     private static int CountOccurrences(string text, string token)
     {
+        // <b>空の綴りは受け付けない。</b> string.IndexOf("", i) は i を返し、
+        // 進める幅が 0 なので探索位置が動かず、<b>このループは永久に回る</b> ——
+        // スイートは失敗文言も無くハングし、どのテストで止まったのかも分からない。
+        // 空が紛れ込む経路は実在する(綴りの表を文字列連結で組み立てたときのタイポ等)ので、
+        // 黙って止まるのではなく<b>その場で落ちる</b>ほうを取る(§9 fail-closed)
+        if (string.IsNullOrEmpty(token))
+        {
+            // 呼び出し側の綴りの表が壊れていることを名指しして落とす
+            throw new ArgumentException("数える綴りが空です。綴りの表を確認してください。", nameof(token));
+        }
+
         // 見つかった回数
         var count = 0;
         // 先頭から順に、見つかるたびにその綴りのぶんだけ進める
