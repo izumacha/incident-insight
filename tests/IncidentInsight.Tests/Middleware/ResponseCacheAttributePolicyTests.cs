@@ -1,5 +1,7 @@
 // 走査と判定の共通処理を使う
 using IncidentInsight.Tests.Helpers;
+// 綴りの表を名前ではなく宣言から導くために反射を使う
+using System.Reflection;
 // ResponseCacheAttribute / ResponseCacheLocation / ControllerBase を使う
 using Microsoft.AspNetCore.Mvc;
 
@@ -728,32 +730,48 @@ public class ResponseCacheAttributePolicyTests
     // 空が紛れ込む経路は実在する(綴りを文字列連結や定数の参照で組み立てたときのタイポ)。
     // 以前はどの検査も綴りの中身を見ていなかったので、混入は<b>緑のスイートを
     // 失敗文言の無いハングへ変えていた</b>。
-    [Theory]
-    [InlineData(nameof(StaticFileWiringTokens))]
-    [InlineData(nameof(OutputCacheWiringTokens))]
-    [InlineData(nameof(CacheControlTokens))]
-    public void WiringTokenTables_ContainNoEmptySpelling(string tableName)
+    //
+    // <b>見る表を手で書き並べない。</b> 包含リストにすると、4 つ目の表を足した人が
+    // 登録を忘れたときにその表だけが黙って照合から外れ、痕跡はテスト件数が 1 減ることだけ
+    // ——正当なリファクタと見分けが付かない(CLAUDE.md がこの形の事故を繰り返し記録している)。
+    // このクラスが宣言している string[] の綴りの表から導出する。
+    [Fact]
+    public void WiringTokenTables_ContainNoEmptySpelling()
     {
-        // 名前から実際の表を選ぶ(表を足したらここにも 1 行足すことになる)
-        var tokens = tableName switch
+        // このクラスが自分で宣言している「綴りの表」をすべて拾う
+        var tables = typeof(ResponseCacheAttributePolicyTests)
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Public | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            .Where(f => f.FieldType == typeof(string[]))
+            .Where(f => f.Name.EndsWith(TokenTableSuffix, StringComparison.Ordinal))
+            .OrderBy(f => f.Name, StringComparer.Ordinal)
+            .ToList();
+
+        // 1 つも拾えないなら命名規約か導出が変わっている(「見るべき表ゼロ＝緑」を避ける)
+        Assert.True(
+            tables.Count > 0,
+            $"*{TokenTableSuffix} という名前の綴りの表が 1 つも見つからない。"
+                + "命名規約か導出を変えたなら、この検査も同じ変更セットで直すこと。");
+
+        // 表ごとに、空でないことと、空の綴りを含まないことを確かめる
+        foreach (var table in tables)
         {
-            nameof(StaticFileWiringTokens) => StaticFileWiringTokens,
-            nameof(OutputCacheWiringTokens) => OutputCacheWiringTokens,
-            nameof(CacheControlTokens) => CacheControlTokens,
-            // 名前の付け替えで表が静かに検査から外れないよう、知らない名前は落とす
-            _ => throw new ArgumentOutOfRangeException(nameof(tableName), tableName, "知らない綴りの表です。"),
-        };
+            // 実際の値を読む(static なのでインスタンスは要らない)
+            var tokens = (string[])table.GetValue(null)!;
 
-        // 表そのものが空なら、その綴りを使う検査は「違反ゼロ＝緑」で無力化されている
-        Assert.NotEmpty(tokens);
+            // 表そのものが空なら、その綴りを使う検査は「違反ゼロ＝緑」で無力化されている
+            Assert.True(tokens.Length > 0, $"{table.Name} が空です。この表を使う検査は何も見ていません。");
 
-        // 1 つずつ、空でも空白だけでもないことを確かめる
-        Assert.All(
-            tokens,
-            token => Assert.False(
-                string.IsNullOrWhiteSpace(token),
-                $"{tableName} に空の綴りがあります。空の綴りは出現回数の数え上げを永久に回します。"));
+            // 1 つずつ、空でも空白だけでもないことを確かめる
+            Assert.All(
+                tokens,
+                token => Assert.False(
+                    string.IsNullOrWhiteSpace(token),
+                    $"{table.Name} に空の綴りがあります。空の綴りは出現回数の数え上げを永久に回します。"));
+        }
     }
+
+    /// <summary>「数える綴りの表」だと見分けるためのフィールド名の接尾辞。</summary>
+    private const string TokenTableSuffix = "Tokens";
 
     // 空の綴りを渡されたら、黙って回り続けるのではなくその場で落ちること。
     //
@@ -960,8 +978,12 @@ public class ResponseCacheAttributePolicyTests
                 "  メモ",
                 "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // 閉じていないコメントの中で終わっても、実コードを拾わない
-        Assert.Empty(ScanLines(
+        // <b>閉じていないコメントの中で終わったら、黙って拾わないのではなく落ちる。</b>
+        // 以前はここで Assert.Empty を期待していたが、それは「以降の行が走査から落ちた」
+        // 状態をそのまま正常として受け入れる形だった ——実際にはこの状態は、
+        // リテラルの中身をコメントの開始と読み違えたときにも起き、そのとき
+        // <b>本物のキャッシュ指示が黙って見逃される</b>(CodeLines の解説が正本)
+        Assert.Throws<InvalidOperationException>(() => ScanLines(
             "/*",
             "  Response.Headers.CacheControl = \"public\";"));
     }
@@ -1145,6 +1167,48 @@ public class ResponseCacheAttributePolicyTests
                 "\"; Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
+    // ビューの走査が取り違えて「以降の行を丸ごと落とす」状態になったら、黙らずに落ちること。
+    //
+    // <b>持ち越しだけでは塞ぎ切れない穴(レビューで実測)。</b> リテラルの持ち越しは
+    // 「開きだと分かったリテラル」にしか効かない。ビューの走査は開きを直前の文字から
+    // 当てているので、return "…" / => "…" の後ろの生文字列のように当たらない形があり、
+    // その中身の /* が以降のファイル全体を飲み込む ——issue #252 とまったく同じ壊れ方が、
+    // 開きの取り違えという別の経路から再現する。綴りを足して開きの判定を広げる直し方は
+    // 取らない(地の文が開きと判定されて正しいコードで赤くなる向きへ踏み直すだけ)。
+    //
+    // 代わりに「閉じないままファイルが終わった」ことを読めなかった証拠として扱う。
+    // コンパイルできるソースがこの状態で終わることは無いので、誤って赤くなる心配は無い。
+    [Fact]
+    public void RazorScan_FailsLoudlyWhenAMisreadLiteralWouldSwallowTheRestOfTheFile()
+    {
+        // 生文字列の開きを取り違える形(直前が n なので開きと見なされない)。
+        // 以前はここで 5 行目の本物の書き込みが<b>黙って見逃されていた</b>
+        var swallowed = Assert.Throws<InvalidOperationException>(() => ScanLines(
+            "@functions {",
+            "  string Sql() { return \"\"\"",
+            "    SELECT /* inner",
+            "    \"\"\"; }",
+            "}",
+            "@{ Context.Response.Headers.CacheControl = \"public,max-age=300\"; }"));
+
+        // 何が起きたのかと、どう直すのかが失敗文言から読めること
+        Assert.Contains("閉じないままファイルが終わりました", swallowed.Message);
+
+        // ふつうの文字列リテラルでも同じ形になる(生文字列だけの話ではない)
+        Assert.Throws<InvalidOperationException>(() => ScanLines(
+            "@functions {",
+            "  string Note() { return \"a /* b\"; }",
+            "}",
+            "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // <b>正しく閉じているビューは今までどおり通ること</b>(落ちる側へ寄せすぎていないこと)
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "@* メモ *@",
+                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
+    }
+
     /// <summary>
     /// 合成した複数行の<b>C# の</b>ソースを走査し、該当した行番号を返す(検査用の入り口)。
     /// </summary>
@@ -1289,6 +1353,35 @@ public class ResponseCacheAttributePolicyTests
             carry = next;
             // 行番号(1 始まり)・元の行・実コードを記録する
             result.Add((i + 1, lines[i].Trim(), code.Trim()));
+        }
+
+        // <b>コメントが閉じないままファイルが終わったら、読めなかったこととして落とす。</b>
+        //
+        // <b>なぜ要るのか(実測した fail-open)。</b> ビューの走査は「ここはリテラルの開きか」を
+        // 直前の文字から当てる近似なので、当たらなかった引用符の中身は実コードとして読まれる。
+        // その中身に /* や @* があると、閉じ綴りはリテラルの中にしか無いので永久に閉じず、
+        // <b>以降のファイル全体がコメント扱い</b>になって走査から落ちる ——
+        // つまり、その下に書かれた Cache-Control への直接の書き込みも、2 つ目の
+        // 静的ファイル配信の配線も、どちらの検査にも載らない(issue #252 と同じ壊れ方が、
+        // 開きを取り違えた別の経路から再現する)。リテラルの持ち越しを足しても、
+        // <b>持ち越しは「開きだと分かったリテラル」にしか効かない</b>ので塞ぎ切れない。
+        //
+        // <b>コンパイルできるソースがこの状態で終わることは無い</b>ので、ここに来たのは
+        // 走査が取り違えた証拠。黙って落とすより落ちるほうを取る(§9 fail-closed。
+        // CountOccurrences の空トークンと同じ判断)。直し方も 1 つに定まる:
+        // §3 が「ページ固有のスクリプトを inline に書かない」と定めているとおり、
+        // その C# をビューの外へ出す。
+        if (carry.PendingCloser is not null)
+        {
+            // どのファイルの何行目から読めなくなったかを名指しして落とす
+            throw new InvalidOperationException(
+                $"{Path.GetRelativePath(RepositoryPaths.Root, sourcePath)}: "
+                + $"コメント({carry.PendingCloser} で閉じるはずのもの)が閉じないままファイルが終わりました。"
+                + "ビューの走査が、文字列リテラルの中身をコメントの開始として読み違えた可能性が高く、"
+                + "そこから下の行は走査から落ちています(キャッシュ指示の直接の書き込みも、"
+                + "静的ファイル配信の配線も、この状態では検出できません)。"
+                + "コメントの綴りを含む C# のリテラルをビューへ書かないでください"
+                + "(§3 のとおり、ページ固有のスクリプトはビューの外へ出します)。");
         }
 
         // 全行を返す
@@ -1512,8 +1605,11 @@ public class ResponseCacheAttributePolicyTests
                     {
                         // 中身をすべて貯めて、フェンスの長さを持ち越す
                         code.Append(line, i, line.Length - i);
-                        // 生文字列の中のまま次の行へ
-                        return (code.ToString(), new RazorScanCarry(pendingCloser, fence));
+                        // 生文字列の中のまま次の行へ。<b>コメントの状態は null で固定する</b> ——
+                        // ここへ来るのはコメントの外だけ(上の pendingCloser の分岐を通過済み)で、
+                        // 「コメントの中かつリテラルの中」という状態は持てない。
+                        // 変数を渡すと、持てない状態を持てるかのように見せてしまう
+                        return (code.ToString(), new RazorScanCarry(null, fence));
                     }
 
                     // 逐語的リテラルなら、重ねていない " が終端になる
@@ -1521,8 +1617,8 @@ public class ResponseCacheAttributePolicyTests
                     {
                         // 中身をすべて貯めて、逐語的であることを持ち越す
                         code.Append(line, i, line.Length - i);
-                        // 逐語的リテラルの中のまま次の行へ
-                        return (code.ToString(), new RazorScanCarry(pendingCloser, VerbatimFence));
+                        // 逐語的リテラルの中のまま次の行へ(コメントの状態は上と同じ理由で null)
+                        return (code.ToString(), new RazorScanCarry(null, VerbatimFence));
                     }
 
                     // ふつうの "…" は改行をまたげないので持ち越さない
@@ -1588,8 +1684,9 @@ public class ResponseCacheAttributePolicyTests
             {
                 // その位置から続く引用符の数を数える
                 var run = CSharpLiteral.QuoteRunLength(line, i);
-                // フェンスに満たないなら本文の一部(0 のときも 1 文字進める)
-                if (run < fence) { i += Math.Max(run, 0); continue; }
+                // フェンスに満たないなら本文の一部。引用符の連なりはまとめて読み飛ばす
+                // (QuoteRunLength は数え上げなので負にはならない。0 のときは for が 1 進める)
+                if (run < fence) { i += run; continue; }
                 // 満たしたので、その連なりの最後の文字が終端
                 return i + fence - 1;
             }
