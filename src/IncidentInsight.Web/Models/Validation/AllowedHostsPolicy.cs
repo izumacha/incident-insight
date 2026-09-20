@@ -686,18 +686,23 @@ public static class AllowedHostsPolicy
     /// 専用の説明を持たない原因へ返す既定の文面。
     /// </summary>
     /// <remarks>
-    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// <para><b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
     /// 理由は <see cref="FallbackFixAdvice"/> と同じで、
     /// 既定の文面を <c>PermissiveCauseMessage(NotPermissive)</c> で求めると
-    /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。
-    /// </remarks>
-    /// <remarks>
-    /// <b>原因を名乗らない文面にしてある。</b> この関数は <c>public</c> なので、
+    /// 比較が<b>自分自身との照合</b>になり、足し忘れを 1 件も検出しなくなる。</para>
+    ///
+    /// <para><b>原因を名乗らない文面にしてある。</b> この関数は <c>public</c> なので、
     /// <see cref="PermissiveReason.NotPermissive"/>（＝正しく絞れている設定）を
     /// そのまま渡す呼び出し側が将来現れうる。以前の文面は
     /// 「絞れていない」と断定していたため、そのとき<b>正しい設定に対して
     /// 事実と逆の説明</b>を出すことになっていた（しかもテストがその対応を固定していた）。
     /// 分類が増えたときの既定としても、断定しないほうが安全側（fail-closed）。
+    /// <b>この 2 段落を別々の <c>&lt;remarks&gt;</c> に分けない</b> ——XML ドキュメントの
+    /// 利用側（IDE のクイック情報・doc 生成）は最初の 1 つしか描画しないので、
+    /// 2 つ目は読み手に届かない。届かなくなるのは「この文面を断定的な向きへ
+    /// 書き換えてはいけない」という唯一の歯止めで、<c>AllowedHostsPolicyTests</c> は
+    /// enum からの網羅しか見ていないため<b>文面の向きが逆でも緑のまま</b>通る
+    /// （issue #259）。</para>
     /// </remarks>
     public const string FallbackPermissiveCauseMessage =
         "No specific cause is available for this value; inspect the value itself.";
