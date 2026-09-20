@@ -737,7 +737,8 @@ public class ResponseCacheAttributePolicyTests
     // (CLAUDE.md がこの形の事故を繰り返し記録している)。<b>名前の末尾で絞るのも同じ穴</b>で、
     // 4 つ目を StaticFileWiringSpellings という名前で足すだけで静かに外れる。
     // <b>このクラスが宣言している string[] をすべて</b>見れば、登録も命名も要らない
-    // (綴りの表でない string[] が混ざっても、空の綴りが無いことを確かめるだけなので害は無い)。
+    // (綴りの表でない string[] が混ざっても、見るのは「空の綴りが無いこと」だけ ——
+    // 許可リストであれ綴りの表であれ、空文字が混ざっているのは等しく不具合なので害は無い)。
     [Fact]
     public void WiringTokenTables_ContainNoEmptySpelling()
     {
@@ -754,18 +755,26 @@ public class ResponseCacheAttributePolicyTests
             "このクラスが宣言している string[] が 1 つも見つからない。"
                 + "導出を変えたなら、この検査も同じ変更セットで直すこと。");
 
-        // 表ごとに、空でないことと、空の綴りを含まないことを確かめる
+        // 表ごとに、空の綴りを含まないことを確かめる
         foreach (var table in tables)
         {
             // 実際の値を読む(static なのでインスタンスは要らない)
-            var tokens = (string[])table.GetValue(null)!;
+            var tokens = (string[]?)table.GetValue(null);
 
-            // 表そのものが空なら、その綴りを使う検査は「違反ゼロ＝緑」で無力化されている
-            Assert.True(tokens.Length > 0, $"{table.Name} が空です。この表を使う検査は何も見ていません。");
+            // <b>null は「空の綴り」より先に落とす。</b> そのまま長さを読むと
+            // NullReferenceException になり、どの表が壊れているかを名指しする
+            // この検査の役目がスタックトレースに変わってしまう
+            Assert.True(tokens is not null, $"{table.Name} が null です。綴りの表は必ず初期化してください。");
+
+            // <b>ここで「空でないこと」は求めない。</b> 対象を名前で絞るのをやめた結果、
+            // 綴りの表でない string[] も含まれる ——「現時点で該当が 1 つも無い」ことを
+            // 表す空の配列は正当なので、一律に禁じると正しいコードで赤くなる。
+            // 綴りの表が空になって検査が無力化する形は、その表を使う検査自身が
+            // 「見るべき対象ゼロ＝緑」を避ける形で受け持つ
 
             // 1 つずつ、空でも空白だけでもないことを確かめる
             Assert.All(
-                tokens,
+                tokens!,
                 token => Assert.False(
                     string.IsNullOrWhiteSpace(token),
                     $"{table.Name} に空の綴りがあります。空の綴りは出現回数の数え上げを永久に回します。"));
@@ -904,9 +913,10 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("    @* Cache-Control はミドルウェアの既定に任せる *@", false)]
     // <b>同じ行で閉じたコメントの後ろの実コードは拾う</b>(綴りを変えただけの抜け道にしない)
     [InlineData("    @* メモ *@ @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
-    // <b>マークアップ中の裸の URL の "//" を行コメントと読まない。</b>
-    // ビューは @* *@ しかコメントとして扱わないので、この形はそもそも起きない
-    // (以前は // を行コメントとして扱っており、実測でこの行が素通りした)
+    // <b>属性値の中の URL の "//" を行コメントと読まない。</b> href=" の二重引用符が
+    // リテラルの開きと判定され、中身ごと読み飛ばされるので // に行き当たらない。
+    // <b>裸の URL(引用符の外)は別の話で、そちらは行が切れる</b> ——
+    // ビューは // を行コメントとして扱うため。CLAUDE.md の「残っている境界 (b)」が正本
     [InlineData("    <a href=\"https://example.com\">x</a> @{ Context.Response.Headers.CacheControl = \"public\"; }", true)]
     // 文字列の中の "@*" でもコメントが始まったと読まない
     [InlineData("        private const string Odd = \"a@*b\";", false)]
@@ -942,10 +952,10 @@ public class ResponseCacheAttributePolicyTests
 
     // C# の 1 行では、C# のコメントだけがコメントとして落ちること。
     //
-    // <b>言語ごとに走査が分かれたので、検査も分ける。</b> .cs は字句解析が読むので
-    // // ・ /* */ ・ /// が正しくコメントになる。ビュー側の [Theory] へこれらの行を
-    // 混ぜると、<b>ビューでは扱わない綴り</b>を「ビューの規則」として固定することになり、
-    // どちらの規則を直しても片方の答えが黙って変わる。
+    // <b>言語ごとに走査が分かれたので、検査も分ける。</b> 同じ綴り(// ・ /* */ ・ ///)を
+    // .cs は字句解析が、ビューは近似の走査が読む ——<b>同じ答えを返すのは今たまたまで、
+    // 拠って立つ規則が違う</b>。1 つの [Theory] にまとめると、どちらかの規則を直したときに
+    // 「どちらの経路の期待値だったのか」が読み取れなくなる。経路ごとに固定する。
     [Theory]
     // 日本語コメントで規則を説明する行は拾わない(§5 が求める書き方で赤くしない)
     [InlineData("    // エラーページ。Cache-Control は属性側で no-store を宣言する", false)]
@@ -1038,6 +1048,119 @@ public class ResponseCacheAttributePolicyTests
             new[] { 1 },
             ScanCSharpLines(
                 "void F() { var url = \"\"\"https://example.test\"\"\"; Response.Headers.CacheControl = \"public\"; }"));
+    }
+
+    // C# のソースでは、<b>リテラルの開きを直前の文字から当てない</b>こと。
+    //
+    // <b>直していた穴(issue #249)。</b> 以前は「直前の非空白文字が = ( , [ { : ? + @ $ の
+    // いずれかなら開き」という近似でリテラルを見分けていた。C# でいちばん普通の形の
+    // いくつか(return "…" ・ =&gt; "…" ・ case "…":)がその集合に無いので、
+    // それらのリテラルは 1 文字ずつ実コードとして貯められ、<b>中身に // があると
+    // その行の残りが丸ごと走査から落ちた</b>。URL 文字列(https://…)がまさにこの形で、
+    // 同じ行に書かれた本物のキャッシュ指示を取り落とす＝見逃す側へ倒れる。
+    //
+    // <b>綴りを足す直し方はしていない。</b> &gt; を集合へ足すと、今度は Razor の地の文
+    // (&lt;p&gt;"レベル3 以上&lt;/p&gt;)が開きと判定されて正しいコードで赤くなる ——
+    // 向きを逆に踏み直すだけ。C# は C# のパーサに読ませる(CSharpCommentScanner)。
+    [Fact]
+    public void CSharpScan_ReadsLiteralsWithoutGuessingFromTheCharacterBefore()
+    {
+        // return の後ろのリテラル: 中身の // で行の残りが落ちないこと
+        Assert.Equal(
+            new[] { 1 },
+            ScanCSharpLines(
+                """string Url() { return "https://example.test"; } void F() { Response.Headers.CacheControl = "public"; }"""));
+
+        // 式形式のメンバー(=> の後ろ)も同じ。このリポジトリ全体に普通に現れる形
+        Assert.Equal(
+            new[] { 1 },
+            ScanCSharpLines(
+                """string Url() => "https://example.test"; void F() { Response.Headers.CacheControl = "public"; }"""));
+
+        // case ラベルの後ろも同じ
+        Assert.Equal(
+            new[] { 1 },
+            ScanCSharpLines(
+                """void F(string s) { switch (s) { case "https://example.test": Response.Headers.CacheControl = "public"; break; } }"""));
+
+        // <b>見逃さないだけでなく、誤検知もしないこと。</b> コメントの中の綴りは拾わない
+        // (リテラルを正しく読めるようになった代わりにコメントを読み落とす、では意味がない)
+        Assert.Empty(ScanCSharpLines(
+            """string Url() => "https://example.test"; // Cache-Control はミドルウェアの既定に任せる"""));
+    }
+
+    // C# のソースでは、<b>改行をまたぐリテラルの中身を実コードとして走査しない</b>こと。
+    //
+    // <b>直していた穴(issue #252)。</b> 以前はブロックコメントの状態だけを行をまたいで
+    // 持ち越し、リテラルの状態は持ち越さなかった。そのため逐語的 @"…" ・ 生文字列 """…""" の
+    // <b>2 行目以降が素の実コードとして走査</b>され、そこに /* があると
+    // 閉じ綴りはリテラルの中にしか無いので永久に閉じず、<b>以降のファイル全体が
+    // コメント扱い</b>になって走査から落ちた。
+    [Fact]
+    public void CSharpScan_DoesNotInterpretTheBodyOfAMultiLineLiteral()
+    {
+        // 逐語的リテラルの 2 行目にある /* が、以降のファイルを飲み込まないこと
+        Assert.Equal(
+            new[] { 4 },
+            ScanCSharpLines(
+                "void F() { var sql = @\"SELECT",
+                "  /* inner",
+                "\"; }",
+                "void G() { Response.Headers.CacheControl = \"public,max-age=300\"; }"));
+
+        // 生文字列でも同じ(複数行の生文字列は、開始フェンスの次の行から中身が始まる)
+        Assert.Equal(
+            new[] { 4 },
+            ScanCSharpLines(
+                "void F() { var sql = \"\"\"",
+                "  SELECT /* inner",
+                "  \"\"\"; }",
+                "void G() { Response.Headers.CacheControl = \"public,max-age=300\"; }"));
+
+        // <b>リテラルの中身は実コードとして残ること。</b> ヘッダー名は文字列キーとして
+        // 書かれる(Response.Headers["Cache-Control"])ので、読み飛ばすと本命を取り落とす
+        Assert.Equal(
+            new[] { 1 },
+            ScanCSharpLines("void F() { Response.Headers[\"Cache-Control\"] = \"public\"; }"));
+    }
+
+    // <c>#if</c> で無効化された領域の中のコメントも、コメントとして取り除くこと。
+    //
+    // <b>なぜ要るのか。</b> 字句解析は成立しない側を丸ごと <c>DisabledTextTrivia</c> として
+    // 扱い、その中の <c>//</c> をコメントとして分類しない。読み直さずに実コードとして残すと、
+    // <b>§5 が求める日本語コメントがそのまま「キャッシュ指示の直接の書き込み」として
+    // 報告される</b> ——書いた人にできるのは「規約が求めるコメントを消す」ことだけで、
+    // 直しようの無い指示になる(実測)。
+    //
+    // <b>Web プロジェクトに <c>#if</c> は 1 つも無いので、合成した行でしか固定できない。</b>
+    // 実在のソースに頼ると、読み直す分岐を消しても<b>全件緑のまま</b>通る(実測)。
+    [Fact]
+    public void CSharpScan_RemovesCommentsInsideDisabledPreprocessorRegions()
+    {
+        // 成立しない側に置いた §5 のコメントは、違反として報告されないこと
+        Assert.Empty(ScanCSharpLines(
+            "#if NEVER",
+            "    // Cache-Control はミドルウェアの既定に任せる",
+            "    var unused = 1;",
+            "#endif"));
+
+        // <b>成立する側でも同じ</b>(どちらが無効化されるかは記号の定義次第なので、
+        // 片側だけ手当てすると反対側が同じ穴になる)
+        Assert.Empty(ScanCSharpLines(
+            "#if NEVER",
+            "    // Cache-Control はここでは書かない",
+            "#else",
+            "    // Cache-Control はこちらでも書かない",
+            "#endif"));
+
+        // <b>無効化された領域の実コードは残ること</b>(条件次第で有効になりうるので、
+        // 取りこぼす側ではなく多く報告する側へ倒す)
+        Assert.Equal(
+            new[] { 2 },
+            ScanCSharpLines(
+                "#if NEVER",
+                "    Response.Headers.CacheControl = \"public\";",
+                "#endif"));
     }
 
     // ビューでも、改行をまたぐリテラルの状態を持ち越すこと（issue #252 のビュー側）。
@@ -1339,7 +1462,9 @@ public class ResponseCacheAttributePolicyTests
         //
         // <b>誤検知で赤くする代わりに、見逃しを issue として持つ。</b> この走査は
         // 近似である限りどちらかの穴を持つので、綴りを足して埋めるのではなく
-        // ビューを本物の Razor パーサで読むところまで運ぶ(issue #260)。        // 全行を返す
+        // ビューを本物の Razor パーサで読むところまで運ぶ(issue #260)。
+
+        // 全行を返す
         return result;
     }
 
