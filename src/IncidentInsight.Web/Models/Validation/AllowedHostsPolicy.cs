@@ -328,8 +328,9 @@ public static class AllowedHostsPolicy
     /// <returns>一致しえない項目（無ければ空）。運用者へそのまま見せる想定。</returns>
     public static IReadOnlyList<string> NeverMatchingEntries(string? allowedHosts) =>
         // 振り分けは 1 か所（PartitionEntries）だけが行う。ここで自前に振り分け直すと、
-        // 分類側（ClassifyDeadEntryDeletion）と「同じ項目を見ている」保証が構造から外れる
-        PartitionEntries(allowedHosts).Dead;
+        // 分類側（ClassifyDeadEntryDeletion）と「同じ項目を見ている」保証が構造から外れる。
+        // 理由まで要る呼び出し側は InspectNeverMatchingEntries を使う（こちらは綴りだけ）
+        [.. PartitionEntries(allowedHosts).Dead.Select(dead => dead.Value)];
 
     /// <summary>
     /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
@@ -419,6 +420,25 @@ public static class AllowedHostsPolicy
         // 正規化できない綴りは別の警告の担当なので、ここでは死んだ項目に数えない
         if (!TryNormalizeEntry(entry, out var normalized)) return null;
 
+        // フレームワークが Host と突き合わせるときに使う綴り（ホスト部だけ）を取り出す
+        var comparable = ComparableSpelling(normalized);
+
+        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致するなら、その項目は一致しうる
+        if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
+            && string.Equals(normalized, comparable, StringComparison.Ordinal))
+        {
+            // 生きている項目なので理由は無い
+            return null;
+        }
+
+        // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
+        // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
+        if (Wildcards.Contains(RepairedSpelling(normalized), StringComparer.Ordinal))
+        {
+            // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
+            return DeadEntryReason.WildcardOnceRepaired;
+        }
+
         // 正規化後にまだ前後の空白が残る項目は、Host ヘッダーと綴りが一致しえない
         if (!string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal))
         {
@@ -426,16 +446,49 @@ public static class AllowedHostsPolicy
             return DeadEntryReason.SurroundingWhitespace;
         }
 
-        // ポートの有無は、フレームワーク自身のホスト部の切り出しに委ねて判定する
-        if (!string.Equals(normalized, new HostString(normalized).Host, StringComparison.Ordinal))
-        {
-            // 突き合わせ相手（Host ヘッダー）は常にポートを落とされているので一致しえない
-            return DeadEntryReason.PortSuffix;
-        }
-
-        // どちらにも当たらなければ、その項目は一致しうる
-        return null;
+        // 突き合わせ相手が「角括弧を足したもの」なら、原因は括弧の無い IPv6 リテラル
+        return string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
+            ? DeadEntryReason.UnbracketedIpv6Literal
+            // そうでなければ、落とされたのはポート部
+            : DeadEntryReason.PortSuffix;
     }
+
+    /// <summary>
+    /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>自前でコロンを数えない。</b> 角括弧の IPv6 リテラルはコロンを含むがポートを持たず、
+    /// 逆に括弧の無い IPv6 リテラルは括弧を補われる。どちらも
+    /// <c>HostString</c> のホスト部の切り出しが正しく分けてくれるので、そこへ委ねる。
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>ホスト部の綴り。</returns>
+    private static string ComparableSpelling(string normalized) => new HostString(normalized).Host;
+
+    /// <summary>
+    /// その項目を案内どおりに直したときに残る綴り（＝実際に突き合わされることになる綴り）を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>「消したら何が起きるか」だけでは足りない。</b>
+    /// <see cref="ClassifyDeadEntryDeletion"/> は<b>消す</b>操作しか見ていないが、
+    /// 2 本目の警告が実際に勧めるのは<b>書き直す</b>操作のほう。
+    /// <c>"incident.example.com;0.0.0.0:8080"</c>（<c>ASPNETCORE_URLS</c> を写すと自然に生まれる形）は
+    /// 消せば実ホスト名だけが残るので「消してよい」＝<c>Safe</c> と分類されるが、
+    /// 案内どおり<b>ポートを外して書き直す</b>と <c>0.0.0.0</c> になり、
+    /// <b>ホスト名の絞り込みが丸ごと無効になる</b>（issue #64 へ移る）。
+    /// 前後の空白でも同じで、<c>"incident.example.com; 0.0.0.0"</c> ・
+    /// <c>"incident.example.com; *"</c> は<b>以前から</b>この形だった。</para>
+    ///
+    /// <para><b>だから直した結果も見る。</b> 直すとは「前後の空白を落とし、
+    /// 突き合わせに使われるホスト部だけにする」こと。その結果がワイルドカードなら、
+    /// その項目は <see cref="DeadEntryReason.WildcardOnceRepaired"/> として
+    /// 専用の文面で名指しする。</para>
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>案内どおりに直したあとの綴り。</returns>
+    private static string RepairedSpelling(string normalized) =>
+        // 前後の空白を落としてからホスト部を取る（空白とポートの両方を一度に外した形）
+        ComparableSpelling(normalized.Trim());
 
     /// <summary>
     /// その項目が、どの <c>Host</c> とも一致しえない理由。
@@ -452,6 +505,12 @@ public static class AllowedHostsPolicy
 
         /// <summary>ポートを含んでいる（<c>Host</c> 側はポートを落としてから比べられる）。</summary>
         PortSuffix,
+
+        /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
+        UnbracketedIpv6Literal,
+
+        /// <summary>直すとワイルドカードになる（＝書き直すと全ホスト許可になる）。</summary>
+        WildcardOnceRepaired,
     }
 
     /// <summary>
@@ -529,7 +588,7 @@ public static class AllowedHostsPolicy
     /// </remarks>
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     /// <returns>一致しえない項目（無ければ空）と、それを消したときに何が起きるかの分類。</returns>
-    public static (IReadOnlyList<string> Entries, DeadEntryDeletionOutcome Outcome)
+    public static (IReadOnlyList<DeadEntry> Entries, DeadEntryDeletionOutcome Outcome)
         InspectNeverMatchingEntries(string? allowedHosts)
     {
         // 設定値を 1 度だけ分割し、1 度だけ「死んだ項目」と「残る項目」へ振り分ける
@@ -544,9 +603,24 @@ public static class AllowedHostsPolicy
     /// <summary>
     /// 設定値を<b>1 度だけ</b>分割し、「一致しえない項目」と「残る項目」へ振り分けた結果。
     /// </summary>
-    /// <param name="Dead">どの <c>Host</c> とも一致しえない項目（書かれた順）。</param>
+    /// <param name="Dead">どの <c>Host</c> とも一致しえない項目（書かれた順・理由つき）。</param>
     /// <param name="Survivors">それらを消したあとに残る項目（書かれた順）。</param>
-    private readonly record struct EntryPartition(string[] Dead, string[] Survivors);
+    private readonly record struct EntryPartition(DeadEntry[] Dead, string[] Survivors);
+
+    /// <summary>
+    /// どの <c>Host</c> とも一致しえない項目 1 件と、その理由。
+    /// </summary>
+    /// <remarks>
+    /// <b>理由を項目と一緒に運ぶ。</b> 名指しする側（警告の文面）が理由を
+    /// <see cref="ClassifyDeadEntry"/> から導き直すと、<see cref="PartitionEntries"/> が
+    /// docstring で約束している「項目ごとに正規化を 1 回で済ませる」が崩れる ——
+    /// あの約束は速度の話ではなく<b>契約</b>で、あとから判定へ副作用（メモ化・計測・
+    /// 1 回だけのログ）を足した人がそれを静かに 2 回走らせることになる。
+    /// 振り分けの時点で分かっている値なので、そのまま持たせる。
+    /// </remarks>
+    /// <param name="Value">項目の綴り（生の値）。</param>
+    /// <param name="Reason">その項目が一致しえない理由。</param>
+    public readonly record struct DeadEntry(string Value, DeadEntryReason Reason);
 
     /// <summary>
     /// 設定値を分割し、<see cref="IsNeverMatchingEntry"/> で 1 度だけ振り分ける。
@@ -577,14 +651,17 @@ public static class AllowedHostsPolicy
         var entries = SplitEntries(allowedHosts);
 
         // 死んだ項目と残る項目を作る。ここが振り分けの唯一の場所
-        var dead = new List<string>();
+        var dead = new List<DeadEntry>();
         var survivors = new List<string>();
 
         // 書かれた順のまま 1 件ずつ振り分ける（並び順は分類の判定に効くので崩さない）
         foreach (var entry in entries)
         {
-            // 判定は 1 項目につき 1 回だけ呼ぶ（規則は IsNeverMatchingEntry が持つ）
-            if (IsNeverMatchingEntry(entry)) dead.Add(entry);
+            // 判定は 1 項目につき 1 回だけ呼ぶ（規則は ClassifyDeadEntry が持つ）
+            var reason = ClassifyDeadEntry(entry);
+
+            // 理由が付いた項目は、理由ごと「死んだ側」へ入れる（あとで導き直さない）
+            if (reason is not null) dead.Add(new DeadEntry(entry, reason.Value));
             // 一致しうる項目は「消したあとに残る側」へ入れる
             else survivors.Add(entry);
         }
@@ -843,9 +920,9 @@ public static class AllowedHostsPolicy
     /// 綴りがそのままなら <see cref="DescribeValueForLog"/> は元の文字列を返すので、
     /// 通しておく代償は無い。</para>
     /// </remarks>
-    /// <param name="entries">一致しえない項目（<see cref="NeverMatchingEntries"/> の結果）。</param>
+    /// <param name="entries">一致しえない項目（<see cref="InspectNeverMatchingEntries"/> の結果）。</param>
     /// <returns>ログへそのまま載せられる 1 本の文字列。</returns>
-    public static string DescribeEntriesForLog(IReadOnlyList<string> entries) =>
+    public static string DescribeEntriesForLog(IReadOnlyList<DeadEntry> entries) =>
         // 1 件ずつ「可視化して "[ ]" で囲み、その項目の理由を添える」形にして ", " でつなぐ
         string.Join(", ", entries.Select(DescribeEntryForLog));
 
@@ -853,24 +930,16 @@ public static class AllowedHostsPolicy
     /// 一致しえない項目 1 件を、囲み・可視化・理由の 3 点セットにする。
     /// </summary>
     /// <remarks>
-    /// <b>理由は項目から導き直す（引数で受け取らない）。</b> 呼び出し側が理由を持ち回る形にすると、
-    /// 名指しした項目と添えた理由が食い違う変更が書けてしまう
-    /// （<see cref="PartitionEntries"/> が振り分けを 1 か所に寄せているのと同じ趣旨）。
-    /// 理由が導けない項目（＝そもそも死んでいない項目を渡された）は既定の文面へ倒す。
+    /// <b>理由は振り分けの時点で決まっているものを使い、ここで導き直さない。</b>
+    /// 導き直すと <see cref="PartitionEntries"/> が docstring で約束している
+    /// 「項目ごとに正規化を 1 回で済ませる」が崩れる。名指しした項目と添えた理由が
+    /// 食い違わないことは、<see cref="DeadEntry"/> が 1 つの値として運ぶことで担保する。
     /// </remarks>
-    /// <param name="entry">一致しえない項目 1 件。</param>
+    /// <param name="entry">一致しえない項目 1 件（理由つき）。</param>
     /// <returns>ログへ載せる 1 件分の綴り。</returns>
-    private static string DescribeEntryForLog(string entry)
-    {
-        // 規則の正本（ClassifyDeadEntry）から、この項目の理由を導き直す
-        var reason = ClassifyDeadEntry(entry);
-
-        // 理由が導けたならその文面、導けなければ断定しない既定の文面を使う
-        var cause = reason is null ? FallbackDeadEntryCauseMessage : DeadEntryCauseMessage(reason.Value);
-
-        // 空白が目で見えるよう "[ ]" で囲み、そのうしろへ理由を添える
-        return $"[{MakeInvisibleCharactersVisible(entry)}] ({cause})";
-    }
+    private static string DescribeEntryForLog(DeadEntry entry) =>
+        // 空白が目で見えるよう "[ ]" で囲み、そのうしろへその項目自身の理由を添える
+        $"[{MakeInvisibleCharactersVisible(entry.Value)}] ({DeadEntryCauseMessage(entry.Reason)})";
 
     /// <summary>
     /// 項目が一致しえない理由を、そのままログに載せられる文に直す。
@@ -903,6 +972,18 @@ public static class AllowedHostsPolicy
             DeadEntryReason.PortSuffix =>
                 "host filtering strips the port from the Host header before comparing, so an "
                 + "entry that carries a port can never be equal — list the hostname on its own",
+
+            // Host ヘッダーの IPv6 リテラルは必ず角括弧付きで届くので、括弧なしは一致しえない
+            DeadEntryReason.UnbracketedIpv6Literal =>
+                "this is an IPv6 literal without brackets, but a Host header always carries one "
+                + "in brackets, so the two can never be equal — write it as '[::1]'",
+
+            // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
+            DeadEntryReason.WildcardOnceRepaired =>
+                "this entry does not match as written, and the hostname inside it is a wildcard "
+                + "('*', '[::]' or '0.0.0.0') — do NOT just strip the whitespace or the port, "
+                + "because the repaired entry would disable host filtering entirely (issue #64). "
+                + "Replace it with a real hostname, or delete it",
 
             // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
             _ => FallbackDeadEntryCauseMessage,

@@ -645,7 +645,8 @@ public class AllowedHostsPolicyTests
             : expectedDeadEntries.Split('|');
 
         // 名指しする項目が、並びまで含めて期待どおりであること
-        Assert.Equal(expected, entries);
+        // （理由は別の検査が見るので、ここでは綴りだけを突き合わせる）
+        Assert.Equal(expected, entries.Select(dead => dead.Value));
 
         // 分類が期待どおりであること
         Assert.Equal(expectedOutcome, outcome);
@@ -743,9 +744,13 @@ public class AllowedHostsPolicyTests
     [Fact]
     public void DescribeEntriesForLog_WrapsEachEntryAndNamesItsOwnReason()
     {
-        // 一致しえない 2 種類の項目を、実際に混ざりうる並びで渡す
-        var described = AllowedHostsPolicy.DescribeEntriesForLog(
-            [" www.example.test", "api.example.test:8080"]);
+        // 一致しえない 2 種類が混ざった設定値を、判定側に振り分けさせる
+        // （理由を手で書くと「振り分けが付けた理由が載る」ことを検査できない）
+        var (entries, _) = AllowedHostsPolicy.InspectNeverMatchingEntries(
+            "incident.example.test; www.example.test;api.example.test:8080");
+
+        // その結果をそのままログの形へ直す
+        var described = AllowedHostsPolicy.DescribeEntriesForLog(entries);
 
         // 理由の綴りは判定側の関数から取る（文面をテストへ書き写さないため）
         var whitespace = AllowedHostsPolicy.DeadEntryCauseMessage(
@@ -759,35 +764,22 @@ public class AllowedHostsPolicyTests
             described);
     }
 
-    // <b>理由が導けない項目は、断定せず既定の文面へ倒す。</b>
-    // 制御文字を含む項目は正規化に失敗して 1 本目の警告側（UnparsableEntry）へ回るので、
-    // いまの規則ではここへ来ない ——それでも来たときに<b>誤った理由を名乗らない</b>ことを
-    // 固定しておく（「一致しえない」の定義が広がるのはこれからも起きるため）。
-    [Fact]
-    public void DescribeEntriesForLog_DoesNotInventAReasonForAnEntryItCannotClassify()
-    {
-        // 正規化に失敗する綴り（＝本来この一覧には現れない項目）を渡す
-        var described = AllowedHostsPolicy.DescribeEntriesForLog(["a\tb"]);
-
-        // 既定の文面が添えられること（理由を名乗らない側へ倒す）
-        Assert.Equal(
-            $"[a\\u0009b] ({AllowedHostsPolicy.FallbackDeadEntryCauseMessage})",
-            described);
-    }
-
     // <b>可視化の規則は 1 か所だけに置く。</b> 2 つの入口が別の規則を持つと、
     // 片方の警告だけがレコードを分断する状態へ静かに戻れてしまう。
     [Fact]
     public void DescribeEntriesForLog_AgreesWithDescribeValueForLog()
     {
-        // 同じ綴りを 2 つの入口へ通す
+        // 同じ綴りを 2 つの入口へ通す。
+        // 理由は可視化とは無関係なので、ここでは任意の 1 つを添えるだけでよい
         const string entry = "a\r\nb";
+        var dead = new AllowedHostsPolicy.DeadEntry(
+            entry, AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace);
 
         // 項目側の出力が、囲みの内側で値側とまったく同じ綴りを使っていること
         // （＝同じ可視化規則を通っている）。うしろに添う理由はここでは見ない
         Assert.StartsWith(
             $"[{AllowedHostsPolicy.DescribeValueForLog(entry)}]",
-            AllowedHostsPolicy.DescribeEntriesForLog([entry]),
+            AllowedHostsPolicy.DescribeEntriesForLog([dead]),
             StringComparison.Ordinal);
     }
 
@@ -853,6 +845,69 @@ public class AllowedHostsPolicyTests
         Assert.Equal(
             messages.Count,
             messages.Distinct(StringComparer.Ordinal).Count());
+    }
+
+
+    // <b>名指しした項目に添う理由が、その項目の事実と合っていること。</b>
+    // 理由を取り違えると、警告は「出ている」のに運用者は違うところを直す ——
+    // 存在しないものを探させる案内（1 本目の警告が PermissiveReason を持つ理由）と同じ形。
+    [Theory]
+    // 区切りのうしろの空白（一覧を書くときに自然に入る形）
+    [InlineData("a.example.test; b.example.test", AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace)]
+    // ポート付き（ASPNETCORE_URLS を写すと自然に生まれる形。issue #256）
+    [InlineData("a.example.test;b.example.test:8080", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // 角括弧を書かない IPv6 リテラル ——Host ヘッダー側は必ず角括弧付きで届くので一致しない。
+    // <b>ポートは 1 つも無いので、ここを PortSuffix と名乗ってはいけない</b>
+    [InlineData("a.example.test;fe80::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
+    [InlineData("a.example.test;::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
+    // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
+    [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test; *", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
+        string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
+    {
+        // 振り分けを実行する
+        var (entries, _) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
+
+        // 死んでいる項目はどのケースも 1 件だけ（2 件目が混ざると検査の意味が変わる）
+        var dead = Assert.Single(entries);
+
+        // その 1 件に添う理由が、期待どおりであること
+        Assert.Equal(expectedReason, dead.Reason);
+    }
+
+    // <b>いちばん危ない形: 案内どおりに直すと全ホスト許可になる項目（レビュー指摘）。</b>
+    //
+    // "incident.example.test;0.0.0.0:8080" は ASPNETCORE_URLS を写すと自然に生まれる。
+    // 消せば実ホスト名だけが残るので<b>削除の分類は Safe</b> ——ところが 2 本目の警告が
+    // 実際に勧めるのは「書き直す」ほうで、案内どおりポートを外すと 0.0.0.0 になり
+    // <b>ホスト名の絞り込みが丸ごと無効になる</b>（issue #64 へ移る）。
+    // 前後の空白でも同じで、こちらは issue #256 以前から同じ形だった。
+    [Fact]
+    public void DeadEntryThatWouldBecomeAWildcard_IsNotPresentedAsASimpleRepair()
+    {
+        // 消すだけなら安全だが、直すと全許可になる設定値
+        const string allowedHosts = "incident.example.test;0.0.0.0:8080";
+
+        // 振り分けと分類を受け取る
+        var (entries, outcome) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
+
+        // <b>削除の分類は Safe のまま</b>（消す操作についての事実は変わらない）
+        Assert.Equal(AllowedHostsPolicy.DeadEntryDeletionOutcome.Safe, outcome);
+
+        // <b>本命。</b> その項目には「直すとワイルドカードになる」理由が添うこと ——
+        // ここが PortSuffix のままだと「ポートを外せばよい」と読めてしまう
+        Assert.Equal(
+            AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired,
+            Assert.Single(entries).Reason);
+
+        // 文面が、そのまま直すことを<b>止めて</b>いること（読み手が踏む一歩を封じる）
+        var cause = AllowedHostsPolicy.DeadEntryCauseMessage(
+            AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired);
+        Assert.Contains("do NOT", cause, StringComparison.Ordinal);
+        Assert.Contains("Replace it with a real hostname", cause, StringComparison.Ordinal);
     }
 
 }
