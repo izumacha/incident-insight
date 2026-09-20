@@ -831,18 +831,25 @@ public class ResponseCacheAttributePolicyTests
     // 列挙していたため、<b>承認済みの入れ物の中に新しい入れ物を作ると素通りした</b> ——
     // wwwroot/js/exports/patient-report.pdf も wwwroot/lib/reports/… も、直下のエントリを
     // 1 つも増やさないので検査は緑のままだった。配信されるのは配下のすべてなので、
-    // 走査もそこへ合わせる。ファイルは<b>種類(拡張子)</b>で見る —— 入れ物を増やさずに
-    // wwwroot/css/patient-report.pdf と置く形が、同じ理由で素通りするため。
+    // 走査もそこへ合わせる。
+    //
+    // <b>ファイルの見方は場所で分ける。</b> 直下は<b>名前</b>で 1 件ずつ承認し、
+    // 入れ物の中は<b>種類(拡張子)</b>で承認する。入れ物を増やさずに
+    // wwwroot/css/patient-report.pdf と置く形は種類で落ち、名前を変えただけの
+    // wwwroot/patient-export.js は直下の表に無いことで落ちる ——
+    // <b>再帰へ広げる最初の実装は後者を取り落としていた</b>(直下の名前ベースの承認を
+    // 拡張子ベースへ置き換えてしまい、覆う範囲を広げた代わりに直下の保証を落としていた。
+    // レビューで実測)。
     //
     // <b>ただし「中を見ない」入れ物が要る。</b> wwwroot/lib は CDN 由来の取得物が数百件入り、
     // 1 件ずつ承認しても中身はこちらが書いたものではない。OpaqueStaticDirectories に
     // 理由付きで登録した入れ物だけは中へ降りない —— 降りないという判断そのものが、
     // 表の 1 行としてレビューに現れる。
     //
-    // <b>残っている境界。</b> 種類での判定なので、承認済みの拡張子を名乗る PHI
-    // (例: 患者一覧を .js として書き出す)は拾えない。拡張子の表を広げる差分が
-    // レビューに現れることと、配信ルート自体を見張る OnlyIntendedPlacesWireUpStaticFileServing
-    // が対になって支えている。
+    // <b>残っている境界。</b> 入れ物の中は種類での判定なので、承認済みの拡張子を名乗る PHI
+    // (例: 患者一覧を wwwroot/js/patient-list.js として書き出す)は拾えない。
+    // 拡張子の表を広げる差分がレビューに現れることと、配信ルート自体を見張る
+    // OnlyIntendedPlacesWireUpStaticFileServing が対になって支えている。
     [Fact]
     public void StaticAssets_AreOnlyApprovedPublicAssets()
     {
@@ -869,7 +876,9 @@ public class ResponseCacheAttributePolicyTests
                 + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
                 + "認可を通すアクションから返してください。"
                 + $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
-                + $"ファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ理由を添えて登録します。");
+                + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
+                + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
+                + "理由を添えて登録します。");
     }
 
     // 走査が「承認済みの入れ物の中へ実際に降りている」ことと、
@@ -914,6 +923,13 @@ public class ResponseCacheAttributePolicyTests
             ["js"] = "テスト用の承認済みの入れ物。",
         };
 
+        // 合成の直下ファイル表(名前で 1 件だけ承認しておく)
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の直下ファイルを 1 つだけ承認しておく
+            ["favicon.ico"] = "テスト用の承認済みの直下ファイル。",
+        };
+
         // 合成の拡張子表(こちらも 1 種類だけ承認しておく)
         var approvedExtensions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
@@ -926,6 +942,8 @@ public class ResponseCacheAttributePolicyTests
         {
             // 承認済みの入れ物(通る)
             new StaticAssetEntry("js", IsDirectory: true),
+            // 名前で承認済みの直下ファイル(通る)
+            new StaticAssetEntry("favicon.ico", IsDirectory: false),
             // 承認済みの種類のファイル(通る)
             new StaticAssetEntry("js/site.js", IsDirectory: false),
             // 大文字で綴った同じ種類(URL の配信は綴りの大小を区別しないので通す)
@@ -936,20 +954,27 @@ public class ResponseCacheAttributePolicyTests
             new StaticAssetEntry("js/exports/patient-report.pdf", IsDirectory: false),
             // 拡張子を持たないファイル(種類が判断できないので落とす)
             new StaticAssetEntry("js/LICENSE", IsDirectory: false),
+            // 承認済みの種類を名乗るだけの直下ファイル(名前が表に無いので落とす)
+            new StaticAssetEntry("patient-export.js", IsDirectory: false),
         };
 
         // 合成の表で判定する
-        var unapproved = FindUnapprovedStaticAssets(entries, approvedDirectories, approvedExtensions);
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions);
 
-        // 落ちるのは 3 件で、入力の順に並ぶこと
+        // 落ちるのは 4 件で、入力の順に並ぶこと
         Assert.Equal(
-            new[] { "js/exports", "js/exports/patient-report.pdf", "js/LICENSE" },
+            new[] { "js/exports", "js/exports/patient-report.pdf", "js/LICENSE", "patient-export.js" },
             unapproved.Select(item => item.RelativePath).ToArray());
 
-        // 入れ物とファイルで理由が分かれていること(失敗文言が直し方を取り違えないため)
+        // 入れ物・種類・直下の名前で理由が分かれていること(失敗文言が直し方を取り違えないため)
         Assert.Equal(UnapprovedDirectoryCause, unapproved[0].Cause);
         Assert.Equal(UnapprovedExtensionCause, unapproved[1].Cause);
         Assert.Equal(UnapprovedExtensionCause, unapproved[2].Cause);
+        Assert.Equal(UnapprovedRootFileCause, unapproved[3].Cause);
     }
 
     // 承認済みだけの入力では 1 件も落とさないこと(「常に落とす」判定への退行を止める)。
@@ -961,6 +986,13 @@ public class ResponseCacheAttributePolicyTests
         {
             // 検査用の入れ物
             ["js"] = "テスト用の承認済みの入れ物。",
+        };
+
+        // 合成の直下ファイル表(名前 1 つ)
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の直下ファイル
+            ["favicon.ico"] = "テスト用の承認済みの直下ファイル。",
         };
 
         // 合成の拡張子表(種類 1 つ)
@@ -975,12 +1007,18 @@ public class ResponseCacheAttributePolicyTests
         {
             // 承認済みの入れ物
             new StaticAssetEntry("js", IsDirectory: true),
+            // 名前で承認済みの直下ファイル
+            new StaticAssetEntry("favicon.ico", IsDirectory: false),
             // 承認済みの種類のファイル
             new StaticAssetEntry("js/site.js", IsDirectory: false),
         };
 
         // 1 件も落ちないこと
-        Assert.Empty(FindUnapprovedStaticAssets(entries, approvedDirectories, approvedExtensions));
+        Assert.Empty(FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions));
     }
 
     // 「中を見ない入れ物か」の判定が、登録した入れ物だけに当たること。
@@ -1019,20 +1057,22 @@ public class ResponseCacheAttributePolicyTests
                 + string.Join(", ", missing));
     }
 
-    // 3 つの表のすべてに、空でない理由が書かれていること。
+    // 4 つの表のすべてに、空でない理由が書かれていること。
     //
     // 理由を誰も読まないままにすると、空文字を入れるだけで検査を黙らせられる
     // (LengthGovernanceExclusions_AllHaveAReason と同じ扱い)。
     [Fact]
     public void StaticAssetTables_AllHaveAReason()
     {
-        // 3 つの表を「表の名前 → 中身」の組にして順に見る
+        // 4 つの表を「表の名前 → 中身」の組にして順に見る
         var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
         {
             // 承認済みの入れ物
             (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
             // 中を見ない入れ物
             (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
+            // 直下に置いてよいファイル
+            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
             // 承認済みのファイル種別
             (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
         };
@@ -1093,6 +1133,9 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>ファイルの種類が承認されていないときの理由。</summary>
     private const string UnapprovedExtensionCause = "承認されていない種類のファイル";
 
+    /// <summary><c>wwwroot</c> 直下のファイル名が承認されていないときの理由。</summary>
+    private const string UnapprovedRootFileCause = "承認されていない直下のファイル";
+
     /// <summary>
     /// <c>wwwroot</c> 配下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
     /// キーは <c>wwwroot</c> からの相対パス（区切りは <c>/</c>）。
@@ -1125,7 +1168,8 @@ public class ResponseCacheAttributePolicyTests
         };
 
     /// <summary>
-    /// <c>wwwroot</c> 配下（中を見ない入れ物の外）に置いてよいファイルの種類と、その理由。
+    /// <b>入れ物の中</b>（中を見ない入れ物の外）に置いてよいファイルの種類と、その理由。
+    /// 直下のファイルはこの表では見ない（<see cref="ApprovedStaticRootFiles"/> が名前で承認する）。
     /// キーは先頭が <c>.</c> の小文字（<c>Path.GetExtension</c> の戻り値と同じ形）。
     ///
     /// <para><b>先回りで足さない。</b> 実際に置いてある種類だけを載せる。使う予定の無い
@@ -1140,8 +1184,29 @@ public class ResponseCacheAttributePolicyTests
             [".css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
             // スクリプト(TypeScript の出力)
             [".js"] = "アプリのスクリプト(TypeScript の出力)。利用者ごとの内容を持たない。",
+        };
+
+    /// <summary>
+    /// <c>wwwroot</c> の<b>直下</b>に置いてよいファイルの名前と、その理由。
+    ///
+    /// <para><b>なぜ直下だけ名前で承認するのか。</b> 直下は「置くだけで配信される」ことが
+    /// いちばん起きやすい場所で、正当なファイルはごく少数（現在は <c>favicon.ico</c> の 1 件）。
+    /// ここを種類（拡張子）だけで見ると <c>wwwroot/patient-export.js</c> のような
+    /// <b>名前を変えただけのエクスポートが素通りする</b> —— 走査を再帰へ広げた最初の実装が
+    /// まさにそれで、直下の名前ベースの承認を拡張子ベースへ置き換えてしまい、
+    /// <b>再帰にした代わりに直下の保証を落としていた</b>（レビューで実測。
+    /// <c>wwwroot/patient-export.js</c> と <c>wwwroot/patient-list.css</c> が全件緑で通った）。
+    /// 覆う範囲を広げる変更が、別の軸で範囲を狭めていないかは必ず確かめること。</para>
+    ///
+    /// <para>入れ物の中まで名前で承認しないのは、<c>js</c> が TypeScript の出力先で
+    /// ページを 1 つ足すたびに表を更新することになり、routine な変更を毎回止めるため
+    /// （§6 の「実行不能な指示を出さない」）。中のファイルは種類で見る。</para>
+    /// </summary>
+    private static readonly IReadOnlyDictionary<string, string> ApprovedStaticRootFiles =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
             // ブラウザのタブに出るアイコン
-            [".ico"] = "ブラウザのアイコン。公開情報。",
+            ["favicon.ico"] = "ブラウザのアイコン。公開情報。",
         };
 
     /// <summary>
@@ -1209,8 +1274,12 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
     private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
         IEnumerable<StaticAssetEntry> entries) =>
-        // 実在の 2 つの表を渡して、判定そのものは下の純粋関数に任せる
-        FindUnapprovedStaticAssets(entries, ApprovedStaticDirectories, ApprovedStaticFileExtensions);
+        // 実在の 3 つの表を渡して、判定そのものは下の純粋関数に任せる
+        FindUnapprovedStaticAssets(
+            entries,
+            ApprovedStaticDirectories,
+            ApprovedStaticRootFiles,
+            ApprovedStaticFileExtensions);
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（判定の純粋関数）。
@@ -1220,11 +1289,13 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <param name="entries">走査で見つかった一覧。</param>
     /// <param name="approvedDirectories">承認済みの入れ物の表。</param>
+    /// <param name="approvedRootFiles"><c>wwwroot</c> 直下に置いてよいファイル名の表。</param>
     /// <param name="approvedExtensions">承認済みのファイル種別の表。</param>
     /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
     private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
         IEnumerable<StaticAssetEntry> entries,
         IReadOnlyDictionary<string, string> approvedDirectories,
+        IReadOnlyDictionary<string, string> approvedRootFiles,
         IReadOnlyDictionary<string, string> approvedExtensions)
     {
         // 承認されていなかったものを順に積む入れ物
@@ -1247,7 +1318,21 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
-            // ファイルは種類(拡張子)で判断する。拡張子が無ければ空文字になり、表にも無い
+            // wwwroot の直下にあるファイルかどうかを、区切りを含まないことで判断する
+            if (!entry.RelativePath.Contains('/'))
+            {
+                // 直下は名前そのもので 1 件ずつ承認する(理由は表の docstring を参照)
+                if (!approvedRootFiles.ContainsKey(entry.RelativePath))
+                {
+                    // 相対パスと理由を添えて積む
+                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedRootFileCause));
+                }
+
+                // 直下のファイルの判定はここで終わり(種類では見ない)
+                continue;
+            }
+
+            // 入れ物の中のファイルは種類(拡張子)で判断する。拡張子が無ければ空文字になり、表にも無い
             var extension = Path.GetExtension(entry.RelativePath);
 
             // 表に無ければ「承認されていない種類のファイル」として記録する
