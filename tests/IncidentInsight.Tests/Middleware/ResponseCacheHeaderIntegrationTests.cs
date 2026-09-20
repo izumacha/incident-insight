@@ -546,6 +546,55 @@ public class HostFilteringShortCircuitTests
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 
+    // <b>「一致しえない項目」のもう 1 つの形を、実際の HTTP で固定する（issue #256）。</b>
+    // HostString.MatchesAny はリクエスト側の値から<b>ポートを落として</b>から許可リストの
+    // 項目と<b>そのまま</b>比べるので、ポートを書いた項目はどの Host とも一致しない ——
+    // <b>ポートを付けて送っても一致しない</b>のが要点で、ここを実測で押さえておかないと
+    // 「ポート付きで送れば通るはず」という直感のまま判定を緩める差分が通ってしまう。
+    //
+    // 上の空白の検査と同じく、<b>片方のホストを見るだけでは足りない</b> ——
+    // 200 側と 400 側が揃ってはじめて「サイトは生きたまま特定のホスト名だけが
+    // 静かに落ちる」という主張になり、それが 2 本目の警告を足した理由そのもの。
+    [Fact]
+    public async Task PortInAnEntry_KillsOnlyThatEntry()
+    {
+        // ASPNETCORE_URLS からホスト名を写すと自然に生まれる形（2 件目にポートが付く）。
+        // 起動する設定と判定へ渡す設定がずれないよう、1 つの定数にまとめる
+        const string entryWithPort = $"{SecondHost}:8080";
+        const string allowedHosts = $"{AllowedHost};{entryWithPort}";
+
+        // その設定でアプリを起動する
+        using var fixture = new AllowedHostsFixture(allowedHosts);
+        // リダイレクトを追わないクライアントを受け取る
+        var client = fixture.CreateNonRedirectingClient();
+
+        // 1 件目（ポートの付いていない側）は、これまでどおり受け付けられること
+        Assert.Equal(
+            System.Net.HttpStatusCode.OK,
+            (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+        // 2 件目は、ホスト名だけで送っても弾かれること（項目側にポートが残っているため）
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, SecondHost)).StatusCode);
+
+        // <b>本命。</b> 書いたとおりポートまで付けて送っても弾かれること ——
+        // 突き合わせの前に Host 側のポートが落とされるので、項目とは決して等しくならない
+        Assert.Equal(
+            System.Net.HttpStatusCode.BadRequest,
+            (await SendWithHostAsync(client, entryWithPort)).StatusCode);
+
+        // 判定側もその項目を「一致しえない項目」として名指しできること
+        // （実測とコードの主張がここで結び付く）
+        Assert.Equal(
+            entryWithPort,
+            Assert.Single(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts)));
+
+        // 絞り込み自体は効いているので、1 本目の警告は出ない
+        // （出ないことがそのまま「誤った安心」になる、というのが 2 本目を足した理由）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
     // <b>上の裏返しを固定する。</b> 「前後に空白がある項目は死んでいる」は
     // <b>綴りによらず成り立つ規則ではない</b> ——HostString.ToUriComponent() は
     // 角括弧の IPv6 リテラルで "]" より後ろを捨てるので、"[::1] " は "[::1]" へ戻り

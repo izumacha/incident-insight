@@ -141,6 +141,44 @@ public class AllowedHostsStartupWarningTests
             warning);
     }
 
+    // <b>ポート付きの項目でも 2 本目の警告が出ること（issue #256）。</b>
+    // 以前は「一致しえない」の定義が前後の空白だけだったため、ポートを書いた項目は
+    // <b>毎リクエスト 400 になるのに警告が 1 本も出なかった</b> ——
+    // docs/security.md が案内する「警告が出ていないことの確認」がそのまま誤った安心になる。
+    [Fact]
+    public void PortInAnEntry_WarnsWithThePortCause()
+    {
+        // ASPNETCORE_URLS からホスト名を写すと自然に生まれる形
+        const string allowedHosts = "incident.example.test;www.example.test:8080";
+
+        // その設定で起動する
+        using var fixture = new WarningCapturingFixture(allowedHosts);
+
+        // <b>1 本目は出ないこと。</b> 絞り込み自体は効いているので、
+        // この警告だけを見ていると設定ミスに気づけない（2 本目を足した理由そのもの）
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 2 本目が出ること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // ポートの付いた項目が "[ ]" で囲まれて名指しされること
+        Assert.Contains("[www.example.test:8080]", warning);
+
+        // <b>本命。</b> その項目に<b>ポートの理由</b>が添えられていること ——
+        // 以前は文面が「前後の空白が残っている」と決め打ちだったので、
+        // ここを見ないと事実と違う理由を添えたまま緑になる
+        Assert.Contains(
+            AllowedHostsPolicy.DeadEntryCauseMessage(
+                AllowedHostsPolicy.DeadEntryReason.PortSuffix),
+            warning);
+
+        // 空白の理由のほうは、この設定には当てはまらないので出ないこと
+        Assert.DoesNotContain(
+            AllowedHostsPolicy.DeadEntryCauseMessage(
+                AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace),
+            warning);
+    }
+
     // <b>警告がログの 1 レコードに収まること。</b> 設定値をそのまま埋め込むと、
     // CR / LF を含む値で<b>1 本の警告がログ上は複数のレコードに見える</b> ——
     // docs/security.md が案内する「この警告が出ていないことを確認する」という運用手順が

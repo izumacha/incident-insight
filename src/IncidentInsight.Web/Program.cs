@@ -401,6 +401,10 @@ if (!app.Environment.IsDevelopment())
     // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
     // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
     // そのまま誤った安心になる。
+    // <b>同じ形がもう 1 つある: ポート付きの項目</b>（"incident.example.test:8080"）。
+    // 突き合わせのとき Host ヘッダー側はポートを落とされる一方、許可リストの項目は
+    // そのまま比べられるので、実測ではポートを付けて送っても一致せず毎リクエスト 400 になる。
+    // ASPNETCORE_URLS を写すとポートごと持ってくるのは自然な形なので、こちらも拾う（issue #256）。
     // <b>判定は正規化後の綴りに対して行う。</b> 生の綴りを見ると、正規化で消える文字
     // (角括弧 IPv6 の "]" より後ろ)を持つ項目を誤って名指しする ——実測では
     // "[::1] " は Host: [::1] を 200 で受けるのに「消してよい」と案内し(消した運用者が
@@ -437,11 +441,16 @@ if (!app.Environment.IsDevelopment())
         var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(deletionOutcome);
 
         // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
+        // <b>理由は項目ごとに添える（1 文にまとめない）。</b> 一致しえない理由は 1 つではなく
+        // (a) 前後の空白が残っている (b) ポートを含んでいる の 2 つがあり、混在した一覧
+        // ("a.example.test; b.example.test;c.example.test:8080") で 1 つの文面しか出せないと、
+        // <b>どの項目がなぜ落ちているか</b>を運用者が追えない。しかも文面を 1 つに決め打つと、
+        // 理由を足した瞬間にその文が<b>名指しした項目について事実と違うこと</b>を言い出す
+        // （実際この行は「これらの項目は前後に空白が残っている」と断定していた。issue #256）。
+        // 理由ごとの文面は AllowedHostsPolicy.DeadEntryCauseMessage が持つ
         app.Logger.LogWarning(
             "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
-            "in the {Environment} environment: {NeverMatchingEntries}. " +
-            "Host filtering does not trim entries, so these entries keep surrounding whitespace " +
-            "after normalisation and no Host header can ever equal them. {HowToFix} (issue #64).",
+            "in the {Environment} environment: {NeverMatchingEntries}. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
             // どの環境の話かを添える(上の警告と同じ理由)

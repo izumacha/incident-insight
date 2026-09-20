@@ -366,10 +366,93 @@ public static class AllowedHostsPolicy
     /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
     /// <returns>どの <c>Host</c> とも一致しえないなら <c>true</c>。</returns>
     private static bool IsNeverMatchingEntry(string entry) =>
+        // 規則そのものは ClassifyDeadEntry が 1 つだけ持つ（ここは「理由があるか」だけを見る）
+        ClassifyDeadEntry(entry) is not null;
+
+    /// <summary>
+    /// その項目 1 件が、どの <c>Host</c> とも一致しえないか、そうなら<b>なぜか</b>を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>ここが「一致しえない」の唯一の定義。</b> 「一致しえないか」（<c>bool</c>）と
+    /// 「なぜ一致しえないか」（運用者へ出す文面）を別々の式で書くと、条件を広げたときに
+    /// 片方だけが取り残され、<b>名指しした項目に付く理由が事実と違う</b>状態になる。
+    /// <see cref="IsNeverMatchingEntry"/> も <see cref="DeadEntryCauseMessage"/> も
+    /// ここから導く。</para>
+    ///
+    /// <para><b>理由が 2 つあるのは、突き合わせ方が 2 段階だから。</b>
+    /// <c>HostString.MatchesAny</c> は (1) リクエスト側の値から<b>ポートを落とし</b>、
+    /// (2) 残ったホスト名を<b>許可リストの項目とそのまま</b>比べる。つまり項目の側は
+    /// トリムもされずポートも落とされないので、<b>前後に空白が残る項目</b>も
+    /// <b>ポートを含む項目</b>も、どの <c>Host</c> とも等しくなりえない。
+    /// 実測でも <c>incident.example.test:8080</c> は
+    /// <c>Host: incident.example.test:8080</c> を送っても一致せず毎リクエスト 400 になる
+    /// のに、<see cref="IsPermissive"/> は <c>false</c>・ここも空を返していたため
+    /// <b>警告が 1 本も出なかった</b>（issue #256）。
+    /// <c>ASPNETCORE_URLS</c> からホスト名を写すときポートごと持ってくるのは
+    /// <c>0.0.0.0</c> を写してしまうのと同じくらい自然な形で、しかも
+    /// <c>a.example.test;b.example.test:8080</c> のように混ざると
+    /// <b>サイトは生きたまま特定のホスト名だけが静かに 400 になる</b> ——
+    /// 2 本目の警告を足した理由そのものの形。</para>
+    ///
+    /// <para><b>ポートの判定は「コロンがあるか」では書かない。</b>
+    /// 角括弧の IPv6 リテラル（<c>[::1]</c> ・ <c>[::]</c>）はコロンを含むが
+    /// ポートは持たず、実測でも <c>Host: [::1]</c> と正しく一致する。
+    /// フレームワーク自身の分け方（<c>HostString</c> のホスト部とポート部）へ委ね、
+    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でポートの有無を見る。
+    /// <c>HostString.Port</c> を見る形では足りない ——実測で <c>a.test:abc</c> ・
+    /// <c>a.test:</c> はポート部が数値として読めないため <c>Port</c> が <c>null</c> になるが、
+    /// 項目としては依然としてどの <c>Host</c> とも一致しない。</para>
+    ///
+    /// <para><b>生の綴りではなく<see cref="TryNormalizeEntry">正規化後</see>を見る。</b>
+    /// 理由は <see cref="IsNeverMatchingEntry"/> の docstring が正本。
+    /// 正規化できない綴りはここでは死んだ項目に数えず、
+    /// <see cref="PermissiveReason.UnparsableEntry"/> 側（1 本目の警告）へ任せる。</para>
+    ///
+    /// <para><b>両方に当たる項目（<c>" a.test:8080"</c>）は空白側を名乗る。</b>
+    /// どちらの理由でも運用者がすることは同じ（その項目を実ホスト名だけに書き直す）で、
+    /// 1 項目に 2 つの理由を並べても読み手の判断は変わらないため。</para>
+    /// </remarks>
+    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
+    /// <returns>一致しえないならその理由、一致しうるなら <c>null</c>。</returns>
+    private static DeadEntryReason? ClassifyDeadEntry(string entry)
+    {
         // 正規化できない綴りは別の警告の担当なので、ここでは死んだ項目に数えない
-        TryNormalizeEntry(entry, out var normalized)
+        if (!TryNormalizeEntry(entry, out var normalized)) return null;
+
         // 正規化後にまだ前後の空白が残る項目は、Host ヘッダーと綴りが一致しえない
-        && !string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal);
+        if (!string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal))
+        {
+            // 空白が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.SurroundingWhitespace;
+        }
+
+        // ポートの有無は、フレームワーク自身のホスト部の切り出しに委ねて判定する
+        if (!string.Equals(normalized, new HostString(normalized).Host, StringComparison.Ordinal))
+        {
+            // 突き合わせ相手（Host ヘッダー）は常にポートを落とされているので一致しえない
+            return DeadEntryReason.PortSuffix;
+        }
+
+        // どちらにも当たらなければ、その項目は一致しうる
+        return null;
+    }
+
+    /// <summary>
+    /// その項目が、どの <c>Host</c> とも一致しえない理由。
+    /// </summary>
+    /// <remarks>
+    /// 理由ごとに文面を分けるのは <see cref="PermissiveReason"/> と同じ趣旨 ——
+    /// 混在した一覧（<c>"a.example.test; b.example.test;c.example.test:8080"</c>）で
+    /// 1 つの文面しか出せないと、<b>どの項目がなぜ落ちているか</b>を運用者が追えない。
+    /// </remarks>
+    public enum DeadEntryReason
+    {
+        /// <summary>正規化後も前後に空白が残っている（項目はトリムされない）。</summary>
+        SurroundingWhitespace,
+
+        /// <summary>ポートを含んでいる（<c>Host</c> 側はポートを落としてから比べられる）。</summary>
+        PortSuffix,
+    }
 
     /// <summary>
     /// 一致しえない項目を<b>消すだけ</b>にしたら何が起きるかの分類。
@@ -552,7 +635,7 @@ public static class AllowedHostsPolicy
     /// 一覧をどう書くかの共通の一言（どの案内にも同じものを添える）。
     /// </summary>
     private const string ListFormatHint =
-        " Write the list as 'a.example;b.example', with no spaces.";
+        " Write the list as 'a.example;b.example', with no spaces and no port numbers.";
 
     /// <summary>
     /// 一覧全体を作り直すよう促す一言（断定できない場合に共通で使う）。
@@ -611,11 +694,12 @@ public static class AllowedHostsPolicy
             // Safe が保証するのは「絞り込みが開かないこと」だけで、
             // その項目が要らないことまでは言っていない
             DeadEntryDeletionOutcome.Safe =>
-                "Fix each listed entry by removing the surrounding whitespace, so the hostname "
-                + "is matched again. Only delete an entry if it contains no hostname you actually "
-                + "serve (an unset ${VARIABLE} leaves a blank entry like this) — deleting these "
-                + "entries does not leave a list that accepts every Host, but it does mean the "
-                + "hostname stays rejected." + ListFormatHint,
+                "Fix each listed entry so that it is exactly the hostname you serve (the reason "
+                + "is given next to each entry above), so the hostname is matched again. Only "
+                + "delete an entry if it contains no hostname you actually serve (an unset "
+                + "${VARIABLE} leaves a blank entry like this) — deleting these entries does not "
+                + "leave a list that accepts every Host, but it does mean the hostname stays "
+                + "rejected." + ListFormatHint,
 
             // 名指しする項目が無いときと、分類が増えたのに足し忘れたとき。
             // どちらも断定せず、一覧全体を見直してもらう（上記のとおり fail-closed）
@@ -762,8 +846,79 @@ public static class AllowedHostsPolicy
     /// <param name="entries">一致しえない項目（<see cref="NeverMatchingEntries"/> の結果）。</param>
     /// <returns>ログへそのまま載せられる 1 本の文字列。</returns>
     public static string DescribeEntriesForLog(IReadOnlyList<string> entries) =>
-        // 1 件ずつ可視化して "[ ]" で囲み、読みやすいよう ", " でつなぐ
-        string.Join(", ", entries.Select(entry => $"[{MakeInvisibleCharactersVisible(entry)}]"));
+        // 1 件ずつ「可視化して "[ ]" で囲み、その項目の理由を添える」形にして ", " でつなぐ
+        string.Join(", ", entries.Select(DescribeEntryForLog));
+
+    /// <summary>
+    /// 一致しえない項目 1 件を、囲み・可視化・理由の 3 点セットにする。
+    /// </summary>
+    /// <remarks>
+    /// <b>理由は項目から導き直す（引数で受け取らない）。</b> 呼び出し側が理由を持ち回る形にすると、
+    /// 名指しした項目と添えた理由が食い違う変更が書けてしまう
+    /// （<see cref="PartitionEntries"/> が振り分けを 1 か所に寄せているのと同じ趣旨）。
+    /// 理由が導けない項目（＝そもそも死んでいない項目を渡された）は既定の文面へ倒す。
+    /// </remarks>
+    /// <param name="entry">一致しえない項目 1 件。</param>
+    /// <returns>ログへ載せる 1 件分の綴り。</returns>
+    private static string DescribeEntryForLog(string entry)
+    {
+        // 規則の正本（ClassifyDeadEntry）から、この項目の理由を導き直す
+        var reason = ClassifyDeadEntry(entry);
+
+        // 理由が導けたならその文面、導けなければ断定しない既定の文面を使う
+        var cause = reason is null ? FallbackDeadEntryCauseMessage : DeadEntryCauseMessage(reason.Value);
+
+        // 空白が目で見えるよう "[ ]" で囲み、そのうしろへ理由を添える
+        return $"[{MakeInvisibleCharactersVisible(entry)}] ({cause})";
+    }
+
+    /// <summary>
+    /// 項目が一致しえない理由を、そのままログに載せられる文に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>対応表を <c>Program.cs</c> に置かない理由は
+    /// <see cref="DeadEntryFixAdvice"/> と同じ。</b> あちらは
+    /// <c>if (!IsDevelopment())</c> の中なので、書くとテストから 1 行も走らない。</para>
+    ///
+    /// <para><b>直し方ではなく理由だけを言う。</b> 直し方は「消してよいかどうか」で変わるので
+    /// <see cref="DeadEntryFixAdvice"/> が 1 本だけ出す。ここで直し方まで分岐させると、
+    /// 同じ 1 文が理由 × 分類の通り数に増えて食い違う口が増える。</para>
+    ///
+    /// <para><b>既定は断定しない側へ倒す。</b> 理由に値が増えたとき <c>switch</c> の
+    /// <c>_</c> は何も言わずに既定の文面を返す（<c>CS8509</c> は出ない）。
+    /// <b>足し忘れ自体は <c>AllowedHostsPolicyTests</c> が enum から導いて落とす。</b></para>
+    /// </remarks>
+    /// <param name="reason">その項目が一致しえない理由。</param>
+    /// <returns>ログにそのまま載せる理由の説明（英語。ログの他の文面とそろえる）。</returns>
+    public static string DeadEntryCauseMessage(DeadEntryReason reason) =>
+        // 理由ごとに、運用者がその項目のどこを見ればよいかを示す
+        reason switch
+        {
+            // 項目はトリムされないので、前後の空白がそのまま綴りの一部になっている
+            DeadEntryReason.SurroundingWhitespace =>
+                "host filtering does not trim entries, so the surrounding whitespace is part of "
+                + "the entry and no Host header can ever equal it",
+
+            // Host ヘッダー側はポートを落としてから比べられるので、ポート付きは一致しえない
+            DeadEntryReason.PortSuffix =>
+                "host filtering strips the port from the Host header before comparing, so an "
+                + "entry that carries a port can never be equal — list the hostname on its own",
+
+            // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
+            _ => FallbackDeadEntryCauseMessage,
+        };
+
+    /// <summary>
+    /// 専用の説明を持たない理由へ返す既定の文面。
+    /// </summary>
+    /// <remarks>
+    /// <b>テストが「関数を呼ばずに」参照できるよう、名前を付けて公開してある。</b>
+    /// 理由は <see cref="FallbackFixAdvice"/> と同じで、既定の文面を
+    /// <c>DeadEntryCauseMessage(...)</c> で求めると比較が<b>自分自身との照合</b>になり、
+    /// 足し忘れを 1 件も検出しなくなる。
+    /// </remarks>
+    public const string FallbackDeadEntryCauseMessage =
+        "no Host header can ever equal this entry; inspect the entry itself";
 
     /// <summary>
     /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
