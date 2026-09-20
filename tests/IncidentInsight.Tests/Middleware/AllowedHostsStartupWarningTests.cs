@@ -141,6 +141,37 @@ public class AllowedHostsStartupWarningTests
             warning);
     }
 
+    // <b>警告がログの 1 レコードに収まること。</b> 設定値をそのまま埋め込むと、
+    // CR / LF を含む値で<b>1 本の警告がログ上は複数のレコードに見える</b> ——
+    // docs/security.md が案内する「この警告が出ていないことを確認する」という運用手順が
+    // 偽の継続行で破れ、ログの収集・解析が<b>まさにその設定ミスのときに</b>壊れる（issue #258）。
+    //
+    // <b>可視化の単体テストだけでは足りない。</b> あちらは
+    // AllowedHostsPolicy.DescribeValueForLog を直接呼ぶので、Program.cs が
+    // その呼び出しをやめて生の値へ戻しても 1 件も落ちない
+    // （警告は if (!IsDevelopment()) の中にあり、この配線はここでしか走らない）。
+    [Fact]
+    public void ControlCharactersInTheValue_DoNotSplitTheWarningAcrossLogRecords()
+    {
+        // 改行が紛れ込んだ設定値（テンプレート展開やコピー & ペーストで自然に生まれる形）。
+        // 制御文字は正規化に失敗するので、1 本目（全許可）の警告が出る経路に入る
+        const string allowedHosts = "incident.example.test;0.0\r\n.0.0";
+
+        // その設定で起動する
+        using var fixture = new WarningCapturingFixture(allowedHosts);
+
+        // 1 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 警告の文面に改行が 1 つも残っていないこと＝レコードが分断されない
+        Assert.DoesNotContain('\r', warning);
+        Assert.DoesNotContain('\n', warning);
+
+        // 値そのものは（可視化された形で）載ること ——運用者が自分の設定だと気づけるように。
+        // 期待値は判定側の関数から取る（文面の綴りをテストへ書き写さないため）
+        Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(allowedHosts), warning);
+    }
+
     /// <summary>
     /// <c>Staging</c> としてアプリを起動し、起動中に出た警告を溜めておくフィクスチャ。
     /// </summary>

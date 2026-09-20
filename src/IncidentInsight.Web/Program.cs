@@ -381,9 +381,14 @@ if (!app.Environment.IsDevelopment())
             // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
             // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える
             app.Environment.EnvironmentName,
-            // 値をそのまま載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
-            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)
-            allowedHosts,
+            // 値を載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
+            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)。
+            // <b>生のままでは載せない。</b> UnparsableEntry という分類がある時点でこの値には
+            // 制御文字が入りうるので、CR / LF が混ざると 1 本の警告がログ上は複数の
+            // レコードに見える ——docs/security.md が案内する「警告が出ていないことの確認」が
+            // 偽の継続行で破れ、ログの収集・解析がまさにその設定ミスのときに壊れる。
+            // 可視化の規則は AllowedHostsPolicy に置く(2 本の警告で書き写さないため。issue #258)
+            AllowedHostsPolicy.DescribeValueForLog(allowedHosts),
             // その設定に合った原因の説明(直し方は原因によらず同じなので次の文で共通)
             AllowedHostsPolicy.PermissiveCauseMessage(permissiveReason));
     }
@@ -442,8 +447,10 @@ if (!app.Environment.IsDevelopment())
             // どの環境の話かを添える(上の警告と同じ理由)
             app.Environment.EnvironmentName,
             // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
-            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない
-            string.Join(", ", neverMatching.Select(entry => $"[{entry}]")),
+            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない。
+            // 囲み方は AllowedHostsPolicy が持つ ——ここは if (!IsDevelopment()) の中で
+            // テストから 1 行も走らないので、整形を置いたままだと誰にも見られない(issue #258)
+            AllowedHostsPolicy.DescribeEntriesForLog(neverMatching),
             // その設定に合った直し方(消してよいかどうかで文面が変わる)
             howToFix);
     }

@@ -1,5 +1,7 @@
 // フレームワークと同じホスト名の正規化を通すために使う
 using Microsoft.AspNetCore.Http;
+// ログ用に制御文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
+using System.Text;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -706,4 +708,98 @@ public static class AllowedHostsPolicy
     /// </remarks>
     public const string FallbackPermissiveCauseMessage =
         "No specific cause is available for this value; inspect the value itself.";
+
+    /// <summary>設定値が未設定だったときにログへ出す代わりの綴り。</summary>
+    /// <remarks>
+    /// 構造化ログの既定は <c>null</c> を <c>(null)</c> と描くが、運用者にとっては
+    /// 「設定していない」と「空文字を設定した」は別の出来事なので、前者だけを名乗る。
+    /// </remarks>
+    public const string UnsetValueForLog = "(not set)";
+
+    /// <summary>
+    /// 設定値を、ログの 1 レコードへそのまま載せられる形に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>生の値をログへ埋め込まない。</b> <see cref="PermissiveReason.UnparsableEntry"/>
+    /// という分類が存在すること自体が、この値に制御文字が入りうることを前提にしている
+    /// （<c>"0.0\t.0.0"</c> のような綴りのためにある）。CR / LF が混ざっていると
+    /// <b>1 本の警告がログ上は複数のレコードに見え</b>、(a) <c>docs/security.md</c> が案内する
+    /// 「この警告が出ていないことを確認する」という運用手順が偽の継続行で破れ、
+    /// (b) ログの収集・解析が<b>まさにその警告が指している設定ミスのときに</b>壊れる
+    /// （issue #258）。</para>
+    ///
+    /// <para><b>置き換えの規則はこの 1 か所だけに置く。</b> 2 本の警告（全許可・一致しえない項目）で
+    /// 書き写すと、片方だけ直る形になる。</para>
+    /// </remarks>
+    /// <param name="value"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
+    /// <returns>目に見えない文字を可視化した綴り（未設定なら <see cref="UnsetValueForLog"/>）。</returns>
+    public static string DescribeValueForLog(string? value) =>
+        // 未設定は「空文字を設定した」と区別して名乗る
+        value is null ? UnsetValueForLog : MakeInvisibleCharactersVisible(value);
+
+    /// <summary>
+    /// 一致しえない項目の一覧を、ログの 1 レコードへそのまま載せられる形に直す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>囲みと可視化を <c>Program.cs</c> から引き取っている。</b> あちらは
+    /// <c>if (!IsDevelopment())</c> の中なのでテストから 1 行も走らず、整形を置いたままだと
+    /// 「項目ごとに可視化を通す」という保証が<b>誰にも見られない場所</b>に残る。</para>
+    ///
+    /// <para><b><c>[ ]</c> で囲むのは、前後の空白が目で見えないから。</b> 囲まないと
+    /// 「なぜこれが一致しないのか」が運用者に伝わらない。</para>
+    ///
+    /// <para><b>囲みの内側にも <see cref="DescribeValueForLog"/> と同じ規則を通す。</b>
+    /// <b>いまの規則では、ここへ制御文字を含む項目は来ない</b> ——実測でも、制御文字を
+    /// 含む項目は正規化そのものに失敗して <see cref="PermissiveReason.UnparsableEntry"/> 側
+    /// （1 本目の警告）へ回るので、「一致しえない項目」として名指しされる綴りに
+    /// 制御文字が残る組み合わせは 1 つも無い。それでも同じ規則を通すのは、
+    /// <b>「一致しえない」の定義が広がるのはこれからも起きる</b>から
+    /// （実際 issue #256 がその 1 つ）。規則を片方だけに掛けておくと、
+    /// 定義を広げた人が<b>ログの分断まで一緒に持ち込む</b>ことになる ——
+    /// 綴りがそのままなら <see cref="DescribeValueForLog"/> は元の文字列を返すので、
+    /// 通しておく代償は無い。</para>
+    /// </remarks>
+    /// <param name="entries">一致しえない項目（<see cref="NeverMatchingEntries"/> の結果）。</param>
+    /// <returns>ログへそのまま載せられる 1 本の文字列。</returns>
+    public static string DescribeEntriesForLog(IReadOnlyList<string> entries) =>
+        // 1 件ずつ可視化して "[ ]" で囲み、読みやすいよう ", " でつなぐ
+        string.Join(", ", entries.Select(entry => $"[{MakeInvisibleCharactersVisible(entry)}]"));
+
+    /// <summary>
+    /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>制御文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
+    /// 名前付きにして残りを別扱いにすると、表と実際の文字集合が少しずつずれていく。
+    /// <c>\uXXXX</c> の 1 規則なら、どの制御文字でも同じ読み方で済む。</para>
+    ///
+    /// <para><b>逆斜線そのものも置き換える。</b> そうしないと、値に文字どおり
+    /// <c>\u0009</c> と書いた場合と、タブが 1 文字入っている場合が<b>同じ見た目</b>になり、
+    /// 運用者は自分の設定のどちらなのかを判別できない。ホスト名に逆斜線が
+    /// 正当に現れることは無いので、読みにくくなる実害も無い。</para>
+    /// </remarks>
+    /// <param name="value">可視化したい文字列。</param>
+    /// <returns>制御文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    private static string MakeInvisibleCharactersVisible(string value)
+    {
+        // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
+        if (!value.Any(ch => char.IsControl(ch) || ch == '\\')) return value;
+
+        // 置き換えが要るときだけ組み立てる
+        var builder = new StringBuilder(value.Length);
+
+        // 1 文字ずつ見て、読めない文字だけを置き換える
+        foreach (var ch in value)
+        {
+            // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
+            if (ch == '\\') builder.Append("\\\\");
+            // 制御文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
+            else if (char.IsControl(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
+            // それ以外はそのまま（ホスト名として読める文字）
+            else builder.Append(ch);
+        }
+
+        // 可視化した綴りを返す
+        return builder.ToString();
+    }
 }

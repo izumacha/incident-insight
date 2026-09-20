@@ -676,4 +676,65 @@ public class AllowedHostsPolicyTests
             AllowedHostsPolicy.PermissiveCauseMessage(
                 AllowedHostsPolicy.PermissiveReason.NotPermissive));
     }
+
+    // <b>ログへ出す値は、目に見えない文字を見えるようにしてから載せる。</b>
+    // UnparsableEntry という分類がある時点で、この値には制御文字が入りうる
+    // （"0.0\t.0.0" のような綴りのためにある）。CR / LF がそのまま載ると
+    // 1 本の警告がログ上は複数のレコードに見え、docs/security.md が案内する
+    // 「警告が出ていないことの確認」が偽の継続行で破れる（issue #258）。
+    [Theory]
+    // タブは \uXXXX の形で見えるようになる
+    [InlineData("0.0\t.0.0", "0.0\\u0009.0.0")]
+    // CR / LF が残らない＝レコードが分断されない（この 2 つが本命）
+    [InlineData("a.test\r\nb.test", "a.test\\u000D\\u000Ab.test")]
+    // 逆斜線も置き換える（そうしないと「\u0009 と書いた値」とタブ 1 文字が同じ見た目になる）
+    [InlineData("a\\test", "a\\\\test")]
+    // 置き換えるものが無い普通の値は、1 文字も変えずにそのまま出す
+    [InlineData("incident.example.test;www.example.test", "incident.example.test;www.example.test")]
+    // 前後の空白は制御文字ではないので触らない（"[ ]" の囲みが見せる役目を持つ）
+    [InlineData(" a.test", " a.test")]
+    public void DescribeValueForLog_MakesInvisibleCharactersVisible(string value, string expected)
+    {
+        // 可視化した綴りが期待どおりであること
+        Assert.Equal(expected, AllowedHostsPolicy.DescribeValueForLog(value));
+    }
+
+    // <b>未設定は「空文字を設定した」と区別して名乗る。</b> 構造化ログの既定は
+    // null を "(null)" と描くが、運用者にとってこの 2 つは別の出来事。
+    [Fact]
+    public void DescribeValueForLog_NamesAnUnsetValue()
+    {
+        // 未設定のときだけ専用の綴りを返すこと
+        Assert.Equal(AllowedHostsPolicy.UnsetValueForLog, AllowedHostsPolicy.DescribeValueForLog(null));
+
+        // 空文字は「設定したが空」なので、未設定の綴りへ畳まないこと
+        Assert.NotEqual(AllowedHostsPolicy.UnsetValueForLog, AllowedHostsPolicy.DescribeValueForLog(""));
+    }
+
+    // <b>項目の一覧も同じ規則を通す。</b> 囲み（"[ ]"）と可視化を 2 本の警告で書き写すと、
+    // 片方だけ直る形になる（issue #258 が名指ししている形）。
+    [Fact]
+    public void DescribeEntriesForLog_WrapsEachEntryAndUsesTheSameVisibilityRule()
+    {
+        // 空白付きの項目と、制御文字を含む項目を並べる
+        var described = AllowedHostsPolicy.DescribeEntriesForLog([" www.example.test", "a\tb"]);
+
+        // 1 件ずつ "[ ]" で囲まれ、間が ", " でつながること
+        Assert.Equal("[ www.example.test], [a\\u0009b]", described);
+    }
+
+    // <b>可視化の規則は 1 か所だけに置く。</b> 2 つの入口が別の規則を持つと、
+    // 片方の警告だけがレコードを分断する状態へ静かに戻れてしまう。
+    [Fact]
+    public void DescribeEntriesForLog_AgreesWithDescribeValueForLog()
+    {
+        // 同じ綴りを 2 つの入口へ通す
+        const string entry = "a\r\nb";
+
+        // 項目側の出力が「囲み＋値側の出力」と一致すること（＝同じ規則を使っている）
+        Assert.Equal(
+            $"[{AllowedHostsPolicy.DescribeValueForLog(entry)}]",
+            AllowedHostsPolicy.DescribeEntriesForLog([entry]));
+    }
+
 }
