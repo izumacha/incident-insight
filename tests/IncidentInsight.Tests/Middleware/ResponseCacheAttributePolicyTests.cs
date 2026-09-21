@@ -890,8 +890,10 @@ public class ResponseCacheAttributePolicyTests
     private static string UnapprovedStaticAssetsMessage(
         IReadOnlyList<UnapprovedStaticAsset> unapproved)
     {
-        // 名指しの一覧(相対パスと、なぜ落ちたかの理由)を組み立てる
-        var named = string.Join(", ", unapproved.Select(item => $"{item.RelativePath}({item.Cause})"));
+        // 名指しの一覧(相対パスと、なぜ落ちたかの理由)。大小違いは承認表側の綴りも添える
+        var named = string.Join(", ", unapproved.Select(item => item.ApprovedSpelling is null
+            ? $"{item.RelativePath}({item.Cause})"
+            : $"{item.RelativePath}({item.Cause}: 表の綴りは {item.ApprovedSpelling})"));
 
         // なぜ wwwroot へ置くと危ないのかを、原因によらず共通で伝える
         var message = $"wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: {named}"
@@ -914,10 +916,13 @@ public class ResponseCacheAttributePolicyTests
         // 綴りの大小だけが違うものがあれば、<b>表へ足さない</b>ことまで明示する
         if (unapproved.Any(item => item.Cause == MiscasedApprovedAssetCause))
         {
-            // 表へ足すと同じ資産が 2 度承認されるので、直すのは名前のほう
-            message += $"「{MiscasedApprovedAssetCause}」ものは表へ足さず、"
-                + "承認済みの綴りに合わせて名前のほうを直してください"
-                + "(表へ足すと同じ資産を 2 度承認することになります)。";
+            // 表へ新しい行を足すと同じ資産が 2 度承認されるので、どちらかの綴りへそろえる。
+            // <b>どちらが正しいかは決め打たない</b>(名前が外部で決まっている資産もある)
+            message += $"「{MiscasedApprovedAssetCause}」ものは表へ新しい行を足さず"
+                + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
+                + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
+                + "入れ物の綴りが違う場合はその中身も未承認として並ぶので、"
+                + "先に入れ物の綴りをそろえてから残りを確認してください。";
         }
 
         // 組み立てた文面を返す
@@ -1216,18 +1221,29 @@ public class ResponseCacheAttributePolicyTests
     // 「表へ足せ」と書いたままでは、綴りの大小が違うだけの資産について
     // <b>同じ資産を 2 度承認させる</b>誤った直し方を案内し続ける ——
     // issue #270 が名指しした defect がそのまま残る。
+    //
+    // <b>かといって「名前を直せ」とも決め打たない（レビュー指摘）。</b> 名前が外部で
+    // 決まっている資産では表のほうを直すのが正しく、決め打つと登録も改名もできない
+    // <b>行き止まり</b>になる。両方の綴りを見せて人に選ばせていることまで固定する。
+    //
     // 実在のツリーには違反が 1 件も無いので、出し分けは合成入力でしか通らない。
     [Fact]
     public void UnapprovedStaticAssetsMessage_GivesTheRepairThatMatchesTheCause()
     {
         // 綴りの大小だけが違うものだけが落ちた場合の文面
         var miscasedOnly = UnapprovedStaticAssetsMessage(
-            [new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause)]);
+            [new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause, "lib")]);
 
-        // 名前のほうを直すよう案内すること
-        Assert.Contains("名前のほうを直して", miscasedOnly, StringComparison.Ordinal);
+        // 表へ新しい行を足さないよう案内すること(同じ資産を 2 度承認させないため)
+        Assert.Contains("表へ新しい行を足さず", miscasedOnly, StringComparison.Ordinal);
 
-        // 表へ足す案内は<b>出さない</b>こと(同じ資産を 2 度承認させないため)
+        // どちらが正しいかは決め打たず、確かめてそろえるよう案内すること
+        Assert.Contains("どちらが正しいかを確かめて", miscasedOnly, StringComparison.Ordinal);
+
+        // 判断できるよう、承認表側の綴りも見せること
+        Assert.Contains("表の綴りは lib", miscasedOnly, StringComparison.Ordinal);
+
+        // 表へ登録する案内は<b>出さない</b>こと
         Assert.DoesNotContain(nameof(ApprovedStaticDirectories), miscasedOnly, StringComparison.Ordinal);
 
         // 本当に未承認のものだけが落ちた場合の文面
@@ -1237,23 +1253,26 @@ public class ResponseCacheAttributePolicyTests
         // 表へ登録するよう案内すること
         Assert.Contains(nameof(ApprovedStaticDirectories), unapprovedOnly, StringComparison.Ordinal);
 
-        // 名前を直す案内は出さない(この原因では直し方が違う)
-        Assert.DoesNotContain("名前のほうを直して", unapprovedOnly, StringComparison.Ordinal);
+        // 綴りをそろえる案内は出さない(この原因では直し方が違う)
+        Assert.DoesNotContain("どちらが正しいかを確かめて", unapprovedOnly, StringComparison.Ordinal);
 
         // 両方が混ざった場合は、<b>どちらの案内も</b>出ること
         var both = UnapprovedStaticAssetsMessage(
         [
             // 表に無いもの(表へ足すのが正しい)
             new UnapprovedStaticAsset("exports", UnapprovedDirectoryCause),
-            // 大小だけが違うもの(名前を直すのが正しい)
-            new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause),
+            // 大小だけが違うもの(どちらかの綴りへそろえるのが正しい)
+            new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause, "lib"),
         ]);
 
         // 表へ登録する案内が出ること
         Assert.Contains(nameof(ApprovedStaticDirectories), both, StringComparison.Ordinal);
 
-        // 名前を直す案内も出ること
-        Assert.Contains("名前のほうを直して", both, StringComparison.Ordinal);
+        // 綴りをそろえる案内も出ること
+        Assert.Contains("どちらが正しいかを確かめて", both, StringComparison.Ordinal);
+
+        // 入れ物の中身が並ぶ理由も説明すること(数十件の一覧を前に途方に暮れさせない)
+        Assert.Contains("先に入れ物の綴りをそろえてから", both, StringComparison.Ordinal);
 
         // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
         Assert.Contains("LIB", both, StringComparison.Ordinal);
@@ -1317,42 +1336,22 @@ public class ResponseCacheAttributePolicyTests
     //
     // "css" や ".CSS" と書いても突き合わせ相手(Path.GetExtension の戻り値)と形が合わず、
     // <b>その 1 行だけが何にも当たらない</b>まま表に残る(登録したつもりの種別が通らない)。
-    // パスをキーにする 2 つの表が、<b>小文字</b>で綴られていること。
-    //
-    // <b>なぜ要るのか（レビュー指摘）。</b> 大小違いの報告は「表のキーが正しい綴り」を
-    // 前提にしている。表側が `CSS` のように綴られていると、実在する正しい `css` のほうが
-    // 「綴りの大小が違う」と報告され、失敗文言は<b>実ファイルを `CSS` へ改名しろ</b>と案内する
-    // ——大文字小文字を区別するファイルシステムでは `~/css/site.css` の参照が全部壊れる。
-    // issue #270 が消したはずの「失敗文言が誤った直し方を案内する」形が、向きを変えて戻る。
-    // 拡張子の表は ApprovedStaticFileExtensions_AreSpelledAsExtensions が既に同じ手当てを
-    // しているので、パス側の 2 つにもそろえる。
     [Fact]
-    public void StaticAssetPathTables_AreSpelledInLowerCase()
+    public void ApprovedStaticFileExtensions_AreSpelledAsExtensions()
     {
-        // パスをキーにする 2 つの表を、表の名前とともに順に見る
-        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
-        {
-            // 承認済みの入れ物
-            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
-            // 中を見ない入れ物
-            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
-            // 直下に置いてよいファイル
-            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
-        };
-
-        // 小文字で綴られていないキーを、表の名前付きで集める
-        var malformed = tables
-            .SelectMany(table => table.Entries.Keys
-                .Where(key => key != key.ToLowerInvariant())
-                .Select(key => $"{table.Name}[{key}]"))
+        // 拡張子の綴りになっていないキーを集める
+        var malformed = ApprovedStaticFileExtensions.Keys
+            .Where(extension =>
+                !extension.StartsWith('.')
+                || extension.Length < 2
+                || extension != extension.ToLowerInvariant())
             .ToList();
 
         // 1 つも無いことを、名指しの一覧付きで確認する
         Assert.True(
             malformed.Count == 0,
-            "静的資産の承認表のキーは小文字で書いてください(表の綴りが正しい前提で"
-                + "「大小が違う」を報告するため、表側が大文字だと実ファイルのほうを"
-                + "改名させる誤った案内になります): " + string.Join(", ", malformed));
+            $"{nameof(ApprovedStaticFileExtensions)} のキーは先頭が . の小文字(例: .css)で"
+                + "書いてください: " + string.Join(", ", malformed));
     }
 
     // 承認表が、<b>大小だけが違う 2 つのキー</b>を同時に持っていないこと。
@@ -1360,13 +1359,14 @@ public class ResponseCacheAttributePolicyTests
     // <b>なぜ機械で見るのか（レビュー指摘）。</b> ApprovedSpellingFor は大小を無視して
     // 最初に一致したキーを返すので、`lib` と `LIB` が同居すると<b>どちらが返るかが
     // Dictionary の規定されていない列挙順に依存する</b>（同じ入れ物が承認済みにも
-    // 大小違いにもなりうる）。実在の表は OrdinalIgnoreCase なので初期化時に例外になるが、
-    // 比較器に依存しない引き方にした以上 Ordinal で作り直すことは<b>許される形</b>
-    // （姉妹の検査がまさに Ordinal の表を渡している）。前提をレビュー任せにせず固定する。
+    // 大小違いにもなりうる）。<b>初期化子は重複キーを上書きするので例外にはならない</b> ——
+    // 実在の表を OrdinalIgnoreCase で作っていた頃は、`LIB` を足すと `lib` の行が
+    // <b>黙って消えて理由の文だけが差し替わり</b>、この検査からもキーが 1 つにしか見えず
+    // 全件緑のまま通った（レビューで実測）。表を Ordinal で作ることで初めてこの検査が生きる。
     [Fact]
     public void StaticAssetTables_HaveNoKeysThatDifferOnlyByCase()
     {
-        // 4 つの表を、表の名前とともに順に見る
+        // 承認表を、表の名前とともに順に見る
         var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
         {
             // 承認済みの入れ物
@@ -1395,24 +1395,6 @@ public class ResponseCacheAttributePolicyTests
                 + string.Join(", ", ambiguous));
     }
 
-    [Fact]
-    public void ApprovedStaticFileExtensions_AreSpelledAsExtensions()
-    {
-        // 拡張子の綴りになっていないキーを集める
-        var malformed = ApprovedStaticFileExtensions.Keys
-            .Where(extension =>
-                !extension.StartsWith('.')
-                || extension.Length < 2
-                || extension != extension.ToLowerInvariant())
-            .ToList();
-
-        // 1 つも無いことを、名指しの一覧付きで確認する
-        Assert.True(
-            malformed.Count == 0,
-            $"{nameof(ApprovedStaticFileExtensions)} のキーは先頭が . の小文字(例: .css)で"
-                + "書いてください: " + string.Join(", ", malformed));
-    }
-
     /// <summary>
     /// <c>wwwroot</c> 配下で見つけた 1 件（走査の結果を判定へ渡すための入れ物）。
     /// </summary>
@@ -1425,7 +1407,15 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <param name="RelativePath"><c>wwwroot</c> からの相対パス。</param>
     /// <param name="Cause">入れ物として未承認か、種類として未承認か。</param>
-    private readonly record struct UnapprovedStaticAsset(string RelativePath, string Cause);
+    /// <param name="ApprovedSpelling">
+    /// 大小を無視して一致した承認表の綴り（<see cref="MiscasedApprovedAssetCause"/> のときだけ入る）。
+    /// <b>どちらが正しいかは機械には決められない</b>ので、両方の綴りを見せて人に選ばせるために持つ
+    /// （表側の綴りを正しいと決め打つと、名前が外部で決まっている資産で行き止まりになる）。
+    /// </param>
+    private readonly record struct UnapprovedStaticAsset(
+        string RelativePath,
+        string Cause,
+        string? ApprovedSpelling = null);
 
     /// <summary>入れ物そのものが承認されていないときの理由。</summary>
     private const string UnapprovedDirectoryCause = "承認されていない入れ物";
@@ -1438,9 +1428,17 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>承認済みの資産と綴りの大小だけが違うときの理由。</summary>
     /// <remarks>
-    /// <b>「未承認」と別の理由にするのは、直し方が違うから。</b> 未承認なら「表へ足す」だが、
-    /// 大小違いは<b>同じ資産を 2 度承認させる</b>ことになるので誤った直し方で、
-    /// 正しくは名前のほうをそろえる。理由を分けないと、失敗文言が誤った直し方を案内する。
+    /// <para><b>「未承認」と別の理由にするのは、直し方が違うから。</b> 未承認なら「表へ足す」だが、
+    /// 大小違いで表へ足すと<b>同じ資産を 2 度承認する</b>ことになる。
+    /// 理由を分けないと、失敗文言が誤った直し方を案内する。</para>
+    ///
+    /// <para><b>ただし「名前のほうを直せ」とも決め打たない（レビュー指摘）。</b>
+    /// 正しいのが表の綴りとは限らず、名前が外部で決まっている資産
+    /// （ベンダーが配る <c>LICENSE.txt</c> のような、大文字を含む正規の綴り）では
+    /// <b>表を直すのが正しい</b>。決め打つと、表へ正しい綴りを登録することも
+    /// 名前を変えることもできない<b>行き止まり</b>になり、
+    /// 「実行不能な指示を出す検出網はいずれ緩められる」形になる。
+    /// だから両方の綴りを見せて、どちらをそろえるかは人が決める。</para>
     /// </remarks>
     private const string MiscasedApprovedAssetCause = "承認済みの資産と綴りの大小が違う";
 
@@ -1471,10 +1469,12 @@ public class ResponseCacheAttributePolicyTests
     /// 同居すると、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する
     /// （同じ入れ物が承認済みにも大小違いにもなりうる）。比較器に依存しない引き方にした以上、
     /// 表を <c>Ordinal</c> で作り直すことは許される形なので、<b>レビュー任せにせず</b>
-    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> と
-    /// <c>StaticAssetPathTables_AreSpelledInLowerCase</c> が機械的に固定する
-    /// （後者が無いと、表側の綴りが大文字のときに<b>実ファイルのほうを改名しろ</b>という
-    /// 誤った案内になる ——issue #270 が消したはずの形が向きを変えて戻る）。</para>
+    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> が機械的に固定する。</para>
+    ///
+    /// <para><b>表の綴りを「正しい側」と決め打たない。</b> 名前が外部で決まっている資産
+    /// （ベンダーが配る <c>LICENSE.txt</c> など）では表のほうを直すのが正しいので、
+    /// 呼び出し側は承認表の綴りも一緒に報告し、どちらへそろえるかは人が決める
+    /// ——決め打つと、登録も改名もできない<b>行き止まり</b>を作る（レビュー指摘）。</para>
     /// </remarks>
     /// <param name="table">承認表（キーが承認された綴り）。</param>
     /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
@@ -1495,7 +1495,7 @@ public class ResponseCacheAttributePolicyTests
     /// 無くなる（この repo が繰り返し避けている、直しようの無い要求）。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticDirectories =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // アプリ自身のスタイルシート
             ["css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
@@ -1510,7 +1510,7 @@ public class ResponseCacheAttributePolicyTests
     /// <see cref="ApprovedStaticDirectories"/> にも載っている必要がある。
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> OpaqueStaticDirectories =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // 第三者ライブラリの取得物(数百件)。1 件ずつ承認しても中身はこちらが書いたものではない
             ["lib"] = "CDN 由来の取得物が数百件入る。中身はこちらが書いたものではなく、1 件ずつ承認しても意味が無い。",
@@ -1527,7 +1527,7 @@ public class ResponseCacheAttributePolicyTests
     /// その変更と同じ差分でここへ 1 行足す。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticFileExtensions =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // スタイルシート
             [".css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
@@ -1552,7 +1552,7 @@ public class ResponseCacheAttributePolicyTests
     /// （§6 の「実行不能な指示を出さない」）。中のファイルは種類で見る。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticRootFiles =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // ブラウザのタブに出るアイコン
             ["favicon.ico"] = "ブラウザのアイコン。公開情報。",
@@ -1674,8 +1674,10 @@ public class ResponseCacheAttributePolicyTests
                 }
                 else if (!string.Equals(approvedDirectory, entry.RelativePath, StringComparison.Ordinal))
                 {
-                    // 見つかったが綴りの大小が違う(直し方は「表へ足す」ではなく「名前を直す」)
-                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, MiscasedApprovedAssetCause));
+                    // 見つかったが綴りの大小が違う(直し方は「表へ足す」ではない)。
+                    // 承認表側の綴りも添えて、どちらをそろえるかは読み手に決めてもらう
+                    unapproved.Add(new UnapprovedStaticAsset(
+                        entry.RelativePath, MiscasedApprovedAssetCause, approvedDirectory));
                 }
 
                 // 入れ物の判定はここで終わり(拡張子では見ない)
@@ -1697,7 +1699,8 @@ public class ResponseCacheAttributePolicyTests
                 else if (!string.Equals(approvedRootFile, entry.RelativePath, StringComparison.Ordinal))
                 {
                     // 入れ物と同じく、綴りの大小が違うだけなら直し方が別になる
-                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, MiscasedApprovedAssetCause));
+                    unapproved.Add(new UnapprovedStaticAsset(
+                        entry.RelativePath, MiscasedApprovedAssetCause, approvedRootFile));
                 }
 
                 // 直下のファイルの判定はここで終わり(種類では見ない)

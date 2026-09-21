@@ -205,6 +205,9 @@ public static class ResponseCachePolicy
                 yield return new AttributeDeclaration(declaredOn, attribute);
             }
 
+            // アクションごとの記録に使い回す入れ物(中身は各アクションの手前で空にする)
+            var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
+
             // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
             foreach (var method in controller.GetMethods(BindingFlags.Public | BindingFlags.Instance))
             {
@@ -216,8 +219,11 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
-                // クラス側と同じく、<b>この 1 つのアクションから見えた分だけ</b>を数える記録
-                var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
+                // クラス側と同じく、<b>この 1 つのアクションから見えた分だけ</b>を数える。
+                // 入れ物は使い回して中身だけ空にする ——走査はアセンブリ中の全アクションを
+                // 回るが、キャッシュ指示を宣言しているものはごく一部なので、
+                // メソッドごとに作ると大半が「1 度も使われない入れ物」になる(レビュー指摘)
+                seenOnThisMethod.Clear();
 
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
