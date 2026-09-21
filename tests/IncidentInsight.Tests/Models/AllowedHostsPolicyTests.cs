@@ -1128,6 +1128,14 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;[::]:abc", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>先頭に紛れた区切りのコロンも同じ。</b> ":[::]" の先頭を削ると "[::]" ＝全許可
     [InlineData("a.example.test;:[::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>直し方の手を減らすときに、覆えているかを確かめるための綴り。</b>
+    // 括弧を二重に書いた形（外側を外しても、全部外しても着地は全許可）と、
+    // ポートが数値として読めない形（ホスト部の切り出しが落としてくれる）。
+    // 手を 1 つ外しても<b>これらが警告を失わないこと</b>を確かめてから減らすこと
+    [InlineData("a.example.test;[[::]]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[[0.0.0.0]]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0:99999", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[::]:99999", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // 逆に、素の IPv6 リテラル（"::1" ・ "fe80::1"）の末尾をポートと読み違えないことは、
     // 上の UnbracketedIpv6Literal のケースがそのまま固定している（重複して書かない）
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(

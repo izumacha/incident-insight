@@ -787,8 +787,6 @@ public static class AllowedHostsPolicy
     {
         // 空白を 1 つ残らず落とす（正規化が括弧を補うと空白は内側へ移る）
         RemoveWhitespace,
-        // 正規化が補った角括弧を外す（外さないと括弧の内側の直しが綴りとして壊れる）
-        StripSurroundingBrackets,
         // 対になっていない角括弧を落とす（"[0.0.0.0" → "0.0.0.0"）
         RemoveEveryBracket,
         // 読めない末尾ごと削る（"0.0.0.0%20" → "0.0.0.0"）
@@ -801,8 +799,6 @@ public static class AllowedHostsPolicy
         TruncateAtFirstColon,
         // "//" の無いスキームを外す（"http:0.0.0.0" → "0.0.0.0"）
         AfterBareScheme,
-        // 末尾の ":ポート番号" だけを外す（":::8080" → "::"）
-        WithoutTrailingPort,
         // 突き合わせに使われるホスト部だけを書く（"[::]:abc" → "[::]"）
         HostPartUnlessItAddsBrackets,
         // 先頭に紛れた区切りのコロンを落とす（":[::]" → "[::]"）
@@ -908,10 +904,14 @@ public static class AllowedHostsPolicy
     /// そこで<b>元の綴りに角括弧が無いのに出力に現れた</b>ときだけ、その候補を採らない。</para>
     ///
     /// <para><b>「閉じ括弧の後ろを落とす」専用の手は置いていない。</b>
-    /// 一度は <c>"[::]:abc"</c>（末尾が数字でないので
-    /// <see cref="WithoutTrailingPort"/> が外せず、<see cref="TruncateAtFirstColon"/> は
-    /// 括弧の中のコロンで切ってしまう形）のために足したが、ここのホスト部の切り出しが
-    /// 同じ結果を返すため<b>9,549 通りの綴りで 1 件も結果が変わらなかった</b>（実測）。
+    /// 一度は <c>"[::]:abc"</c>（<see cref="TruncateAtFirstColon"/> が括弧の中のコロンで
+    /// 切ってしまう形）のために足したが、ここのホスト部の切り出しが同じ結果を返すため
+    /// <b>9,549 通りの綴りで 1 件も結果が変わらなかった</b>（実測）。
+    /// <b>同じ理由で「末尾のポート番号だけを外す」手と「外側の角括弧だけを外す」手も置いていない。</b>
+    /// 前者は <c>":::8080"</c> → <c>"::"</c> のために足したが、
+    /// <b>素の <c>::</c> はワイルドカードではない</b>と実測で分かった時点で理由そのものが消えた。
+    /// 後者は <c>"[[::]]"</c> のためだったが、
+    /// <see cref="RemoveEveryBracket"/> とこの手で同じ結論に届く（構成した綴りで確認済み）。
     /// どのテストにも守られない手は、読み手に守られていると誤解させるだけなので置かない（§6）。</para>
     /// </remarks>
     /// <param name="value">綴り。</param>
@@ -1054,55 +1054,6 @@ public static class AllowedHostsPolicy
     private static string RemoveEveryPercentSign(string value) =>
         // 記号だけを空文字へ置き換える（前後の綴りはそのまま残す）
         value.Replace(PercentSign.ToString(), string.Empty, StringComparison.Ordinal);
-
-    /// <summary>末尾の <c>":ポート番号"</c> だけを外す。</summary>
-    /// <remarks>
-    /// <para><b>「余分なコロン」の案内で消えるのは、末尾のポートのほうでもある（レビュー指摘）。</b>
-    /// <c>":::8080"</c>（<c>netstat -tln</c> が IPv6 の待受を表示する形）は
-    /// <see cref="DeadEntryReason.NotABareHostname"/> になり、その文面
-    /// 「ポートも余分なコロンも書くな」に従って末尾のポートを外すと <c>::</c> ＝
-    /// 全ホスト許可（issue #64）。<see cref="TruncateAtFirstColon"/> は
-    /// <b>最初の</b>コロンで切るのでこの形には届かない。</para>
-    ///
-    /// <para><b>素の IPv6 リテラルを巻き添えにしない。</b> <c>"::1"</c> の末尾も
-    /// 「コロン＋数字」の形をしているので、一見すると <c>"::1"</c> → <c>"::"</c> へ
-    /// 倒れそうに見える（<b>なお素の <c>"::"</c> はワイルドカードではない</b> ——
-    /// 実測で <c>AllowedHosts="::"</c> はどのホストも 400。以前ここは
-    /// 「全ホスト許可」と書いており、<b>存在しない危険</b>を理由に門番を勧めていた。
-    /// 理由は <see cref="IsWildcardEntry"/> の remarks が正本）。
-    /// そもそもそう倒れないのは、<b>外すときに最後のコロンごと落とす</b>から ——
-    /// <c>"::1"</c> の最後のコロンは 2 文字目なので、残るのは <c>":"</c> であって
-    /// <c>"::"</c> ではない。<c>"fe80::1"</c> は <c>"fe80:"</c>、
-    /// <c>"0:0:0:0:0:0:0:1"</c> は <c>"0:0:0:0:0:0:0"</c> になる。
-    /// <b>だから <see cref="IsIpv6Literal"/> による門番は置いていない。</b>
-    /// 一度は置いたが、9,549 通りの綴りで<b>1 件も結果が変わらない</b>ことを実測した
-    /// （＝どのテストにも守られない、読み手に守られていると誤解させるだけの行。§6）。
-    /// <b>ここに「末尾だけ」ではなく「最後のコロンより後ろ」を残す直し方を足すときは、
-    /// この理由が崩れるので門番を戻すこと。</b></para>
-    /// </remarks>
-    /// <param name="value">綴り。</param>
-    /// <returns>末尾のポートを外した綴り（ポートに見えなければ元の綴り）。</returns>
-    private static string WithoutTrailingPort(string value)
-    {
-        // 最後のコロンの位置を探す
-        var at = value.LastIndexOf(PortSeparator, StringComparison.Ordinal);
-
-        // コロンが無ければポートも無い
-        if (at < 0) return value;
-
-        // コロンの後ろ（ポート部の候補）
-        var tail = value[(at + PortSeparator.Length)..];
-
-        // 数字以外が 1 文字でもあれば、ポートの位置ではないので触らない
-        foreach (var ch in tail)
-        {
-            // 数字でない文字を見つけた時点で、元の綴りをそのまま返す
-            if (!char.IsAsciiDigit(ch)) return value;
-        }
-
-        // コロンの手前だけを返す（空のポート ":" もここで外れる）
-        return value[..at];
-    }
 
     /// <summary>正規化が補った角括弧を外す（囲まれていなければそのまま）。</summary>
     /// <remarks>
