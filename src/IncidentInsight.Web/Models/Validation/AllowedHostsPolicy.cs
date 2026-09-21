@@ -563,6 +563,15 @@ public static class AllowedHostsPolicy
     /// <b>同じ規則を 2 か所に書かない</b> ——書くと条件を直したときに片方が取り残される
     /// （<see cref="IsNeverMatchingEntry"/> の docstring が禁じている形。レビュー指摘）。</para>
     ///
+    /// <para><b>残っている境界: ポートを付けた IPv6 の綴り（レビュー指摘）。</b>
+    /// <c>::1:8080</c> は<b>それ自体が正しい IPv6 リテラル</b>なので、
+    /// 「ポートを書いた」のか「そういうアドレスを書いた」のかを綴りから区別できない。
+    /// 案内どおり <c>[::1:8080]</c> と書くとこの判定からは生きている項目になり、
+    /// 運用者が意図した <c>Host: [::1]:8080</c> は 400 のまま残る。
+    /// <b>診断が推測で決められる範囲の外</b>（決め打つと、本物の
+    /// <c>::1:8080</c> を使う配備で生きている項目を名指しすることになる）なので、
+    /// 見逃す側へ倒している。</para>
+    ///
     /// <para><b>判定は自前で書かず <see cref="IPAddress"/> に委ねる。</b>
     /// 「コロンが 2 つ以上」「16 進とコロンだけ」といった近似は、
     /// 埋め込み IPv4（<c>::ffff:192.168.0.1</c>）やスコープ付き（<c>fe80::1%eth0</c>）で
@@ -708,27 +717,45 @@ public static class AllowedHostsPolicy
     /// <returns>案内どおりに直したあとの綴り（直し方が複数あるので複数返る）。</returns>
     private static IEnumerable<string> RepairedSpellings(string normalized)
     {
-        // まず空白を落とす（どの直し方でも共通。案内が必ず求めるもの）
-        var withoutWhitespace = RemoveWhitespace(normalized);
+        // どの直し方でも共通の一歩（案内が必ず求めるもの）。
+        // 正規化が補った角括弧も外した形を候補に入れる ——外さないと、括弧の内側で
+        // 起きた直し（"[::%20]" → "[::"）が綴りとして壊れ、ワイルドカードに当たらない
+        var bases = new[] { RemoveWhitespace(normalized), StripSurroundingBrackets(RemoveWhitespace(normalized)) };
 
-        // (a) 読めない末尾ごと削る形（"0.0.0.0%20" → "0.0.0.0"）
-        yield return ComparableSpelling(TruncateAtPercentSign(withoutWhitespace));
-
-        // (c) URL として貼られた形から、ホスト名だけを取り出す形
-        // （"http://0.0.0.0:5000" → "0.0.0.0"、"0.0.0.0/0" → "0.0.0.0"、"::/0" → "[::]"）。
-        // <b>これが無いと逆転が起きる（レビュー指摘）</b> ——スキームを外した
-        // "0.0.0.0:5000" は専用警告になるのに、ASPNETCORE_URLS をそのまま貼った
-        // "http://0.0.0.0:5000" のほうが外れて、ごく普通の「実ホスト名へ直せ」が付いていた
-        yield return ComparableSpelling(HostnameInsideUrlLikeSpelling(withoutWhitespace));
-
-        // (b) パーセント記号だけを抜く形（"%0.0.0.0" → "0.0.0.0"）。
-        // <b>2 通り見るのが要点（レビュー指摘）。</b> 文面は「'%' を書くな」と言うので
-        // 運用者は (b) をしうるのに、(a) しか見ていないと "%0.0.0.0" が
-        // WildcardOnceRepaired に当たらず<b>ごく普通の案内</b>が付いていた
-        // ——直した瞬間に全ホスト許可（issue #64）。
+        // <b>直し方は組み合わせて当てる（レビュー指摘）。</b> 1 つずつ別々に当てていた頃は、
+        // 2 つ以上が要る綴り（"http://0.0.0.0%20"・"%0.0.0.0/0"・" ::%20"）が
+        // WildcardOnceRepaired から外れ、<b>ワイルドカードの注意を持たない文面</b>が付いていた
+        // ——運用者が案内どおり直すと全ホスト許可（issue #64）。
+        // 候補はたかだか十数通りなので、数え上げても代償が無い。
         // 多く報告する側（「そのまま直すな」）へ倒れるので、誤検知の害も無い
-        yield return ComparableSpelling(withoutWhitespace.Replace(PercentSign.ToString(), string.Empty));
+        foreach (var start in bases)
+        {
+            // パーセント記号の扱い: そのまま / 以降を削る / 記号だけ抜く
+            foreach (var withoutPercent in new[]
+                     {
+                         start,
+                         TruncateAtPercentSign(start),
+                         start.Replace(PercentSign.ToString(), string.Empty),
+                     })
+            {
+                // URL として貼られた形は、ホスト名だけを取り出した形も候補にする
+                yield return ComparableSpelling(withoutPercent);
+                yield return ComparableSpelling(HostnameInsideUrlLikeSpelling(withoutPercent));
+            }
+        }
     }
+
+    /// <summary>正規化が補った角括弧を外す（囲まれていなければそのまま）。</summary>
+    /// <remarks>
+    /// ホスト部の切り出しはコロンが 2 つ以上ある値を中身を問わず括弧で包むので、
+    /// 「直したら何になるか」を見るときは外しておかないと、括弧の内側で起きた直しが
+    /// 綴りとして壊れる（<c>"[::%20]"</c> の <c>%</c> 以降を削ると <c>"[::"</c>）。
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>角括弧を外した綴り。</returns>
+    private static string StripSurroundingBrackets(string value) =>
+        // 開きと閉じの両方で挟まれているときだけ、中身を返す
+        value.Length >= 2 && value[0] == '[' && value[^1] == ']' ? value[1..^1] : value;
 
     /// <summary>最初のパーセント記号より後ろを落とす。</summary>
     /// <remarks>
@@ -775,14 +802,16 @@ public static class AllowedHostsPolicy
         // <b>まず、正規化が補った角括弧を外す。</b> コロンが 2 つ以上あると
         // ホスト部の切り出しが中身を問わず括弧で包むので（"http://0.0.0.0:5000" は
         // "[http://0.0.0.0:5000]" になる）、外さないとスキームもパスも見つけられない
-        var bare = value.Length >= 2 && value[0] == '[' && value[^1] == ']'
-            ? value[1..^1]
-            : value;
+        var bare = StripSurroundingBrackets(value);
 
         // "スキーム://" があれば、その後ろから見る
         var afterScheme = bare.IndexOf(SchemeSeparator, StringComparison.Ordinal);
         // 見つかったぶんだけ先頭を落とす
         var rest = afterScheme < 0 ? bare : bare[(afterScheme + SchemeSeparator.Length)..];
+
+        // <b>先頭のスラッシュは読み飛ばす（レビュー指摘）。</b> 落とさないと
+        // "//0.0.0.0" ・ "http:///0.0.0.0" が空文字になり、この直し方が答えを返せない
+        rest = rest.TrimStart(PathSeparator);
 
         // 最初のパス区切りより後ろ（パス・クエリ）は落とす
         var path = rest.IndexOf(PathSeparator);

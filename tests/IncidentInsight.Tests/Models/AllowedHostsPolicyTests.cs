@@ -979,6 +979,13 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;http://0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;::/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>直し方が 2 つ以上要る綴りも、専用警告のほうが勝つこと（レビュー指摘）。</b>
+    // 1 つずつ別々に当てていた頃は、これらが WildcardOnceRepaired から外れ、
+    // <b>ワイルドカードの注意を持たない文面</b>が付いていた（従うと全許可）
+    [InlineData("a.example.test; ::%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;http://0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;%0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;//0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
     // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
     // 「角括弧で囲んでも直らない」と言ってはいけない
