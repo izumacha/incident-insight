@@ -740,15 +740,16 @@ public class HostFilteringShortCircuitTests
                 (await SendWithHostAsync(client, SecondHost)).StatusCode);
         }
 
-        // <b>囲んだ項目も、ちゃんと死んだ項目として名指しされること。</b>
-        // 以前はここが空で、運用者は「警告が消えた＝直った」と読めてしまっていた
-        var deadAfterBracketing = Assert.Single(
-            AllowedHostsPolicy.InspectNeverMatchingEntries(listWithBracketed).Entries);
-        Assert.Equal(bracketed, deadAfterBracketing.Value);
-        Assert.Equal(
-            AllowedHostsPolicy.DeadEntryReason.NotABareHostname, deadAfterBracketing.Reason);
+        // <b>それでいて、囲んだ項目は 1 件も名指しされない（意図した見逃し）。</b>
+        // 角括弧の中身から Kestrel の受け付け方を言い当てることはできない
+        // （実測で [a:b] ・ [...] は 200、[foo] は 400 ——IPv6 として正しいかとは無関係）ので、
+        // 「素の IPv6 でなければ死んでいる」と書くと<b>実際には一致する項目</b>を
+        // 「消してよい」と案内する側へ倒れる。見逃す側を選んでいるぶん、
+        // <b>運用者をここへ誘導しないことが唯一の守り</b>になる
+        // ——それがこの検査の本題（理由は IsUnusableBracketedSpelling の docstring が正本）
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(listWithBracketed));
 
-        // <b>そして、タイプミスの側を IPv6 リテラルと名乗らない。</b>
+        // <b>だから、タイプミスの側を IPv6 リテラルと名乗らない。</b>
         // 原因を言い当てられない綴りは断定せず、素のホスト名を書けとだけ案内する
         var dead = Assert.Single(
             AllowedHostsPolicy.InspectNeverMatchingEntries(listWithTypo).Entries);

@@ -923,11 +923,11 @@ public class AllowedHostsPolicyTests
     // <b>スコープ付き IPv6 を「角括弧で囲め」と案内しない。</b> 本物の Kestrel は
     // Host: [fe80::1%eth0] を 400 で弾くので、囲んでも一致するようにはならない
     [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
-    // <b>角括弧で囲んだだけの綴りは「生きている」ではない。</b> HostString は ] を含む値を
-    // 中身を問わずホスト部として受け取るので、この判定が無いと警告が 1 本も出ない
-    // （Kestrel は Host: [foo] も 400。実測値は IsUnusableBracketedSpelling の docstring が正本）
-    [InlineData("a.example.test;[foo]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
-    [InlineData("a.example.test;[b.example.test:8080:]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>角括弧の中身に「Host ヘッダーが運べない文字」があれば、囲んであっても死んでいる。</b>
+    // HostString は ] を含む値を中身を問わずホスト部として受け取るので、この判定が無いと
+    // 警告が 1 本も出ない（実測値は IsUnusableBracketedSpelling の docstring が正本）
+    [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]

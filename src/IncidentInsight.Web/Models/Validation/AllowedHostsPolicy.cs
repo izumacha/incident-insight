@@ -525,8 +525,12 @@ public static class AllowedHostsPolicy
         && address.AddressFamily == AddressFamily.InterNetworkV6
         // <b>スコープ付き（fe80::1%eth0）は除く（レビュー指摘）。</b>
         // 案内どおり角括弧で囲んでも Kestrel が Host ヘッダーごと弾くので、
-        // 「囲めば一致する」は事実にならない（実測は IsUnusableBracketedSpelling が正本）
-        && address.ScopeId == 0;
+        // 「囲めば一致する」は事実にならない。
+        // <b>除き方は ScopeId ではなく綴りで見る（レビュー指摘）。</b>
+        // IPAddress.TryParse はスコープ名が解決できないと ScopeId を 0 にして成功するため、
+        // ScopeId を見る形は<b>実行機のインターフェース表に依存</b>し、
+        // fe80::1%eth0 の分類が配備先ごとに変わる（"%25" を使う綴りも 0 になる）
+        && !ContainsSpellingAHostHeaderCannotCarry(value);
 
     /// <summary>
     /// その項目が「角括弧で囲んであるが、<c>Host</c> ヘッダーには載りえない綴り」かを見る。
@@ -555,12 +559,51 @@ public static class AllowedHostsPolicy
     /// <param name="normalized">正規化済みの項目。</param>
     /// <returns>角括弧付きだが <c>Host</c> に載りえない綴りなら <c>true</c>。</returns>
     private static bool IsUnusableBracketedSpelling(string normalized) =>
-        // 角括弧で囲まれていて（開きと閉じの両方があり、中身が 1 文字以上）
-        normalized.Length > 2
+        // 角括弧で囲まれていて（開きと閉じの両方がある）
+        normalized.Length >= 2
         && normalized[0] == '['
         && normalized[^1] == ']'
-        // その中身が素の IPv6 リテラルでないなら、Host ヘッダーには載りえない
-        && !IsIpv6Literal(normalized[1..^1]);
+        // その中身に、Host ヘッダーが運べないと実測した綴りが含まれること
+        && ContainsSpellingAHostHeaderCannotCarry(normalized[1..^1]);
+
+    /// <summary>
+    /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Kestrel の検証規則を書き写さない（レビュー指摘）。</b> 角括弧の中身について
+    /// 実測すると、Kestrel が受け付ける範囲は「IPv6 として正しいか」とは無関係だった ——
+    /// <c>[a:b]</c> ・ <c>[...]</c> ・ <c>[::1::2]</c> ・ <c>[0.0.0.0]</c> は
+    /// <b>どれも 200</b>（IPv6 としては 1 つも正しくない）で、
+    /// <c>[foo]</c> ・ <c>[]</c> ・ <c>[:]</c> は 400。つまり実際の規則は
+    /// 「16 進の数字・<c>:</c> ・ <c>.</c> だけからなり、ある程度の形を満たすこと」に近い。</para>
+    ///
+    /// <para><b>だから「素の IPv6 でなければ死んでいる」とは書けない。</b>
+    /// そう書いた版は <c>[a:b]</c> のような<b>実際には一致する項目</b>を
+    /// 「消してよい」と案内することになり、このクラスが繰り返し避けている
+    /// <b>警告が障害を作る側</b>（見逃しより重い誤り）へ倒れる。
+    /// かといって Kestrel の文字集合を推測で書き写すのは、この repo が
+    /// 何度も踏んだ「近似を育てる」道そのもの。</para>
+    ///
+    /// <para><b>そこで、実測で 400 になった原因の文字だけに絞る</b> ——
+    /// 空白（<c>[::1 ]</c> ・ <c>[:: ]</c>）と <c>%</c>（<c>[fe80::1%eth0]</c> ・
+    /// <c>[::1%25eth0]</c>）。どちらも Host ヘッダーの構文として運べないので
+    /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。</para>
+    ///
+    /// <para><b>残っている境界（意図した見逃し）:</b> <c>[foo]</c> や
+    /// <c>[www.example.com:8080:]</c> は Kestrel が 400 で弾くのに、ここでは拾えない
+    /// （中身の文字だけでは Kestrel の規則と区別できないため）。
+    /// 見逃す側なので許容する ——そのかわり、
+    /// <see cref="DeadEntryReason.NotABareHostname"/> の文面が
+    /// <b>「角括弧で囲むな」</b>と明示して、運用者をここへ誘導しないようにしてある。</para>
+    /// </remarks>
+    /// <param name="spelling">角括弧の中身（または項目そのもの）。</param>
+    /// <returns>運べない文字を含むなら <c>true</c>。</returns>
+    private static bool ContainsSpellingAHostHeaderCannotCarry(string spelling) =>
+        // 空白（ヘッダー値の解析で切れる）か、スコープの区切り（実測で 400）を含むか
+        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == ScopeSeparator);
+
+    /// <summary>IPv6 のスコープを書くときの区切り（<c>fe80::1%eth0</c> の <c>%</c>）。</summary>
+    private const char ScopeSeparator = '%';
 
     /// <summary>
     /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
