@@ -967,11 +967,18 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;%0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>アドレスバーから URL ごと貼った形が黙らないこと（レビュー指摘）。</b>
     // ポート付きの URL は正規化で "[https://…:8443]" になり「正規化後の綴り＝ホスト部」に
-    // 化けるので、"/" を運べない文字に入れないと警告 2 本とも出ないまま 400 になる
-    [InlineData("a.example.test;https://b.example.test:8443", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
-    // ポートを書かない URL は、綴りとしては "https:" がポート区切りに見えるので
-    // PortSuffix になる（名指しはされるので黙る形にはならない）
-    [InlineData("a.example.test;https://b.example.test", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // 化けるので、"/" を運べない文字に入れないと警告 2 本とも出ないまま 400 になる。
+    // <b>理由は URL 専用のものを名乗る</b> ——ポートを書かない形は "https:" が
+    // ポート区切りに見えるため、分けないと「ポートを外せ」と事実と違う案内になる
+    [InlineData("a.example.test;https://b.example.test:8443", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
+    [InlineData("a.example.test;https://b.example.test", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
+    // <b>URL / CIDR の形でも、直すとワイルドカードになるなら専用警告のほうが勝つこと
+    // （レビュー指摘）。</b> これが無いと、ASPNETCORE_URLS をそのまま貼った形のほうが
+    // スキームを外した "0.0.0.0:5000" より弱い案内になるという逆転が起きる
+    [InlineData("a.example.test;http://0.0.0.0:5000", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;http://0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;::/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
     // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
     // 「角括弧で囲んでも直らない」と言ってはいけない

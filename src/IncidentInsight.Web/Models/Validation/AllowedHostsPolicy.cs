@@ -489,6 +489,16 @@ public static class AllowedHostsPolicy
             return DeadEntryReason.PercentSignInEntry;
         }
 
+        // <b>URL として書かれた項目は、ポートの理由を名乗る前に分ける（レビュー指摘）。</b>
+        // "https://b.example.test" は "https:" がポート区切りに見えるため下の判定に当たり、
+        // ポートを 1 つも含まないのに「ポートを外せ」と案内していた ——この PR が
+        // NotABareHostname で無くしたはずの「事実と違う理由」そのもの
+        if (normalized.Contains(PathSeparator))
+        {
+            // URL ごと貼られたことを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.UrlInsteadOfHostname;
+        }
+
         // ホスト部の直後がコロンなら、落とされたのは<b>実際にポート部</b>
         // （"a.test:8080" ・ "a.test:" ・ "a.test:abc" がこの形）
         if (normalized.StartsWith(comparable + PortSeparator, StringComparison.Ordinal))
@@ -577,9 +587,12 @@ public static class AllowedHostsPolicy
     /// 何度も踏んだ「近似を育てる」道そのもの。</para>
     ///
     /// <para><b>そこで、実測で 400 になった原因の文字だけに絞る</b> ——
-    /// 空白（<c>[::1 ]</c> ・ <c>[:: ]</c>）と <c>%</c>（<c>[fe80::1%eth0]</c> ・
-    /// <c>[::1%25eth0]</c>）。どちらも Host ヘッダーの構文として運べないので
-    /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。</para>
+    /// 空白（<c>[::1 ]</c> ・ <c>[:: ]</c>）、<c>%</c>（<c>[fe80::1%eth0]</c> ・
+    /// <c>[::1%25eth0]</c>）、<c>/</c>（<c>https://incident.example.test:8443</c> ・
+    /// <c>a/b.test</c>）の<b>3 つ</b>。いずれも Host ヘッダーの構文として運べないので
+    /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。
+    /// <b>増減するときはこの段落と実装を同じ変更セットで直すこと</b>
+    /// ——ここが「どこまで拾うか」の正本として他所から参照されている。</para>
     ///
     /// <para><b>どちらも角括弧の有無を問わない（レビュー指摘）。</b> 空白が
     /// <c>0.0.0 .0</c> のような途中の形でも運べないのは分かりやすいが、
@@ -683,6 +696,13 @@ public static class AllowedHostsPolicy
         // (a) 読めない末尾ごと削る形（"0.0.0.0%20" → "0.0.0.0"）
         yield return ComparableSpelling(TruncateAtPercentSign(withoutWhitespace));
 
+        // (c) URL として貼られた形から、ホスト名だけを取り出す形
+        // （"http://0.0.0.0:5000" → "0.0.0.0"、"0.0.0.0/0" → "0.0.0.0"、"::/0" → "[::]"）。
+        // <b>これが無いと逆転が起きる（レビュー指摘）</b> ——スキームを外した
+        // "0.0.0.0:5000" は専用警告になるのに、ASPNETCORE_URLS をそのまま貼った
+        // "http://0.0.0.0:5000" のほうが外れて、ごく普通の「実ホスト名へ直せ」が付いていた
+        yield return ComparableSpelling(HostnameInsideUrlLikeSpelling(withoutWhitespace));
+
         // (b) パーセント記号だけを抜く形（"%0.0.0.0" → "0.0.0.0"）。
         // <b>2 通り見るのが要点（レビュー指摘）。</b> 文面は「'%' を書くな」と言うので
         // 運用者は (b) をしうるのに、(a) しか見ていないと "%0.0.0.0" が
@@ -721,6 +741,40 @@ public static class AllowedHostsPolicy
         // 見つからなければそのまま、見つかればその手前までを返す
         return at < 0 ? value : value[..at];
     }
+
+    /// <summary>URL として書かれた綴りから、ホスト名の部分だけを取り出す。</summary>
+    /// <remarks>
+    /// <b>「スキームを外して、パスを落とす」という、運用者が実際に行う直し方のモデル</b>
+    /// （<c>"http://0.0.0.0:5000"</c> → <c>"0.0.0.0:5000"</c>、
+    /// <c>"0.0.0.0/0"</c> → <c>"0.0.0.0"</c>）。ポートは呼び出し側の
+    /// <see cref="ComparableSpelling"/> が落とすので、ここでは触らない。
+    /// URL でない綴りは素通しする（<c>"//"</c> も <c>"/"</c> も無ければ元のまま）。
+    /// </remarks>
+    /// <param name="value">空白を落とした後の綴り。</param>
+    /// <returns>ホスト名にあたる部分。</returns>
+    private static string HostnameInsideUrlLikeSpelling(string value)
+    {
+        // <b>まず、正規化が補った角括弧を外す。</b> コロンが 2 つ以上あると
+        // ホスト部の切り出しが中身を問わず括弧で包むので（"http://0.0.0.0:5000" は
+        // "[http://0.0.0.0:5000]" になる）、外さないとスキームもパスも見つけられない
+        var bare = value.Length >= 2 && value[0] == '[' && value[^1] == ']'
+            ? value[1..^1]
+            : value;
+
+        // "スキーム://" があれば、その後ろから見る
+        var afterScheme = bare.IndexOf(SchemeSeparator, StringComparison.Ordinal);
+        // 見つかったぶんだけ先頭を落とす
+        var rest = afterScheme < 0 ? bare : bare[(afterScheme + SchemeSeparator.Length)..];
+
+        // 最初のパス区切りより後ろ（パス・クエリ）は落とす
+        var path = rest.IndexOf(PathSeparator);
+
+        // 区切りが無ければそのまま、あればその手前までを返す
+        return path < 0 ? rest : rest[..path];
+    }
+
+    /// <summary>URL のスキームと本体の区切り（<c>https://…</c> の <c>://</c>）。</summary>
+    private const string SchemeSeparator = "://";
 
     /// <summary>綴りから空白をすべて取り除く。</summary>
     /// <remarks>
@@ -776,6 +830,18 @@ public static class AllowedHostsPolicy
         /// 書くな」と<b>その項目には当てはまらないこと</b>を案内してしまう。
         /// </remarks>
         PercentSignInEntry,
+
+        /// <summary>
+        /// ホスト名ではなく URL が書かれている（スキームやパスを含む）。
+        /// </summary>
+        /// <remarks>
+        /// <c>AllowedHosts</c> へ<b>アドレスバーから URL ごと貼る</b>のは自然な間違いで、
+        /// <c>Host</c> ヘッダーは <c>/</c> を運べない（実測）。
+        /// <see cref="PortSuffix"/> と分けてあるのは、<c>"https://b.example.test"</c> の
+        /// <c>"https:"</c> がポート区切りに見えてしまい、ポートを 1 つも含まない項目に
+        /// 「ポートを外せ」と案内することになるから。
+        /// </remarks>
+        UrlInsteadOfHostname,
 
         /// <summary>
         /// 素のホスト名になっていない（ポートでも IPv6 リテラルでもない綴り）。
@@ -1268,6 +1334,14 @@ public static class AllowedHostsPolicy
                 + "space from this entry (note that host filtering rewrites a bare IPv6 literal "
                 + "into brackets, so a leading space ends up inside them: ' ::1' becomes "
                 + "'[ ::1]'; write it as '[::1]')",
+
+            // URL ごと貼られた形は、ホスト名だけを書けば直る
+            DeadEntryReason.UrlInsteadOfHostname =>
+                "this looks like a URL, but AllowedHosts takes hostnames — a Host header "
+                + "carries no scheme and no path, so the two can never be equal. Write only "
+                + "the hostname (no 'https://', no '/...', no port). Take care not to end up "
+                + "with a wildcard: 'http://0.0.0.0:5000' becomes '0.0.0.0', which disables "
+                + "host filtering entirely (issue #64)",
 
             // パーセント記号は用途を問わず運べないので、「書かない」とだけ言う
             DeadEntryReason.PercentSignInEntry =>
