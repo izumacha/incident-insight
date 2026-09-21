@@ -14,17 +14,25 @@
   全レスポンスに `X-Content-Type-Options: nosniff` / `X-Frame-Options: DENY` /
   `Referrer-Policy: strict-origin-when-cross-origin` を付与します(クリックジャッキング・
   MIME スニッフィング・Referer 経由の URL 漏洩対策)。
-- 同ミドルウェアが**誰もキャッシュ指示を書かなかった応答**へ `Cache-Control: no-store` を
+- 同ミドルウェアが**誰もキャッシュ指示を書かなかった応答**へ `Cache-Control: no-store`<!--cache-claim--> を
   付与します(PHI を含む画面・集計 JSON が共用端末のディスクキャッシュや共有キャッシュに
   残らないようにするため)。規則はこの 1 つだけで、応答の種類では振り分けません(将来 CSV・
   添付画像のエクスポートを足しても既定で保護される fail-closed)。すでに `Cache-Control` が
   書かれている応答(`HomeController.Error` の `[ResponseCache]`、`/health`、アンチフォージェリ、
   静的ファイル配信)は上書きしません。
 - 静的アセット(`wwwroot` 配下)は `Program.cs` の `UseStaticFiles` が `OnPrepareResponse` で
-  `Cache-Control: public,max-age=3600` を名乗ります。これが上の既定値を静的ファイルへ
+  `Cache-Control: public,max-age=3600`<!--cache-claim--> を名乗ります。これが上の既定値を静的ファイルへ
   及ばせないための仕組みです(`lib/` 配下は版付き URL でないため、長期・`immutable` にはしません)。
   付与の根拠と実測(導入前は「フォームを持つ画面だけがアンチフォージェリ経由で偶然保護されて
   いた」)は `SecurityHeadersMiddleware` の docstring が正本です。
+- **`Cache-Control:` を具体値つきで書くときは、直後に目印を付けてください。**
+  実際にその指示を名乗るなら `<!--cache-claim-->`、してはいけない例として挙げるなら
+  `<!--cache-counter-example-->` を値の直後（バッククォートの外）へ置きます。
+  目印は HTML コメントなので表示には出ません。`SecurityHeadersMiddlewareTests` が
+  **目印の付いていない指示を落とし**、`<!--cache-claim-->` の付いた指示については
+  「長期でない・`immutable` を含まない」ことを確かめます ——
+  文章の言い回しから「名乗っているのか、反例なのか」を推し量る形にすると、
+  書き方を変えるたびに検査が誤って赤くなったり黙って緑になったりするためです。
 - **例外**: 同ミドルウェアより手前で応答が完結する経路が 2 つあり、そこには上記のヘッダー群が
   付きません。**どちらもこのアプリのデータを 1 文字も載せない**ため、PHI が漏れることは無いと
   判断しています(覆いたい場合の手当ては `Program.cs` の該当箇所のコメントが持ちます)。

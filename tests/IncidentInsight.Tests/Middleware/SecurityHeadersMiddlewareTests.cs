@@ -177,7 +177,11 @@ public class SecurityHeadersMiddlewareTests
         var bullet = StaticAssetCachingBullet(securityDoc);
 
         // その箇条書きが名乗ると説明している指示を<b>すべて</b>取り出す(`Cache-Control: <値>` の形)
-        var documented = Regex.Matches(bullet, @"`Cache-Control:\s*(?<value>[^`]+)`\s*を名乗");
+        // <b>目印で拾う（言い回しに依存しない）。</b> 以前は「を名乗」という綴りを
+        // 手がかりにしていたが、文章を整えるだけで外れる ——文書側に置いた
+        // 機械可読な目印なら、書き方を変えても壊れない
+        var documented = Regex.Matches(
+            bullet, @"`Cache-Control:\s*(?<value>[^`]+)`" + Regex.Escape(ClaimTag));
 
         // <b>ちょうど 1 件であること。</b> 最初の一致で済ませると、次の 2 方向どちらにも壊れる:
         //   (a) 同じ形の文が手前に増えると、そちらを拾って比較が失敗する ——
@@ -277,20 +281,6 @@ public class SecurityHeadersMiddlewareTests
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
 
-    // 「その指示を実際に名乗る」と述べていることの目印。
-    //
-    // <b>肯定的な名乗りに絞らないと、反例が書けなくなる（レビュー指摘）。</b>
-    // 実測で、"`Cache-Control: public,max-age=31536000,immutable` は使いません。" という
-    // <b>運用手順として正しい反例</b>を足すだけで落ちた ——しかも失敗文言は
-    // 「文書が immutable を含む指示を載せています」と、その文が禁じている当のことを
-    // 書き手に向かって言う。直し方が「反例を消す」しか無い検出網は、いずれ緩められる。
-    // 兄弟の StaticAssetCacheControl_MatchesTheDocumentedDirective が既に「を名乗」で
-    // 絞っているのと同じ手がかりを使う。
-    //
-    // <b>残っている境界</b>: ここに無い言い回し（"を返します" 以外の動詞を新しく使う等）で
-    // 名乗る囮は拾えない。綴りを足して埋めようとせず、囮が実際に出たら手がかりごと見直す。
-    private static readonly string[] AffirmativeClaimMarkers = ["を名乗", "を付与", "を返"];
-
     // 「そうしない」と述べていることの目印。
     //
     // <b>肯定の目印だけでは足りない（レビュー指摘）。</b> 「を名乗」は
@@ -306,11 +296,6 @@ public class SecurityHeadersMiddlewareTests
     //
     // <b>残っている境界</b>: 肯定的に名乗る行がたまたま否定語を含む場合
     //（"…を名乗ります（キャッシュしないため）" 等）は見逃す。
-    // <b>「ず」「なく」も否定（レビュー指摘）。</b> 「を名乗ることなく…」「を付与せず…」は
-    // 運用文書のごく普通の書き方で、入れていないと<b>正しい反例で赤くなる</b>（実測）。
-    // 見る範囲が動詞の言い切りまでに限られているので、
-    // 「まず」「必ず」のような語をたまたま拾う余地は小さい。
-    private static readonly string[] NegatedClaimMarkers = ["ません", "ない", "なく", "ず", "避け"];
 
     // 付けてはいけない指示の綴り。
     // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
@@ -354,27 +339,31 @@ public class SecurityHeadersMiddlewareTests
         AssertNotLongLived(directives, "SecurityHeadersMiddleware.StaticAssetCacheControl");
     }
 
-    // <b>文書が名乗るキャッシュ指示は、1 つ残らず同じ不変条件を満たすこと。</b>
+    // <b>文書が名乗るキャッシュ指示は、1 つ残らず長期でも immutable でもないこと。</b>
     //
     // 上の 2 つは「静的アセットの箇条書き 1 つ」と「定数そのもの」しか見ないので、
-    // <b>別の箇条書きが長期・immutable を名乗っても止められない</b> ——実測で、
-    // OnPrepareResponse という語を含まない囮の箇条書き
-    // （"/attachments 配信は public,max-age=31536000,immutable を名乗ります"）を
-    // 手前へ足すと 1168 件すべて緑のまま通った。目印を持たないので切り出しの件数も
-    // 変わらず、本命の文も定数も動いていないためどの検査にも掛からない。
-    // つまり issue #265 で塞いだ穴が「目印を持つ囮」から「目印を持たない囮」へ
-    // 移っただけだった（レビュー指摘）。
-    //
-    // <b>運用者が読むのは文書全体</b>なので、どの箇条書きであれ
+    // 別の箇条書きが長期・immutable を名乗っても止められない（実測で、
+    // 目印を持たない囮を手前へ足すと 1168 件すべて緑のまま通った）。
+    // 運用者が読むのは文書全体なので、どの箇条書きであれ
     // 「長期・immutable を名乗る」記述が載っていること自体が守りたい状態に反する。
+    //
+    // <b>「名乗りか反例か」を文章から推し量らない（レビュー指摘）。</b> 以前は
+    // 「を名乗」「ません」等の綴りから判定していたが、それは CLAUDE.md が
+    // <b>繰り返し失敗として記録している近似の走査</b>そのものだった ——実際この PR の中だけでも
+    // 「6 文字では足りない」「『なく』『ず』が抜けている」「括弧内の否定を拾う」と
+    // 3 度踏み直し、そのたびに<b>正しい文書で赤くなる</b>か<b>囮が黙って通る</b>かを
+    // 行き来した。文書側に<b>機械可読な目印</b>（HTML コメント）を置けば推測が要らなくなる。
+    //
+    // <b>目印が無い指示は落とす（fail-closed）。</b> 新しく指示を書いた人は、
+    // 名乗りなのか反例なのかを<b>必ず一度決める</b>ことになる ——
+    // 囮を仕込むには「これは反例です」と差分に書き残す必要があり、レビューに現れる。
     [Fact]
     public void EveryDocumentedCacheDirective_IsNeverLongLived()
     {
         // 運用者向けドキュメントを読む
         var securityDoc = ReadSecurityDoc();
 
-        // 具体的な値を伴うキャッシュ指示を<b>すべて</b>取り出す。
-        // 「を名乗」等の言い回しで絞らない ——絞ると、言い回しを変えた囮が素通りする
+        // 具体的な値を伴うキャッシュ指示を<b>すべて</b>取り出す
         var documented = Regex.Matches(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`");
 
         // 1 つも読み取れないのは、書き方が変わったか検査が壊れたか ——どちらも落とす
@@ -386,8 +375,8 @@ public class SecurityHeadersMiddlewareTests
         // 1 件ずつ確かめる
         foreach (Match match in documented)
         {
-            // 「実際に名乗る」と述べている文だけを見る（反例や禁止の記述は対象外）
-            if (!IsAffirmativeClaim(securityDoc, match.Index)) continue;
+            // その指示に付いている目印を読む（無ければ落ちる）
+            if (ClaimKindAfter(securityDoc, match.Index + match.Length, match.Value) != ClaimKind.Claim) continue;
 
             // 確かめた 1 件として控える
             examined.Add(match.Groups["value"].Value.Trim());
@@ -399,108 +388,131 @@ public class SecurityHeadersMiddlewareTests
             AssertNotLongLived(directives, $"docs/security.md の `{match.Value}`");
         }
 
-        // <b>「1 件も確かめていない」状態を落とす（レビュー指摘）。</b>
-        // 肯定の判定が何かの拍子にすべてを弾くと、この検査は<b>何も assert しないまま
-        // 緑になる</b> ——実際、否定語を箇条書き全体から探していたときは
-        // 説明文の「上書きしません」等が拒否権を持ち、文書のすべての名乗りが
-        // 対象から外れていた（実測）。手がかりを変えて、<b>兄弟の検査が固定している
-        // 静的アセットの指示</b>が確かめた中にあることを見る ——この 1 件は
-        // 文書に必ず載っている（載っていなければ兄弟の検査が先に落ちる）。
+        // <b>「1 件も確かめていない」状態を落とす。</b> 目印の読み取りが何かの拍子に
+        // すべてを弾くと、この検査は<b>何も assert しないまま緑になる</b>。
+        // 手がかりを変えて、<b>兄弟の検査が固定している静的アセットの指示</b>が
+        // 確かめた中にあることを見る ——この 1 件は文書に必ず載っている。
         Assert.Contains(SecurityHeadersMiddleware.StaticAssetCacheControl, examined);
 
-        // <b>整った書き方だけを見ていては足りない（レビュー指摘）。</b> 上の走査は
-        // バッククォートで囲まれた指示しか拾わないので、囲まずに書いた囮
-        // （"添付ファイル配信は public,max-age=31536000,immutable を名乗ります。"）は
-        // 素通りする ——実測で 10 件すべて緑のまま通った。守りたいのは
-        // 「文書が長期・immutable を名乗らないこと」であって、<b>書式ではない</b>。
+        // <b>整った書き方だけを見ていては足りない。</b> 上の走査はバッククォートで
+        // 囲まれた指示しか拾わないので、囲まずに書いた囮は素通りする（実測）。
+        // 守りたいのは「文書が長期・immutable を名乗らないこと」であって<b>書式ではない</b>。
         //
-        // そこで<b>禁じている綴りそのもの</b>を、囲みの有無を問わず走査する。
-        // 期間の値は、囲まれていてもいなくても同じ形で現れる
-        // <b>指示の名前は MaxAgeFamilyPrefixes から導く（レビュー指摘）。</b> ここへ
-        // 書き下すと、定数へ 5 つ目を足した人が<b>囲みのある名乗りでは拾えるのに
-        // 囲みの無い地の文では拾えない</b>状態を作る（実測で、"surrogate-control=" を
-        // 足して囲みなしで名乗らせると 10 件すべて緑のまま通った）——
-        // 「規則を 2 度書くと片方が素通りの窓口になる」形そのもの
         // 地の文の枝が実際に見た件数（空振りしていないかの照合に使う）
         var scannedInProse = 0;
 
+        // 禁じている綴り自体を、囲みの有無を問わず走査する
         foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
-            // <b>カンマで他の指示とつながっている形だけを見る（レビュー指摘）。</b>
-            // 期間の綴りはキャッシュ以外の指示にも現れる ——この文書には
-            // HSTS の節があり、"Strict-Transport-Security: max-age=31536000; includeSubDomains"
-            // という<b>正しい記述</b>で赤くなっていた（実測）。直そうとしている
-            // 「正しい記述で赤くなる」形を自分で踏んでいたことになる。
-            // Cache-Control の値はカンマ区切り、HSTS はセミコロン区切りなので、
-            // カンマ隣接に絞れば実際の名乗りは拾え、HSTS は巻き込まない。
-            //
-            // <b>残っている境界</b>: 他の指示を伴わずに "max-age=… を名乗ります" とだけ
-            // 書いた囮は拾えない。ただし囲みのある名乗り（`Cache-Control: …`）は
-            // 上の走査が拾うので、残るのは「囲みも無く、他の指示も無い」場合だけ。
+            // <b>カンマで他の指示とつながっている形だけを見る。</b>
+            // 期間の綴りはキャッシュ以外の指示にも現れる ——この文書には HSTS の節があり、
+            // "Strict-Transport-Security: max-age=…; includeSubDomains" という
+            // <b>正しい記述</b>で赤くなっていた（実測）。Cache-Control の値はカンマ区切り、
+            // HSTS はセミコロン区切りなので、カンマ隣接に絞れば巻き込まない。
             if (!IsCommaAdjacent(securityDoc, lifetime)) continue;
 
-            // 囲みのある名乗りと同じく、肯定的に名乗っている文だけを見る
-            if (!IsAffirmativeClaim(securityDoc, lifetime.Index)) continue;
+            // 囲みのある名乗りと同じく、目印で「名乗りか反例か」を決める
+            if (ClaimKindAfter(securityDoc, lifetime.Index + lifetime.Length, lifetime.Value) != ClaimKind.Claim) continue;
 
-            // この枝も 1 件は実際に見たことを控える（下の空振り検出に使う）
+            // この枝も 1 件は実際に見たことを控える
             scannedInProse++;
 
-            // <b>上限の判定は共有のヘルパーへ通す（レビュー指摘）。</b> ここで
-            // 読み取りと比較を書き下すと、上限や扱いを変えた人が片方だけを直し、
-            // <b>囲みの有無で答えが食い違う</b>状態になる（AssertNotLongLived の
-            // docstring が「書き写すと片方が素通りの窓口になる」と述べている形）
-            // <b>正規化した形で渡す。</b> lifetime.Value には "=" の前後の空白がそのまま
-            // 含まれるので、素直に渡すと上と同じ理由で「期間の指示 0 件」になる
+            // <b>上限の判定は共有のヘルパーへ通す。</b> ここで読み取りと比較を
+            // 書き下すと、上限や扱いを変えた人が片方だけを直し、
+            // <b>囲みの有無で答えが食い違う</b>状態になる
             AssertNotLongLived(
                 [$"{lifetime.Groups["name"].Value}={lifetime.Groups["seconds"].Value}"],
                 $"docs/security.md の「{lifetime.Value}」");
         }
 
-        // immutable が<b>指示の並びの一部として</b>現れていないこと。
-        //
-        // <b>語そのものを禁じてはいけない。</b> この文書は「長期・`immutable` にはしません」と
-        // 説明のために正しく使っており、一律に禁じると<b>正しい記述で赤くなる</b>
-        // （そういう検出網はいずれ緩められる）。
-        //
-        // <b>空白を挟まないカンマ隣接だけを見る（レビュー指摘）。</b> 以前は空白も
-        // 許していたため、「public, immutable などの指示は…」という<b>散文の列挙</b>でも
-        // 赤くなった ——直そうとしている失敗モードを自分で踏んでいた。
-        // 指示の値は空白を挟まずに書かれる（"public,max-age=3600"）ので、
-        // 隣接だけに絞れば実際の名乗りは拾え、散文は巻き込まない。
-        //
-        // <b>残っている境界</b>: "public, immutable" と空白付きで名乗る囮は拾えない。
-        // ただし immutable は<b>単体では効かない</b>（RFC 8246。新鮮さの指示を
-        // 修飾するものなので、害のある名乗りには必ず max-age 系が伴う）ため、
-        // その場合は上の期間の走査が囲みの有無を問わず拾う。
-        // <b>地の文の枝も「1 件も見ていない」状態を落とす（レビュー指摘）。</b>
+        // <b>地の文の枝も「1 件も見ていない」状態を落とす。</b>
         // 実測で、IsCommaAdjacent を常に false にしても全件緑のまま通り、
-        // その状態では囲みなしの囮が素通りした ——違反 0 件で緑になる検査は、
-        // 別の手がかりで「実際に見たこと」を固定しないと黙って死ぬ。
-        // この文書には静的アセットの名乗り（`public,max-age=3600`）があり、
-        // その max-age はカンマ隣接なので、必ず 1 件は数えられる。
+        // その状態では囲みなしの囮が素通りした。この文書には静的アセットの名乗り
+        // （`public,max-age=3600`）があり、その max-age はカンマ隣接なので必ず 1 件は数えられる。
         Assert.True(
             scannedInProse > 0,
             "囲みの無い地の文の走査が 1 件も見ていません。"
                 + "docs/security.md にはカンマでつながった期間の指示が少なくとも 1 つあるはずなので、"
-                + "走査の条件（綴り・カンマ隣接・肯定の名乗り）が狭すぎないか確かめてください"
+                + "走査の条件（綴り・カンマ隣接・目印）が狭すぎないか確かめてください"
                 + "（このまま緑にすると、囲みの無い囮が素通りします）。");
-
-        // 肯定的に名乗っている行に限って、カンマでつながった immutable を探す
-        var immutableClaim = Regex.Matches(
-            securityDoc,
-            // 綴りは定数から組み立てる（上の完全一致の検査と同じものを見る）
-            $"[A-Za-z0-9-],{Regex.Escape(ForbiddenDirective)}|{Regex.Escape(ForbiddenDirective)},[A-Za-z0-9-]",
-            RegexOptions.IgnoreCase)
-            .Cast<Match>()
-            .Any(m => IsAffirmativeClaim(securityDoc, m.Index));
-
-        // 名乗っていれば落とす
-        Assert.False(
-            immutableClaim,
-            "docs/security.md が immutable を含むキャッシュ指示を載せています。"
-                + "版付きでない wwwroot/lib 配下を参照しているため、immutable を名乗ると"
-                + "脆弱性修正後も古いファイルを消す手段が無くなります。");
     }
+
+    /// <summary>文書が指示をどう扱っているか（実際に名乗るのか、反例なのか）。</summary>
+    private enum ClaimKind
+    {
+        /// <summary>実際にその指示を名乗る。</summary>
+        Claim,
+
+        /// <summary>してはいけない例として挙げている。</summary>
+        CounterExample,
+    }
+
+    /// <summary>実際に名乗っていることを示す目印（HTML コメントなので表示に出ない）。</summary>
+    private const string ClaimTag = "<!--cache-claim-->";
+
+    /// <summary>してはいけない例であることを示す目印。</summary>
+    private const string CounterExampleTag = "<!--cache-counter-example-->";
+
+    /// <summary>
+    /// 指示の直後に置かれた目印を読み、文書がその指示をどう扱っているかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>目印が無ければ落とす（fail-closed）。</b> 「たぶん反例だろう」と読み飛ばすと、
+    /// 新しく書かれた名乗りが黙って検査を外れる。目印を要求すれば、書いた人は
+    /// <b>名乗りなのか反例なのかを必ず一度決める</b>ことになり、
+    /// 囮を仕込むには「これは反例です」と差分に書き残す必要がある。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="after">指示の直後の位置。</param>
+    /// <param name="directive">失敗文言に出す、その指示の綴り。</param>
+    /// <returns>文書がその指示をどう扱っているか。</returns>
+    private static ClaimKind ClaimKindAfter(string doc, int after, string directive)
+    {
+        // 目印は<b>指示の並び全体の後ろ</b>に置く決まり。1 件の期間の指示に当たったときは
+        // 同じ並びの残り（",immutable" など）と閉じのバッククォートが手前に挟まるので、
+        // <b>指示の並びを構成しうる文字と空白だけ</b>を読み飛ばしてから目印を探す。
+        // 日本語の文字に当たった時点で止まるので、地の文の名乗り
+        // （"public, max-age=… を名乗ります"）を目印付きと取り違えることはない
+        var at = after;
+        // 指示の並びの続き・閉じのバッククォート・空白の間は進める
+        while (at < doc.Length && IsDirectiveListCharacter(doc[at])) at++;
+
+        // 読み飛ばした先から、目印 1 つ分だけを見る
+        var window = doc[at..Math.Min(at + TagWindow, doc.Length)];
+
+        // 「名乗る」の目印があればそれ
+        if (window.StartsWith(ClaimTag, StringComparison.Ordinal)) return ClaimKind.Claim;
+
+        // 「反例」の目印があればそれ
+        if (window.StartsWith(CounterExampleTag, StringComparison.Ordinal)) return ClaimKind.CounterExample;
+
+        // どちらも無ければ、どう扱うべきか決められないので落とす
+        Assert.Fail(
+            $"docs/security.md のキャッシュ指示に目印がありません: {directive}。"
+                + $"実際に名乗るなら値の直後へ {ClaimTag} を、"
+                + $"してはいけない例として挙げるなら {CounterExampleTag} を付けてください"
+                + "（どちらも HTML コメントなので表示には出ません）。"
+                + "文章の言い回しから推し量る形は、書き方を変えるたびに"
+                + "誤って赤くなるか黙って緑になるかのどちらかになるため採りません。");
+
+        // Assert.Fail は必ず投げるので、ここには来ない
+        return ClaimKind.CounterExample;
+    }
+
+
+    /// <summary>指示の並び（<c>public,max-age=3600</c> 等）を構成しうる文字かを見る。</summary>
+    /// <remarks>
+    /// 目印を探す前に読み飛ばす範囲を決めるためのもの。閉じのバッククォートと空白も含める。
+    /// <b>日本語の文字は含めない</b> ——含めると、地の文の名乗りを目印付きと取り違える。
+    /// </remarks>
+    /// <param name="ch">判定する 1 文字。</param>
+    /// <returns>読み飛ばしてよいなら <c>true</c>。</returns>
+    private static bool IsDirectiveListCharacter(char ch) =>
+        // 指示の綴りに使う文字か、区切り・囲み・空白なら読み飛ばす
+        char.IsAsciiLetterOrDigit(ch) || ch is '=' or ',' or '-' or '`' || char.IsWhiteSpace(ch);
+
+    /// <summary>目印を探す幅（指示の直後に置く決まりなので、長い目印 1 つ分あれば足りる）。</summary>
+    private static readonly int TagWindow = Math.Max(ClaimTag.Length, CounterExampleTag.Length);
 
     /// <summary>キャッシュ指示の文字列を、指示ごとに分ける。</summary>
     /// <param name="cacheControl"><c>Cache-Control</c> の値。</param>
@@ -637,108 +649,6 @@ public class SecurityHeadersMiddlewareTests
         return at < doc.Length && doc[at] == ',';
     }
 
-    /// <summary>その一致が「実際に名乗る」と述べているかを見る。</summary>
-    /// <remarks>
-    /// <para><b>見るのは「一致より後ろ・同じ箇条書きの中」だけ。</b> 文書は
-    /// 「`Cache-Control: …` を名乗ります」の語順で書かれるので、名乗りの動詞は
-    /// 必ず指示のうしろに来る。空白と改行は落としてから探す ——この文書は
-    /// 動詞の手前で行を折る書き方を実際に使っており、落とさないと
-    /// 「を名乗」の 3 文字が改行とインデントで分断されて見つからない。</para>
-    ///
-    /// <para><b>否定は目印の直後だけを見る（レビュー指摘）。</b> 箇条書き全体から
-    /// 否定語を探す形にしたところ、<b>説明文に自然に現れる否定</b>
-    /// （「振り分けません」「上書きしません」「にはしません」）が拒否権を持ってしまい、
-    /// <b>この文書のすべての名乗りが対象から外れて検査が 1 つも走らなくなっていた</b>
-    /// （実測。走っていたのは「1 件は読めた」という前提の確認だけ）。
-    /// 「を名乗」は「を名乗<b>りません</b>」の一部でもある、という 1 点だけが問題なので、
-    /// 見るのは目印の<b>直後の数文字</b>に限る。</para>
-    ///
-    /// <para><b>残っている境界</b>: 動詞を指示より手前に置く語順
-    /// （「次の指示を名乗ります: `Cache-Control: …`」）は拾えない。
-    /// 綴りを足して埋めようとせず、その書き方が実際に出たら手がかりごと見直す。</para>
-    /// </remarks>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">一致の開始位置。</param>
-    /// <returns>肯定的に名乗っているなら <c>true</c>。</returns>
-    private static bool IsAffirmativeClaim(string doc, int index)
-    {
-        // その一致が載っている箇条書きの、一致より後ろだけを空白抜きで見る
-        var following = RemoveWhitespace(FollowingTextInBullet(doc, index));
-
-        // 肯定の目印を 1 つずつ確かめる
-        foreach (var marker in AffirmativeClaimMarkers)
-        {
-            // その目印が後ろに現れるか
-            var at = following.IndexOf(marker, StringComparison.Ordinal);
-            // 現れなければ次の目印へ
-            if (at < 0) continue;
-
-            // 目印の直後から、その動詞が言い切られるところまで（ここに否定の結びが来る）
-            var tail = VerbTail(following, at + marker.Length);
-
-            // 否定で結ばれていれば、これは反例なので次の目印へ
-            if (NegatedClaimMarkers.Any(n => tail.Contains(n, StringComparison.Ordinal))) continue;
-
-            // 否定で結ばれていない肯定の目印が見つかった
-            return true;
-        }
-
-        // 肯定的な名乗りは見つからなかった
-        return false;
-    }
-
-    // 否定を探す範囲の打ち切り（動詞が言い切られる前に現れる区切り）。
-    // <b>固定の文字数では足りない（レビュー指摘）。</b> 6 文字にしていたところ、
-    // 「を名乗ることはありません」のような<b>ごく普通の否定</b>が範囲から外れ、
-    // 正しい反例で赤くなった（実測）。一方、範囲を文末まで広げると
-    // 「…を名乗ります(この経路には no-store を付けません)。」のような
-    // <b>括弧の中の無関係な否定</b>が肯定の名乗りを取り消す。
-    // そこで<b>動詞が言い切られるところ</b>（句読点・括弧・コロン）で打ち切る。
-    private static readonly char[] VerbTailBoundaries =
-        ['。', '、', '(', ')', '（', '）', ':', '：', ';', '；'];
-
-    // 動詞の言い切りを探す上限（区切りが 1 つも無い書き方への保険）。
-    // 「ることはありません」が収まる幅にしてある
-    private const int VerbTailLimit = 24;
-
-    /// <summary>目印の直後から、その動詞が言い切られるところまでを切り出す。</summary>
-    /// <param name="text">空白を落とした、一致より後ろの文字列。</param>
-    /// <param name="from">目印の直後の位置。</param>
-    /// <returns>否定の結びを探す範囲。</returns>
-    private static string VerbTail(string text, int from)
-    {
-        // 上限を超えない終わりの位置
-        var limit = Math.Min(from + VerbTailLimit, text.Length);
-
-        // 区切りに当たるまで進める
-        var at = from;
-        // 区切りでない間は進み続ける
-        while (at < limit && !VerbTailBoundaries.Contains(text[at])) at++;
-
-        // 目印の直後から、区切り（または上限）までを返す
-        return text[from..at];
-    }
-
-    /// <summary>指定位置から、その箇条書きの終わりまでを切り出す。</summary>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">切り出しの開始位置。</param>
-    /// <returns>一致より後ろ・同じ箇条書きの中の文字列。</returns>
-    private static string FollowingTextInBullet(string doc, int index)
-    {
-        // その位置を含む箇条書きの範囲を求める
-        var (_, end) = BulletBounds(doc, index);
-
-        // 一致の位置から箇条書きの終わりまでを返す
-        return doc[index..end];
-    }
-
-    /// <summary>空白と改行をすべて取り除く（折り返しで目印が割れないようにするため）。</summary>
-    /// <param name="text">元の文字列。</param>
-    /// <returns>空白を 1 つも含まない文字列。</returns>
-    private static string RemoveWhitespace(string text) =>
-        // 空白でない文字だけをつなぎ直す
-        string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
-
     /// <summary>指定位置を含む箇条書きの範囲（開始・終了の文字位置）を求める。</summary>
     /// <remarks>
     /// <b>箇条書きの境目の規則はここ 1 か所に置く（レビュー指摘）。</b> 同じ規則
@@ -803,21 +713,11 @@ public class SecurityHeadersMiddlewareTests
         index + 1 < doc.Length && doc[index] == '-' && doc[index + 1] == ' ';
 
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
-    /// <remarks>
-    /// <b>読み取りを 1 か所に寄せてある（レビュー指摘）。</b> パスを 2 か所へ書き写すと、
-    /// 文書を改名・分割したときに片方だけが直り、もう片方は見つからないか
-    /// <b>古いファイルを読み続ける</b>（§6「パスは名前付き定数にし単一の参照元に置く」）。
-    /// </remarks>
+    /// <remarks>パスの正本は <see cref="RepositoryPaths.SecurityDoc"/>（読み手が 2 つあるため）。</remarks>
     /// <returns>文書全体。</returns>
     private static string ReadSecurityDoc() =>
-        // リポジトリ直下からの相対位置で読む
-        // 何段の相対パスでもそのまま読めるよう、要素を展開して組み立てる ——
-        // 位置で取り出すと、段数が増えたときに<b>定数だけが直って読み手が取り残される</b>
-        // （この関数の存在理由そのものと矛盾する）
-        File.ReadAllText(Path.Combine([RepositoryPaths.Root, .. SecurityDocRelativePath]));
-
-    /// <summary>セキュリティ文書のリポジトリ内での位置。</summary>
-    private static readonly string[] SecurityDocRelativePath = ["docs", "security.md"];
+        // 共有のパスから読む
+        File.ReadAllText(RepositoryPaths.SecurityDoc);
 
     /// <summary>
     /// 指定した応答フィーチャーだけを持つ最小構成の <see cref="HttpContext"/> を作る。

@@ -34,9 +34,8 @@ public class AllowedHostsWarningReporterTests
             .GetField(constantName)!
             .GetRawConstantValue()!;
 
-        // 運用者向けドキュメントを読む
-        var securityDoc = File.ReadAllText(
-            Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+        // 運用者向けドキュメントを読む（パスの正本は RepositoryPaths）
+        var securityDoc = File.ReadAllText(RepositoryPaths.SecurityDoc);
 
         // 手順がその綴りを引用していること
         Assert.Contains(marker, securityDoc, StringComparison.Ordinal);
