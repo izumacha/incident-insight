@@ -927,10 +927,17 @@ public class ResponseCacheAttributePolicyTests
             // 一方は「表へ登録します」、もう一方は「登録して黙らせないでください」と
             // <b>正反対のことを言う</b> ——どちらがどの項目の話かを書かないと、
             // 上から読んだ人が最初の案内を全項目へ当ててしまう
+            // <b>見出しの並びも列挙順に任せない（レビュー指摘）。</b> 1 つの直し方を
+            // 共有する原因が同時に落ちると(UnapprovedDirectory と UnapprovedRootFile はどちらも
+            // 表への登録)、見出しの並びが `Directory.EnumerateFileSystemEntries` の順で決まり、
+            // CI と手元で失敗文言が変わる ——案内の並びを対応表へ移したのと同じ理由が、
+            // 見出し側にだけ適用されずに残っていた。enum の宣言順で並べて決め切る
             var governed = unapproved
                 .Where(item => RepairFor(item.Cause) == repair)
-                .Select(item => CauseText(item.Cause))
-                .Distinct(StringComparer.Ordinal);
+                .Select(item => item.Cause)
+                .Distinct()
+                .OrderBy(cause => cause)
+                .Select(CauseText);
 
             // 案内の前に、その案内が掛かる理由の名前を並べる
             message += $"【{string.Join("・", governed)}】について: ";
@@ -1710,6 +1717,65 @@ public class ResponseCacheAttributePolicyTests
                 < message.IndexOf("理由を添えて登録します", StringComparison.Ordinal),
             "「そろえる前に中身を確かめる」案内は、表への登録の案内より前に出してください"
                 + "(後ろだと、上から読んだ人が先に種別の登録を済ませてしまいます)。");
+    }
+
+    // 同じ直し方を共有する原因が並ぶ見出しが、<b>項目の到達順に左右されない</b>こと。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> `UnapprovedDirectory` と `UnapprovedRootFile` は
+    // どちらも「表へ登録する」なので、1 つの見出しに 2 つの理由が並ぶ。その並びを
+    // 到達順のままにすると、`Directory.EnumerateFileSystemEntries` の順しだいで
+    // <b>CI と手元で失敗文言が変わる</b> ——案内の並びを対応表へ移した理由が、
+    // 見出し側にだけ適用されずに残っていた。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_OrdersHeadingsIndependentlyOfArrivalOrder()
+    {
+        // 入れ物が先に届いた場合の文言
+        var directoryFirst = UnapprovedStaticAssetsMessage(
+            [
+                // 承認されていない入れ物
+                new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory),
+                // 承認されていない直下のファイル
+                new UnapprovedStaticAsset("readme.md", UnapprovedCause.UnapprovedRootFile),
+            ]);
+
+        // 直下のファイルが先に届いた場合の文言(同じ 2 件を逆順で渡す)
+        var rootFileFirst = UnapprovedStaticAssetsMessage(
+            [
+                // 承認されていない直下のファイル
+                new UnapprovedStaticAsset("readme.md", UnapprovedCause.UnapprovedRootFile),
+                // 承認されていない入れ物
+                new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory),
+            ]);
+
+        // 見出しの並びを取り出す(名指しの一覧は到達順のままでよいので、見出しだけを見る)
+        var directoryFirstHeading = HeadingOf(directoryFirst);
+
+        // もう一方の見出しも取り出す
+        var rootFileFirstHeading = HeadingOf(rootFileFirst);
+
+        // 到達順が逆でも、見出しは同じ並びであること
+        Assert.Equal(directoryFirstHeading, rootFileFirstHeading);
+
+        // 空振り検出: 見出しが実際に 2 つの理由を並べていること
+        Assert.Contains("・", directoryFirstHeading, StringComparison.Ordinal);
+    }
+
+    /// <summary>失敗文言から、最初の見出し（【…】）だけを取り出す。</summary>
+    /// <param name="message">組み立てた失敗文言。</param>
+    /// <returns>見出しの中身（見つからなければ空文字）。</returns>
+    private static string HeadingOf(string message)
+    {
+        // 見出しの開きを探す
+        var open = message.IndexOf('【', StringComparison.Ordinal);
+
+        // 見出しの閉じを探す
+        var close = message.IndexOf('】', StringComparison.Ordinal);
+
+        // どちらかが無ければ、比べる見出しが無い
+        if (open < 0 || close <= open) return string.Empty;
+
+        // 開きと閉じのあいだを返す
+        return message.Substring(open + 1, close - open - 1);
     }
 
     // 承認表が<b>大小を区別する</b>比較器で作られていること。
@@ -4338,6 +4404,63 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(
             2,
             declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    // <b>名前空間だけが違う同名の型</b>を受けるオーバーロードも、報告の上で見分けが付くこと。
+    //
+    // <b>なぜ別に要るのか（レビューが実測）。</b> 引数の型を<b>単純名</b>で並べていたころは、
+    // `Export(Models.Incident)` と `Export(ViewModels.Incident)` の名指しが
+    // <b>一字一句同じ</b>になり、引数を載せた理由（どちらを直すのか分かるようにする）が
+    // その形でだけ失われていた。上のオーバーロードの検査は `Export()` と `Export(long)` しか
+    // 通さないので、この綴りは拾えない（MVC では同名の型の対は普通に起きる）。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsApart_EvenWhenTheirParameterTypesShareASimpleName()
+    {
+        // 名前空間だけが違う同名の型を受ける 2 つのオーバーロードを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(AmbiguousOverloadProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること
+        Assert.Equal(2, declarations.Count);
+
+        // <b>名指しが 2 通りに分かれること</b>(同じ行が 2 本並ばない)
+        Assert.Equal(
+            2,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    /// <summary>引数の型名を衝突させるための、1 つ目の入れ子の置き場所。</summary>
+    private static class AmbiguousParameterNsA
+    {
+        /// <summary>2 つ目と単純名が同じ、引数用の型。</summary>
+        internal sealed class Report;
+    }
+
+    /// <summary>引数の型名を衝突させるための、2 つ目の入れ子の置き場所。</summary>
+    private static class AmbiguousParameterNsB
+    {
+        /// <summary>1 つ目と単純名が同じ、引数用の型。</summary>
+        internal sealed class Report;
+    }
+
+    /// <summary>単純名が同じ別々の型を受ける、2 つのオーバーロードを持つ合成コントローラ。</summary>
+    private sealed class AmbiguousOverloadProbeController : ControllerBase
+    {
+        /// <summary>1 つ目の型を受けるアクション。</summary>
+        /// <param name="report">1 つ目の置き場所の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 61, NoStore = true)]
+        public IActionResult Export(AmbiguousParameterNsA.Report report) => NoContent();
+
+        /// <summary>2 つ目の型を受けるアクション。</summary>
+        /// <param name="report">2 つ目の置き場所の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 62, NoStore = true)]
+        public IActionResult Export(AmbiguousParameterNsB.Report report) => NoContent();
     }
 
     // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。

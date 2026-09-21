@@ -225,14 +225,6 @@ public static class ResponseCachePolicy
                     var declaringMethod = DeclaringMethodOf(method, SameKindAs(attribute, matches));
                     // その宣言が置かれている型を、名指しに使う形へそろえる
                     var declaringType = DeclarationSite(declaringMethod.DeclaringType!);
-                    // どのアクションに付いていたかが分かる表示名を作る。
-                    // <b>引数の型まで載せる（レビュー指摘）。</b> 載せないと、同じ名前の
-                    // オーバーロードが 2 つとも違反したとき失敗文言に<b>まったく同じ行が 2 本</b>並び、
-                    // 片方だけが違反なら名指しされたファイルを開いても<b>どちらを直すのか分からない</b>
-                    // ——このファイルが繰り返し塞いでいる「名指しされた場所に直すべき 1 か所が無い」形
-                    var declaredOn =
-                        $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}"
-                            + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
                     // <b>キーは表示名から作らない（レビュー指摘・実測）。</b> 表示名には
                     // 引数の型が載るが、その綴りは「宣言の置き場所を引き直せたか」に左右される
                     // ——引き直せない綴りでは閉じ方ごとの姿(Int32 / String)になるので、
@@ -251,6 +243,17 @@ public static class ResponseCachePolicy
                     // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
                     if (IsNewDeclaration(seenOnThisMethod, seen, key, attribute))
                     {
+                        // 表示名は<b>返す分だけ</b>組み立てる（レビュー指摘）。畳まれて捨てられる分まで
+                        // 先に作ると、総称の基底へ 1 つ付けた宣言を N 個の具象から観測するたびに
+                        // 宣言の置き場所を探すリフレクション走査が N 回走る（返るのは 1 件なのに）。
+                        // キーが表示名を読まなくなったので、ここまで遅らせられる。
+                        // <b>引数の型まで載せる</b>のは、載せないと同じ名前のオーバーロードが
+                        // 2 つとも違反したとき<b>まったく同じ行が 2 本</b>並び、片方だけが違反なら
+                        // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため
+                        var declaredOn =
+                            $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}"
+                                + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
+
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
                     }
@@ -483,11 +486,17 @@ public static class ResponseCachePolicy
         // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
         if (declaringType?.IsGenericType != true) return declaringMethod;
 
-        // 開いた総称定義の側から、同じメタデータ行のメソッドを探す
+        // 開いた総称定義が<b>自分で宣言した</b>メソッドの中から、同じメタデータ行のものを探す。
+        // <b>DeclaredOnly を外さない（レビュー指摘・実測）。</b> 外すと候補に基底
+        // (Mvc.Core / CoreLib)のメソッドが 180 件あまり混ざり、<b>メタデータ行はモジュール内でしか
+        // 一意でない</b>ので、数値が偶然一致する別モジュールのメソッドを拾いうる
+        // ——表示名に無関係な署名が載り、名指しされたファイルにその綴りが存在しない形になる。
+        // いま当たらないのは GetMethods の返す順がたまたまそうだからで、順は規定されていない
+        // (このリポジトリは宣言順に依存して一度事故を起こしている)
         return DeclarationSite(declaringType)
             .GetMethods(
                 BindingFlags.Public | BindingFlags.NonPublic
-                    | BindingFlags.Instance | BindingFlags.Static)
+                    | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
             // 同じ行なら、閉じ方によらず同じ 1 つの宣言
             .FirstOrDefault(candidate => candidate.MetadataToken == declaringMethod.MetadataToken)
             // 見つからなければ、受け取ったメソッドをそのまま表示名に使う
@@ -495,11 +504,23 @@ public static class ResponseCachePolicy
     }
 
     /// <summary>メソッドの引数の型を、表示名へ載せる 1 語にする。</summary>
+    /// <remarks>
+    /// <b>単純名で並べない（レビュー指摘・実測）。</b> 名前空間だけが違う同名の型
+    /// （MVC では <c>Models.Incident</c> と <c>ViewModels.Incident</c> のような対が普通に起きる）を
+    /// 受けるオーバーロードは、単純名だと <c>Export(Incident)</c> で<b>一字一句同じ</b>になり、
+    /// 引数を載せた理由（どちらを直すのか分かるようにする）がその形でだけ失われる。
+    /// <b>どちらが衝突するかは兄弟のオーバーロードを見ないと決められない</b>ので、
+    /// 条件で出し分けず一律に完全修飾名で並べる（宣言元の型も完全修飾名で名乗っており、そろう）。
+    /// 型引数（<c>TModel</c>）は完全修飾名を持たないので、そのときだけ単純名になる。
+    /// </remarks>
     /// <param name="method">引数を並べるメソッド。</param>
     /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
     private static string ParameterTypeList(MethodBase method) =>
-        // 型の単純名だけを並べる(名前空間まで載せると 1 行が読めない長さになる)
-        string.Join(", ", method.GetParameters().Select(parameter => parameter.ParameterType.Name));
+        // 完全修飾名で並べる(持たない型引数などは単純名へ落ちる)
+        string.Join(
+            ", ",
+            method.GetParameters()
+                .Select(parameter => parameter.ParameterType.FullName ?? parameter.ParameterType.Name));
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
