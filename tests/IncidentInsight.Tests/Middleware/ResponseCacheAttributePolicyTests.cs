@@ -1037,6 +1037,136 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(expected, IsOpaqueStaticDirectory(relativePath));
     }
 
+    // 綴りの大小だけが違う資産は、「未承認」ではなく<b>専用の理由</b>で報告されること。
+    //
+    // <b>なぜ要るのか（issue #270）。</b> 承認表を大小を区別して引くと、
+    // macOS / Windows で `favicon.ico` とまったく同じに配信される `FAVICON.ICO` が
+    // 「承認されていない直下のファイル」として報告され、失敗文言は「表へ足せ」と案内する ——
+    // それは<b>同じ資産を 2 度承認させる</b>誤った直し方。
+    // かといって大小を無視して素通しにすると、大文字小文字を<b>区別する</b>
+    // ファイルシステムでは `LIB` が本物の `lib` とは別の入れ物なのに承認を継ぐ。
+    // どちらへも倒れないよう、理由を分けて「名前のほうを直せ」と言えるようにしてある。
+    [Fact]
+    public void FindUnapprovedStaticAssets_SeparatesMiscasedAssetsFromUnapprovedOnes()
+    {
+        // 合成の承認表(綴りは小文字で登録する)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの入れ物
+            ["lib"] = "テスト用の承認済みの入れ物。",
+        };
+
+        // 合成の直下ファイル表
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの直下ファイル
+            ["favicon.ico"] = "テスト用の承認済みの直下ファイル。",
+        };
+
+        // 合成の拡張子表
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの種類
+            [".js"] = "テスト用の承認済みの種類。",
+        };
+
+        // 綴りをそろえたもの・大小だけ違うもの・本当に未承認のものを混ぜる
+        var entries = new[]
+        {
+            // 綴りまで一致する入れ物(通る)
+            new StaticAssetEntry("lib", IsDirectory: true),
+            // 大小だけが違う入れ物(専用の理由で落とす)
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // 綴りまで一致する直下ファイル(通る)
+            new StaticAssetEntry("favicon.ico", IsDirectory: false),
+            // 大小だけが違う直下ファイル(専用の理由で落とす)
+            new StaticAssetEntry("FAVICON.ICO", IsDirectory: false),
+            // 種類は分類なので、大小が違っても通る(site.JS は同じスクリプト)
+            new StaticAssetEntry("lib/site.JS", IsDirectory: false),
+            // 本当に承認されていない入れ物(こちらは「表へ足す」が正しい直し方)
+            new StaticAssetEntry("exports", IsDirectory: true),
+        };
+
+        // 合成の表で判定する
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions);
+
+        // 落ちるのは 3 件で、入力の順に並ぶこと
+        Assert.Equal(
+            new[] { "LIB", "FAVICON.ICO", "exports" },
+            unapproved.Select(item => item.RelativePath).ToArray());
+
+        // 大小違いの 2 件は、未承認とは別の理由で報告されること(直し方が違うため)
+        Assert.Equal(MiscasedApprovedAssetCause, unapproved[0].Cause);
+        Assert.Equal(MiscasedApprovedAssetCause, unapproved[1].Cause);
+
+        // 本当に未承認の 1 件は、これまでどおりの理由であること
+        Assert.Equal(UnapprovedDirectoryCause, unapproved[2].Cause);
+    }
+
+    // 判定が<b>表の比較器に左右されない</b>こと。
+    //
+    // <b>issue #270 の本体はここ。</b> 表ごとに `Ordinal` と `OrdinalIgnoreCase` が
+    // 混在していたため、同じ入力でも表の作り方で答えが変わっていた。
+    // 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>ので、
+    // 引き方そのものを比較器から切り離してある（それをここで固定する）。
+    [Fact]
+    public void FindUnapprovedStaticAssets_GivesTheSameAnswerWhicheverComparerTheTablesUse()
+    {
+        // 同じ中身を、比較器だけ変えて 2 通り作る関数
+        static (Dictionary<string, string> Directories,
+            Dictionary<string, string> RootFiles,
+            Dictionary<string, string> Extensions) Tables(StringComparer comparer) =>
+            (new Dictionary<string, string>(comparer) { ["lib"] = "入れ物。" },
+                new Dictionary<string, string>(comparer) { ["favicon.ico"] = "直下のファイル。" },
+                new Dictionary<string, string>(comparer) { [".js"] = "種類。" });
+
+        // 大小がそろったもの・違うもの・未承認のものを混ぜた入力
+        var entries = new[]
+        {
+            // 綴りまで一致する入れ物
+            new StaticAssetEntry("lib", IsDirectory: true),
+            // 大小だけが違う入れ物
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // 大小だけが違う直下ファイル
+            new StaticAssetEntry("FAVICON.ICO", IsDirectory: false),
+            // 大小だけが違う種類
+            new StaticAssetEntry("lib/site.JS", IsDirectory: false),
+        };
+
+        // 区別する比較器で作った表で判定する
+        var strict = Tables(StringComparer.Ordinal);
+
+        // 無視する比較器で作った表でも判定する
+        var lenient = Tables(StringComparer.OrdinalIgnoreCase);
+
+        // どちらの表でも、落ちる一覧と理由が一字一句同じであること
+        Assert.Equal(
+            FindUnapprovedStaticAssets(entries, strict.Directories, strict.RootFiles, strict.Extensions),
+            FindUnapprovedStaticAssets(entries, lenient.Directories, lenient.RootFiles, lenient.Extensions));
+    }
+
+    // 「中を見ない」入れ物の判定も、綴りの大小を無視すること。
+    //
+    // ここを区別したままにすると、`LIB` のような綴り違いで<b>中へ降りてしまい</b>、
+    // 「名前を直せ」という 1 件の指摘の代わりに CDN 由来の数百件が違反として並ぶ
+    // （失敗文言が実際の原因を埋もれさせる）。
+    [Fact]
+    public void IsOpaqueStaticDirectory_IgnoresSpellingCase()
+    {
+        // 登録してある綴りそのものは、当然「中を見ない」側であること
+        Assert.True(IsOpaqueStaticDirectory("lib"));
+
+        // 大小だけが違う綴りでも、中へは降りないこと
+        Assert.True(IsOpaqueStaticDirectory("LIB"));
+
+        // 別の入れ物まで巻き込まないこと(前方一致にしない)
+        Assert.False(IsOpaqueStaticDirectory("library"));
+    }
+
     // 「中を見ない」入れ物は、承認済みの入れ物でもあること。
     //
     // 片方だけに載せると、<b>中へ降りないのに入れ物自身は未承認</b>(＝毎回落ちる)か、
@@ -1046,7 +1176,7 @@ public class ResponseCacheAttributePolicyTests
     {
         // 承認表に載っていない「中を見ない入れ物」を集める
         var missing = OpaqueStaticDirectories.Keys
-            .Where(name => !ApprovedStaticDirectories.ContainsKey(name))
+            .Where(name => ApprovedSpellingFor(ApprovedStaticDirectories, name) is null)
             .ToList();
 
         // 1 つも無いことを、名指しの一覧付きで確認する
@@ -1136,6 +1266,46 @@ public class ResponseCacheAttributePolicyTests
     /// <summary><c>wwwroot</c> 直下のファイル名が承認されていないときの理由。</summary>
     private const string UnapprovedRootFileCause = "承認されていない直下のファイル";
 
+    /// <summary>承認済みの資産と綴りの大小だけが違うときの理由。</summary>
+    /// <remarks>
+    /// <b>「未承認」と別の理由にするのは、直し方が違うから。</b> 未承認なら「表へ足す」だが、
+    /// 大小違いは<b>同じ資産を 2 度承認させる</b>ことになるので誤った直し方で、
+    /// 正しくは名前のほうをそろえる。理由を分けないと、失敗文言が誤った直し方を案内する。
+    /// </remarks>
+    private const string MiscasedApprovedAssetCause = "承認済みの資産と綴りの大小が違う";
+
+    /// <summary>
+    /// 承認表から、<b>綴りの大小を無視して</b>一致するキー（承認された綴り）を探す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ大小を無視するのか（issue #270）。</b> macOS / Windows のような
+    /// 大文字小文字を区別しないファイルシステムでは、<c>wwwroot/FAVICON.ICO</c> は
+    /// <c>UseStaticFiles</c> から見て <c>favicon.ico</c> とまったく同じに配信される。
+    /// 区別して引くと、<b>正しく配信されている承認済みの資産が「未承認」として報告され</b>、
+    /// しかも失敗文言は「表へ足せ」という誤った直し方を案内する
+    /// （正しいコードで赤くなる検出網は、いずれ検査ごと緩められる）。</para>
+    ///
+    /// <para><b>それでも綴りは見る。</b> 大小を無視して素通しにすると、大文字小文字を
+    /// <b>区別する</b>ファイルシステムでは <c>wwwroot/LIB</c> が本物の <c>lib</c> とは
+    /// 別の入れ物なのに承認を継いでしまう。見つかった綴りを呼び出し側が
+    /// <see cref="MiscasedApprovedAssetCause"/> と突き合わせることで、
+    /// 「赤くならない」でも「誤った直し方を案内する」でもない third option を取る。</para>
+    ///
+    /// <para><b>表の比較器には依存させない。</b> 引き方をここへ寄せることで、
+    /// 表を <c>Ordinal</c> で作るか <c>OrdinalIgnoreCase</c> で作るかに答えが左右されなくなる
+    /// ——issue #270 の本体は「表ごとに比較器が違っていた」ことなので、
+    /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
+    /// 表は数件なので、素直に走査して構わない。</para>
+    /// </remarks>
+    /// <param name="table">承認表（キーが承認された綴り）。</param>
+    /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
+    /// <returns>承認された綴り。大小を無視しても見つからなければ <c>null</c>。</returns>
+    private static string? ApprovedSpellingFor(
+        IReadOnlyDictionary<string, string> table,
+        string name) =>
+        // 大小を無視して一致する最初のキーを返す(表は数件なので走査で足りる)
+        table.Keys.FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
+
     /// <summary>
     /// <c>wwwroot</c> 配下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
     /// キーは <c>wwwroot</c> からの相対パス（区切りは <c>/</c>）。
@@ -1146,7 +1316,7 @@ public class ResponseCacheAttributePolicyTests
     /// 無くなる（この repo が繰り返し避けている、直しようの無い要求）。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticDirectories =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // アプリ自身のスタイルシート
             ["css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
@@ -1161,7 +1331,7 @@ public class ResponseCacheAttributePolicyTests
     /// <see cref="ApprovedStaticDirectories"/> にも載っている必要がある。
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> OpaqueStaticDirectories =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // 第三者ライブラリの取得物(数百件)。1 件ずつ承認しても中身はこちらが書いたものではない
             ["lib"] = "CDN 由来の取得物が数百件入る。中身はこちらが書いたものではなく、1 件ずつ承認しても意味が無い。",
@@ -1203,7 +1373,7 @@ public class ResponseCacheAttributePolicyTests
     /// （§6 の「実行不能な指示を出さない」）。中のファイルは種類で見る。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticRootFiles =
-        new Dictionary<string, string>(StringComparer.Ordinal)
+        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
         {
             // ブラウザのタブに出るアイコン
             ["favicon.ico"] = "ブラウザのアイコン。公開情報。",
@@ -1264,8 +1434,10 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="relativePath"><c>wwwroot</c> からの相対パス。</param>
     /// <returns>中を見ない入れ物なら true。</returns>
     private static bool IsOpaqueStaticDirectory(string relativePath) =>
-        // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)
-        OpaqueStaticDirectories.ContainsKey(relativePath);
+        // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)。
+        // 綴りの大小は無視する ——`LIB` のような綴り違いで中へ降りると、
+        // 「名前を直す」という 1 件の指摘の代わりに CDN 由来の数百件が違反として並ぶ
+        ApprovedSpellingFor(OpaqueStaticDirectories, relativePath) is not null;
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（実在の表を使う入口）。
@@ -1307,11 +1479,19 @@ public class ResponseCacheAttributePolicyTests
             // 入れ物(ディレクトリ)は、相対パスが承認表にあるかで判断する
             if (entry.IsDirectory)
             {
-                // 表に無ければ「承認されていない入れ物」として記録する
-                if (!approvedDirectories.ContainsKey(entry.RelativePath))
+                // 綴りの大小を無視して承認済みの行を探す(理由は ApprovedSpellingFor の説明が正本)
+                var approvedDirectory = ApprovedSpellingFor(approvedDirectories, entry.RelativePath);
+
+                // 大小を無視しても見つからなければ「承認されていない入れ物」
+                if (approvedDirectory is null)
                 {
                     // 相対パスと理由を添えて積む
                     unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedDirectoryCause));
+                }
+                else if (!string.Equals(approvedDirectory, entry.RelativePath, StringComparison.Ordinal))
+                {
+                    // 見つかったが綴りの大小が違う(直し方は「表へ足す」ではなく「名前を直す」)
+                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, MiscasedApprovedAssetCause));
                 }
 
                 // 入れ物の判定はここで終わり(拡張子では見ない)
@@ -1322,10 +1502,18 @@ public class ResponseCacheAttributePolicyTests
             if (!entry.RelativePath.Contains('/'))
             {
                 // 直下は名前そのもので 1 件ずつ承認する(理由は表の docstring を参照)
-                if (!approvedRootFiles.ContainsKey(entry.RelativePath))
+                var approvedRootFile = ApprovedSpellingFor(approvedRootFiles, entry.RelativePath);
+
+                // 大小を無視しても見つからなければ「承認されていない直下のファイル」
+                if (approvedRootFile is null)
                 {
                     // 相対パスと理由を添えて積む
                     unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedRootFileCause));
+                }
+                else if (!string.Equals(approvedRootFile, entry.RelativePath, StringComparison.Ordinal))
+                {
+                    // 入れ物と同じく、綴りの大小が違うだけなら直し方が別になる
+                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, MiscasedApprovedAssetCause));
                 }
 
                 // 直下のファイルの判定はここで終わり(種類では見ない)
@@ -1335,8 +1523,9 @@ public class ResponseCacheAttributePolicyTests
             // 入れ物の中のファイルは種類(拡張子)で判断する。拡張子が無ければ空文字になり、表にも無い
             var extension = Path.GetExtension(entry.RelativePath);
 
-            // 表に無ければ「承認されていない種類のファイル」として記録する
-            if (!approvedExtensions.ContainsKey(extension))
+            // 種類は<b>同一性ではなく分類</b>なので、大小の一致までは求めない
+            // (site.JS は綴りが違うだけで同じスクリプト。ここで赤くすると正しいファイルが落ちる)
+            if (ApprovedSpellingFor(approvedExtensions, extension) is null)
             {
                 // 相対パスと理由を添えて積む
                 unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedExtensionCause));
