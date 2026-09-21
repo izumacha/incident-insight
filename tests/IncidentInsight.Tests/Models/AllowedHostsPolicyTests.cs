@@ -168,9 +168,9 @@ public class AllowedHostsPolicyTests
     // <b>かつての「残っている境界」が閉じた（issue #269）。</b> 素の IPv6 を書くと
     // HostString が括弧を補うので、実測では "::1 " → "[::1 ]" となり空白が<b>内側</b>へ入る。
     // 正規化後の前後には空白が無いので<b>空白としては</b>拾えないままだが、
-    // 「角括弧の中身が素の IPv6 リテラルでなければ死んでいる」を足したことで
-    // （"::1 " は IPAddress で読めない）この綴りも名指しできるようになった
+    // 「角括弧の中身に空白か % があれば死んでいる」を足したことで名指しできるようになった
     // ——Host ヘッダーは解析の時点で空白を持てないので、実際に一致しない項目である
+    // （実測でも本物の Kestrel は Host: [::1 ] を 400 で弾く）
     [InlineData("incident.example.test;::1 ", "::1 ")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
@@ -933,6 +933,14 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test; *", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>空白が角括弧の内側へ移っても、ワイルドカードの警告から外れないこと（レビュー指摘）。</b>
+    // 正規化は括弧を補うので " ::" は "[ ::]" になる。直した結果を Trim() だけで見ていた頃は
+    // 内側の空白が残って [::] と一致せず、この項目だけが<b>ごく普通の「実ホスト名へ直せ」</b>の
+    // 案内になっていた ——従って空白を外すと :: ＝全ホスト許可（issue #64）で、
+    // <b>空白 1 つで専用警告が有害な案内に入れ替わる</b>形だった
+    [InlineData("a.example.test; ::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[ ::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[:: ]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
         string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
     {
@@ -948,11 +956,12 @@ public class AllowedHostsPolicyTests
 
     // <b>角括弧の扱いを厳しくした代償で、生きている項目を巻き込んでいないこと。</b>
     //
-    // 「角括弧の中身が素の IPv6 リテラルでなければ死んでいる」を足したので、
+    // 角括弧の項目に「中身に空白か % があれば死んでいる」を足したので、
     // <b>本当に一致する綴りまで「消してよい」と案内していないか</b>を対で押さえる
     // ——生きている項目を名指しするのは、見逃しより重い誤り（このクラスの docstring が正本）。
     // 並べた綴りはいずれも、本物の Kestrel が Host ヘッダーとして 200 で受け付けることを
-    // 実測してある（実測値は AllowedHostsPolicy.IsUnusableBracketedSpelling の docstring）。
+    // 実測してある（実測値は AllowedHostsPolicy.ContainsSpellingAHostHeaderCannotCarry の
+    // docstring が正本。そこには「IPv6 として正しいかとは無関係」だった実測も載せてある）。
     [Theory]
     // 短縮形のループバック
     [InlineData("[::1]")]

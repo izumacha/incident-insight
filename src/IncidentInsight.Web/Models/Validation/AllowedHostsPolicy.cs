@@ -631,16 +631,40 @@ public static class AllowedHostsPolicy
     /// 前後の空白でも同じで、<c>"incident.example.com; 0.0.0.0"</c> ・
     /// <c>"incident.example.com; *"</c> は<b>以前から</b>この形だった。</para>
     ///
-    /// <para><b>だから直した結果も見る。</b> 直すとは「前後の空白を落とし、
+    /// <para><b>だから直した結果も見る。</b> 直すとは「空白を落とし、
     /// 突き合わせに使われるホスト部だけにする」こと。その結果がワイルドカードなら、
     /// その項目は <see cref="DeadEntryReason.WildcardOnceRepaired"/> として
     /// 専用の文面で名指しする。</para>
+    ///
+    /// <para><b>落とすのは前後の空白だけでは足りない（レビュー指摘）。</b>
+    /// 正規化は角括弧を<b>補う</b>ので、空白は<b>括弧の内側へ移りうる</b> ——
+    /// <c>" ::"</c>（区切りのうしろに空白を入れた一覧で、<c>ASPNETCORE_URLS</c> から
+    /// 写す <c>0.0.0.0</c> の IPv6 版）は <c>"[ ::]"</c> になる。
+    /// <c>Trim()</c> だけだと内側の空白が残って <c>[::]</c> と一致せず、
+    /// <b>この項目だけがワイルドカードの警告から外れる</b>。
+    /// そのとき付くのは「この項目を実ホスト名へ直せ」という<b>ごく普通の案内</b>で、
+    /// 従って空白を外すと <c>::</c> ＝全ホスト許可（issue #64）——
+    /// 空白 1 つで、いちばん危ない形の専用警告が<b>有害な案内</b>に入れ替わる。
+    /// 空白をすべて落としてから見れば、この抜け道は綴りに依存せず閉じる
+    /// （落として初めてワイルドカードになる項目だけが影響を受けるので、
+    /// 実ホスト名を誤って名指しすることは無い）。</para>
     /// </remarks>
     /// <param name="normalized">正規化済みの項目。</param>
     /// <returns>案内どおりに直したあとの綴り。</returns>
     private static string RepairedSpelling(string normalized) =>
-        // 前後の空白を落としてからホスト部を取る（空白とポートの両方を一度に外した形）
-        ComparableSpelling(normalized.Trim());
+        // 空白をすべて落としてからホスト部を取る（空白とポートの両方を一度に外した形）
+        ComparableSpelling(RemoveWhitespace(normalized));
+
+    /// <summary>綴りから空白をすべて取り除く。</summary>
+    /// <remarks>
+    /// 前後だけでなく途中の空白も落とすのは、正規化が角括弧を補うと
+    /// 空白が内側へ移るため（理由は <see cref="RepairedSpelling"/> の remarks が正本）。
+    /// </remarks>
+    /// <param name="value">元の綴り。</param>
+    /// <returns>空白を 1 つも含まない綴り。</returns>
+    private static string RemoveWhitespace(string value) =>
+        // 空白でない文字だけを連結して返す
+        string.Concat(value.Where(ch => !char.IsWhiteSpace(ch)));
 
     /// <summary>
     /// その項目が、どの <c>Host</c> とも一致しえない理由。
