@@ -171,20 +171,89 @@ public class SecurityHeadersMiddlewareTests
         // 運用者向けドキュメントを読む
         var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
 
-        // ドキュメントが名乗ると説明している指示を取り出す(`Cache-Control: <値>` の形)
-        var documented = Regex.Match(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`\s*を名乗");
-        // 取り出せなければ落とす ——読めないものを「一致している」と扱わない(fail-closed)
+        // <b>静的アセットを説明している箇条書きだけを切り出してから読む(issue #265)。</b>
+        // ドキュメント全体を対象にすると、キャッシュ指示を述べた文が<b>すでに 2 つ</b>ある
+        // (既定の no-store と、静的アセットの public,max-age=3600)。
+        var bullet = StaticAssetCachingBullet(securityDoc);
+
+        // その箇条書きが名乗ると説明している指示を<b>すべて</b>取り出す(`Cache-Control: <値>` の形)
+        var documented = Regex.Matches(bullet, @"`Cache-Control:\s*(?<value>[^`]+)`\s*を名乗");
+
+        // <b>ちょうど 1 件であること。</b> 最初の一致で済ませると、次の 2 方向どちらにも壊れる:
+        //   (a) 同じ形の文が手前に増えると、そちらを拾って比較が失敗する ——
+        //       <b>何も壊れていないのに赤くなる</b>ので、いずれ検査ごと緩められる。
+        //   (b) 先に当たる文の値がたまたま定数と同じなら、<b>本命の文が誰にも照合されないまま
+        //       drift する</b>(検査が無いのと同じ)。
+        // (a) は上の切り出しが防ぐ。(b) は「どの文を守るのか決まっていない」ことが原因なので、
+        // 件数を固定して決められない状態そのものを落とす(fail-closed)
         Assert.True(
-            documented.Success,
-            "docs/security.md から静的アセットの Cache-Control を読み取れませんでした。"
-                + "書き方を変えたなら、この照合も同じ変更セットで直してください"
-                + "(読めないまま緑にすると、文書と実装のずれが誰にも見えなくなります)。");
+            documented.Count == 1,
+            // 失敗文言が「何件見つかったか」と「次に何をすればよいか」を示す
+            $"docs/security.md の静的アセットの箇条書きから Cache-Control を"
+                + $"ちょうど 1 件読み取れませんでした(見つかった件数: {documented.Count})。"
+                + "0 件なら書き方を変えた側と同じ変更セットでこの照合も直してください"
+                + "(読めないまま緑にすると、文書と実装のずれが誰にも見えなくなります)。"
+                + "2 件以上なら、どの文を守るのかを決めて読む範囲をさらに絞ってください"
+                + "(最初の一致で済ませると、守るべき記述が黙って入れ替わります)。");
 
         // ドキュメントの値と定数が一字一句一致すること
         // (期待値は定数、実測値はドキュメント側。失敗文言が「文書が何を名乗っているか」を示す)
         Assert.Equal(
             SecurityHeadersMiddleware.StaticAssetCacheControl,
-            documented.Groups["value"].Value.Trim());
+            documented[0].Groups["value"].Value.Trim());
+    }
+
+    // 静的アセットへキャッシュ指示を名乗らせている仕組みの名前。
+    //
+    // <b>切り出しの目印を「文言」ではなく「コードの識別子」にしてある。</b> 見出しや
+    // 「静的アセット」といった日本語を目印にすると、文章を整えただけで切り出しが外れる
+    // (そのとき 0 件になって落ちるので気づけはするが、赤くなる理由が毎回ドキュメントの
+    // 言い回しになり、検査そのものが煩わしがられる)。OnPrepareResponse は
+    // Program.cs 側の実体そのもので、この 2 つは対で動く(CLAUDE.md が明記している)。
+    private const string StaticAssetCachingMechanism = "OnPrepareResponse";
+
+    /// <summary>
+    /// <c>docs/security.md</c> から、静的アセットのキャッシュ指示を説明している箇条書きを切り出す。
+    /// </summary>
+    /// <remarks>
+    /// <b>見つからなければ落とす(fail-closed)。</b> 切り出せないまま全体を返すと、
+    /// 呼び出し側の「ちょうど 1 件」が<b>別の文</b>に当たって緑になりうる ——
+    /// それは守るべき記述が入れ替わった状態そのもの(issue #265)。
+    /// </remarks>
+    /// <param name="doc">ドキュメント全体。</param>
+    /// <returns>仕組みを説明している箇条書き 1 つ分の文字列。</returns>
+    private static string StaticAssetCachingBullet(string doc)
+    {
+        // 行単位で見る(箇条書きの境目は行頭の "- " で決まる)
+        var lines = doc.Split('\n');
+
+        // 仕組みの名前が書かれている行を探す
+        var anchor = Array.FindIndex(lines, line => line.Contains(StaticAssetCachingMechanism, StringComparison.Ordinal));
+        // 見つからなければ、どの箇条書きを守るのか決められないので落とす
+        Assert.True(
+            anchor >= 0,
+            $"docs/security.md に {StaticAssetCachingMechanism} の説明が見つかりませんでした。"
+                + "静的アセットのキャッシュ指示を説明している箇所の目印なので、"
+                + "書き方を変えたならこの切り出しも同じ変更セットで直してください。");
+
+        // その行から上へたどって、その箇条書きの先頭(行頭の "- ")を見つける
+        var start = anchor;
+        // 先頭に当たるまで 1 行ずつ戻る
+        while (start >= 0 && !lines[start].StartsWith("- ", StringComparison.Ordinal)) start--;
+        // 箇条書きの中に無い(＝地の文に書かれている)なら、範囲を決められないので落とす
+        Assert.True(
+            start >= 0,
+            $"docs/security.md の {StaticAssetCachingMechanism} の説明が箇条書きの中にありません。"
+                + "切り出しは行頭の \"- \" を境目にしているので、書き方を変えたなら"
+                + "この切り出しも同じ変更セットで直してください。");
+
+        // 次の箇条書きの手前(または文書の末尾)までがこの箇条書き
+        var end = start + 1;
+        // 次の "- " に当たるまで 1 行ずつ進む
+        while (end < lines.Length && !lines[end].StartsWith("- ", StringComparison.Ordinal)) end++;
+
+        // 切り出した範囲を 1 本の文字列に戻して返す
+        return string.Join('\n', lines[start..end]);
     }
 
     // 定数が、docstring の述べている不変条件(短い期間・immutable なし)を満たしていること。
