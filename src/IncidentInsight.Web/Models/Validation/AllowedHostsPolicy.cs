@@ -458,7 +458,7 @@ public static class AllowedHostsPolicy
 
         // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
         // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
-        if (RepairedSpellings(normalized).Any(spelling => Wildcards.Contains(spelling, StringComparer.Ordinal)))
+        if (RepairsToWildcard(normalized))
         {
             // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
             return DeadEntryReason.WildcardOnceRepaired;
@@ -762,6 +762,10 @@ public static class AllowedHostsPolicy
             // 取り出した綴りを、突き合わせに使われる形（ホスト部）にして返す
             yield return ComparableSpelling(current);
 
+            // 上限に達したら、そこで数え上げをやめる
+            // （<b>打ち切りの扱いは呼び出し側が決める</b>。理由は RepairsToWildcard 参照）
+            if (seen.Count >= MaxRepairedSpellings) yield break;
+
             // どの直し方も 1 手ずつ試し、初めて出た綴りだけを待ち行列へ足す
             foreach (var step in steps)
             {
@@ -771,19 +775,71 @@ public static class AllowedHostsPolicy
                 // まだ見ていない綴りなら、そこからさらに広げる
                 if (seen.Add(next)) pending.Enqueue(next);
             }
-
-            // <b>数え上げに上限を置く（fail-safe）。</b> どの手も綴りを伸ばさないので
-            // 閉包は必ず有限だが、上限が無いと設定値の綴りしだいで起動が長引きうる。
-            // 実測では実在しうる項目の閉包はどれも 2 桁前半なので、余裕をもって打ち切る
-            if (seen.Count >= MaxRepairedSpellings) yield break;
         }
+    }
+
+    /// <summary>案内どおりに直すとワイルドカードになる項目かを判定する。</summary>
+    /// <remarks>
+    /// <para><b>打ち切ったときは「判断できない」ので警告する側へ倒す。</b>
+    /// <see cref="RepairedSpellings"/> の数え上げには上限があり、そこで止めた場合
+    /// 「ワイルドカードが見つからなかった」ことは「ワイルドカードにならない」ことを
+    /// 意味しない。見つからなかった扱いにすると、上限に届くような長い綴りだけが
+    /// <b>ワイルドカードの注意を持たない文面</b>になり、運用者が案内どおり直すと
+    /// 全ホスト許可（issue #64）——<b>上限そのものが fail-open の口</b>になる。
+    /// 「そのまま直すな・直した結果を確かめろ」と言うのは、判断できない項目に対しても
+    /// 害の無い案内なので、こちらへ倒す（このクラスが一貫して取っている
+    /// 「多く報告する側＝安全側」）。</para>
+    ///
+    /// <para>実測（9,549 通りの綴り）での閉包の最大は 46 通りなので、上限に届く綴りは
+    /// 現実には現れない。上限は<b>起動時と設定の再読込で走る</b>ことへの備えで、
+    /// 「届かない前提の安全装置」であって判定の一部ではない。</para>
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>直した結果がワイルドカードになりうるなら <c>true</c>。</returns>
+    private static bool RepairsToWildcard(string normalized) =>
+        // 数え上げた候補と上限を、判定そのものを持つ純粋関数へ渡す
+        RepairsToWildcard(RepairedSpellings(normalized), MaxRepairedSpellings);
+
+    /// <summary>
+    /// 候補の並びと上限から、「直すとワイルドカードになる」かを決める（判定そのもの）。
+    /// </summary>
+    /// <remarks>
+    /// <b>合成入力で挙動を固定できるように、実際の綴りから切り離してある。</b>
+    /// 上限は実測（9,549 通り）の最大 46 通りに対して 256 なので、
+    /// <b>実在しうる綴りでは打ち切りに届かない</b> ——つまり本物の項目を並べたテストでは
+    /// 打ち切りの扱いを 1 度も通らず、ここを「見つからなかった」側へ書き換えても
+    /// 全件緑のままになる。だから判定を純粋関数として切り出し、
+    /// <c>AllowedHostsPolicyTests</c> が合成した候補の並びで直接固定する。
+    /// </remarks>
+    /// <param name="repairedSpellings">直したあとの綴りの並び（打ち切られていてもよい）。</param>
+    /// <param name="limit">数え上げの上限（これに達していたら打ち切られている）。</param>
+    /// <returns>ワイルドカードに当たった、または打ち切られて判断できないなら <c>true</c>。</returns>
+    public static bool RepairsToWildcard(IEnumerable<string> repairedSpellings, int limit)
+    {
+        // 見た候補の数（打ち切りかどうかを見分けるために自分で数える）
+        var counted = 0;
+
+        // 候補を 1 つずつ取り出して、ワイルドカードの綴りと突き合わせる
+        foreach (var spelling in repairedSpellings)
+        {
+            // 見た候補の数を控える
+            counted++;
+
+            // ワイルドカードの綴りに当たれば、その時点で「直すな」と判定する
+            if (Wildcards.Contains(spelling, StringComparer.Ordinal)) return true;
+        }
+
+        // 上限まで見て終わったなら、数え上げは<b>途中で打ち切られている</b>
+        // ——「見つからなかった」ではなく「判断できない」なので、警告する側へ倒す
+        return counted >= limit;
     }
 
     /// <summary>「直したら何になるか」を数え上げる上限。</summary>
     /// <remarks>
     /// <see cref="RepairedSpellings"/> の閉包は、どの手も綴りを伸ばさないので必ず有限。
     /// それでも上限を置くのは、この判定が<b>起動時と設定の再読込で走る</b>ため。
-    /// 実測（9,549 通りの綴り）での最大は 2 桁前半なので、ここは十分に余裕がある。
+    /// 実測（9,549 通りの綴り）での最大は 46 通りなので、ここは十分に余裕がある。
+    /// 上限に届いたときの扱いは <see cref="RepairsToWildcard"/> の remarks が正本。
     /// </remarks>
     private const int MaxRepairedSpellings = 256;
 

@@ -903,6 +903,36 @@ public class AllowedHostsPolicyTests
     // <b>名指しした項目に添う理由が、その項目の事実と合っていること。</b>
     // 理由を取り違えると、警告は「出ている」のに運用者は違うところを直す ——
     // 存在しないものを探させる案内（1 本目の警告が PermissiveReason を持つ理由）と同じ形。
+    // <b>数え上げを打ち切ったときは「判断できない」ので警告する側へ倒すこと。</b>
+    // 上限（256）は実測の最大（46 通り）に対して十分な余裕があり、実在しうる綴りでは
+    // 1 度も通らない ——つまり本物の項目を並べたテストでは、ここを「見つからなかった」側へ
+    // 書き換えても全件緑のままになる。だから判定を純粋関数として直接固定する。
+    // 見つからなかった扱いにすると、上限に届くような綴りだけが<b>ワイルドカードの注意を
+    // 持たない文面</b>になり、運用者が案内どおり直すと全ホスト許可（issue #64）——
+    // <b>上限そのものが fail-open の口</b>になる。
+    [Theory]
+    // ワイルドカードに当たれば、打ち切りかどうかに関係なく true
+    [InlineData(new[] { "a.example.test", "0.0.0.0" }, 8, true)]
+    [InlineData(new[] { "a.example.test", "[::]" }, 2, true)]
+    [InlineData(new[] { "*" }, 1, true)]
+    // 当たらず、上限にも届かずに数え終わったなら false（＝ふつうの「死んだ項目」）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, 8, false)]
+    [InlineData(new string[0], 8, false)]
+    // 当たらないまま上限に達したなら、判断できないので true（警告する側へ倒す）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, 2, true)]
+    [InlineData(new[] { "a.example.test" }, 1, true)]
+    public void RepairsToWildcard_TreatsATruncatedSearchAsUndecided(
+        string[] repairedSpellings,
+        int limit,
+        bool expected)
+    {
+        // 合成した候補の並びと上限で、判定そのものを呼ぶ
+        var actual = AllowedHostsPolicy.RepairsToWildcard(repairedSpellings, limit);
+
+        // 期待どおりに倒れているか（打ち切りは「見つからなかった」ではない）
+        Assert.Equal(expected, actual);
+    }
+
     [Theory]
     // 区切りのうしろの空白（一覧を書くときに自然に入る形）
     [InlineData("a.example.test; b.example.test", AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace)]
