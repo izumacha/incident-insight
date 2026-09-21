@@ -912,6 +912,14 @@ public class AllowedHostsPolicyTests
     // <b>ポートは 1 つも無いので、ここを PortSuffix と名乗ってはいけない</b>
     [InlineData("a.example.test;fe80::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
     [InlineData("a.example.test;::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
+    // <b>コロンが 2 つ以上あるだけの綴りは IPv6 ではない（issue #269）。</b>
+    // HostString のホスト部の切り出しは IPv6 かどうかを問わず角括弧で包むので、
+    // 「角括弧を足されたか」だけで決めると、この末尾コロンのタイプミスが
+    // 「角括弧で囲め」と案内される ——従うと警告だけが消えて 400 は残る
+    [InlineData("a.example.test;b.example.test:8080:", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>逆側の取り違え。</b> 角括弧を足されない綴りを一律 PortSuffix と名乗ると、
+    // ポートを 1 つも含まない項目に「ポートを外せ」と案内することになる
+    [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]

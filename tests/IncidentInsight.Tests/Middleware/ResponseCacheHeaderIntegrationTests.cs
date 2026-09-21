@@ -676,6 +676,76 @@ public class HostFilteringShortCircuitTests
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 
+    // <b>「角括弧で囲め」という案内が、その項目について事実かを実測で固定する（issue #269）。</b>
+    //
+    // HostString のホスト部の切り出しは、"]" を含まず<b>コロンが 2 つ以上</b>ある値を
+    // IPv6 かどうかに関係なく角括弧で包む。そのため「角括弧を足されたか」だけで理由を決めると、
+    // 末尾コロンのタイプミス（ASPNETCORE_URLS や host:port:path の写しで生まれる）が
+    // <b>UnbracketedIpv6Literal と名乗り、角括弧で囲めと案内される</b>。
+    //
+    // <b>従うと何が起きるかがこの検査の本題。</b> 囲んだ綴りは
+    // <c>Host: [www.example.test:8080:]</c> なら実際に一致するので判定は「生きている」＝
+    // 2 本目の警告が消える。一方、運用者が並べたかった <c>www.example.test</c> は 400 のまま。
+    // つまり<b>案内に従うほど「警告が出ていない＝絞れている」が誤った安心になる</b> ——
+    // AllowedHostsPolicy の docstring が「見逃しより重い」と書いている、
+    // 警告が障害を作る側に回る形そのもの。
+    //
+    // 判定側だけで固定すると、写している相手（フレームワークの切り出し）が変わったときに
+    // 気づけないので、囲んだあとも 400 のままであることを実際の HTTP で押さえる。
+    [Fact]
+    public async Task BracketingANonIpv6Entry_SilencesTheWarning_WithoutMakingTheHostReachable()
+    {
+        // 末尾にコロンが 1 つ余分に入ったタイプミス（コロンが 2 つ以上あるので角括弧で包まれる）
+        const string typo = $"{SecondHost}:8080:";
+        // 以前の案内（「角括弧で囲め」）どおりに「直した」形
+        const string bracketed = $"[{SecondHost}:8080:]";
+        // 実ホスト名と併記した一覧（片方が生きている、いちばん紛らわしい形）
+        const string listWithTypo = $"{AllowedHost};{typo}";
+        // 「直した」あとの一覧
+        const string listWithBracketed = $"{AllowedHost};{bracketed}";
+
+        // まずタイプミスのまま起動する
+        using (var fixture = new AllowedHostsFixture(listWithTypo))
+        {
+            // リダイレクトを追わないクライアントを受け取る
+            var client = fixture.CreateNonRedirectingClient();
+
+            // 1 件目（正しく書けている側）は、これまでどおり受け付けられること
+            Assert.Equal(
+                System.Net.HttpStatusCode.OK,
+                (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+            // 2 件目に並べたホスト名は届かないこと（＝この項目は死んでいる）
+            Assert.Equal(
+                System.Net.HttpStatusCode.BadRequest,
+                (await SendWithHostAsync(client, SecondHost)).StatusCode);
+        }
+
+        // 次に、案内どおり角括弧で囲んだ一覧で起動する
+        using (var fixture = new AllowedHostsFixture(listWithBracketed))
+        {
+            // リダイレクトを追わないクライアントを受け取る
+            var client = fixture.CreateNonRedirectingClient();
+
+            // <b>本命。</b> 囲んでも、運用者が並べたかったホスト名は 400 のまま
+            Assert.Equal(
+                System.Net.HttpStatusCode.BadRequest,
+                (await SendWithHostAsync(client, SecondHost)).StatusCode);
+        }
+
+        // <b>それなのに 2 本目の警告は消える。</b> 囲んだ綴りは Host: [www.example.test:8080:] で
+        // 実際に一致するため、判定としては「生きている」で正しい ——だからこそ、
+        // ここへ運用者を誘導する案内を出してはいけない（囲んだ項目を死んだ項目として
+        // 名指しする「直し方」は取れない。実在しうる Host に一致するので誤検知になる）
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(listWithBracketed));
+
+        // <b>だから、タイプミスの側を IPv6 リテラルと名乗らない。</b>
+        // 原因を言い当てられない綴りは断定せず、素のホスト名を書けとだけ案内する
+        var dead = Assert.Single(
+            AllowedHostsPolicy.InspectNeverMatchingEntries(listWithTypo).Entries);
+        Assert.Equal(AllowedHostsPolicy.DeadEntryReason.NotABareHostname, dead.Reason);
+    }
+
     /// <summary>指定した <c>Host</c> ヘッダーだけを差し替えて 1 回叩く。</summary>
     /// <param name="client">リダイレクトを追わないクライアント。</param>
     /// <param name="host">送る Host ヘッダーの値。</param>

@@ -4,6 +4,10 @@ using Microsoft.AspNetCore.Http;
 using System.Text;
 // 文字が「字として現れるか」をカテゴリで判定するために使う
 using System.Globalization;
+// 項目が本当に IPv6 リテラルかを、自前の近似ではなく標準の解析で見るために使う
+using System.Net;
+// 読めたアドレスが IPv4 か IPv6 かを見分けるために使う
+using System.Net.Sockets;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -382,7 +386,9 @@ public static class AllowedHostsPolicy
     /// <see cref="IsNeverMatchingEntry"/> も <see cref="DeadEntryCauseMessage"/> も
     /// ここから導く。</para>
     ///
-    /// <para><b>理由が 2 つあるのは、突き合わせ方が 2 段階だから。</b>
+    /// <para><b>空白とポートが理由になるのは、突き合わせ方が 2 段階だから</b>
+    /// （<b>理由の一覧は <see cref="DeadEntryReason"/> が正本</b>。ここで数えて書くと、
+    /// 理由を足したときにこの数字だけが古くなる）。
     /// <c>HostString.MatchesAny</c> は (1) リクエスト側の値から<b>ポートを落とし</b>、
     /// (2) 残ったホスト名を<b>許可リストの項目とそのまま</b>比べる。つまり項目の側は
     /// トリムもされずポートも落とされないので、<b>前後に空白が残る項目</b>も
@@ -401,7 +407,13 @@ public static class AllowedHostsPolicy
     /// 角括弧の IPv6 リテラル（<c>[::1]</c> ・ <c>[::]</c>）はコロンを含むが
     /// ポートは持たず、実測でも <c>Host: [::1]</c> と正しく一致する。
     /// フレームワーク自身の分け方（<c>HostString</c> のホスト部とポート部）へ委ね、
-    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でポートの有無を見る。
+    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でその項目が死んでいることを見る。
+    /// <b>ただし「死んでいる」から先の理由は、そこからは決まらない（issue #269）。</b>
+    /// ポートと名乗るのは<b>ホスト部の直後がコロン</b>のときだけ、IPv6 と名乗るのは
+    /// <b>実際に <see cref="IPAddress"/> で読める</b>ときだけにし、
+    /// どちらにも当たらない綴りは <see cref="DeadEntryReason.NotABareHostname"/> へ倒す
+    /// （理由を 2 択の当て推量で決めていた頃の壊れ方は
+    /// <see cref="IsIpv6Literal"/> の docstring が正本）。
     /// <c>HostString.Port</c> を見る形では足りない ——実測で <c>a.test:abc</c> ・
     /// <c>a.test:</c> はポート部が数値として読めないため <c>Port</c> が <c>null</c> になるが、
     /// 項目としては依然としてどの <c>Host</c> とも一致しない。</para>
@@ -448,12 +460,67 @@ public static class AllowedHostsPolicy
             return DeadEntryReason.SurroundingWhitespace;
         }
 
-        // 突き合わせ相手が「角括弧を足したもの」なら、原因は括弧の無い IPv6 リテラル
-        return string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
-            ? DeadEntryReason.UnbracketedIpv6Literal
-            // そうでなければ、落とされたのはポート部
-            : DeadEntryReason.PortSuffix;
+        // ホスト部の直後がコロンなら、落とされたのは<b>実際にポート部</b>
+        // （"a.test:8080" ・ "a.test:" ・ "a.test:abc" がこの形）
+        if (normalized.StartsWith(comparable + PortSeparator, StringComparison.Ordinal))
+        {
+            // ポートが原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.PortSuffix;
+        }
+
+        // 突き合わせ相手が「角括弧を足したもの」で、<b>中身が実際に IPv6 として読める</b>なら、
+        // 原因は括弧の無い IPv6 リテラル（＝角括弧で囲めば本当に一致するようになる）
+        if (string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
+            && IsIpv6Literal(normalized))
+        {
+            // 「角括弧で囲め」という案内が、この項目については事実として正しい
+            return DeadEntryReason.UnbracketedIpv6Literal;
+        }
+
+        // どちらとも断定できない綴り（素のホスト名になっていない）
+        return DeadEntryReason.NotABareHostname;
     }
+
+    /// <summary>ホスト名とポートを分ける区切り。</summary>
+    /// <remarks>
+    /// 名前を付けているのは、<see cref="ClassifyDeadEntry"/> の判定と
+    /// <see cref="ComparableSpelling"/> が委ねている <see cref="HostString"/> の分け方が
+    /// <b>同じ区切り</b>の話をしていることを読み手に示すため（§6）。
+    /// </remarks>
+    private const string PortSeparator = ":";
+
+    /// <summary>
+    /// その綴りが、<b>実際に IPv6 アドレスとして読める</b>かを見る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>「角括弧を補われた」＝ IPv6 ではない（issue #269）。</b>
+    /// <see cref="HostString"/> のホスト部の切り出しは、<c>]</c> を含まず
+    /// <b>コロンが 2 つ以上ある</b>値を、IPv6 かどうかに関係なく角括弧で包む。
+    /// つまり <c>www.example.com:8080:</c>（末尾コロンのタイプミス、あるいは
+    /// <c>host:port:path</c> の写し）も「角括弧を足したもの」に一致してしまう。</para>
+    ///
+    /// <para><b>取り違えると、警告が自分で自分を黙らせる。</b> この綴りを
+    /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> と名乗ると、文面は
+    /// 「角括弧で囲め」と案内する。実測では、そのとおり
+    /// <c>[www.example.test:8080:]</c> へ直すと<b>2 本目の警告が消える</b>一方
+    /// （その綴りは <c>Host: [www.example.test:8080:]</c> なら実際に一致するので、
+    /// 判定としては「生きている」で正しい）、運用者が並べたかった
+    /// <c>www.example.test</c> は<b>400 のまま</b>だった。
+    /// つまり案内に従うほど「警告が出ていない＝絞れている」という
+    /// <c>docs/security.md</c> の確認手順が誤った安心になる ——
+    /// このクラスが繰り返し避けている<b>警告が障害を作る側に回る</b>形そのもの。</para>
+    ///
+    /// <para><b>判定は自前で書かず <see cref="IPAddress"/> に委ねる。</b>
+    /// 「コロンが 2 つ以上」「16 進とコロンだけ」といった近似は、
+    /// 埋め込み IPv4（<c>::ffff:192.168.0.1</c>）やスコープ付き（<c>fe80::1%eth0</c>）で
+    /// 取りこぼすか、逆に上の <c>www.example.com:8080:</c> を拾う。</para>
+    /// </remarks>
+    /// <param name="value">正規化済みの項目。</param>
+    /// <returns>IPv6 アドレスとして読めるなら <c>true</c>。</returns>
+    private static bool IsIpv6Literal(string value) =>
+        // アドレスとして読めて、かつそれが IPv6 であること（IPv4 は角括弧を取らない）
+        IPAddress.TryParse(value, out var address)
+        && address.AddressFamily == AddressFamily.InterNetworkV6;
 
     /// <summary>
     /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
@@ -510,6 +577,21 @@ public static class AllowedHostsPolicy
 
         /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
         UnbracketedIpv6Literal,
+
+        /// <summary>
+        /// 素のホスト名になっていない（ポートでも IPv6 リテラルでもない綴り）。
+        /// </summary>
+        /// <remarks>
+        /// <b>断定しないための値（issue #269）。</b> 以前は最後の 2 つを
+        /// 「角括弧を足されたか否か」の 2 択で決めており、どちらの側でも
+        /// 事実と違う理由が付いた: <c>www.example.com:8080:</c> は
+        /// <see cref="UnbracketedIpv6Literal"/> と名乗って<b>角括弧で囲め</b>と案内し
+        /// （従うと 2 本目の警告だけが消え、並べたかったホスト名は 400 のまま）、
+        /// <c>a]b.test</c> は <see cref="PortSuffix"/> と名乗って<b>ポートを外せ</b>と
+        /// 案内していた（その項目にポートは 1 つも無い）。
+        /// 原因を言い当てられない綴りでは、<b>言い当てないほうが安全</b>。
+        /// </remarks>
+        NotABareHostname,
 
         /// <summary>直すとワイルドカードになる（＝書き直すと全ホスト許可になる）。</summary>
         WildcardOnceRepaired,
@@ -979,6 +1061,14 @@ public static class AllowedHostsPolicy
             DeadEntryReason.UnbracketedIpv6Literal =>
                 "this is an IPv6 literal without brackets, but a Host header always carries one "
                 + "in brackets, so the two can never be equal — write it as '[::1]'",
+
+            // 原因を言い当てられない綴り ——<b>断定せず、直し方だけを案内する</b>
+            DeadEntryReason.NotABareHostname =>
+                "this entry is not a bare hostname, and host filtering compares the Host "
+                + "header's host part against the entry exactly as written, so the two can "
+                + "never be equal — write one plain hostname with no port and no stray colons "
+                + "(and do NOT simply wrap it in brackets: that spelling silences this warning "
+                + "without making the hostname you meant to allow reachable)",
 
             // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
             DeadEntryReason.WildcardOnceRepaired =>
