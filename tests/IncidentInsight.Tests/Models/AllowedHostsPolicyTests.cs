@@ -720,6 +720,14 @@ public class AllowedHostsPolicyTests
     [InlineData("incident.example.test;www.example.test", "incident.example.test;www.example.test")]
     // 前後の空白は制御文字ではないので触らない（"[ ]" の囲みが見せる役目を持つ）
     [InlineData(" a.test", " a.test")]
+    // <b>NEL（U+0085）は char.IsControl が true なので、以前から置き換えられていた。</b>
+    // 下の 2 つと並べてあるのは、この 3 文字が「同じ役割なのに判定だけが違う」組だから ——
+    // 条件を char.IsControl へ畳み戻す変異は、この行を通したまま下の 2 行で落ちる
+    [InlineData("a.test\u0085b.test", "a.test\\u0085b.test")]
+    // <b>本命（issue #263）。</b> U+2028 / U+2029 は行区切りとして扱われうるのに
+    // char.IsControl が false なので、条件を「制御文字か」にしていると生のまま載る
+    [InlineData("a.test\u2028b.test", "a.test\\u2028b.test")]
+    [InlineData("a.test\u2029b.test", "a.test\\u2029b.test")]
     public void DescribeValueForLog_MakesInvisibleCharactersVisible(string value, string expected)
     {
         // 可視化した綴りが期待どおりであること

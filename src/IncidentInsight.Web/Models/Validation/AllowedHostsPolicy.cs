@@ -1002,24 +1002,37 @@ public static class AllowedHostsPolicy
         "no Host header can ever equal this entry; inspect the entry itself";
 
     /// <summary>
-    /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
+    /// 目に見えない文字（制御文字と、行区切りとして扱われうる文字）を、ログで読める綴りへ置き換える。
     /// </summary>
     /// <remarks>
-    /// <para><b>制御文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
+    /// <para><b>文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
     /// 名前付きにして残りを別扱いにすると、表と実際の文字集合が少しずつずれていく。
-    /// <c>\uXXXX</c> の 1 規則なら、どの制御文字でも同じ読み方で済む。</para>
+    /// <c>\uXXXX</c> の 1 規則なら、どの文字でも同じ読み方で済む。</para>
     ///
     /// <para><b>逆斜線そのものも置き換える。</b> そうしないと、値に文字どおり
     /// <c>\u0009</c> と書いた場合と、タブが 1 文字入っている場合が<b>同じ見た目</b>になり、
     /// 運用者は自分の設定のどちらなのかを判別できない。ホスト名に逆斜線が
     /// 正当に現れることは無いので、読みにくくなる実害も無い。</para>
+    ///
+    /// <para><b>条件は <c>char.IsControl</c> では足りない。</b> 守りたいのは
+    /// 「1 本の警告がログ上は複数のレコードに見える」ことを防ぐ点（issue #258）で、
+    /// そこで効くのは<b>行区切りとして扱われうるか</b>であって
+    /// 「制御文字か」ではない。<c>U+2028</c>（LINE SEPARATOR）と
+    /// <c>U+2029</c>（PARAGRAPH SEPARATOR）は<b><c>char.IsControl</c> が <c>false</c></b> なのに、
+    /// これらを行の区切りとして扱う処理系が実在する（このリポジトリ自身の
+    /// <c>CSharpCommentScanner.SplitLines</c> の docstring が、解析器は
+    /// <c>\r\n</c> ・ <c>\r</c> ・ <c>\n</c> に加えて <c>U+0085</c> ・ <c>U+2028</c> ・ <c>U+2029</c> でも
+    /// 行を分けると明記している。JSON / JS ベースのログビューアも同じ）。
+    /// <b>非対称なのが要点</b>で、同じ役割の <c>U+0085</c>（NEL）は
+    /// <c>char.IsControl</c> が <c>true</c> なので以前から置き換えられており、
+    /// <c>U+2028</c> / <c>U+2029</c> だけが生のまま載っていた（issue #263）。</para>
     /// </remarks>
     /// <param name="value">可視化したい文字列。</param>
-    /// <returns>制御文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    /// <returns>読めない文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
     private static string MakeInvisibleCharactersVisible(string value)
     {
         // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
-        if (!value.Any(ch => char.IsControl(ch) || ch == '\\')) return value;
+        if (!value.Any(ch => NeedsEscaping(ch) || ch == '\\')) return value;
 
         // 置き換えが要るときだけ組み立てる
         var builder = new StringBuilder(value.Length);
@@ -1029,8 +1042,8 @@ public static class AllowedHostsPolicy
         {
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
             if (ch == '\\') builder.Append("\\\\");
-            // 制御文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
-            else if (char.IsControl(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
+            // 読めない文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
+            else if (NeedsEscaping(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
             // それ以外はそのまま（ホスト名として読める文字）
             else builder.Append(ch);
         }
@@ -1038,4 +1051,33 @@ public static class AllowedHostsPolicy
         // 可視化した綴りを返す
         return builder.ToString();
     }
+
+    /// <summary>
+    /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
+    /// </summary>
+    /// <remarks>
+    /// <b>条件を 1 か所に置くのは、可視化の入り口が「判定」と「組み立て」の 2 つあるから。</b>
+    /// <see cref="MakeInvisibleCharactersVisible"/> は「置き換えが 1 つでもあるか」を先に見てから
+    /// 組み立てるので、条件を 2 度書くことになる。書き写すと<b>片方だけを広げた変更</b>が
+    /// 通り、そのとき壊れ方は「広げたはずの文字が、早期 return に拾われて素通りする」＝
+    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。
+    /// </remarks>
+    /// <param name="ch">判定する 1 文字。</param>
+    /// <returns>可視化が要るなら <c>true</c>。</returns>
+    private static bool NeedsEscaping(char ch) =>
+        // 制御文字（タブ・CR / LF・NEL など。ホスト名に正当に現れることは無い）か、
+        // 制御文字ではないが行区切りとして扱われうる 2 文字なら可視化する
+        char.IsControl(ch) || ch == LineSeparator || ch == ParagraphSeparator;
+
+    /// <summary>行区切りとして扱われうるが <c>char.IsControl</c> が <c>false</c> の文字（U+2028）。</summary>
+    /// <remarks>
+    /// <b>名前を付けているのは、判定を読む人に「なぜこの 2 文字だけ特別なのか」を示すため。</b>
+    /// 裸の <c>'\u2028'</c> が条件に並んでいると、次に触る人が
+    /// 「制御文字の書き漏れ」と読んで <c>char.IsControl</c> へ畳み戻しかねない。
+    /// </remarks>
+    private const char LineSeparator = '\u2028';
+
+    /// <summary>行区切りとして扱われうるが <c>char.IsControl</c> が <c>false</c> の文字（U+2029）。</summary>
+    /// <remarks>役割は <see cref="LineSeparator"/> と同じ（段落の区切り）。</remarks>
+    private const char ParagraphSeparator = '\u2029';
 }
