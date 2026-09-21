@@ -717,7 +717,6 @@ public static class AllowedHostsPolicy
     /// で、実測ではそれはワイルドカードではない（理由は
     /// <see cref="IsWildcardEntry"/> の remarks が正本）。だから数え上げの出発点は
     /// 正規化後ではなく<b>運用者が書いた綴り</b>にしてある。</para>
-    /// </remarks>
     ///
     /// <para><b>上限を引数に取るのは、打ち切りの配線をテストから通せるようにするため。</b>
     /// 本番の上限（<see cref="MaxRepairedSpellings"/>）は実在しうる綴りでは届きにくい値なので、
@@ -1789,11 +1788,16 @@ public static class AllowedHostsPolicy
 
             // Host ヘッダー側はポートを落としてから比べられるので、コロンから先がある項目は
             // 一致しえない。<b>「ポートを含む」と断定しない（レビュー指摘）</b> ——
-            // "https:b.example.test" のように、コロンの手前がスキームの綴りも同じ分岐に入る
+            // "https:b.example.test" のように、コロンの手前がスキームの綴りも同じ分岐に入る。
+            // <b>「コロンの後ろに文字がある」とも断定しない（issue #274）</b> ——
+            // "a.test:" ・ "[::1]:" のように末尾がコロンだけの綴りも同じ分岐に入る
+            // （AllowedHosts=${HOST}:${PORT} で PORT が未設定だとこの形が残る）。
+            // 断定すると、運用者は在りもしないポート番号を探すことになる（issue #256 と同じ誤り）
             DeadEntryReason.PortSuffix =>
                 "host filtering removes the port from the Host header before comparing, but it "
-                + "compares the entry exactly as written, and this entry has more text after a "
-                + "':' — so the two can never be equal. Write one hostname and nothing else: "
+                + "compares the entry exactly as written, and this entry contains a ':' that is "
+                + "kept along with everything after it — so the two can never be equal. Write "
+                + "one hostname and nothing else: "
                 + "for 'a.test:8080' that is 'a.test'; for 'https:b.example.test' (a scheme, "
                 + "not a port) it is 'b.example.test'. Take care not to end up with a wildcard: "
                 + "'0.0.0.0:8080' becomes '0.0.0.0', which disables host filtering entirely "

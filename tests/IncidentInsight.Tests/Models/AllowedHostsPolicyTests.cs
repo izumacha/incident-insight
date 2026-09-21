@@ -976,6 +976,11 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test; b.example.test", AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace)]
     // ポート付き（ASPNETCORE_URLS を写すと自然に生まれる形。issue #256）
     [InlineData("a.example.test;b.example.test:8080", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // <b>末尾がコロンだけの綴りも同じ理由に入る（issue #274）。</b>
+    // AllowedHosts=${HOST}:${PORT} で PORT が未設定だとこの形が残る。ここを覆っておかないと、
+    // DeadEntryCauseMessage の文面が「コロンの後ろに文字がある」と断定していても
+    // どのテストも落ちず、運用者は在りもしないポート番号を探すことになる
+    [InlineData("a.example.test;b.example.test:", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     // 角括弧を書かない IPv6 リテラル ——Host ヘッダー側は必ず角括弧付きで届くので一致しない。
     // <b>ポートは 1 つも無いので、ここを PortSuffix と名乗ってはいけない</b>
     [InlineData("a.example.test;fe80::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
