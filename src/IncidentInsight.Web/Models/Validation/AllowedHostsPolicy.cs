@@ -442,10 +442,11 @@ public static class AllowedHostsPolicy
         // フレームワークが Host と突き合わせるときに使う綴り（ホスト部だけ）を取り出す
         var comparable = ComparableSpelling(normalized);
 
-        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致し、
-        // さらに<b>角括弧の中身がそのまま Host ヘッダーに載りうる</b>なら、その項目は一致しうる
-        if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
-            && string.Equals(normalized, comparable, StringComparison.Ordinal)
+        // 突き合わせ相手の綴りと一致し、<b>Host ヘッダーが運べない文字も含まない</b>なら、
+        // その項目は一致しうる。
+        // <b>前後の空白を別に見る必要は無い（レビュー指摘）</b> ——下の述語がどこの空白も
+        // 弾くので包含される（理由の名乗り分けは下の鎖が別に行う）
+        if (string.Equals(normalized, comparable, StringComparison.Ordinal)
             && !ContainsSpellingAHostHeaderCannotCarry(normalized))
         {
             // 生きている項目なので理由は無い
@@ -540,11 +541,17 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>取り違えると、警告が自分で自分を黙らせる。</b> この綴りを
     /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> と名乗ると、文面は
-    /// 「角括弧で囲め」と案内する。実測では、そのとおり
-    /// <c>[www.example.test:8080:]</c> へ直すと<b>2 本目の警告が消える</b>一方
-    /// （その綴りは <c>Host: [www.example.test:8080:]</c> なら実際に一致するので、
-    /// 判定としては「生きている」で正しい）、運用者が並べたかった
-    /// <c>www.example.test</c> は<b>400 のまま</b>だった。
+    /// 「角括弧で囲め」と案内する。そのとおり <c>[www.example.test:8080:]</c> へ直すと、
+    /// 運用者が並べたかった <c>www.example.test</c> は<b>400 のまま</b>なのに
+    /// <b>2 本目の警告だけが消える</b>（囲んだ綴りはホスト部と一致するので、
+    /// この判定からは「生きている」に見える）。
+    /// <b>「実際に一致するから正しい」のではない</b> ——実測では本物の Kestrel は
+    /// <c>Host: [www.example.test:8080:]</c> も <b>400</b> で弾く。
+    /// 囲んだ綴りを名指しできないのは、角括弧の中身から Kestrel の受け付け方を
+    /// 言い当てられないための<b>意図した見逃し</b>で、理由は
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本
+    /// （この段落は一度その逆を書いていた。TestServer の実測を本番の挙動と
+    /// 取り違えたため ——レビュー指摘）。
     /// つまり案内に従うほど「警告が出ていない＝絞れている」という
     /// <c>docs/security.md</c> の確認手順が誤った安心になる ——
     /// このクラスが繰り返し避けている<b>警告が障害を作る側に回る</b>形そのもの。</para>
@@ -593,6 +600,17 @@ public static class AllowedHostsPolicy
     /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。
     /// <b>増減するときはこの段落と実装を同じ変更セットで直すこと</b>
     /// ——ここが「どこまで拾うか」の正本として他所から参照されている。</para>
+    ///
+    /// <para><b>実測の射程は Kestrel（レビュー指摘）。</b> 上の 400 / 200 はすべて
+    /// Kestrel の要求行の検証で測った値で、IIS / HTTP.sys の前段に置く配備では
+    /// 受け付ける集合が違いうる。空白と <c>/</c> は <c>Host</c> ヘッダーの構文として
+    /// どこでも無効だが、<c>%</c> は RFC 3986 の reg-name としては合法なので、
+    /// <b>理屈のうえでは</b>そちらで一致しうる項目を名指しする余地が残る。
+    /// それでも弾いているのは、<b>実在する DNS 名に <c>%</c> は現れず</b>、
+    /// ブラウザも <c>Host</c> を percent-encode しないため、名指しする項目が
+    /// 実際に使われている見込みが無いから。<b>IIS / HTTP.sys 配備で
+    /// <c>%</c> を含む項目を「正しく使っている」報告が出たら、この 1 文字だけを外す</b>
+    /// （空白と <c>/</c> はそのままでよい）。</para>
     ///
     /// <para><b>どちらも角括弧の有無を問わない（レビュー指摘）。</b> 空白が
     /// <c>0.0.0 .0</c> のような途中の形でも運べないのは分かりやすいが、
