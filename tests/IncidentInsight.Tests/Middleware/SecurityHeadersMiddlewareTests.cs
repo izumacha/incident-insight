@@ -506,8 +506,53 @@ public class SecurityHeadersMiddlewareTests
         Regex.IsMatch(match.Value, LifetimeDirectivePattern, RegexOptions.IgnoreCase)
             ? !NamesAnotherHeader(doc, match)
             // immutable は地の文にも現れるので、名乗りの手がかりがあるときだけ見る
-            : MarkdownSource.LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
-                || IsCommaAdjacent(doc, match);
+            : ContinuesAnUnclosedCacheClaim(doc, match.Index) || IsCommaAdjacent(doc, match);
+
+    /// <summary>その位置が、まだ目印で閉じられていない <c>Cache-Control</c> の名乗りの続きかを見る。</summary>
+    /// <remarks>
+    /// <b><c>immutable</c> の側にだけ残っていた穴を塞ぐ（レビュー指摘）。</b>
+    /// 以前は<b>同じ行</b>に <c>Cache-Control</c> があるかだけを見ていたため、
+    /// ヘッダー名が折り返しで前の行へ回った名乗り
+    /// （<c>`Cache-Control:`</c> の次の行に <c>`immutable`</c>）が目印を 1 つも要求されなかった
+    /// （実測で全件緑。<c>immutable</c> は RFC 8246 上 <c>max-age</c> 無しでも成立するので、
+    /// これは期間の指示と同じ重さの名乗り）。期間の指示の側は同じ穴を先に塞いである。
+    ///
+    /// <para><b>範囲を箇条書きへ広げるだけでは正しい文書が赤くなる。</b>
+    /// この文書は「<c>Cache-Control: public,max-age=3600</c> を名乗ります（…長期・<c>immutable</c> には
+    /// しません）」と<b>同じ箇条書きの中で</b>説明しており、箇条書きに <c>Cache-Control</c> が
+    /// あるかだけで判定すると、この正しい地の文が目印を要求される。</para>
+    ///
+    /// <para><b>そこで「その名乗りが既に目印で閉じられているか」で切る。</b>
+    /// 手前の <c>Cache-Control</c> と自分のあいだに目印があれば、その名乗りは<b>決着済み</b>で
+    /// ここまで掛からない（上の地の文がこれ）。目印が無ければ<b>名乗りの続き</b>とみなす
+    /// （折り返した名乗りがこれ）。目印は囲みの中にあるものも数える ——
+    /// この文書は約束ごとの説明として目印を囲みで掲げており、数えないと
+    /// その説明を含む箇条書きの <c>immutable</c> が赤くなる。</para>
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">見ている位置（<c>immutable</c> の開始位置）。</param>
+    /// <returns>閉じられていない名乗りの続きなら <c>true</c>。</returns>
+    private static bool ContinuesAnUnclosedCacheClaim(string doc, int index)
+    {
+        // その位置を含む箇条書き（地の文ならその行）の範囲
+        var (start, _) = MarkdownSource.BulletBounds(doc, index);
+
+        // その位置より前の綴り
+        var before = doc[start..index];
+
+        // 一番近いヘッダー名の位置を探す
+        var nearest = before.LastIndexOf(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
+
+        // ヘッダー名が手前に無ければ、名乗りの続きではない
+        if (nearest < 0) return false;
+
+        // ヘッダー名と自分のあいだの綴り
+        var between = before[(nearest + CacheControlHeaderName.Length)..];
+
+        // 目印があれば、その名乗りは決着済みなのでここまで掛からない
+        return !between.Contains(ClaimTag, StringComparison.Ordinal)
+            && !between.Contains(CounterExampleTag, StringComparison.Ordinal);
+    }
 
     /// <summary>その指示が、<c>Cache-Control</c> 以外のヘッダーの値として書かれているかを見る。</summary>
     /// <remarks>
@@ -517,22 +562,26 @@ public class SecurityHeadersMiddlewareTests
     /// 除外したいのは「同じ綴りの期間を持つ別の HTTP ヘッダー」だけなので、
     /// <see cref="LifetimeBearingHeaders"/> に載っている名前だけを認める（知らない名前は fail-closed）。
     ///
-    /// <para><b>見る範囲は行ではなく箇条書き。</b> この文書は折り返しが多く、
-    /// ヘッダー名と値が別の行へ分かれる。行だけを見る形だと、
-    /// <b>折り返した HSTS で正しい文書が赤くなり</b>（実測）、しかも失敗文言が案内する
-    /// 目印を付けても次の検査で落ちるという<b>行き止まり</b>になる。
-    /// 逆に <c>Cache-Control</c> が前の行へ回った名乗りも、この範囲なら正しく拾える。</para>
+    /// <para><b>見る範囲は「指示の並びとして地続きの綴り」だけ（レビュー指摘）。</b>
+    /// 箇条書き全体を見ていたころは、同じ箇条書きの中で<b>先に別のヘッダー名を書いておくだけ</b>で
+    /// 後ろの 1 年のキャッシュが目印も判定も要求されずに済んだ
+    /// （実測で <c>`Strict-Transport-Security:` は別の話です。静的アセットは `public, max-age=31536000` …</c> が全件緑）。
+    /// 範囲を広げるほど「手前に置くだけ」の囮が作りやすくなるので、
+    /// <b>ヘッダー名と値のあいだに地の文を挟まない</b>ことを要求する。</para>
+    ///
+    /// <para><b>代償: 折り返してヘッダー名と値を別の囲みへ分けた記述は目印を要求される。</b>
+    /// これは行き止まりではない ——この文書は既に
+    /// <c>`Strict-Transport-Security: max-age=…`</c> のように<b>名前と値を続けて書く</b>形を
+    /// 慣習にしており（<c>Cache-Control</c> の 2 件がそう書かれている）、そちらへそろえれば通る。
+    /// 失敗文言がその直し方も案内する。</para>
     /// </remarks>
     /// <param name="doc">文書全体。</param>
     /// <param name="match">指示への一致。</param>
     /// <returns>他のヘッダーの値として書かれているなら <c>true</c>。</returns>
     private static bool NamesAnotherHeader(string doc, Match match)
     {
-        // その指示を含む箇条書き（地の文ならその行）の範囲
-        var (start, _) = MarkdownSource.BulletBounds(doc, match.Index);
-
-        // その指示より前の綴り
-        var before = doc[start..match.Index];
+        // その指示の手前にある、指示の並びとして地続きの綴り（地の文に当たった時点で止まる）
+        var before = DirectiveRunBefore(doc, match.Index);
 
         // 知っているヘッダー名のうち、<b>一番近いもの</b>を探す
         var nearest = Regex.Match(
@@ -547,8 +596,9 @@ public class SecurityHeadersMiddlewareTests
         if (!nearest.Success) return false;
 
         // <b>名前と、いま見ている指示のあいだに別の期間の指示があれば、その名前はそちらのもの
-        // （レビュー指摘）。</b> 同じ箇条書きの中で先に HSTS を名乗っておけば、
-        // 後ろに書いた 1 年のキャッシュが目印も判定も要求されずに済んでいた（実測で全件緑）。
+        // （レビュー指摘）。</b> 地続きの綴りの中でも、カンマでつなげて
+        // 「`Strict-Transport-Security: max-age=63072000, public,max-age=31536000`」と
+        // 書けば後ろの名乗りが除外できてしまう。
         // 「名前はいちばん近い指示に掛かる」と読めば、この抜け道は綴りに依存せず閉じる
         if (Regex.IsMatch(before[(nearest.Index + nearest.Length)..], LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
