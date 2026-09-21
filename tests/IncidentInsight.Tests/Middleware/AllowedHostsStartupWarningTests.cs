@@ -33,6 +33,17 @@ namespace IncidentInsight.Tests.Middleware;
 /// <c>Staging</c> ならその必須チェック（<c>IsProduction()</c> 限定）を通らずに
 /// まったく同じ警告の分岐へ入れるので、秘密鍵をテストへ持ち込まずに済む。</para>
 /// </remarks>
+// <b>このクラスは他のテストと並行させない（レビュー指摘）。</b>
+// WhenEvenTheErrorLogFails_TheFailureStillReachesStandardError は
+// Console.SetError でプロセス全体の標準エラーを横取りする。xUnit はテストクラスごとに
+// 別のコレクションとして<b>並行実行する</b>ので、横取りしている間に走った別のテストの
+// 標準エラー出力（TempDatabaseAppFixture が後始末に失敗したときの診断など）が
+// この受け皿へ吸い込まれ、誰にも読まれないまま消える ——
+// §6「エラーを握り潰さない」が守ろうとしている記録そのものが失われる形。
+[CollectionDefinition(nameof(AllowedHostsStartupWarningTests), DisableParallelization = true)]
+public sealed class AllowedHostsStartupWarningCollection;
+
+[Collection(nameof(AllowedHostsStartupWarningTests))]
 public class AllowedHostsStartupWarningTests
 {
     // 1 本目（全許可）の警告を見分ける目印。文面そのものではなく、
@@ -422,6 +433,32 @@ public class AllowedHostsStartupWarningTests
 
         // 検査に失敗したことが、文脈付きで残っていること
         Assert.Contains(fixture.Warnings, w => w.Contains(CheckFailureMarker));
+    }
+
+    // <b>1 本目の書き込みが失敗しても、2 本目は試されること（レビュー指摘）。</b>
+    //
+    // そのまま並べて呼ぶと、1 本目が例外を投げた時点で 2 本目が一度も走らない。
+    // 起動時は普通そのあと再読み込みが来ないので、"*; b.example.test" のような値では
+    // <b>「一致しえない項目がある」という別の事実がプロセスの生涯にわたって失われる</b> ——
+    // 運用者に見えるのは一般的な検査失敗のエラーだけで、b.example.test が静かに
+    // 400 を返していることは永久に伝わらない。
+    [Fact]
+    public void AFailingFirstWarning_DoesNotSuppressTheSecondOne()
+    {
+        // 1 本目（全許可）と 2 本目（一致しえない項目）の<b>両方</b>が出る値で、
+        // 1 本目の書き込みだけを落として起動する
+        using var fixture = new WarningCapturingFixture(
+            "*; b.example.test",
+            failLoggingWhen: message => message.Contains(PermissiveWarningMarker));
+
+        // 前提: 1 本目は（書き込みに失敗するので）残っていないこと
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 2 本目は道連れにならず、ちゃんと残っていること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // 一致しえない項目が名指しされていること（空白が見えるよう "[ ]" で囲まれる）
+        Assert.Contains("[ b.example.test]", warning);
     }
 
     // <b>出力先ごと落ちていても、失敗の事実は別の出力先へ必ず残すこと（レビュー指摘）。</b>

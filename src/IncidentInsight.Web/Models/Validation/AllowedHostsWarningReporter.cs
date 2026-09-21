@@ -99,10 +99,42 @@ public sealed class AllowedHostsWarningReporter(
                 return;
             }
 
+            // <b>2 本は互いに独立させる（レビュー指摘）。</b> そのまま並べると、
+            // 1 本目の書き込みが失敗しただけで 2 本目が<b>一度も試されない</b> ——
+            // 起動時は普通そのあと再読み込みが来ないので、"*; b.example.test" のような
+            // 値では「一致しえない項目がある」という別の事実がプロセスの生涯にわたって
+            // 失われる（運用者には一般的な検査失敗のエラーしか見えない）。
+            // 片方の失敗をもう片方の道連れにしない。
+            var failures = new List<Exception>();
+
             // 「絞ったつもりで全部通る」形を拾う(1 本目)
-            ReportPermissiveValue(allowedHosts);
+            try
+            {
+                // 全許可なら原因を添えて警告する
+                ReportPermissiveValue(allowedHosts);
+            }
+            catch (Exception ex)
+            {
+                // 握り潰さず貯めておく（下でまとめて投げ直す）
+                failures.Add(ex);
+            }
+
             // 「並べたつもりで一部が通らない」形を拾う(2 本目)
-            ReportNeverMatchingEntries(allowedHosts);
+            try
+            {
+                // 一致しえない項目があれば項目ごとの理由を添えて警告する
+                ReportNeverMatchingEntries(allowedHosts);
+            }
+            catch (Exception ex)
+            {
+                // こちらの失敗も貯めておく
+                failures.Add(ex);
+            }
+
+            // どちらかが失敗していたら、覚えずに投げ直す ——
+            // <b>覚えないことが retry になる</b>（次の再読み込みで両方とも評価し直される。
+            // 成功したほうが 2 度出るだけで、失われるよりは良い＝過剰に出す側）
+            if (failures.Count > 0) throw new AggregateException(failures);
 
             // <b>覚えるのは出し終えてから。</b> 先に覚えると、出力の途中で例外が出た値が
             // 「評価済み」として残り、<b>同じ値での再読み込みでは黙る</b> ——
