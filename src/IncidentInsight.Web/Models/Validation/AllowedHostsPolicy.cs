@@ -441,7 +441,7 @@ public static class AllowedHostsPolicy
         // さらに<b>角括弧の中身がそのまま Host ヘッダーに載りうる</b>なら、その項目は一致しうる
         if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
             && string.Equals(normalized, comparable, StringComparison.Ordinal)
-            && !IsUnusableBracketedSpelling(normalized))
+            && !CannotBeCarriedByAHostHeader(normalized))
         {
             // 生きている項目なので理由は無い
             return null;
@@ -533,15 +533,18 @@ public static class AllowedHostsPolicy
         && !ContainsSpellingAHostHeaderCannotCarry(value);
 
     /// <summary>
-    /// その項目が「角括弧で囲んであるが、<c>Host</c> ヘッダーには載りえない綴り」かを見る。
+    /// その項目が「正規化後もホスト部と一致するが、<c>Host</c> ヘッダーには載りえない綴り」かを見る。
     /// </summary>
     /// <remarks>
     /// <para><b>ここが「生きている」の判定を 1 段厳しくしている（レビュー指摘）。</b>
     /// <see cref="ComparableSpelling"/> が委ねている <see cref="HostString"/> は、
-    /// <c>]</c> を含む値を<b>中身を問わず</b>ホスト部として受け取る。そのため
-    /// <c>[www.example.com:8080:]</c> ・ <c>[foo]</c> ・ <c>[fe80::1%eth0]</c> は
-    /// 「正規化後の綴り＝ホスト部」になり、**この判定が無いと「生きている」に分類され、
-    /// 2 本目の警告が 1 本も出ない**。</para>
+    /// <c>]</c> を含む値を<b>中身を問わず</b>ホスト部として受け取り、
+    /// 途中の空白もそのまま通す。そのため <c>[fe80::1%eth0]</c> ・ <c>[::1 ]</c> ・
+    /// <c>0.0.0 .0</c> は「正規化後の綴り＝ホスト部」になり、
+    /// **この判定が無いと「生きている」に分類され、2 本目の警告が 1 本も出ない**。</para>
+    ///
+    /// <para><b>どこまで拾うかの線引きは <see cref="ContainsSpellingAHostHeaderCannotCarry"/>
+    /// の remarks が正本</b>（実測と、そこで止める理由）。</para>
     ///
     /// <para><b>実測（本物の Kestrel へ生の <c>Host</c> ヘッダーを送って計測）。</b>
     /// 受け付けられるのは<b>素の IPv6 リテラルを囲んだ綴りだけ</b>だった:
@@ -557,14 +560,25 @@ public static class AllowedHostsPolicy
     /// 統合テストの「実測」は TestServer の挙動であって、本番の Kestrel のそれではない）。</para>
     /// </remarks>
     /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns>角括弧付きだが <c>Host</c> に載りえない綴りなら <c>true</c>。</returns>
-    private static bool IsUnusableBracketedSpelling(string normalized) =>
-        // 角括弧で囲まれていて（開きと閉じの両方がある）
-        normalized.Length >= 2
-        && normalized[0] == '['
-        && normalized[^1] == ']'
-        // その中身に、Host ヘッダーが運べないと実測した綴りが含まれること
-        && ContainsSpellingAHostHeaderCannotCarry(normalized[1..^1]);
+    /// <returns><c>Host</c> ヘッダーに載りえない綴りなら <c>true</c>。</returns>
+    private static bool CannotBeCarriedByAHostHeader(string normalized) =>
+        // <b>空白はどこにあっても運べない（レビュー指摘）。</b> 以前は角括弧の中だけを見ていたため、
+        // 括弧の無い項目の<b>途中</b>の空白（"0.0.0 .0" ・ "www.example .test"）が
+        // 「生きている」のまま黙っていた ——前者は運用者がタイプミスの空白を外すと
+        // 0.0.0.0 ＝全許可（issue #64）になり、後者は前後の空白の警告に従って直した先が
+        // <b>無警告のまま 400</b>（＝警告が自分で自分を黙らせる形）だった。
+        // 実測でも本物の Kestrel は Host: 0 .0.0.0 を 400 で弾く
+        normalized.Any(char.IsWhiteSpace)
+        // <b>スコープの区切りは角括弧の中だけ。</b> reg-name（普通のホスト名）では
+        // "%" は percent-encoding として合法なので、一律に弾くと誤検知の側へ倒れる
+        || (IsBracketed(normalized) && normalized[1..^1].Contains(ScopeSeparator));
+
+    /// <summary>その綴りが角括弧で囲まれているかを見る。</summary>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>開きと閉じの両方があるなら <c>true</c>。</returns>
+    private static bool IsBracketed(string normalized) =>
+        // 開きと閉じの両方がある長さで、実際にその 2 文字で挟まれていること
+        normalized.Length >= 2 && normalized[0] == '[' && normalized[^1] == ']';
 
     /// <summary>
     /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
@@ -588,6 +602,13 @@ public static class AllowedHostsPolicy
     /// 空白（<c>[::1 ]</c> ・ <c>[:: ]</c>）と <c>%</c>（<c>[fe80::1%eth0]</c> ・
     /// <c>[::1%25eth0]</c>）。どちらも Host ヘッダーの構文として運べないので
     /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。</para>
+    ///
+    /// <para><b>ただし 2 つは適用範囲が違う（レビュー指摘）。</b> 空白は
+    /// <b>角括弧の有無を問わず</b>運べない（<c>0.0.0 .0</c> のような途中の空白も同じ）。
+    /// 一方 <c>%</c> は普通のホスト名では percent-encoding として合法なので、
+    /// <b>角括弧の中にあるときだけ</b>見る ——一律に弾くと誤検知の側へ倒れる。
+    /// 振り分けは <see cref="CannotBeCarriedByAHostHeader"/> が持ち、
+    /// ここは「その 1 つでも含むか」だけを答える（IPv6 リテラルの判定が使う）。</para>
     ///
     /// <para><b>残っている境界（意図した見逃し）:</b> <c>[foo]</c> や
     /// <c>[www.example.com:8080:]</c> は Kestrel が 400 で弾くのに、ここでは拾えない

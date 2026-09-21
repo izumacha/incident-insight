@@ -941,6 +941,13 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test; ::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;[ ::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;[:: ]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>角括弧が無くても、途中の空白は運べない（レビュー指摘）。</b>
+    // 以前は角括弧の中だけを見ていたため "0.0.0 .0" は無警告のままで、
+    // 運用者がタイプミスの空白を外すと 0.0.0.0 ＝全許可（issue #64）になっていた
+    [InlineData("a.example.test;0.0.0 .0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // ワイルドカードにならない側も、黙らずに名指しされること
+    // （前後の空白の警告に従って直した先が、無警告のまま 400 になるのを防ぐ）
+    [InlineData("a.example.test;www.example .test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
         string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
     {
