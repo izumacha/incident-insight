@@ -516,11 +516,60 @@ public static class ResponseCachePolicy
     /// <param name="method">引数を並べるメソッド。</param>
     /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
     private static string ParameterTypeList(MethodBase method) =>
-        // 完全修飾名で並べる(持たない型引数などは単純名へ落ちる)
+        // 型ごとの綴りは TypeDisplayName が決める(素の FullName を使わない理由はそちらの説明が正本)
         string.Join(
             ", ",
-            method.GetParameters()
-                .Select(parameter => parameter.ParameterType.FullName ?? parameter.ParameterType.Name));
+            method.GetParameters().Select(parameter => TypeDisplayName(parameter.ParameterType)));
+
+    /// <summary>型を、表示名へ載せる読める 1 語にする。</summary>
+    /// <remarks>
+    /// <para><b>素の <c>FullName</c> を使わない（レビュー指摘・実測）。</b> 構築済みの総称型の
+    /// <c>FullName</c> は<b>アセンブリ修飾名</b>を含むので、<c>DateTime?</c> を受けるアクションは
+    /// <c>System.Nullable`1[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, …]]</c>
+    /// と名乗る ——<see cref="DeclarationSite"/> の説明が「<b>開けるファイルを指さない</b>」として
+    /// 退けた綴りそのもので、しかもこの repo は期間・enum の絞り込みを
+    /// <c>Nullable&lt;T&gt;</c> で受けることを規約で求めている（いちばん出やすい形）。</para>
+    ///
+    /// <para><b><c>FullName ?? Name</c> でも足りない（レビュー指摘・実測）。</b> 開いた総称
+    /// （<c>List&lt;T1&gt;</c>）は <c>FullName</c> を持たないので <c>Name</c> へ落ち、
+    /// <c>List`1</c> だけが残る ——総称の基底で <c>Export(List&lt;T1&gt;)</c> と
+    /// <c>Export(List&lt;T2&gt;)</c> を分けているオーバーロードが<b>同じ名前</b>になり、
+    /// 引数を載せた理由がその形でだけ失われる。</para>
+    ///
+    /// <para>そこで型引数まで自分で組み立てる。名前空間は残し（単純名だけだと
+    /// 名前空間違いの同名の型が衝突する）、アセンブリ修飾名は載せない。</para>
+    /// </remarks>
+    /// <param name="type">綴りにする型。</param>
+    /// <returns>表示名へ載せる 1 語。</returns>
+    private static string TypeDisplayName(Type type)
+    {
+        // 型引数(TModel / T1)はそれ自身が名前なので、そのまま使う
+        if (type.IsGenericParameter) return type.Name;
+
+        // 配列は要素の綴りに [] を付ける(要素が型引数でも読める形になる)
+        if (type.IsArray) return TypeDisplayName(type.GetElementType()!) + "[]";
+
+        // 総称でなければ、名前空間付きの名前をそのまま使う(持たなければ単純名)
+        if (!type.IsGenericType) return type.FullName ?? type.Name;
+
+        // 総称は、開いた定義の名前から `1 のような個数の印を落とす
+        var definition = type.GetGenericTypeDefinition();
+
+        // 名前空間付きの名前を取り出す(開いた定義は FullName を持つ)
+        var rawName = definition.FullName ?? definition.Name;
+
+        // 個数の印(`1)があればそこまでを名前とする
+        var tick = rawName.IndexOf('`');
+
+        // 印の手前までを名前にする(印が無ければそのまま)
+        var name = tick < 0 ? rawName : rawName[..tick];
+
+        // 型引数も同じ規則で綴る(入れ子の総称でも読める形になる)
+        var arguments = string.Join(", ", type.GetGenericArguments().Select(TypeDisplayName));
+
+        // 名前と型引数を組み立てて返す
+        return $"{name}<{arguments}>";
+    }
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。

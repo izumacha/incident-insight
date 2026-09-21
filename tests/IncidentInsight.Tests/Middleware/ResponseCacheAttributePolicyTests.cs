@@ -946,6 +946,17 @@ public class ResponseCacheAttributePolicyTests
             message += RepairAdvice(repair);
         }
 
+        // <b>共有の注意書きは最後に 1 度だけ出す（レビュー指摘）。</b> 綴りをそろえる案内と
+        // 中身を確かめる案内は同時に出うるので、案内ごとに足すと<b>同じ長い 1 文が 2 度</b>並ぶ。
+        // 読みにくいだけでなく、「重複を消す」変更で<b>片方の枝から黙って落ちる</b>
+        // ——このファイルは「一覧が空でも中身が安全とは限らない」を中身を確かめる枝で
+        // いちばん効く注意として書いており、落ちると残る境界をそのまま踏ませる
+        if (unapproved.Any(item => RepairCarriesContentsCaveat(RepairFor(item.Cause))))
+        {
+            // 掛かる案内があるときだけ、最後に 1 度添える
+            message += ContentsNotFullyListedCaveat;
+        }
+
         // 組み立てた文面を返す
         return message;
     }
@@ -1287,6 +1298,10 @@ public class ResponseCacheAttributePolicyTests
             new StaticAssetEntry("LIB2", IsDirectory: true),
             // その中のファイルは、これまでどおりの原因のままであること
             new StaticAssetEntry("LIB2/report.csv", IsDirectory: false),
+            // <b>綴りの大小だけが違うもう 1 つの入れ物</b>(出所の取り違えを見る)
+            new StaticAssetEntry("Lib", IsDirectory: true),
+            // その中のファイル(LIB の中身として数えられてはいけない)
+            new StaticAssetEntry("Lib/other.csv", IsDirectory: false),
         };
 
         // 「lib だけが中を見ない入れ物」という合成の判定を渡す
@@ -1297,9 +1312,13 @@ public class ResponseCacheAttributePolicyTests
             approvedExtensions,
             name => string.Equals(name, "lib", StringComparison.Ordinal));
 
-        // 入力の順を保ったまま 5 件とも落ちること
+        // 入力の順を保ったまま 7 件とも落ちること
         Assert.Equal(
-            new[] { "LIB", "LIB/patients.csv", "LIB/exports", "LIB2", "LIB2/report.csv" },
+            new[]
+            {
+                "LIB", "LIB/patients.csv", "LIB/exports", "LIB2", "LIB2/report.csv",
+                "Lib", "Lib/other.csv",
+            },
             unapproved.Select(item => item.RelativePath).ToArray());
 
         // 出所の入れ物は、これまでどおり専用の原因であること
@@ -1316,6 +1335,19 @@ public class ResponseCacheAttributePolicyTests
 
         // その中身も、これまでどおりの原因のままであること
         Assert.Equal(UnapprovedCause.UnapprovedExtension, unapproved[4].Cause);
+
+        // <b>綴りの大小だけが違うもう 1 つの入れ物</b>も、それ自身として報告されること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, unapproved[5].Cause);
+
+        // その中身は、自分の入れ物の中身として数えられること
+        Assert.Equal(UnapprovedCause.ContentsOfMiscasedOpaqueContainer, unapproved[6].Cause);
+
+        // <b>出所を取り違えていないこと（レビュー指摘）。</b> 突き合わせを大小無視へ緩めると、
+        // 大文字小文字を区別するファイルシステムで<b>別の入れ物</b>である Lib の中身が
+        // LIB の中身として数えられ、失敗文言が<b>決めるべき入れ物を取り違えて名指しする</b>
+        // ——このファイルが塞ぎ続けている「失敗文言が違うものを名指しする」形。
+        // 名指しの綴りで、どちらの入れ物の中身かが読み取れることを確かめる
+        Assert.StartsWith("Lib/", unapproved[6].RelativePath, StringComparison.Ordinal);
     }
 
     // 上の付け替えが<b>失敗文言まで届いている</b>こと（相反する案内が同居しないこと）。
@@ -1675,6 +1707,22 @@ public class ResponseCacheAttributePolicyTests
         // (これが後ろだと、上から読んだ人が先に種別の登録を済ませてしまう)
         Assert.Equal(orders.Min(), RepairAdviceOrder(RepairKind.AuditContentsBeforeAligning));
 
+        // <b>綴りをそろえる案内は、表への登録より前であること（レビュー指摘・実測）。</b>
+        // 入れ替えても全件緑のまま通っていた ——後ろだと、上から読んだ人が
+        // 綴りをそろえれば済む資産について<b>表へ 2 行目を足して 2 度承認する</b>
+        // （issue #270 が名指しした誤った直し方がそのまま戻る）
+        Assert.True(
+            RepairAdviceOrder(RepairKind.AlignSpelling)
+                < RepairAdviceOrder(RepairKind.RegisterInTable),
+            "綴りをそろえる案内は、表への登録の案内より前に出してください"
+                + "(後ろだと、そろえれば済む資産を 2 度承認させます)。");
+
+        // すべての直し方について、注意書きが掛かるかが決まっていること
+        var caveats = Enum.GetValues<RepairKind>().Select(RepairCarriesContentsCaveat).ToList();
+
+        // 掛かる側・掛からない側の<b>両方</b>が実際にあること(片方だけなら決めが死んでいる)
+        Assert.Equal(2, caveats.Distinct().Count());
+
         // すべての原因について「綴りが要るか」が決まっていること
         // (足し忘れは対応表が例外を投げて落ちる。決めないと失敗文言の組み立てごと落ちる)
         var carries = causes.Select(CauseCarriesApprovedSpelling).ToList();
@@ -1776,6 +1824,65 @@ public class ResponseCacheAttributePolicyTests
 
         // 開きと閉じのあいだを返す
         return message.Substring(open + 1, close - open - 1);
+    }
+
+    // 共有の注意書きが、掛かる案内が 2 つ同時に出ても<b>1 度だけ</b>出ること。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> 案内ごとに足していたころは、綴りをそろえる案内と
+    // 中身を確かめる案内が同時に出ると<b>同じ長い 1 文が 2 度</b>並んだ。読みにくいだけでなく、
+    // 「重複を消す」変更で<b>片方の枝から黙って落ちる</b> ——このファイルは
+    // 「一覧が空でも中身が安全とは限らない」を中身を確かめる枝でいちばん効く注意としている。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_EmitsTheSharedCaveatOnlyOnce()
+    {
+        // 注意書きが掛かる案内を 2 つとも出させる(そろえる先が中を見ない入れ物かで分かれる)
+        var message = UnapprovedStaticAssetsMessage(
+            [
+                // そろえる先が中まで見る入れ物(綴りをそろえる案内)
+                new UnapprovedStaticAsset("CSS", UnapprovedCause.MiscasedApprovedAsset, "css"),
+                // そろえる先が中を見ない入れ物(中身を確かめる案内)
+                new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer, "lib"),
+            ]);
+
+        // 2 つの案内がどちらも出ていること(空振り検出)
+        Assert.Contains("正しいほうへそろえてください", message, StringComparison.Ordinal);
+
+        // もう一方の案内も出ていること
+        Assert.Contains("そろえる前に", message, StringComparison.Ordinal);
+
+        // 共有の注意書きが 1 度だけ出ること
+        Assert.Equal(
+            1,
+            message.Split("承認済みの種類のファイルは並びません").Length - 1);
+    }
+
+    // 「その入れ物の中にあるか」の突き合わせが、<b>綴りの大小を区別する</b>こと。
+    //
+    // <b>なぜ判定を直に見るのか（レビュー指摘・実測）。</b> 一覧の側から確かめても、
+    // 大小を無視へ緩めた変異は<b>原因が同じ</b>（どちらの入れ物の中身でも
+    // `ContentsOfMiscasedOpaqueContainer`）なので落ちない ——取り違えるのは
+    // 「どの入れ物の中身か」という<b>出所</b>で、それは原因の値には現れない。
+    // 大文字小文字を区別するファイルシステムでは `LIB` と `Lib` は別の入れ物なので、
+    // 緩めると失敗文言が<b>決めるべき入れ物を取り違えて名指しする</b>。
+    [Theory]
+    // 綴りまで一致する入れ物の中にあるので、中身として数える
+    [InlineData("LIB/patients.csv", "LIB", true)]
+    // 綴りの大小が違う別の入れ物の中なので、数えない
+    [InlineData("Lib/other.csv", "LIB", false)]
+    // 名前が前方一致するだけの別の入れ物なので、数えない
+    [InlineData("LIB2/report.csv", "LIB", false)]
+    // 入れ物そのものは「中」ではない
+    [InlineData("LIB", "LIB", false)]
+    public void IsInsideAny_MatchesTheContainerSpellingExactly(
+        string relativePath,
+        string container,
+        bool expected)
+    {
+        // 1 つの入れ物だけを渡して判定する
+        var inside = IsInsideAny(relativePath, [container]);
+
+        // 期待どおりに数えられていること
+        Assert.Equal(expected, inside);
     }
 
     // 承認表が<b>大小を区別する</b>比較器で作られていること。
@@ -2209,6 +2316,26 @@ public class ResponseCacheAttributePolicyTests
             + "承認済みの種類のファイルは並びません"
             + "(一覧に無いことは中身が公開してよいことを意味しません)。";
 
+    /// <summary>その直し方の案内に、中身の一覧についての注意書きが掛かるかを返す。</summary>
+    /// <remarks>
+    /// 注意書きは<b>入れ物の綴りをそろえる話</b>に掛かるので、表へ登録するだけの案内には要らない。
+    /// 掛かる案内が同時に 2 つ出ても<b>1 度だけ</b>出すために、掛かるかどうかを別に持つ。
+    /// </remarks>
+    /// <param name="repair">調べる直し方の種類。</param>
+    /// <returns>注意書きが掛かるなら <c>true</c>。</returns>
+    /// <exception cref="NotSupportedException">対応する決めを足し忘れている場合。</exception>
+    private static bool RepairCarriesContentsCaveat(RepairKind repair) => repair switch
+    {
+        // 表へ登録するだけの話には、入れ物の中身の一覧は関係しない
+        RepairKind.RegisterInTable => false,
+        // 綴りをそろえる先が入れ物なら、その中身がどう扱われるかが効く
+        RepairKind.AlignSpelling => true,
+        // そろえる前に中身を確かめる案内では、いちばん効く注意
+        RepairKind.AuditContentsBeforeAligning => true,
+        // 足し忘れを黙って通さない(§9 fail-closed)
+        _ => throw new NotSupportedException($"{repair} に注意書きが掛かるかの決めがありません。"),
+    };
+
     /// <summary>案内を並べる順（小さいほど先に出す）。</summary>
     /// <remarks>
     /// <b>「先にこれを決めてから」と言う案内を先頭に置く。</b> それより後ろに置くと、
@@ -2257,9 +2384,7 @@ public class ResponseCacheAttributePolicyTests
             // 読み手は「自分の項目には当てはまらない」と読む
             "綴りの大小だけが違うものは表へ新しい行を足さず"
                 + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
-                + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
-                // 入れ物の中身がどう扱われるかは、両方の枝で同じ注意が要る(共有の 1 か所から)
-                + ContentsNotFullyListedCaveat,
+                + "どちらが正しいかを確かめて、正しいほうへそろえてください。",
         // そろえる先が中を見ない入れ物のときは、<b>そろえる前に</b>中身を確かめる。
         // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
         RepairKind.AuditContentsBeforeAligning =>
@@ -2274,10 +2399,6 @@ public class ResponseCacheAttributePolicyTests
                 // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
                 // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
                 + "この入れ物は綴りが違うぶん中まで走査されます。"
-                // AlignSpelling 側とまったく同じ注意なので、共有の 1 か所から出す
-                // (この枝ではいちばん効く注意 ——案内が「中身を確かめてから」なのに、
-                //  一覧が空でも中身が安全とは限らないため)
-                + ContentsNotFullyListedCaveat
                 + "並んだ中身を "
                 + $"{nameof(ApprovedStaticFileExtensions)} や "
                 + $"{nameof(ApprovedStaticDirectories)} へ登録して黙らせないでください"
@@ -4462,6 +4583,99 @@ public class ResponseCacheAttributePolicyTests
         [ResponseCache(Duration = 62, NoStore = true)]
         public IActionResult Export(AmbiguousParameterNsB.Report report) => NoContent();
     }
+
+    // 引数の綴りに<b>アセンブリ修飾名</b>が混ざらないこと。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> 構築済みの総称型の `FullName` は
+    // `System.Nullable`1[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, …]]` の形で、
+    // `DeclarationSite` の説明が「<b>開けるファイルを指さない</b>」として退けた綴りそのもの。
+    // しかも CLAUDE.md は期間・enum の絞り込みを `Nullable<T>` で受けることを求めているので、
+    // <b>いちばん出やすい引数の形</b>で失敗文言が読めなくなる。
+    [Fact]
+    public void AttributeScan_NamesParameterTypesWithoutAssemblyQualifiers()
+    {
+        // Nullable<DateTime> を 2 つ受けるアクションを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(NullableParameterProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 件
+        var declared = Assert.Single(declarations);
+
+        // アセンブリ修飾名が混ざっていないこと
+        Assert.DoesNotContain("Version=", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 型引数まで読める形で綴られていること
+        Assert.Contains(
+            "System.Nullable<System.DateTime>",
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    // <b>開いた総称</b>を受けるオーバーロードも、報告の上で見分けが付くこと。
+    //
+    // <b>なぜ別に要るのか（レビューが実測）。</b> `List<T1>` は開いた総称なので `FullName` を
+    // 持たず、`FullName ?? Name` だと `List`1` だけが残る ——`Export(List<T1>)` と
+    // `Export(List<T2>)` が<b>同じ名前</b>になり、引数を載せた理由がその形でだけ失われる。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsApart_EvenWhenTheirParametersAreOpenGenerics()
+    {
+        // 型引数だけが違う 2 つのオーバーロードを、閉じた具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OpenGenericOverloadProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 名指しが 2 通りに分かれること(同じ行が 2 本並ばない)
+        Assert.Equal(
+            2,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+
+        // 型引数まで読める形で綴られていること(T1 / T2 が残る)
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("List<T1>", StringComparison.Ordinal));
+    }
+
+    /// <summary>期間の絞り込みの形（<c>Nullable&lt;T&gt;</c>）を受ける合成コントローラ。</summary>
+    private sealed class NullableParameterProbeController : ControllerBase
+    {
+        /// <summary>期間の絞り込みを 2 つ受けるアクション。</summary>
+        /// <param name="dateFrom">開始日。</param>
+        /// <param name="dateTo">終了日。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 71, NoStore = true)]
+        public IActionResult Index(DateTime? dateFrom, DateTime? dateTo) => NoContent();
+    }
+
+    /// <summary>型引数だけが違うオーバーロードを持つ、総称の基底。</summary>
+    /// <typeparam name="T1">1 つ目の型引数。</typeparam>
+    /// <typeparam name="T2">2 つ目の型引数。</typeparam>
+    private abstract class OpenGenericOverloadProbeBase<T1, T2> : ControllerBase
+    {
+        /// <summary>1 つ目の型引数を要素に取るアクション。</summary>
+        /// <param name="items">1 つ目の型引数の一覧。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 81, NoStore = true)]
+        public IActionResult Export(List<T1> items) => NoContent();
+
+        /// <summary>2 つ目の型引数を要素に取るアクション。</summary>
+        /// <param name="items">2 つ目の型引数の一覧。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 82, NoStore = true)]
+        public IActionResult Export(List<T2> items) => NoContent();
+    }
+
+    /// <summary>上の基底を閉じて継承する具象。</summary>
+    private sealed class OpenGenericOverloadProbeLeaf : OpenGenericOverloadProbeBase<int, string>;
 
     // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
     //
