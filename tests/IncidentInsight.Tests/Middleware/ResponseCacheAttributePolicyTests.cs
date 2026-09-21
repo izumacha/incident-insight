@@ -4,6 +4,7 @@ using IncidentInsight.Tests.Helpers;
 using System.Reflection;
 // ResponseCacheAttribute / ResponseCacheLocation / ControllerBase を使う
 using Microsoft.AspNetCore.Mvc;
+using Xunit.Sdk;
 
 // 既存の Middleware 配下テストと同じ名前空間に置く
 namespace IncidentInsight.Tests.Middleware;
@@ -1896,9 +1897,71 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void StaticAssetTables_AreBuiltWithACaseSensitiveComparer()
     {
-        // 承認表を、表の名前とともに順に見る
-        var tables = StaticAssetTables();
+        // 実在の承認表を、判定そのものは下の純粋関数に任せて確かめる
+        AssertTablesAreCaseSensitive(StaticAssetTables());
+    }
 
+    // 上の判定のうち、<b>実在の表では一度も走らない枝</b>を合成入力で固定する。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 実在のキーはすべて英字を含むので、
+    // 「英字を含むキーが無い表」の枝（比較器を直接読む側と、読めなかったときの
+    // fail-closed）は<b>一度も実行されない</b> ——`!Comparer.Equals("a", "A")` を
+    // `true` へ、`unprobed.Add(name)` を `continue` へ潰しても全件緑のまま通った。
+    // 「見るべき対象ゼロ＝緑」を避けるために置いた枝が、それ自体無検査だった。
+    [Fact]
+    public void AssertTablesAreCaseSensitive_AlsoChecksTablesWithoutLetters()
+    {
+        // 英字を含まないキーだけの表(比較器を直接読む枝へ入る)
+        var digitsOnly = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 大小の無い綴りなので、引いて確かめることができない
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 大小を区別する比較器で作ってあれば通ること
+        AssertTablesAreCaseSensitive([("digits-ordinal", digitsOnly)]);
+
+        // 同じキーを大小無視の比較器で作った表
+        var digitsIgnoreCase = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 引いて確かめられないので、比較器そのものを読む必要がある
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 比較器を読む枝が、大小無視の表を落とすこと
+        var ignored = Assert.Throws<TrueException>(
+            () => AssertTablesAreCaseSensitive([("digits-ignore-case", digitsIgnoreCase)]));
+
+        // 名指しと直し方が文言に出ていること
+        Assert.Contains("digits-ignore-case", ignored.Message, StringComparison.Ordinal);
+
+        // 比較器も読めない形(Dictionary ではない実装)の表
+        var opaque = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 英字を含まないので引けず、実体が Dictionary でないので比較器も読めない
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 確かめられなかった表は名指しして落ちること(fail-closed)
+        var unprobed = Assert.Throws<TrueException>(
+            () => AssertTablesAreCaseSensitive([("opaque", opaque)]));
+
+        // こちらも名指しが文言に出ていること
+        Assert.Contains("opaque", unprobed.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 渡された表が<b>大小を区別する</b>比較器で作られていることを確かめる（判定の純粋関数）。
+    /// </summary>
+    /// <remarks>
+    /// <b>実在の表を直接見る形にしない（レビュー指摘）。</b> 実在のキーはすべて英字を含むので、
+    /// 「英字を含まないキーだけの表」の枝は一度も走らず、潰しても全件緑のまま通る
+    /// ——このファイルが随所で採っている「実在の入力で走らない判定は合成入力で固定する」形。
+    /// </remarks>
+    /// <param name="tables">確かめる表（表の名前つき）。</param>
+    private static void AssertTablesAreCaseSensitive(
+        IEnumerable<(string Name, IReadOnlyDictionary<string, string> Entries)> tables)
+    {
         // 英字を含むキーが無く、確かめられなかった表の名前を集める
         var unprobed = new List<string>();
 
@@ -4480,6 +4543,11 @@ public class ResponseCacheAttributePolicyTests
         // 閉じ方の具象がそのまま漏れていないこと(どちらの閉じ方を先に見ても同じ文言になる)
         Assert.DoesNotContain("Int32", declared.DeclaredOn, StringComparison.Ordinal);
 
+        // <b>宣言元の型もソースの綴りで名乗ること（レビュー指摘）。</b> 素の FullName だと
+        // `GenericSignatureProbeBase`1` というメタデータの綴りのまま出て、引数側
+        // （同じ 1 行の中）がソースの綴りなのと食い違う
+        Assert.DoesNotContain("`1", declared.DeclaredOn, StringComparison.Ordinal);
+
         // 中身も読めること
         Assert.Equal(43, ((ResponseCacheAttribute)declared.Attribute).Duration);
     }
@@ -4676,6 +4744,89 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>上の基底を閉じて継承する具象。</summary>
     private sealed class OpenGenericOverloadProbeLeaf : OpenGenericOverloadProbeBase<int, string>;
+
+    // 引数の綴りが、<b>入れ子・参照渡し・多次元配列</b>でも 2 つの型を取り違えないこと。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> どれも `TypeDisplayName` が素の綴りへ落ちる形で、
+    // (a) 総称型の中に入れ子にした型は `Ns+Outer`1+Inner` なので最初の印で切ると
+    // <b>入れ子の段ごと落ちて</b> Inner と Other が同じ綴りになる、
+    // (b) `ref DateTime?` は総称でも配列でもない扱いになり素の FullName＝
+    // <b>アセンブリ修飾名</b>が出る、(c) `int[,]` は次元を落とすと `int[]` と同じ綴りになる。
+    // いずれも「どちらを直すのか分からない」形。
+    [Fact]
+    public void AttributeScan_NamesParameterTypesDistinctly_ForNestedByRefAndRankedArrays()
+    {
+        // 紛らわしい引数の形を並べた合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(TrickyParameterProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 4 件とも返ること
+        Assert.Equal(4, declarations.Count);
+
+        // 名指しが 4 通りに分かれること(取り違えた 2 件が同じ行にならない)
+        Assert.Equal(
+            4,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+
+        // 入れ子の段が残っていること(Outer で切られていない)
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("Inner", StringComparison.Ordinal));
+
+        // 参照渡しでもアセンブリ修飾名が出ないこと
+        Assert.DoesNotContain(
+            declarations,
+            d => d.DeclaredOn.Contains("Version=", StringComparison.Ordinal));
+
+        // 多次元配列が次元まで綴られること
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("[,]", StringComparison.Ordinal));
+    }
+
+    /// <summary>総称型の中に入れ子の型を 2 つ持つ、引数用の入れ物。</summary>
+    /// <typeparam name="T">使わない型引数（入れ子の段を作るためだけ）。</typeparam>
+    private static class NestingParameterProbe<T>
+    {
+        /// <summary>1 つ目の入れ子の型。</summary>
+        internal sealed class Inner;
+
+        /// <summary>2 つ目の入れ子の型（1 つ目と取り違えてはいけない）。</summary>
+        internal sealed class Other;
+    }
+
+    /// <summary>綴りを取り違えやすい引数の形を並べた合成コントローラ。</summary>
+    private sealed class TrickyParameterProbeController : ControllerBase
+    {
+        /// <summary>入れ子の型（1 つ目）を受けるアクション。</summary>
+        /// <param name="value">1 つ目の入れ子の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 91, NoStore = true)]
+        public IActionResult Take(NestingParameterProbe<int>.Inner value) => NoContent();
+
+        /// <summary>入れ子の型（2 つ目）を受けるアクション。</summary>
+        /// <param name="value">2 つ目の入れ子の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 92, NoStore = true)]
+        public IActionResult Take(NestingParameterProbe<int>.Other value) => NoContent();
+
+        /// <summary>1 次元配列を受けるアクション。</summary>
+        /// <param name="values">1 次元の配列。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 93, NoStore = true)]
+        public IActionResult Take(int[] values) => NoContent();
+
+        /// <summary>参照渡しの期間と多次元配列を受けるアクション。</summary>
+        /// <param name="from">参照渡しで受ける開始日。</param>
+        /// <param name="values">2 次元の配列。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 94, NoStore = true)]
+        public IActionResult Take(ref DateTime? from, int[,] values) => NoContent();
+    }
 
     // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
     //

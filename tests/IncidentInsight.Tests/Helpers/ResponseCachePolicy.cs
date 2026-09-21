@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 // 属性とアクションをリフレクションで走査するために使う
 using System.Reflection;
+using System.Text.RegularExpressions;
 
 // このヘルパーが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -17,7 +18,7 @@ namespace IncidentInsight.Tests.Helpers;
 /// 2 か所が同じ基準を使うため。基準を書き写すと、片方だけを緩めたときに
 /// もう片方が黙って別の答えを出す(CLAUDE.md §6 DRY)。
 /// </remarks>
-public static class ResponseCachePolicy
+public static partial class ResponseCachePolicy
 {
     /// <summary>
     /// <c>[ResponseCache]</c> が名乗っている内容と、それが許されるかどうかの判定結果。
@@ -186,9 +187,15 @@ public static class ResponseCachePolicy
                 // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
                 var declaringType = DeclarationSite(DeclaringTypeOf(controller, SameKindAs(attribute, matches)));
                 // どこに付いていたかが分かる表示名を作る
-                var declaredOn = declaringType.FullName ?? declaringType.Name;
-                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
-                var key = DeclarationKey($"type:{declaredOn}", attribute);
+                // <b>名指しは TypeDisplayName を通す（レビュー指摘）。</b> 素の FullName だと
+                // 総称型が `GenericProbeBase`1` という<b>メタデータの綴り</b>のまま出て、
+                // 引数側（同じ 1 行の中）がソースの綴りなのと食い違う
+                var declaredOn = TypeDisplayName(declaringType);
+                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本。
+                // <b>表示名から作らない</b>のはアクション側と同じ理由 ——名指しの綴りを変えても
+                // 同一性の意味が動かないよう、キーはメタデータの綴りだけで決める
+                var key = DeclarationKey(
+                    $"type:{declaringType.FullName ?? declaringType.Name}", attribute);
 
                 // この観測場所の記録を、最初に要ったここで作る
                 seenOnThisType ??= new HashSet<string>(StringComparer.Ordinal);
@@ -251,7 +258,7 @@ public static class ResponseCachePolicy
                         // 2 つとも違反したとき<b>まったく同じ行が 2 本</b>並び、片方だけが違反なら
                         // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため
                         var declaredOn =
-                            $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}"
+                            $"{TypeDisplayName(declaringType)}.{declaringMethod.Name}"
                                 + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
 
                         // アクション側の宣言として返す
@@ -546,8 +553,28 @@ public static class ResponseCachePolicy
         // 型引数(TModel / T1)はそれ自身が名前なので、そのまま使う
         if (type.IsGenericParameter) return type.Name;
 
-        // 配列は要素の綴りに [] を付ける(要素が型引数でも読める形になる)
-        if (type.IsArray) return TypeDisplayName(type.GetElementType()!) + "[]";
+        // <b>参照渡し(ref / out / in)とポインタは、包んでいる殻を剥いてから綴る（レビュー指摘・実測）。</b>
+        // 剥かないと総称でも配列でもない扱いになり、素の FullName へ落ちて
+        // `System.Nullable`1[[System.DateTime, …, Version=8.0.0.0, …]]&` という
+        // <b>開けるファイルを指さない</b>綴りがそのまま出る(走査はアクション以外の公開メソッドも見る)
+        if (type.IsByRef) return TypeDisplayName(type.GetElementType()!) + "&";
+
+        // ポインタも同じ理由で剥く
+        if (type.IsPointer) return TypeDisplayName(type.GetElementType()!) + "*";
+
+        // 配列は要素の綴りに角括弧を付ける(要素が型引数でも読める形になる)
+        if (type.IsArray)
+        {
+            // <b>次元を落とさない（レビュー指摘・実測）。</b> 落とすと int[,] が int[] と
+            // 同じ綴りになり、2 つのオーバーロードが同じ 1 行として並ぶ
+            var rank = type.GetArrayRank();
+
+            // 次元の数だけカンマを入れた角括弧を作る(1 次元なら [] のまま)
+            var brackets = "[" + new string(',', rank - 1) + "]";
+
+            // 要素の綴りに角括弧を足して返す
+            return TypeDisplayName(type.GetElementType()!) + brackets;
+        }
 
         // 総称でなければ、名前空間付きの名前をそのまま使う(持たなければ単純名)
         if (!type.IsGenericType) return type.FullName ?? type.Name;
@@ -558,11 +585,11 @@ public static class ResponseCachePolicy
         // 名前空間付きの名前を取り出す(開いた定義は FullName を持つ)
         var rawName = definition.FullName ?? definition.Name;
 
-        // 個数の印(`1)があればそこまでを名前とする
-        var tick = rawName.IndexOf('`');
-
-        // 印の手前までを名前にする(印が無ければそのまま)
-        var name = tick < 0 ? rawName : rawName[..tick];
+        // <b>最初の印で切らない（レビュー指摘・実測）。</b> 総称型の中に入れ子にした型は
+        // `Ns+Outer`1+Inner` の形で、最初の印までで切ると入れ子の段(+Inner)ごと落ちて
+        // Outer&lt;int&gt;.Inner と Outer&lt;int&gt;.Other が<b>同じ綴り</b>になる
+        // ——引数の型を載せた理由がその形でだけ失われる。印だけを取り除く
+        var name = ArityTicks().Replace(rawName, string.Empty);
 
         // 型引数も同じ規則で綴る(入れ子の総称でも読める形になる)
         var arguments = string.Join(", ", type.GetGenericArguments().Select(TypeDisplayName));
@@ -570,6 +597,11 @@ public static class ResponseCachePolicy
         // 名前と型引数を組み立てて返す
         return $"{name}<{arguments}>";
     }
+
+    /// <summary>総称の個数の印（<c>`1</c>）を見つける正規表現。</summary>
+    /// <returns>個数の印に一致する正規表現。</returns>
+    [GeneratedRegex("`[0-9]+")]
+    private static partial Regex ArityTicks();
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
