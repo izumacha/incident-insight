@@ -302,6 +302,23 @@ public class SecurityHeadersMiddlewareTests
     // 名乗る囮は拾えない。綴りを足して埋めようとせず、囮が実際に出たら手がかりごと見直す。
     private static readonly string[] AffirmativeClaimMarkers = ["を名乗", "を付与", "を返"];
 
+    // 「そうしない」と述べていることの目印。
+    //
+    // <b>肯定の目印だけでは足りない（レビュー指摘）。</b> 「を名乗」は
+    // 「を名乗<b>りません</b>」の一部でもあるので、否定形で書いた反例が
+    // 肯定的な名乗りに見えていた（実測で、正しい反例が落ちた）——
+    // 直したはずの「反例を書くと赤くなる」形が、別の言い回しで残っていた。
+    //
+    // <b>行に 1 つでもあれば反例として扱う（見逃す側へ倒す）。</b> 否定は文の
+    // どこにでも置けるので、肯定の目印との位置関係で判定しようとすると
+    // 綴りを足し続けることになる。取りこぼす側の代償は、囲みのある名乗りを
+    // 箇条書き単位で照合する検査（StaticAssetCacheControl_MatchesTheDocumentedDirective）と
+    // 定数側の検査が別の手がかりで押さえているぶん小さい。
+    //
+    // <b>残っている境界</b>: 肯定的に名乗る行がたまたま否定語を含む場合
+    //（"…を名乗ります（キャッシュしないため）" 等）は見逃す。
+    private static readonly string[] NegatedClaimMarkers = ["ません", "ない", "避け"];
+
     // 付けてはいけない指示の綴り。
     // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
     // 囲みのある名乗り（指示ごとの完全一致）と、囲みの無い地の文（カンマ隣接）で
@@ -413,7 +430,11 @@ public class SecurityHeadersMiddlewareTests
             // 読み取りと比較を書き下すと、上限や扱いを変えた人が片方だけを直し、
             // <b>囲みの有無で答えが食い違う</b>状態になる（AssertNotLongLived の
             // docstring が「書き写すと片方が素通りの窓口になる」と述べている形）
-            AssertNotLongLived([lifetime.Value], $"docs/security.md の「{lifetime.Value}」");
+            // <b>正規化した形で渡す。</b> lifetime.Value には "=" の前後の空白がそのまま
+            // 含まれるので、素直に渡すと上と同じ理由で「期間の指示 0 件」になる
+            AssertNotLongLived(
+                [$"{lifetime.Groups["name"].Value}={lifetime.Groups["seconds"].Value}"],
+                $"docs/security.md の「{lifetime.Value}」");
         }
 
         // immutable が<b>指示の並びの一部として</b>現れていないこと。
@@ -453,8 +474,31 @@ public class SecurityHeadersMiddlewareTests
     /// <param name="cacheControl"><c>Cache-Control</c> の値。</param>
     /// <returns>前後の空白を落とした指示の一覧。</returns>
     private static List<string> SplitDirectives(string cacheControl) =>
-        // カンマ区切りの各指示へ分ける
-        [.. cacheControl.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+        // カンマ区切りの各指示へ分け、"=" の前後の空白も落とす
+        [.. cacheControl
+            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Select(NormalizeDirective)];
+
+    /// <summary>指示 1 つを、名前と値のあいだの空白を落とした形へそろえる。</summary>
+    /// <remarks>
+    /// <b>そろえないと、空白の入った書き方が「指示 0 件」として素通りする（レビュー指摘）。</b>
+    /// 走査側は <c>\s*=\s*</c> で空白を許しているのに、期間かどうかの判定は
+    /// <c>"max-age="</c> で始まるかを見ていたため、<c>public, max-age = 31536000</c> と
+    /// 書いた囮は<b>期間の指示が 1 つも無い</b>とみなされ、上限の検査が
+    /// 1 つも走らないまま緑になっていた（実測）。
+    /// </remarks>
+    /// <param name="directive">指示 1 つ。</param>
+    /// <returns>"名前=値" の形（値を持たない指示はそのまま）。</returns>
+    private static string NormalizeDirective(string directive)
+    {
+        // 値を持つ指示かどうかを見る
+        var separator = directive.IndexOf('=');
+        // 持たないならそのまま返す（no-store など）
+        if (separator < 0) return directive;
+
+        // 名前と値それぞれの前後の空白を落としてつなぎ直す
+        return directive[..separator].TrimEnd() + "=" + directive[(separator + 1)..].TrimStart();
+    }
 
     /// <summary>保存できる時間を延ばす向きに効く指示だけを取り出す。</summary>
     /// <param name="directives">分解済みの指示。</param>
@@ -578,6 +622,9 @@ public class SecurityHeadersMiddlewareTests
 
         // その行を切り出す
         var line = doc[start..end];
+
+        // 「そうしない」と述べている行は、反例なので対象にしない
+        if (NegatedClaimMarkers.Any(marker => line.Contains(marker, StringComparison.Ordinal))) return false;
 
         // 肯定的な名乗りの目印が 1 つでもあれば、その文は「実際に名乗る」と述べている
         return AffirmativeClaimMarkers.Any(marker => line.Contains(marker, StringComparison.Ordinal));
