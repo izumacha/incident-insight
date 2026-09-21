@@ -34,8 +34,11 @@ public class AllowedHostsWarningReporterTests
     [InlineData(AllowedHostsWarningReporter.SubscribeFailedMessagePrefix)]
     public void DiagnosticMarkers_AppearInTheOperatorRunbook(string marker)
     {
-        // 運用者向けドキュメントを読む（パスの正本は RepositoryPaths）
-        var securityDoc = File.ReadAllText(RepositoryPaths.SecurityDoc);
+        // 運用者向けドキュメントを読む。
+        // <b>読み口も共有する（レビュー指摘）。</b> パスだけを共有して
+        // 読み方を各自で書くと、改行の正規化を足した側だけが直り、
+        // もう片方は<b>Windows のチェックアウトでだけ壊れる</b>状態が黙って残る
+        var securityDoc = MarkdownSource.Read(RepositoryPaths.SecurityDoc);
 
         // 手順がその綴りを引用していること
         Assert.Contains(marker, securityDoc, StringComparison.Ordinal);

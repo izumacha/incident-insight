@@ -258,11 +258,11 @@ public class SecurityHeadersMiddlewareTests
         // <b>箇条書きの境目は BulletBounds が持つ（レビュー指摘）。</b> 同じ規則を
         // ここへ書き写すと、文書が別の記号の箇条書きへ変わったときに片方だけが直り、
         // もう片方は無関係な範囲を見たまま静かに誤分類する（§6 DRY）
-        var (start, end) = BulletBounds(doc, anchors[0]);
+        var (start, end) = MarkdownSource.BulletBounds(doc, anchors[0]);
 
         // 箇条書きの中にあること（地の文に書かれていると範囲を決められない）
         Assert.True(
-            IsBulletStart(doc, start),
+            MarkdownSource.IsBulletStart(doc, start),
             $"docs/security.md の {StaticAssetCachingMechanism} の説明が箇条書きの中にありません。"
                 + "切り出しは行頭の \"- \" を境目にしているので、書き方を変えたなら"
                 + "この切り出しも同じ変更セットで直してください。");
@@ -348,6 +348,16 @@ public class SecurityHeadersMiddlewareTests
         // 運用者向けドキュメントを読む
         var securityDoc = ReadSecurityDoc();
 
+        // <b>囲いが閉じていない文書はその場で落とす（fail-closed。レビュー指摘）。</b>
+        // 囲いの数が奇数だと、それ以降が丸ごと「ブロックの中」になって
+        // <b>目印の要求が黙って外れる</b>。しかも下の空振り検出は囲いより手前の
+        // 指示 1 件で満たされてしまうので、この穴を拾えない（実測で全件緑）
+        Assert.True(
+            MarkdownSource.FencesAreBalanced(securityDoc),
+            "docs/security.md のコードブロックの囲い（```）が閉じていません。"
+                + "閉じないままだと、それ以降のキャッシュ指示がすべて"
+                + "「設定例の中」と見なされ、黙って検査から外れます。");
+
         // (a) 実際に確かめた指示の並びを控えておく（空振りの照合に使う）
         var examined = new List<string>();
 
@@ -358,7 +368,7 @@ public class SecurityHeadersMiddlewareTests
             // 文書はこの約束自体を説明するために目印をコードの囲みで掲げるので、
             // それを名乗りと取り違えると<b>正しい文書で赤くなる</b>。名乗りは必ず囲みの外へ置く決まりなので、
             // 囲みの中にある目印を逃しても、目印を囲みへ退避させる囮は (b) が落とす
-            if (IsInsideCodeSpan(securityDoc, tag.Index)) continue;
+            if (MarkdownSource.IsInsideCodeSpan(securityDoc, tag.Index)) continue;
 
             // その目印が指している指示の並び（同じ行の、直前にある綴り）
             var claimed = DirectiveListBefore(securityDoc, tag.Index);
@@ -393,8 +403,8 @@ public class SecurityHeadersMiddlewareTests
             // 「正しい短期の nginx 設定例を足しただけで CI が赤くなり、
             // 案内される直し方に従うと運用者がコピペする設定へコメントが混ざる」
             // ——この repo が繰り返し避けている<b>実行不能な指示</b>になる（実測で赤くなった）。
-            // 代償は下の「残る境界」に書いてある
-            if (IsInsideFencedBlock(securityDoc, directive.Index)) continue;
+            // 代償（ブロックの中の長期指定は検査が黙る）は CLAUDE.md §3 の「残る境界」が正本
+            if (MarkdownSource.IsInsideFencedBlock(securityDoc, directive.Index)) continue;
 
             // キャッシュの名乗りとして書かれているものだけを見る（HSTS や地の文を巻き込まない）
             if (!RequiresMarker(securityDoc, directive)) continue;
@@ -452,7 +462,7 @@ public class SecurityHeadersMiddlewareTests
         Regex.IsMatch(match.Value, LifetimeDirectivePattern, RegexOptions.IgnoreCase)
             ? !NamesAnotherHeader(doc, match)
             // immutable は地の文にも現れるので、名乗りの手がかりがあるときだけ見る
-            : LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
+            : MarkdownSource.LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
                 || IsCommaAdjacent(doc, match);
 
     /// <summary>その指示の手前で、<c>Cache-Control</c> 以外のヘッダー名を名乗っているかを見る。</summary>
@@ -483,21 +493,6 @@ public class SecurityHeadersMiddlewareTests
 
     /// <summary>ヘッダー名（文脈の判定に使う）。</summary>
     private const string CacheControlHeaderName = "Cache-Control";
-
-    /// <summary>指定位置を含む 1 行を切り出す。</summary>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">含めたい位置。</param>
-    /// <returns>その行。</returns>
-    private static string LineAt(string doc, int index)
-    {
-        // 行の先頭
-        var start = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
-        // 行の終わり
-        var end = doc.IndexOf('\n', index);
-
-        // 改行が見つからなければ文書の末尾まで
-        return doc[start..(end < 0 ? doc.Length : end)];
-    }
 
     /// <summary>目印の直前にある、指示の並びを切り出す。</summary>
     /// <remarks>
@@ -592,7 +587,7 @@ public class SecurityHeadersMiddlewareTests
 
         // <b>囲みの外にある目印だけを認める。</b> 囲みの中の目印は約束への言及なので、
         // 認めると「指示を囲みで閉じ、目印を別の囲みへ入れる」形で囮を逃がせられる
-        var tagged = !IsInsideCodeSpan(doc, at);
+        var tagged = !MarkdownSource.IsInsideCodeSpan(doc, at);
 
         // 「名乗る」の目印があれば、ここではこれ以上見ない
         // （値そのものは、目印を起点に並び全体を読む (a) の枝が確かめる）
@@ -624,63 +619,6 @@ public class SecurityHeadersMiddlewareTests
     private static bool IsDirectiveListCharacter(char ch) =>
         // 指示の綴りに使う文字か、区切り・囲み・コロン・空白なら真
         char.IsAsciiLetterOrDigit(ch) || ch is '=' or ',' or '-' or '`' or ':' || char.IsWhiteSpace(ch);
-
-    /// <summary>その位置が Markdown のコードの囲み（バッククォート）の中かを見る。</summary>
-    /// <remarks>
-    /// 囲みは 1 行の中で閉じるので、<b>行頭からその位置までのバッククォートの個数が
-    /// 奇数なら中、偶数なら外</b>と数えれば足りる。目印は値の直後（囲みの<b>外</b>）へ
-    /// 置く決まりなので、この 1 つの規則で「名乗り」と「約束への言及」を分けられる。
-    /// </remarks>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">見たい位置。</param>
-    /// <returns>囲みの中なら <c>true</c>。</returns>
-    private static bool IsInsideCodeSpan(string doc, int index)
-    {
-        // その位置を含む行の先頭
-        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
-
-        // 行頭からその位置までのバッククォートを数える
-        var backticks = 0;
-        // 1 文字ずつ見る
-        for (var at = lineStart; at < index; at++)
-        {
-            // バッククォートなら 1 つ数える
-            if (doc[at] == '`') backticks++;
-        }
-
-        // 奇数なら囲みの中にいる
-        return backticks % 2 == 1;
-    }
-
-    /// <summary>その位置が Markdown のコードブロック（``` で囲んだ領域）の中かを見る。</summary>
-    /// <remarks>
-    /// <b>行単位の囲みの判定とは別の関心</b> ——ブロックの中の行はバッククォートを
-    /// 1 つも持たないので、<see cref="IsInsideCodeSpan"/> は地の文と判定する。
-    /// 先頭から ``` の出現を数え、奇数番目のあとならブロックの中とする。
-    /// </remarks>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">見たい位置。</param>
-    /// <returns>コードブロックの中なら <c>true</c>。</returns>
-    private static bool IsInsideFencedBlock(string doc, int index)
-    {
-        // 囲いの綴りがこれまでに何回現れたか
-        var fences = 0;
-
-        // 文書の先頭からその位置までを見る
-        for (var at = doc.IndexOf(CodeFence, StringComparison.Ordinal);
-             at >= 0 && at < index;
-             at = doc.IndexOf(CodeFence, at + CodeFence.Length, StringComparison.Ordinal))
-        {
-            // 1 つ数える
-            fences++;
-        }
-
-        // 奇数なら閉じていない＝ブロックの中にいる
-        return fences % 2 == 1;
-    }
-
-    /// <summary>コードブロックの囲いの綴り。</summary>
-    private const string CodeFence = "```";
 
     /// <summary>目印を探す幅（指示の直後に置く決まりなので、長い目印 1 つ分あれば足りる）。</summary>
     private static readonly int TagWindow = Math.Max(ClaimTag.Length, CounterExampleTag.Length);
@@ -820,80 +758,17 @@ public class SecurityHeadersMiddlewareTests
         return at < doc.Length && doc[at] == ',';
     }
 
-    /// <summary>指定位置を含む箇条書きの範囲（開始・終了の文字位置）を求める。</summary>
-    /// <remarks>
-    /// <b>箇条書きの境目の規則はここ 1 か所に置く（レビュー指摘）。</b> 同じ規則
-    /// （行頭の <c>"- "</c> で区切る）を 2 か所へ書き写すと、文書が別の記号の
-    /// 箇条書きへ変わったときに片方だけが直り、もう片方は<b>無関係な範囲</b>を
-    /// 見たまま静かに誤分類する（§6 DRY）。
-    /// 箇条書きの外（地の文）にある位置は、その行だけを範囲として返す。
-    /// </remarks>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">含めたい位置。</param>
-    /// <returns>箇条書きの開始位置と、終了位置（終端は含まない）。</returns>
-    private static (int Start, int End) BulletBounds(string doc, int index)
-    {
-        // その位置を含む行の先頭を探す
-        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
-
-        // <b>上へたどってよいのは「継続行」の間だけ（レビュー指摘）。</b>
-        // 条件を付けずに直前の "- " まで遡ると、<b>箇条書きの外にある地の文</b>が
-        // 手前の箇条書きの一部として扱われ、「箇条書きの中にあること」の検査が
-        // <b>原理的に落ちなくなる</b> ——実測で、静的アセットの説明を地の文へ移し、
-        // 手前に別の箇条書きを置くと、<b>無関係な箇条書きの指示</b>が
-        // 静的アセットの名乗りとして照合され、全件緑のまま通った。
-        // 継続行（行頭が空白）でたどれば、その位置を実際に含む箇条書きだけに着く。
-        var start = lineStart;
-        // 箇条書きの先頭に当たるまで、継続行の間だけ遡る
-        while (start > 1 && !IsBulletStart(doc, start) && IsContinuationLine(doc, start))
-        {
-            // 1 つ前の行の先頭へ
-            start = doc.LastIndexOf('\n', start - 2) + 1;
-        }
-
-        // 箇条書きの外（地の文）なら、その行だけを範囲にする
-        if (!IsBulletStart(doc, start)) start = lineStart;
-
-        // 次の行から順に、箇条書きの続きでなくなるところまで進める
-        var end = doc.IndexOf('\n', index);
-        // 継続行の間は同じ箇条書き（次の "- " も、字下げの無い地の文もここで止まる）
-        while (end >= 0 && end + 1 < doc.Length && IsContinuationLine(doc, end + 1))
-        {
-            // さらに次の改行へ
-            end = doc.IndexOf('\n', end + 1);
-        }
-
-        // 改行が見つからなければ文書の末尾まで
-        return (start, end < 0 ? doc.Length : end);
-    }
-
-    /// <summary>その行が、直前の箇条書きの続き（字下げされた行）かを見る。</summary>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">行の先頭位置。</param>
-    /// <returns>継続行なら <c>true</c>。</returns>
-    private static bool IsContinuationLine(string doc, int index) =>
-        // 行頭が空白（かつ改行ではない）なら、前の行の続き
-        index < doc.Length && doc[index] != '\n' && char.IsWhiteSpace(doc[index]);
-
-    /// <summary>その位置が箇条書きの先頭（行頭の <c>"- "</c>）かを見る。</summary>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">行の先頭位置。</param>
-    /// <returns>箇条書きの先頭なら <c>true</c>。</returns>
-    private static bool IsBulletStart(string doc, int index) =>
-        // 行頭が "- " で始まっているか
-        index + 1 < doc.Length && doc[index] == '-' && doc[index + 1] == ' ';
-
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
-    /// <remarks>パスの正本は <see cref="RepositoryPaths.SecurityDoc"/>（読み手が 2 つあるため）。</remarks>
+    /// <remarks>
+    /// パスの正本は <see cref="RepositoryPaths.SecurityDoc"/>、読み方の正本は
+    /// <see cref="MarkdownSource.Read"/>（改行を LF へそろえる）。
+    /// <b>パスだけを共有して読み方を各自で書かない（レビュー指摘）</b> ——
+    /// 正規化を足した側だけが直り、もう片方は Windows のチェックアウトでだけ壊れる。
+    /// </remarks>
     /// <returns>文書全体。</returns>
     private static string ReadSecurityDoc() =>
-        // <b>改行を LF へそろえてから返す（レビュー指摘）。</b> この repo に .gitattributes は無く、
-        // Windows の既定（core.autocrlf=true）でチェックアウトすると CRLF になる。
-        // すると空行の行頭が CR になり、「空白だけの行は継続行」という判定が
-        // <b>空行まで継続行と読む</b> ——箇条書きの境目が消え、照合の範囲が
-        // 黙って隣の箇条書きまで広がる。判定を 1 箇所ずつ直すと取りこぼしが出るので、
-        // <b>読み口でそろえる</b>（§10「判定ロジックは共有層に置きテストで担保する」）
-        File.ReadAllText(RepositoryPaths.SecurityDoc).Replace("\r\n", "\n");
+        // 共有の読み口を通す
+        MarkdownSource.Read(RepositoryPaths.SecurityDoc);
 
     /// <summary>
     /// 指定した応答フィーチャーだけを持つ最小構成の <see cref="HttpContext"/> を作る。

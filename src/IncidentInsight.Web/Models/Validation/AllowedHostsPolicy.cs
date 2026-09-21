@@ -1036,7 +1036,11 @@ public static class AllowedHostsPolicy
     /// <c>U+2028</c> / <c>U+2029</c> だけが生のまま載っていた（issue #263）。</para>
     /// </remarks>
     /// <param name="value">可視化したい文字列。</param>
-    /// <returns>読めない文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    /// <returns>
+    /// 読めない文字を <c>\uXXXX</c>（BMP）または <c>\UXXXXXXXX</c>（それ以外の面）へ、
+    /// 逆斜線を <c>\\</c> へ置き換えた文字列。<b>幅は 2 通りある</b> ——
+    /// 4 桁固定と読むと、運用者が読む値を静かに壊す（詳しくは remarks）。
+    /// </returns>
     private static string MakeInvisibleCharactersVisible(string value)
     {
         // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
