@@ -14,6 +14,16 @@ using Xunit;
 // このテストが属する名前空間(パイプライン周りの検査と同じ場所)
 namespace IncidentInsight.Tests.Middleware;
 
+// <b>このクラスは他のテストと並行させない（レビュー指摘）。</b>
+// WhenEvenTheErrorLogFails_TheFailureStillReachesStandardError は
+// Console.SetError でプロセス全体の標準エラーを横取りする。xUnit はテストクラスごとに
+// 別のコレクションとして<b>並行実行する</b>ので、横取りしている間に走った別のテストの
+// 標準エラー出力（TempDatabaseAppFixture が後始末に失敗したときの診断など）が
+// この受け皿へ吸い込まれ、誰にも読まれないまま消える ——
+// §6「エラーを握り潰さない」が守ろうとしている記録そのものが失われる形。
+[CollectionDefinition(nameof(AllowedHostsStartupWarningTests), DisableParallelization = true)]
+public sealed class AllowedHostsStartupWarningCollection;
+
 /// <summary>
 /// <c>AllowedHosts</c> の設定ミスに対して、<c>Program.cs</c> が<b>実際に警告を出す</b>ことを固定する。
 /// </summary>
@@ -33,16 +43,6 @@ namespace IncidentInsight.Tests.Middleware;
 /// <c>Staging</c> ならその必須チェック（<c>IsProduction()</c> 限定）を通らずに
 /// まったく同じ警告の分岐へ入れるので、秘密鍵をテストへ持ち込まずに済む。</para>
 /// </remarks>
-// <b>このクラスは他のテストと並行させない（レビュー指摘）。</b>
-// WhenEvenTheErrorLogFails_TheFailureStillReachesStandardError は
-// Console.SetError でプロセス全体の標準エラーを横取りする。xUnit はテストクラスごとに
-// 別のコレクションとして<b>並行実行する</b>ので、横取りしている間に走った別のテストの
-// 標準エラー出力（TempDatabaseAppFixture が後始末に失敗したときの診断など）が
-// この受け皿へ吸い込まれ、誰にも読まれないまま消える ——
-// §6「エラーを握り潰さない」が守ろうとしている記録そのものが失われる形。
-[CollectionDefinition(nameof(AllowedHostsStartupWarningTests), DisableParallelization = true)]
-public sealed class AllowedHostsStartupWarningCollection;
-
 [Collection(nameof(AllowedHostsStartupWarningTests))]
 public class AllowedHostsStartupWarningTests
 {
@@ -410,15 +410,29 @@ public class AllowedHostsStartupWarningTests
     [Fact]
     public void AFailingLogSinkAtStartup_DoesNotPreventTheAppFromStarting()
     {
-        // 全許可のまま起動する ——起動時に 1 本目の警告を書こうとして失敗する状況
-        var startup = Record.Exception(() => new WarningCapturingFixture(
-            "*",
-            failLoggingWhen: message =>
-                // 1 本目の警告の書き込みだけを落とす（その失敗の記録は残せる状態にする）
-                message.Contains(PermissiveWarningMarker)));
+        // <b>組み立てたインスタンスは必ず受け取って捨てる。</b> Record.Exception の中で
+        // 作って放置すると、一時 DB とホストがプロセスの生涯にわたって残り、
+        // 実行のたびに 1 つずつ溜まる（TempDatabaseAppFixture が存在する理由そのもの。§8）
+        WarningCapturingFixture? fixture = null;
 
-        // <b>本命。</b> 起動が例外で止まっていないこと
-        Assert.Null(startup);
+        // 後始末に必ず到達させる
+        try
+        {
+            // 全許可のまま起動する ——起動時に 1 本目の警告を書こうとして失敗する状況
+            var startup = Record.Exception(() => fixture = new WarningCapturingFixture(
+                "*",
+                failLoggingWhen: message =>
+                    // 1 本目の警告の書き込みだけを落とす（その失敗の記録は残せる状態にする）
+                    message.Contains(PermissiveWarningMarker)));
+
+            // <b>本命。</b> 起動が例外で止まっていないこと
+            Assert.Null(startup);
+        }
+        finally
+        {
+            // 起動できていれば止めて一時 DB を消す（起動に失敗していれば何もしない）
+            fixture?.Dispose();
+        }
     }
 
     // <b>起動時の失敗も、握り潰さず記録すること。</b>

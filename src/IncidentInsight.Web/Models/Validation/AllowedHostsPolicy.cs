@@ -1032,7 +1032,7 @@ public static class AllowedHostsPolicy
     private static string MakeInvisibleCharactersVisible(string value)
     {
         // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
-        if (!value.Any(ch => NeedsEscaping(ch) || ch == '\\')) return value;
+        if (!value.Any(NeedsRewriting)) return value;
 
         // 置き換えが要るときだけ組み立てる
         var builder = new StringBuilder(value.Length);
@@ -1041,7 +1041,7 @@ public static class AllowedHostsPolicy
         foreach (var ch in value)
         {
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
-            if (ch == '\\') builder.Append("\\\\");
+            if (ch == Backslash) builder.Append("\\\\");
             // 読めない文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
             else if (NeedsEscaping(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
             // それ以外はそのまま（ホスト名として読める文字）
@@ -1051,6 +1051,34 @@ public static class AllowedHostsPolicy
         // 可視化した綴りを返す
         return builder.ToString();
     }
+
+    /// <summary>
+    /// その 1 文字を、元のまま出してはいけないか（＝何らかの書き換えが要るか）を判定する。
+    /// </summary>
+    /// <remarks>
+    /// <b>「書き換えが 1 つでもあるか」を先に見る早期 return が使う判定。</b>
+    /// 書き換えの種類は 2 つある ——読めない文字は <c>\uXXXX</c> へ、逆斜線は二重化する ——ので、
+    /// 早期 return はその<b>和</b>を見る必要がある。
+    ///
+    /// <b>以前はここを書き下していた（レビュー指摘）。</b> 早期 return 側だけが
+    /// <c>NeedsEscaping(ch) || ch == '\\'</c> と書かれていたため、
+    /// <see cref="NeedsEscaping"/> を切り出した理由（条件を 2 か所へ書き写さない）が
+    /// <b>逆斜線の側についてはそのまま残っていた</b>。二重化する文字を 1 つ足す人が
+    /// 早期 return 側を直し忘れると、「他に書き換えるものが無い値」では
+    /// <b>組み立てに入らず素通りする</b> ——広げたはずの規則が黙って元へ戻る向きの壊れ方になる。
+    /// </remarks>
+    /// <param name="ch">判定する 1 文字。</param>
+    /// <returns>何らかの書き換えが要るなら <c>true</c>。</returns>
+    private static bool NeedsRewriting(char ch) =>
+        // \uXXXX へ直す文字か、二重化する逆斜線なら書き換えが要る
+        NeedsEscaping(ch) || ch == Backslash;
+
+    /// <summary>二重化して出す文字（逆斜線）。</summary>
+    /// <remarks>
+    /// 名前を付けているのは、<see cref="NeedsRewriting"/> と組み立ての 2 か所が
+    /// <b>同じ文字</b>を指していることを読み手に示すため。
+    /// </remarks>
+    private const char Backslash = '\\';
 
     /// <summary>
     /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
@@ -1065,6 +1093,7 @@ public static class AllowedHostsPolicy
     /// <param name="ch">判定する 1 文字。</param>
     /// <returns>可視化が要るなら <c>true</c>。</returns>
     private static bool NeedsEscaping(char ch) =>
+
         // 制御文字（タブ・CR / LF・NEL など。ホスト名に正当に現れることは無い）か、
         // 制御文字ではないが行区切りとして扱われうる 2 文字なら可視化する
         char.IsControl(ch) || ch == LineSeparator || ch == ParagraphSeparator;

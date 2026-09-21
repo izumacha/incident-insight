@@ -408,11 +408,29 @@ if (!app.Environment.IsDevelopment())
                 // 失敗した」事実がどこにも残らない</b> ——運用者は docs/security.md の
                 // 「2 本とも出ていないことの確認」をきれいなログで通してしまい、
                 // 絞り込みが緩んだ可能性に気づけない。
-                Console.Error.WriteLine(
-                    "Failed to check AllowedHosts, and the failure could not be logged. "
-                    + "The permissive/never-matching warnings may be stale until the next "
-                    + "configuration reload (issue #64). Original failure: " + ex
-                    + " | Logging failure: " + loggingFailure);
+                // <b>この 1 行自身も守る（レビュー指摘）。</b> 標準エラーが満杯の
+                // ボリュームを指していたり、テストのように差し替えられた受け皿が
+                // 落ちていたりすると、ここからも例外が出る ——そのとき
+                // 「必ず戻る」という、この入れ子を置いた目的が成り立たなくなる。
+                try
+                {
+                    // 元の失敗（ex）と、記録できなかった理由（loggingFailure）を両方出す
+                    Console.Error.WriteLine(
+                        "Failed to check AllowedHosts, and the failure could not be logged. "
+                        + "The permissive/never-matching warnings may be stale until the next "
+                        + "configuration reload (issue #64). Original failure: " + ex
+                        + " | Logging failure: " + loggingFailure);
+                }
+                catch (Exception)
+                {
+                    // <b>意図して何もしない（§6 の「空の catch」の唯一の例外）。</b>
+                    // ここは「通常のログ」も「標準エラー」も落ちている状態で、
+                    // <b>残せる先がもう 1 つも無い</b>。それでも投げないのは、
+                    // 投げた先が起動処理か設定ファイルの監視スレッドで、
+                    // <b>診断を残せないという理由だけでアプリが止まる</b>ことになるから
+                    // （§9「例外時はクラッシュではなく機能を縮退して継続する」）。
+                    // 握り潰しているのは「記録の失敗」であって、業務上の失敗ではない。
+                }
             }
         }
     }
