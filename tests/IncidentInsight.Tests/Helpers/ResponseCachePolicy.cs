@@ -356,7 +356,7 @@ public static class ResponseCachePolicy
     ///
     /// <para><b>直し方は「キーを位置まで含む形にする」だが、
     /// それだけでは足りない</b> ——宣言元をたどる
-    /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
+    /// <see cref="DeclaringMethodOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
     /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
     /// <b>2 つをセットで見直すこと。</b></para>
     /// </remarks>
@@ -379,7 +379,8 @@ public static class ResponseCachePolicy
             $"{attribute.GetType().FullName} は AllowMultiple = true です。"
                 + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "
                 + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
-                + "キーへ位置を含める形へ変え、あわせて DeclaringTypeOf の名指しも見直してください。");
+                + "キーへ位置を含める形へ変え、あわせて宣言元をたどる DeclaringTypeOf / "
+                + "DeclaringMethodOf の名指しも見直してください。");
     }
 
     /// <summary>

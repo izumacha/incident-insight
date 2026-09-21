@@ -903,26 +903,14 @@ public class ResponseCacheAttributePolicyTests
             + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
             + "認可を通すアクションから返してください。";
 
-        // 「表に無い」ものが 1 件でもあれば、表へ登録する案内を添える
-        if (unapproved.Any(item => RepairFor(item.Cause) == RepairKind.RegisterInTable))
+        // 実際に落ちたものが必要とする直し方だけを、重複なく案内へ足す。
+        // <b>個別の if で分岐しない（レビュー指摘）。</b> 分岐を書き並べると、
+        // 新しい直し方を足したときにどの枝にも当たらず、<b>名指しだけされて
+        // 何をすればよいか 1 文字も書かれていない</b>失敗文言になる
+        foreach (var repair in unapproved.Select(item => RepairFor(item.Cause)).Distinct())
         {
-            // どの表へ登録するかは、落ちた場所(入れ物 / 直下 / 中のファイル)で変わる
-            message += $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
-                + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
-                + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
-                + "理由を添えて登録します。";
-        }
-
-        // 綴りの大小だけが違うものがあれば、<b>表へ足さない</b>ことまで明示する
-        if (unapproved.Any(item => RepairFor(item.Cause) == RepairKind.AlignSpelling))
-        {
-            // 表へ新しい行を足すと同じ資産が 2 度承認されるので、どちらかの綴りへそろえる。
-            // <b>どちらが正しいかは決め打たない</b>(名前が外部で決まっている資産もある)
-            message += $"「{CauseText(UnapprovedCause.MiscasedApprovedAsset)}」ものは表へ新しい行を足さず"
-                + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
-                + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
-                + "入れ物の綴りが違う場合はその中身も未承認として並ぶので、"
-                + "先に入れ物の綴りをそろえてから残りを確認してください。";
+            // 直し方ごとの案内を、足し忘れれば落ちる対応表から引く
+            message += RepairAdvice(repair);
         }
 
         // 組み立てた文面を返す
@@ -1310,18 +1298,8 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void StaticAssetTables_AllHaveAReason()
     {
-        // 4 つの表を「表の名前 → 中身」の組にして順に見る
-        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
-        {
-            // 承認済みの入れ物
-            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
-            // 中を見ない入れ物
-            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
-            // 直下に置いてよいファイル
-            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
-            // 承認済みのファイル種別
-            (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
-        };
+        // 承認表を「表の名前 → 中身」の組にして順に見る
+        var tables = StaticAssetTables();
 
         // 理由が空・空白のエントリを、表の名前付きで集める
         var blank = tables
@@ -1392,6 +1370,57 @@ public class ResponseCacheAttributePolicyTests
 
         // 直し方が 2 種類とも実際に使われていること(片方だけなら出し分けが死んでいる)
         Assert.Equal(Enum.GetValues<RepairKind>().Length, repairs.Distinct().Count());
+
+        // すべての直し方に案内があること(足し忘れは対応表が例外を投げて落ちる)
+        var advice = Enum.GetValues<RepairKind>().Select(RepairAdvice).ToList();
+
+        // 案内が空でないこと(空文字で「案内の無い失敗文言」を作れないようにする)
+        Assert.DoesNotContain(advice, text => string.IsNullOrWhiteSpace(text));
+
+        // 案内が直し方ごとに固有であること(使い回すと出し分けの意味が無い)
+        Assert.Equal(advice.Count, advice.Distinct(StringComparer.Ordinal).Count());
+    }
+
+    // 承認表が<b>大小を区別する</b>比較器で作られていること。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 上の「大小だけが違うキーを同時に載せない」
+    // 検査は、表が大小を無視する比較器で作られていると<b>構造的に落ちようがない</b> ——
+    // 初期化子は重複キーを例外ではなく<b>上書き</b>で扱うので、`[".CSS"]` を足すと
+    // `[".css"]` の理由の文が黙って差し替わり、検査からはキーが 1 つにしか見えない。
+    // 比較器は 1 語で戻せてしまうので、戻したときに鳴るものを置く。
+    // 判定は比較器の実装ではなく<b>挙動</b>で見る(どの comparer 実装でも同じ答えになる)。
+    [Fact]
+    public void StaticAssetTables_AreBuiltWithACaseSensitiveComparer()
+    {
+        // 4 つの表を、表の名前とともに順に見る
+        var tables = StaticAssetTables();
+
+        // 大小を変えると別物になるキー(英字を含むキー)で試した回数を数える
+        var probed = 0;
+
+        // 表ごとに、英字を含むキーを 1 つ選んで大小を変えて引いてみる
+        foreach (var (name, entries) in tables)
+        {
+            // 大文字にすると綴りが変わるキー(＝英字を含むキー)を探す
+            var probe = entries.Keys.FirstOrDefault(key =>
+                !string.Equals(key, key.ToUpperInvariant(), StringComparison.Ordinal));
+
+            // 英字を含むキーが無い表は、この方法では確かめられないので飛ばす
+            if (probe is null) continue;
+
+            // 試した回数を数える(1 つも試せていない状態を下で落とすため)
+            probed++;
+
+            // 大小を変えた綴りでは引けないこと(引けたら大小を無視する比較器)
+            Assert.False(
+                entries.ContainsKey(probe.ToUpperInvariant()),
+                $"{name} は大小を無視する比較器で作られています。"
+                    + "初期化子は重複キーを上書きするため、大小だけが違う行を足すと"
+                    + "既存の行が黙って消えます。StringComparer.Ordinal で作ってください。");
+        }
+
+        // 1 つも試せていないなら、この検査は何も確かめていない(fail-closed)
+        Assert.True(probed > 0, "英字を含むキーが 1 つも無く、比較器を確かめられませんでした。");
     }
 
     // 大小衝突の検出そのものが、拾う側と見逃さない側の両方で働くこと。
@@ -1449,17 +1478,7 @@ public class ResponseCacheAttributePolicyTests
     public void StaticAssetTables_HaveNoKeysThatDifferOnlyByCase()
     {
         // 承認表を、表の名前とともに順に見る
-        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
-        {
-            // 承認済みの入れ物
-            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
-            // 中を見ない入れ物
-            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
-            // 直下に置いてよいファイル
-            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
-            // 入れ物の中に置いてよい種類
-            (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
-        };
+        var tables = StaticAssetTables();
 
         // 小文字にそろえると重なるキーの組を、表の名前付きで集める
         var ambiguous = tables
@@ -1536,6 +1555,36 @@ public class ResponseCacheAttributePolicyTests
         AlignSpelling,
     }
 
+    /// <summary>直し方の種類ごとの、失敗文言へ足す案内。</summary>
+    /// <remarks>
+    /// <b>呼び出し側で <c>if</c> を書き並べない（レビュー指摘）。</b> 分岐を並べると、
+    /// 新しい直し方を足したときにどの枝にも当たらず、<b>名指しだけされて何をすればよいか
+    /// 1 文字も書かれていない</b>失敗文言になる ——「新しい種類が既定の枝へ黙って落ちる」
+    /// という、この変更が閉じようとしている形が 1 段上へ移るだけ。
+    /// </remarks>
+    /// <param name="repair">案内する直し方の種類。</param>
+    /// <returns>失敗文言へ足す案内。</returns>
+    /// <exception cref="NotSupportedException">対応する案内を足し忘れている場合。</exception>
+    private static string RepairAdvice(RepairKind repair) => repair switch
+    {
+        // 公開してよいと確認したうえで、落ちた場所に対応する表へ理由を添えて登録する
+        RepairKind.RegisterInTable =>
+            $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
+                + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
+                + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
+                + "理由を添えて登録します。",
+        // 表へ新しい行を足すと同じ資産が 2 度承認されるので、どちらかの綴りへそろえる。
+        // <b>どちらが正しいかは決め打たない</b>(名前が外部で決まっている資産もある)
+        RepairKind.AlignSpelling =>
+            $"「{CauseText(UnapprovedCause.MiscasedApprovedAsset)}」ものは表へ新しい行を足さず"
+                + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
+                + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
+                + "入れ物の綴りが違う場合はその中身も未承認として並ぶので、"
+                + "先に入れ物の綴りをそろえてから残りを確認してください。",
+        // 足し忘れを黙って通さない(案内の無い失敗文言を出さない)
+        _ => throw new NotSupportedException($"{repair} に対応する案内がありません。"),
+    };
+
     /// <summary>原因を、失敗文言に出す日本語にする。</summary>
     /// <param name="cause">落ちた原因。</param>
     /// <returns>失敗文言に出す文字列。</returns>
@@ -1573,42 +1622,27 @@ public class ResponseCacheAttributePolicyTests
     };
 
     /// <summary>
-    /// 承認表から、<b>綴りの大小を無視して</b>一致するキー（承認された綴り）を探す。
+    /// 静的資産の承認表を、<b>表の名前つきで</b>すべて並べる。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜ大小を無視するのか（issue #270）。</b> macOS / Windows のような
-    /// 大文字小文字を区別しないファイルシステムでは、<c>wwwroot/FAVICON.ICO</c> は
-    /// <c>UseStaticFiles</c> から見て <c>favicon.ico</c> とまったく同じに配信される。
-    /// 区別して引くと、<b>正しく配信されている承認済みの資産が「未承認」として報告され</b>、
-    /// しかも失敗文言は「表へ足せ」という誤った直し方を案内する
-    /// （正しいコードで赤くなる検出網は、いずれ検査ごと緩められる）。</para>
-    ///
-    /// <para><b>それでも綴りは見る。</b> 大小を無視して素通しにすると、大文字小文字を
-    /// <b>区別する</b>ファイルシステムでは <c>wwwroot/LIB</c> が本物の <c>lib</c> とは
-    /// 別の入れ物なのに承認を継いでしまう。見つかった綴りを呼び出し側が
-    /// <see cref="UnapprovedCause.MiscasedApprovedAsset"/> と突き合わせることで、
-    /// 「赤くならない」でも「誤った直し方を案内する」でもない third option を取る。</para>
-    ///
-    /// <para><b>表の比較器には依存させない。</b> 引き方をここへ寄せることで、
-    /// 表を <c>Ordinal</c> で作るか <c>OrdinalIgnoreCase</c> で作るかに答えが左右されなくなる
-    /// ——issue #270 の本体は「表ごとに比較器が違っていた」ことなので、
-    /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
-    /// 表は数件なので、素直に走査して構わない。</para>
-    ///
-    /// <para><b>前提: 表は「承認された綴り」を持ち、大小だけが違うキーを同時に持たない。</b>
-    /// 同居すると、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する
-    /// （同じ入れ物が承認済みにも大小違いにもなりうる）。比較器に依存しない引き方にした以上、
-    /// 表を <c>Ordinal</c> で作り直すことは許される形なので、<b>レビュー任せにせず</b>
-    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> が機械的に固定する。</para>
-    ///
-    /// <para><b>表の綴りを「正しい側」と決め打たない。</b> 名前が外部で決まっている資産
-    /// （ベンダーが配る <c>LICENSE.txt</c> など）では表のほうを直すのが正しいので、
-    /// 呼び出し側は承認表の綴りも一緒に報告し、どちらへそろえるかは人が決める
-    /// ——決め打つと、登録も改名もできない<b>行き止まり</b>を作る（レビュー指摘）。</para>
+    /// 表そのものに掛ける検査（理由が書かれているか・大小衝突が無いか・比較器が
+    /// 大小を区別するか）が同じ並びを必要とするので、1 か所から配る。
+    /// 各検査が並びを書き写すと、表を足したときに<b>片方だけが取り残される</b>（§6 DRY）。
     /// </remarks>
-    /// <param name="table">承認表（キーが承認された綴り）。</param>
-    /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
-    /// <returns>承認された綴り。大小を無視しても見つからなければ <c>null</c>。</returns>
+    /// <returns>表の名前と中身の組。</returns>
+    private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
+        StaticAssetTables() =>
+    [
+        // 承認済みの入れ物
+        (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
+        // 中を見ない入れ物
+        (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
+        // 直下に置いてよいファイル
+        (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
+        // 入れ物の中に置いてよい種類
+        (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
+    ];
+
     /// <summary>
     /// 承認表の中で、<b>大小だけが違うキーの組</b>を集める（判定の純粋関数）。
     /// </summary>
@@ -1645,6 +1679,46 @@ public class ResponseCacheAttributePolicyTests
         // 大小まで含めて一致するキーがあるかを見る(表は数件なので走査で足りる)
         table.Keys.Any(key => string.Equals(key, name, StringComparison.Ordinal));
 
+    /// <summary>
+    /// 承認表から、<b>綴りの大小を無視して</b>一致するキー（承認された綴り）を探す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ大小を無視するのか（issue #270）。</b> macOS / Windows のような
+    /// 大文字小文字を区別しないファイルシステムでは、<c>wwwroot/FAVICON.ICO</c> は
+    /// <c>UseStaticFiles</c> から見て <c>favicon.ico</c> とまったく同じに配信される。
+    /// 区別して引くと、<b>正しく配信されている承認済みの資産が「未承認」として報告され</b>、
+    /// 失敗文言は「表へ足せ」という<b>誤った直し方</b>を案内する ——従うと同じ資産を 2 度承認する。
+    /// <b>直したのは案内であって、赤くなること自体ではない（レビュー指摘）。</b>
+    /// 大小が違う資産は引き続き違反として報告され CI も赤いままで、変わるのは
+    /// 「なぜ落ちたか」と「どう直すか」だけ ——ここを「もう落ちなくなる」と読むと、
+    /// 実際に赤くなったときに検査のほうを疑うことになる。</para>
+    ///
+    /// <para><b>それでも綴りは見る。</b> 大小を無視して素通しにすると、大文字小文字を
+    /// <b>区別する</b>ファイルシステムでは <c>wwwroot/LIB</c> が本物の <c>lib</c> とは
+    /// 別の入れ物なのに承認を継いでしまう。見つかった綴りを呼び出し側が
+    /// <see cref="UnapprovedCause.MiscasedApprovedAsset"/> と突き合わせることで、
+    /// 「赤くならない」でも「誤った直し方を案内する」でもない third option を取る。</para>
+    ///
+    /// <para><b>表の比較器には依存させない。</b> 引き方をここへ寄せることで、
+    /// 表を <c>Ordinal</c> で作るか <c>OrdinalIgnoreCase</c> で作るかに答えが左右されなくなる
+    /// ——issue #270 の本体は「表ごとに比較器が違っていた」ことなので、
+    /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
+    /// 表は数件なので、素直に走査して構わない。</para>
+    ///
+    /// <para><b>前提: 表は「承認された綴り」を持ち、大小だけが違うキーを同時に持たない。</b>
+    /// 同居すると、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する
+    /// （同じ入れ物が承認済みにも大小違いにもなりうる）。比較器に依存しない引き方にした以上、
+    /// 表を <c>Ordinal</c> で作り直すことは許される形なので、<b>レビュー任せにせず</b>
+    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> が機械的に固定する。</para>
+    ///
+    /// <para><b>表の綴りを「正しい側」と決め打たない。</b> 名前が外部で決まっている資産
+    /// （ベンダーが配る <c>LICENSE.txt</c> など）では表のほうを直すのが正しいので、
+    /// 呼び出し側は承認表の綴りも一緒に報告し、どちらへそろえるかは人が決める
+    /// ——決め打つと、登録も改名もできない<b>行き止まり</b>を作る（レビュー指摘）。</para>
+    /// </remarks>
+    /// <param name="table">承認表（キーが承認された綴り）。</param>
+    /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
+    /// <returns>承認された綴り。大小を無視しても見つからなければ <c>null</c>。</returns>
     private static string? ApprovedSpellingFor(
         IReadOnlyDictionary<string, string> table,
         string name) =>
