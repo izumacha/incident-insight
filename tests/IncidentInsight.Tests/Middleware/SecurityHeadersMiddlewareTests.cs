@@ -281,22 +281,6 @@ public class SecurityHeadersMiddlewareTests
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
 
-    // 「そうしない」と述べていることの目印。
-    //
-    // <b>肯定の目印だけでは足りない（レビュー指摘）。</b> 「を名乗」は
-    // 「を名乗<b>りません</b>」の一部でもあるので、否定形で書いた反例が
-    // 肯定的な名乗りに見えていた（実測で、正しい反例が落ちた）——
-    // 直したはずの「反例を書くと赤くなる」形が、別の言い回しで残っていた。
-    //
-    // <b>行に 1 つでもあれば反例として扱う（見逃す側へ倒す）。</b> 否定は文の
-    // どこにでも置けるので、肯定の目印との位置関係で判定しようとすると
-    // 綴りを足し続けることになる。取りこぼす側の代償は、囲みのある名乗りを
-    // 箇条書き単位で照合する検査（StaticAssetCacheControl_MatchesTheDocumentedDirective）と
-    // 定数側の検査が別の手がかりで押さえているぶん小さい。
-    //
-    // <b>残っている境界</b>: 肯定的に名乗る行がたまたま否定語を含む場合
-    //（"…を名乗ります（キャッシュしないため）" 等）は見逃す。
-
     // 付けてはいけない指示の綴り。
     // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
     // 囲みのある名乗り（指示ごとの完全一致）と、囲みの無い地の文（カンマ隣接）で
@@ -343,49 +327,53 @@ public class SecurityHeadersMiddlewareTests
     //
     // 上の 2 つは「静的アセットの箇条書き 1 つ」と「定数そのもの」しか見ないので、
     // 別の箇条書きが長期・immutable を名乗っても止められない（実測で、
-    // 目印を持たない囮を手前へ足すと 1168 件すべて緑のまま通った）。
+    // 目印を持たない囮を手前へ足すと全件緑のまま通った）。
     // 運用者が読むのは文書全体なので、どの箇条書きであれ
     // 「長期・immutable を名乗る」記述が載っていること自体が守りたい状態に反する。
     //
-    // <b>「名乗りか反例か」を文章から推し量らない（レビュー指摘）。</b> 以前は
-    // 「を名乗」「ません」等の綴りから判定していたが、それは CLAUDE.md が
-    // <b>繰り返し失敗として記録している近似の走査</b>そのものだった ——実際この PR の中だけでも
-    // 「6 文字では足りない」「『なく』『ず』が抜けている」「括弧内の否定を拾う」と
-    // 3 度踏み直し、そのたびに<b>正しい文書で赤くなる</b>か<b>囮が黙って通る</b>かを
-    // 行き来した。文書側に<b>機械可読な目印</b>（HTML コメント）を置けば推測が要らなくなる。
+    // <b>「名乗りか反例か」は文章から推し量らず、文書側の目印で決める。</b>
+    // 肯定・否定の綴りから判定する近似は、この PR の中だけで 4 度踏み直し、
+    // そのたびに<b>正しい文書で赤くなる</b>か<b>囮が黙って通る</b>かを行き来した。
     //
-    // <b>目印が無い指示は落とす（fail-closed）。</b> 新しく指示を書いた人は、
-    // 名乗りなのか反例なのかを<b>必ず一度決める</b>ことになる ——
-    // 囮を仕込むには「これは反例です」と差分に書き残す必要があり、レビューに現れる。
+    // <b>検査は 2 本立てにする（レビュー指摘）。</b>
+    //   (a) <b>目印を起点に、その指示の並び全体</b>を確かめる ——
+    //       期間の指示だけを渡していたため、同じ並びの immutable が
+    //       <b>一度も見られていなかった</b>（実測で、
+    //       "public, max-age=3600, immutable" が全件緑で通った）。
+    //   (b) <b>キャッシュの指示を書いたら必ず目印を付ける</b>ことを要求する ——
+    //       (a) だけだと、目印を付けない囮が最初から視界に入らない。
     [Fact]
     public void EveryDocumentedCacheDirective_IsNeverLongLived()
     {
         // 運用者向けドキュメントを読む
         var securityDoc = ReadSecurityDoc();
 
-        // 具体的な値を伴うキャッシュ指示を<b>すべて</b>取り出す
-        var documented = Regex.Matches(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`");
-
-        // 1 つも読み取れないのは、書き方が変わったか検査が壊れたか ——どちらも落とす
-        Assert.NotEmpty(documented);
-
-        // 実際に確かめた指示を控えておく（下の「空振りしていないか」の照合に使う）
+        // (a) 実際に確かめた指示の並びを控えておく（空振りの照合に使う）
         var examined = new List<string>();
 
-        // 1 件ずつ確かめる
-        foreach (Match match in documented)
+        // 「実際に名乗る」の目印を 1 つずつたどる
+        foreach (Match tag in Regex.Matches(securityDoc, Regex.Escape(ClaimTag)))
         {
-            // その指示に付いている目印を読む（無ければ落ちる）
-            if (ClaimKindAfter(securityDoc, match.Index + match.Length, match.Value) != ClaimKind.Claim) continue;
+            // <b>囲みの中に置かれた目印は「約束ごとの言及」で、名乗りではない。</b>
+            // 文書はこの約束自体を説明するために目印をコードの囲みで掲げるので、
+            // それを名乗りと取り違えると<b>正しい文書で赤くなる</b>。名乗りは必ず囲みの外へ置く決まりなので、
+            // 囲みの中にある目印を逃しても、目印を囲みへ退避させる囮は (b) が落とす
+            if (IsInsideCodeSpan(securityDoc, tag.Index)) continue;
+
+            // その目印が指している指示の並び（同じ行の、直前にある綴り）
+            var claimed = DirectiveListBefore(securityDoc, tag.Index);
+
+            // 並びが読めなければ、何を確かめればよいか決められないので落とす
+            Assert.False(
+                string.IsNullOrWhiteSpace(claimed),
+                $"{ClaimTag} の直前にキャッシュ指示が見つかりません（docs/security.md）。"
+                    + "目印は指示の値の直後（同じ行）へ置いてください。");
 
             // 確かめた 1 件として控える
-            examined.Add(match.Groups["value"].Value.Trim());
-
-            // その指示を分解する
-            var directives = SplitDirectives(match.Groups["value"].Value.Trim());
+            examined.Add(claimed);
 
             // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
-            AssertNotLongLived(directives, $"docs/security.md の `{match.Value}`");
+            AssertNotLongLived(SplitDirectives(claimed), $"docs/security.md の「{claimed}」");
         }
 
         // <b>「1 件も確かめていない」状態を落とす。</b> 目印の読み取りが何かの拍子に
@@ -394,47 +382,114 @@ public class SecurityHeadersMiddlewareTests
         // 確かめた中にあることを見る ——この 1 件は文書に必ず載っている。
         Assert.Contains(SecurityHeadersMiddleware.StaticAssetCacheControl, examined);
 
-        // <b>整った書き方だけを見ていては足りない。</b> 上の走査はバッククォートで
-        // 囲まれた指示しか拾わないので、囲まずに書いた囮は素通りする（実測）。
-        // 守りたいのは「文書が長期・immutable を名乗らないこと」であって<b>書式ではない</b>。
-        //
-        // 地の文の枝が実際に見た件数（空振りしていないかの照合に使う）
-        var scannedInProse = 0;
+        // (b) 目印を要求した件数（空振りの照合に使う）
+        var required = 0;
 
-        // 禁じている綴り自体を、囲みの有無を問わず走査する
+        // 期間の指示を、囲みの有無を問わず走査する
         foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
-            // <b>カンマで他の指示とつながっている形だけを見る。</b>
-            // 期間の綴りはキャッシュ以外の指示にも現れる ——この文書には HSTS の節があり、
-            // "Strict-Transport-Security: max-age=…; includeSubDomains" という
-            // <b>正しい記述</b>で赤くなっていた（実測）。Cache-Control の値はカンマ区切り、
-            // HSTS はセミコロン区切りなので、カンマ隣接に絞れば巻き込まない。
-            if (!IsCommaAdjacent(securityDoc, lifetime)) continue;
+            // キャッシュの指示として書かれているものだけを見る（HSTS 等を巻き込まない）
+            if (!IsCacheDirectiveContext(securityDoc, lifetime)) continue;
 
-            // 囲みのある名乗りと同じく、目印で「名乗りか反例か」を決める
-            if (ClaimKindAfter(securityDoc, lifetime.Index + lifetime.Length, lifetime.Value) != ClaimKind.Claim) continue;
+            // 目印を 1 件要求したことを控える
+            required++;
 
-            // この枝も 1 件は実際に見たことを控える
-            scannedInProse++;
-
-            // <b>上限の判定は共有のヘルパーへ通す。</b> ここで読み取りと比較を
-            // 書き下すと、上限や扱いを変えた人が片方だけを直し、
-            // <b>囲みの有無で答えが食い違う</b>状態になる
-            AssertNotLongLived(
-                [$"{lifetime.Groups["name"].Value}={lifetime.Groups["seconds"].Value}"],
-                $"docs/security.md の「{lifetime.Value}」");
+            // 目印が無ければ落ちる（付いていれば名乗り／反例のどちらかに決まっている）
+            ClaimKindAfter(securityDoc, lifetime.Index + lifetime.Length, lifetime.Value);
         }
 
-        // <b>地の文の枝も「1 件も見ていない」状態を落とす。</b>
-        // 実測で、IsCommaAdjacent を常に false にしても全件緑のまま通り、
-        // その状態では囲みなしの囮が素通りした。この文書には静的アセットの名乗り
-        // （`public,max-age=3600`）があり、その max-age はカンマ隣接なので必ず 1 件は数えられる。
+        // <b>この枝も「1 件も見ていない」状態を落とす。</b>
+        // 実測で、文脈の判定を常に false にしても全件緑のまま通り、
+        // その状態では目印を付けない囮が素通りした。
         Assert.True(
-            scannedInProse > 0,
-            "囲みの無い地の文の走査が 1 件も見ていません。"
-                + "docs/security.md にはカンマでつながった期間の指示が少なくとも 1 つあるはずなので、"
-                + "走査の条件（綴り・カンマ隣接・目印）が狭すぎないか確かめてください"
-                + "（このまま緑にすると、囲みの無い囮が素通りします）。");
+            required > 0,
+            "キャッシュ指示に目印を要求する走査が 1 件も見ていません。"
+                + "docs/security.md には期間の指示が少なくとも 1 つあるはずなので、"
+                + "走査の条件（綴り・文脈の判定）が狭すぎないか確かめてください"
+                + "（このまま緑にすると、目印を付けない囮が素通りします）。");
+    }
+
+    /// <summary>その期間の指示が、キャッシュの指示として書かれているかを見る。</summary>
+    /// <remarks>
+    /// <b>カンマ隣接だけでは足りない（レビュー指摘）。</b> 指示が 1 つだけの名乗り
+    /// （"Cache-Control: max-age=31536000 を名乗ります"）はカンマを持たないので、
+    /// 目印を要求する前に読み飛ばされていた（実測で 1 年のキャッシュが素通りした）。
+    /// <b>HSTS を巻き込まないことが要点</b>で、あちらはセミコロン区切りかつ
+    /// 同じ行に <c>Cache-Control</c> が現れないので、次のどちらかで足りる:
+    /// 同じ行に <c>Cache-Control</c> があるか、カンマで他の指示とつながっているか。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="match">期間の指示への一致。</param>
+    /// <returns>キャッシュの指示として書かれているなら <c>true</c>。</returns>
+    private static bool IsCacheDirectiveContext(string doc, Match match) =>
+        // 同じ行に Cache-Control と書かれているか
+        LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
+        // カンマで他の指示とつながっているか
+        || IsCommaAdjacent(doc, match);
+
+    /// <summary>ヘッダー名（文脈の判定に使う）。</summary>
+    private const string CacheControlHeaderName = "Cache-Control";
+
+    /// <summary>指定位置を含む 1 行を切り出す。</summary>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">含めたい位置。</param>
+    /// <returns>その行。</returns>
+    private static string LineAt(string doc, int index)
+    {
+        // 行の先頭
+        var start = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+        // 行の終わり
+        var end = doc.IndexOf('\n', index);
+
+        // 改行が見つからなければ文書の末尾まで
+        return doc[start..(end < 0 ? doc.Length : end)];
+    }
+
+    /// <summary>目印の直前にある、指示の並びを切り出す。</summary>
+    /// <remarks>
+    /// <b>目印を起点にするのが要点（レビュー指摘）。</b> 期間の指示を起点に
+    /// その 1 つだけを渡していたため、同じ並びの <c>immutable</c> が
+    /// 一度も見られていなかった。目印から遡って並び全体を取れば、
+    /// 期間も <c>immutable</c> も同じ 1 回の判定に載る。
+    /// <b>行をまたがない</b> ——またぐと、次の行の指示まで巻き込む。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="tagIndex">目印の開始位置。</param>
+    /// <returns>指示の並び（囲みとヘッダー名を取り除いたもの）。</returns>
+    private static string DirectiveListBefore(string doc, int tagIndex)
+    {
+        // 同じ行の中だけを遡る
+        var lineStart = doc.LastIndexOf('\n', Math.Max(tagIndex - 1, 0)) + 1;
+
+        // 指示の並びを構成しうる文字の間だけ遡る
+        var at = tagIndex;
+        // 行の先頭に着くまで
+        while (at > lineStart && IsDirectiveListCharacter(doc[at - 1])) at--;
+
+        // 切り出した綴りから、囲みとヘッダー名を取り除く
+        return StripDirectiveDecoration(doc[at..tagIndex]);
+    }
+
+    /// <summary>切り出した綴りから、囲み（バッククォート）とヘッダー名を取り除く。</summary>
+    /// <param name="text">切り出した綴り。</param>
+    /// <returns>指示の並びだけ。</returns>
+    private static string StripDirectiveDecoration(string text)
+    {
+        // 囲みと前後の空白を落とす
+        var trimmed = text.Trim().Trim('`').Trim();
+
+        // ヘッダー名が前に付いていれば落とす
+        var header = trimmed.IndexOf(':');
+        // "Cache-Control:" の形だけを落とす（値の中の "=" は触らない）
+        if (header >= 0
+            && trimmed[..header].Trim().Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase))
+        {
+            // ヘッダー名とコロンより後ろだけを残す
+            trimmed = trimmed[(header + 1)..].Trim();
+        }
+
+        // 指示の並びを返す
+        return trimmed;
     }
 
     /// <summary>文書が指示をどう扱っているか（実際に名乗るのか、反例なのか）。</summary>
@@ -474,17 +529,24 @@ public class SecurityHeadersMiddlewareTests
         // 日本語の文字に当たった時点で止まるので、地の文の名乗り
         // （"public, max-age=… を名乗ります"）を目印付きと取り違えることはない
         var at = after;
-        // 指示の並びの続き・閉じのバッククォート・空白の間は進める
-        while (at < doc.Length && IsDirectiveListCharacter(doc[at])) at++;
+
+        // <b>行はまたがない（レビュー指摘）。</b> またぐと、次の行に置かれた
+        // 別の指示の目印を借りてしまい、<b>目印の無い指示が反例として見逃される</b>
+        // （実測: "public, max-age=31536000" の次の行に反例の目印を置くと全件緑だった）。
+        while (at < doc.Length && doc[at] != '\n' && IsDirectiveListCharacter(doc[at])) at++;
 
         // 読み飛ばした先から、目印 1 つ分だけを見る
         var window = doc[at..Math.Min(at + TagWindow, doc.Length)];
 
+        // <b>囲みの外にある目印だけを認める。</b> 囲みの中の目印は約束への言及なので、
+        // 認めると「指示を囲みで閉じ、目印を別の囲みへ入れる」形で囮を逃がせられる
+        var tagged = !IsInsideCodeSpan(doc, at);
+
         // 「名乗る」の目印があればそれ
-        if (window.StartsWith(ClaimTag, StringComparison.Ordinal)) return ClaimKind.Claim;
+        if (tagged && window.StartsWith(ClaimTag, StringComparison.Ordinal)) return ClaimKind.Claim;
 
         // 「反例」の目印があればそれ
-        if (window.StartsWith(CounterExampleTag, StringComparison.Ordinal)) return ClaimKind.CounterExample;
+        if (tagged && window.StartsWith(CounterExampleTag, StringComparison.Ordinal)) return ClaimKind.CounterExample;
 
         // どちらも無ければ、どう扱うべきか決められないので落とす
         Assert.Fail(
@@ -499,17 +561,46 @@ public class SecurityHeadersMiddlewareTests
         return ClaimKind.CounterExample;
     }
 
-
     /// <summary>指示の並び（<c>public,max-age=3600</c> 等）を構成しうる文字かを見る。</summary>
     /// <remarks>
-    /// 目印を探す前に読み飛ばす範囲を決めるためのもの。閉じのバッククォートと空白も含める。
+    /// 目印を探す前に読み飛ばす範囲と、目印から遡って指示の並びを切り出す範囲を
+    /// 決めるためのもの。閉じのバッククォート・ヘッダー名のコロン・空白も含める。
     /// <b>日本語の文字は含めない</b> ——含めると、地の文の名乗りを目印付きと取り違える。
+    /// 改行はここでは弾かず、<b>呼ぶ側が行をまたぎそうな位置で止める</b>
+    /// （空白の判定と行の境界は別の関心で、混ぜると片方を直したときにもう片方が壊れる）。
     /// </remarks>
     /// <param name="ch">判定する 1 文字。</param>
-    /// <returns>読み飛ばしてよいなら <c>true</c>。</returns>
+    /// <returns>指示の並びを構成しうるなら <c>true</c>。</returns>
     private static bool IsDirectiveListCharacter(char ch) =>
-        // 指示の綴りに使う文字か、区切り・囲み・空白なら読み飛ばす
-        char.IsAsciiLetterOrDigit(ch) || ch is '=' or ',' or '-' or '`' || char.IsWhiteSpace(ch);
+        // 指示の綴りに使う文字か、区切り・囲み・コロン・空白なら真
+        char.IsAsciiLetterOrDigit(ch) || ch is '=' or ',' or '-' or '`' or ':' || char.IsWhiteSpace(ch);
+
+    /// <summary>その位置が Markdown のコードの囲み（バッククォート）の中かを見る。</summary>
+    /// <remarks>
+    /// 囲みは 1 行の中で閉じるので、<b>行頭からその位置までのバッククォートの個数が
+    /// 奇数なら中、偶数なら外</b>と数えれば足りる。目印は値の直後（囲みの<b>外</b>）へ
+    /// 置く決まりなので、この 1 つの規則で「名乗り」と「約束への言及」を分けられる。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">見たい位置。</param>
+    /// <returns>囲みの中なら <c>true</c>。</returns>
+    private static bool IsInsideCodeSpan(string doc, int index)
+    {
+        // その位置を含む行の先頭
+        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+
+        // 行頭からその位置までのバッククォートを数える
+        var backticks = 0;
+        // 1 文字ずつ見る
+        for (var at = lineStart; at < index; at++)
+        {
+            // バッククォートなら 1 つ数える
+            if (doc[at] == '`') backticks++;
+        }
+
+        // 奇数なら囲みの中にいる
+        return backticks % 2 == 1;
+    }
 
     /// <summary>目印を探す幅（指示の直後に置く決まりなので、長い目印 1 つ分あれば足りる）。</summary>
     private static readonly int TagWindow = Math.Max(ClaimTag.Length, CounterExampleTag.Length);
