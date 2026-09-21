@@ -67,6 +67,14 @@ public sealed class AllowedHostsWarningReporter(
     // 直近に評価した値(同じ値で鳴り続けないための比較対象)
     private string? _lastEvaluatedValue;
 
+    // 前回、1 本目（全許可）を出せなかったか。
+    // <b>出せなかった側だけを次回へ持ち越すための旗。</b> 値ごと覚え直す形にすると
+    // 「失敗した警告が永久に失われる」か「成功した警告まで毎回出し直す」のどちらかに倒れる
+    private bool _permissiveFailed;
+
+    // 前回、2 本目（一致しえない項目）を出せなかったか（役割は上と同じ）
+    private bool _deadEntryFailed;
+
     /// <summary>
     /// 前回と違う値のときだけ、<c>AllowedHosts</c> を検査して警告を出す。
     /// </summary>
@@ -103,58 +111,81 @@ public sealed class AllowedHostsWarningReporter(
             // 記憶が実際の設定とずれる（詳細はコンストラクタ引数の docstring）
             var allowedHosts = readCurrentValue();
 
-            // 2 回目以降で値が前回と同じなら、何も出さずに戻る
-            if (_hasEvaluated && string.Equals(_lastEvaluatedValue, allowedHosts, StringComparison.Ordinal))
-            {
-                // 前回と同じ値なので、何も出さずに戻る
-                return;
-            }
+            // 前回と同じ値か（初回は「前回」が無いので必ず違う扱いにする）
+            var sameValue =
+                _hasEvaluated && string.Equals(_lastEvaluatedValue, allowedHosts, StringComparison.Ordinal);
 
-            // <b>2 本は互いに独立させる（レビュー指摘）。</b> そのまま並べると、
-            // 1 本目の書き込みが失敗しただけで 2 本目が<b>一度も試されない</b> ——
-            // 起動時は普通そのあと再読み込みが来ないので、"*; b.example.test" のような
-            // 値では「一致しえない項目がある」という別の事実がプロセスの生涯にわたって
-            // 失われる（運用者には一般的な検査失敗のエラーしか見えない）。
-            // 片方の失敗をもう片方の道連れにしない。
+            // 同じ値で、しかも前回どちらも出し切れていたなら、何も出さずに戻る
+            if (sameValue && !_permissiveFailed && !_deadEntryFailed) return;
+
+            // <b>「値が変わった」と「前回失敗した分の出し直し」を分けて扱う（レビュー指摘）。</b>
+            // 失敗した分だけを retry するのが要点で、両端の壊れ方を同時に避けられる:
+            //   - 失敗しても値を覚えてしまう …… その警告はプロセスの生涯にわたって失われる。
+            //   - 失敗したら値を覚えない …… 失敗が続く限り<b>成功したほうの警告まで</b>
+            //     再読み込みのたびに出し直され、「本当に緩めた瞬間の 1 本」が
+            //     同じ文面の山に埋もれる（重複抑止を置いた理由そのものが崩れる）。
+            // 値は必ず覚え、<b>出せなかった側だけ</b>を次回の対象として持ち越す。
+
+            // <b>2 本は互いに独立させる。</b> そのまま並べると、1 本目の書き込みが
+            // 失敗しただけで 2 本目が<b>一度も試されない</b> ——起動時は普通そのあと
+            // 再読み込みが来ないので、"*; b.example.test" のような値では
+            // 「一致しえない項目がある」という別の事実が永久に失われる。
             var failures = new List<Exception>();
 
-            // 「絞ったつもりで全部通る」形を拾う(1 本目)
-            try
+            // 値が変わったか、前回 1 本目を出せていなければ、1 本目を出す
+            if (!sameValue || _permissiveFailed)
             {
-                // 全許可なら原因を添えて警告する
-                ReportPermissiveValue(allowedHosts);
-            }
-            catch (Exception ex)
-            {
-                // 握り潰さず貯めておく（下でまとめて投げ直す）
-                failures.Add(ex);
+                // 「絞ったつもりで全部通る」形を拾う(1 本目)
+                _permissiveFailed = TryReport(() => ReportPermissiveValue(allowedHosts), failures);
             }
 
-            // 「並べたつもりで一部が通らない」形を拾う(2 本目)
-            try
+            // 値が変わったか、前回 2 本目を出せていなければ、2 本目を出す
+            if (!sameValue || _deadEntryFailed)
             {
-                // 一致しえない項目があれば項目ごとの理由を添えて警告する
-                ReportNeverMatchingEntries(allowedHosts);
-            }
-            catch (Exception ex)
-            {
-                // こちらの失敗も貯めておく
-                failures.Add(ex);
+                // 「並べたつもりで一部が通らない」形を拾う(2 本目)
+                _deadEntryFailed = TryReport(() => ReportNeverMatchingEntries(allowedHosts), failures);
             }
 
-            // どちらかが失敗していたら、覚えずに投げ直す ——
-            // <b>覚えないことが retry になる</b>（次の再読み込みで両方とも評価し直される。
-            // 成功したほうが 2 度出るだけで、失われるよりは良い＝過剰に出す側）
-            if (failures.Count > 0) throw new AggregateException(failures);
-
-            // <b>覚えるのは出し終えてから。</b> 先に覚えると、出力の途中で例外が出た値が
-            // 「評価済み」として残り、<b>同じ値での再読み込みでは黙る</b> ——
-            // 警告が永久に失われる側の壊れ方になる。後で覚えれば、失敗した値は
-            // 次の再読み込みでもう一度評価され、最悪でも同じ警告が 2 度出るだけ
-            // （過剰に出す＝安全側。この判定が一貫して取っている向き）。
+            // <b>値は成否によらず覚える。</b> 出せなかった側は上の旗が持ち越すので、
+            // 「覚えないことで retry する」必要が無くなった（以前はそうしていたため、
+            // 失敗が続くと成功したほうの警告まで毎回出し直されていた）
             _lastEvaluatedValue = allowedHosts;
             // 以降は「前回の値がある」状態になる
             _hasEvaluated = true;
+
+            // 出せなかったものがあれば、呼び出し側（Program.cs の CheckAllowedHosts）へ伝える。
+            // <b>握り潰さない</b>ぶんは向こうが記録する ——ここで黙ると、
+            // 警告が出ていないのが「問題が無い」のか「出せなかった」のか区別できなくなる
+            if (failures.Count > 0) throw new AggregateException(failures);
+        }
+    }
+
+    /// <summary>
+    /// 1 本分の警告を出し、失敗したらその例外を貯めて「出せなかった」と返す。
+    /// </summary>
+    /// <remarks>
+    /// <b>2 本で同じ形を書き写さないために切り出してある。</b> 片方にだけ
+    /// 持ち越しの旗を付け忘れる変更が通ると、その 1 本だけが retry されなくなる（§6 DRY）。
+    /// </remarks>
+    /// <param name="report">1 本分の警告を出す処理。</param>
+    /// <param name="failures">失敗を貯める入れ物。</param>
+    /// <returns>出せなかったなら <c>true</c>（次回に持ち越す）。</returns>
+    private static bool TryReport(Action report, List<Exception> failures)
+    {
+        // 出力先が落ちていることがあるので、失敗しても呼び出し側の流れは止めない
+        try
+        {
+            // 1 本分を出す
+            report();
+            // 出せたので持ち越さない
+            return false;
+        }
+        catch (Exception ex)
+        {
+            // 握り潰さず貯めておく（上でまとめて投げ直す）
+            failures.Add(ex);
+            // 出せなかったので次回へ持ち越す
+            return true;
         }
     }
 

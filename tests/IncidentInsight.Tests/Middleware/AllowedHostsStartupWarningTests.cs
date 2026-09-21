@@ -571,9 +571,15 @@ public class AllowedHostsStartupWarningTests
         // <b>本命 1。</b> 「再検査が失敗した」事実そのものが残っていること
         Assert.Contains(CheckFailureMarker, fallback);
 
-        // <b>本命 2。</b> 元の失敗（なぜ再検査が失敗したか）も一緒に残っていること ——
-        // 出力先が落ちた理由だけを書くと、肝心の事実がどこにも残らない
-        Assert.Contains(FailingSinkExceptionMessage, fallback);
+        // <b>本命 2。</b> 元の失敗（なぜ検査が失敗したか）も一緒に残っていること ——
+        // 出力先が落ちた理由だけを書くと、肝心の事実がどこにも残らない。
+        //
+        // <b>目印は「元の失敗にしか現れない文字列」にする。</b> 落とした本文を例外へ
+        // 載せてあるので、1 本目の警告の書き込みで落ちた例外だけが
+        // PermissiveWarningMarker を含む ——記録できなかった理由のほうは
+        // 「検査に失敗した」という別の本文なので含まない。
+        // 共通の文言で照合すると、元の失敗を落とす変更を 1 つも検出しない
+        Assert.Contains(PermissiveWarningMarker, fallback);
     }
 
     // <b>評価済みとして覚えるのは、出し終えた後であること（レビュー指摘）。</b>
@@ -609,6 +615,34 @@ public class AllowedHostsStartupWarningTests
 
         // <b>本命。</b> 失われたはずの警告が、次の再読み込みで出ていること
         Assert.Contains(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+    }
+
+    // <b>片方が出せない状態が続いても、出せたほうを何度も出し直さないこと（レビュー指摘）。</b>
+    //
+    // 「失敗したら値を覚えない」形にすると、失敗が続く限り<b>成功したほうの警告まで</b>
+    // 再読み込みのたびに出し直される ——設定のどこを直しても再読み込みは鳴るので、
+    // 「本当に緩めた瞬間の 1 本」が同じ文面の山に埋もれ、重複抑止を置いた理由そのものが崩れる。
+    // 値は必ず覚え、<b>出せなかった側だけ</b>を次回の対象として持ち越す。
+    [Fact]
+    public void APersistentlyFailingWarning_DoesNotRepeatTheOneThatSucceeded()
+    {
+        // <b>2 本とも出る値</b>で、2 本目（一致しえない項目）の書き込みだけが
+        // いつも失敗する状況で起動する ——ワイルドカードで 1 本目、区切りのうしろの
+        // 空白で 2 本目が出る（片方しか出ない値だと、この検査は何も見ていないことになる）
+        using var fixture = new WarningCapturingFixture(
+            "*; b.example.test",
+            failLoggingWhen: message => message.Contains(DeadEntryWarningMarker));
+
+        // 起動時に 1 本目が 1 本だけ出ていること
+        Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>同じ値のまま</b>再読み込みを 2 回起こす（設定のどこを直しても鳴る形）。
+        // 2 本目は出せないままなので、毎回 retry されて毎回失敗する
+        fixture.ReloadAllowedHosts("*; b.example.test");
+        fixture.ReloadAllowedHosts("*; b.example.test");
+
+        // <b>本命。</b> 出せているほうの 1 本目が積み増されていないこと
+        Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
     }
 
     // <b>未設定のまま起動したら 1 本目を出すこと（レビュー指摘）。</b>
@@ -882,7 +916,10 @@ public class AllowedHostsStartupWarningTests
             if (failWhen is not null && failWhen(message))
             {
                 // 実際の出力先が落ちたときと同じく、書き込みの呼び出しから例外を投げる
-                throw new InvalidOperationException(FailingSinkExceptionMessage);
+                // <b>どの書き込みで落ちたかを例外へ載せる。</b> 載せないと、最後の手段が
+                // 書く 2 つの例外（元の失敗と、記録できなかった理由）が<b>同じ文面</b>になり、
+                // 「元の失敗も一緒に出す」という規則を検査で区別できない（レビュー指摘）
+                throw new InvalidOperationException($"{FailingSinkExceptionMessage} message={message}");
             }
 
             // 溜め込む

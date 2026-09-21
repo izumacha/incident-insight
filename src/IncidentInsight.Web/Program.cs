@@ -368,6 +368,51 @@ if (!app.Environment.IsDevelopment())
         app.Environment.EnvironmentName,
         () => app.Configuration["AllowedHosts"]);
 
+    // 診断（AllowedHosts の検査）の失敗を、<b>絶対に例外を通さずに</b>記録する。
+    //
+    // <b>呼び出し口が 2 つあるので 1 か所に寄せてある</b>（検査そのものの失敗と、
+    // 再読み込みの購読を張れなかった失敗）。書き写すと、片方にだけ守りが残る形になる ——
+    // 実際レビューで「購読側の catch が素の LogError を呼んでいる」と指摘された（§6 DRY）。
+    void ReportDiagnosticFailure(Exception failure, string message)
+    {
+        // まずは通常のログへ残す
+        try
+        {
+            // 失敗の事実と例外を、文脈付きで記録する
+            app.Logger.LogError(failure, "{Message}", message);
+        }
+        catch (Exception loggingFailure)
+        {
+            // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
+            // ここから投げると起動が失敗するか、ファイル監視のスレッドまで例外が戻り、
+            // 設定ファイルに触れただけでプロセスが落ちる ——このはしごを
+            // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
+            //
+            // <b>元の失敗（failure）も必ず一緒に出す。</b> 出力先が落ちた理由
+            // （loggingFailure）だけを書くと、<b>肝心の「検査が失敗した」事実が
+            // どこにも残らない</b> ——運用者は docs/security.md の
+            // 「2 本とも出ていないことの確認」をきれいなログで通してしまい、
+            // 絞り込みが緩んだ可能性に気づけない。
+            try
+            {
+                // 元の失敗と、記録できなかった理由の両方を出す
+                Console.Error.WriteLine(
+                    message + " The failure could not be logged. Original failure: " + failure
+                    + " | Logging failure: " + loggingFailure);
+            }
+            catch (Exception)
+            {
+                // <b>意図して何もしない（§6 の「空の catch」の唯一の例外）。</b>
+                // ここは「通常のログ」も「標準エラー」も落ちている状態で、
+                // <b>残せる先がもう 1 つも無い</b>。それでも投げないのは、
+                // 投げた先が起動処理か設定ファイルの監視スレッドで、
+                // <b>診断を残せないという理由だけでアプリが止まる</b>ことになるから
+                // （§9「例外時はクラッシュではなく機能を縮退して継続する」）。
+                // 握り潰しているのは「記録の失敗」であって、業務上の失敗ではない。
+            }
+        }
+    }
+
     // <b>検査で例外を出さない（§9 fail-safe）。</b> 呼び出し口は 2 つあり、
     // どちらも「診断のための警告がアプリを止める」形になってはいけない:
     //   - 起動時 …… ログの出力先が落ちていると、警告を書けないだけで<b>起動そのものが失敗</b>する。
@@ -393,50 +438,10 @@ if (!app.Environment.IsDevelopment())
         catch (Exception ex)
         {
             // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
-            try
-            {
-                // 失敗の事実を、通常のログとして残す
-                app.Logger.LogError(
-                    ex,
-                    "Failed to check AllowedHosts. The permissive/never-matching warnings may " +
-                    "be stale until the next configuration reload (issue #64).");
-            }
-            catch (Exception loggingFailure)
-            {
-                // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
-                // ここから投げると起動が失敗するか、ファイル監視のスレッドまで例外が戻り、
-                // 設定ファイルに触れただけでプロセスが落ちる ——この try/catch を
-                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
-                //
-                // <b>元の失敗（ex）も必ず一緒に出す。</b> 出力先が落ちた理由
-                // （loggingFailure）だけを書くと、<b>肝心の「AllowedHosts の検査が
-                // 失敗した」事実がどこにも残らない</b> ——運用者は docs/security.md の
-                // 「2 本とも出ていないことの確認」をきれいなログで通してしまい、
-                // 絞り込みが緩んだ可能性に気づけない。
-                // <b>この 1 行自身も守る（レビュー指摘）。</b> 標準エラーが満杯の
-                // ボリュームを指していたり、テストのように差し替えられた受け皿が
-                // 落ちていたりすると、ここからも例外が出る ——そのとき
-                // 「必ず戻る」という、この入れ子を置いた目的が成り立たなくなる。
-                try
-                {
-                    // 元の失敗（ex）と、記録できなかった理由（loggingFailure）を両方出す
-                    Console.Error.WriteLine(
-                        "Failed to check AllowedHosts, and the failure could not be logged. "
-                        + "The permissive/never-matching warnings may be stale until the next "
-                        + "configuration reload (issue #64). Original failure: " + ex
-                        + " | Logging failure: " + loggingFailure);
-                }
-                catch (Exception)
-                {
-                    // <b>意図して何もしない（§6 の「空の catch」の唯一の例外）。</b>
-                    // ここは「通常のログ」も「標準エラー」も落ちている状態で、
-                    // <b>残せる先がもう 1 つも無い</b>。それでも投げないのは、
-                    // 投げた先が起動処理か設定ファイルの監視スレッドで、
-                    // <b>診断を残せないという理由だけでアプリが止まる</b>ことになるから
-                    // （§9「例外時はクラッシュではなく機能を縮退して継続する」）。
-                    // 握り潰しているのは「記録の失敗」であって、業務上の失敗ではない。
-                }
-            }
+            ReportDiagnosticFailure(
+                ex,
+                "Failed to check AllowedHosts. The permissive/never-matching warnings may " +
+                "be stale until the next configuration reload (issue #64).");
         }
     }
 
@@ -468,8 +473,12 @@ if (!app.Environment.IsDevelopment())
     catch (Exception ex)
     {
         // 握り潰さず、何が縮退したのかまで残す（§6）——
-        // このとき起動時の 1 回だけは下で検査されるが、以降の再読み込みは拾えない
-        app.Logger.LogError(
+        // このとき起動時の 1 回だけは下で検査されるが、以降の再読み込みは拾えない。
+        // <b>記録も同じはしごを通す（レビュー指摘）。</b> ここで素の LogError を呼ぶと、
+        // 出力先が落ちている状況で<b>この catch 自体が起動を止める</b> ——
+        // 「警告を配線できないというだけでアプリが起動しない」を避けるために
+        // 置いた catch が、まさにその形になる
+        ReportDiagnosticFailure(
             ex,
             "Failed to subscribe to configuration reloads for AllowedHosts. The permissive/" +
             "never-matching warnings will only reflect the value seen at startup (issue #64).");

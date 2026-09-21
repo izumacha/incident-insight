@@ -285,6 +285,10 @@ public class SecurityHeadersMiddlewareTests
     // 値そのものの性質を見る(手がかりを変えるのが要点)。
     // 保存できる時間を延ばす向きに効く指示の接頭辞。
     // max-age だけを見ると、共有キャッシュへは s-maxage が優先されるため素通りする
+    // キャッシュ期間の上限（1 日）。版付きでない lib/ の更新が利用者へ届くまでの最長時間。
+    // <b>定数にしてあるのは、見る対象が 2 つあるから</b>（定数側の検査と、文書の走査）
+    private const int MaxCacheLifetimeSeconds = 24 * 60 * 60;
+
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
 
@@ -341,6 +345,40 @@ public class SecurityHeadersMiddlewareTests
             // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
             AssertNotLongLived(directives, $"docs/security.md の `{match.Value}`");
         }
+
+        // <b>整った書き方だけを見ていては足りない（レビュー指摘）。</b> 上の走査は
+        // バッククォートで囲まれた指示しか拾わないので、囲まずに書いた囮
+        // （"添付ファイル配信は public,max-age=31536000,immutable を名乗ります。"）は
+        // 素通りする ——実測で 10 件すべて緑のまま通った。守りたいのは
+        // 「文書が長期・immutable を名乗らないこと」であって、<b>書式ではない</b>。
+        //
+        // そこで<b>禁じている綴りそのもの</b>を、囲みの有無を問わず走査する。
+        // 期間の値は、囲まれていてもいなくても同じ形で現れる
+        foreach (Match lifetime in Regex.Matches(
+            securityDoc, @"(?<name>max-age|s-maxage|stale-while-revalidate|stale-if-error)\s*=\s*(?<seconds>\d+)",
+            RegexOptions.IgnoreCase))
+        {
+            // 秒数として読み取る（この走査は数字にしか当たらないので必ず読める）
+            var seconds = int.Parse(lifetime.Groups["seconds"].Value);
+
+            // 上限は定数側と同じ 1 日（規則の値を 2 か所へ書き写さないため定数を使う）
+            Assert.True(
+                seconds <= MaxCacheLifetimeSeconds,
+                $"docs/security.md が長すぎるキャッシュ期間を載せています({lifetime.Value})。"
+                    + "囲みの有無にかかわらず、文書は長期のキャッシュ指示を名乗りません"
+                    + "(wwwroot/lib 配下は版を付けずに参照されているため)。");
+        }
+
+        // immutable が<b>指示の並びの一部として</b>現れていないこと。
+        //
+        // <b>語そのものを禁じてはいけない。</b> この文書は「長期・`immutable` にはしません」と
+        // 説明のために正しく使っており、一律に禁じると<b>正しい記述で赤くなる</b>
+        // （そういう検出網はいずれ緩められる）。カンマで他の指示とつながった形だけを見る
+        Assert.False(
+            Regex.IsMatch(securityDoc, @"[A-Za-z0-9-]\s*,\s*immutable|immutable\s*,\s*[A-Za-z0-9-]", RegexOptions.IgnoreCase),
+            "docs/security.md が immutable を含むキャッシュ指示を載せています。"
+                + "版付きでない wwwroot/lib 配下を参照しているため、immutable を名乗ると"
+                + "脆弱性修正後も古いファイルを消す手段が無くなります。");
     }
 
     /// <summary>キャッシュ指示の文字列を、指示ごとに分ける。</summary>
@@ -391,7 +429,7 @@ public class SecurityHeadersMiddlewareTests
             // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
             // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
             Assert.True(
-                seconds <= 24 * 60 * 60,
+                seconds <= MaxCacheLifetimeSeconds,
                 $"キャッシュ期間が長すぎます({directive}／{source})。"
                     + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
                     + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
