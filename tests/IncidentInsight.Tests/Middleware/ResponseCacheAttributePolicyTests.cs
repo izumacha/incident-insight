@@ -1000,7 +1000,9 @@ public class ResponseCacheAttributePolicyTests
             entries,
             approvedDirectories,
             approvedRootFiles,
-            approvedExtensions);
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false);
 
         // 落ちるのは 4 件で、入力の順に並ぶこと
         Assert.Equal(
@@ -1055,7 +1057,9 @@ public class ResponseCacheAttributePolicyTests
             entries,
             approvedDirectories,
             approvedRootFiles,
-            approvedExtensions));
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false));
     }
 
     // 「中を見ない入れ物か」の判定が、登録した入れ物だけに当たること。
@@ -1133,7 +1137,9 @@ public class ResponseCacheAttributePolicyTests
             entries,
             approvedDirectories,
             approvedRootFiles,
-            approvedExtensions);
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false);
 
         // 落ちるのは 3 件で、入力の順に並ぶこと
         Assert.Equal(
@@ -1264,11 +1270,11 @@ public class ResponseCacheAttributePolicyTests
 
         // 区別する表での判定結果を取り出す
         var strictResult = FindUnapprovedStaticAssets(
-            entries, strict.Directories, strict.RootFiles, strict.Extensions);
+            entries, strict.Directories, strict.RootFiles, strict.Extensions, _ => false);
 
         // 無視する表での判定結果も取り出す
         var lenientResult = FindUnapprovedStaticAssets(
-            entries, lenient.Directories, lenient.RootFiles, lenient.Extensions);
+            entries, lenient.Directories, lenient.RootFiles, lenient.Extensions, _ => false);
 
         // <b>空振り検出（レビュー指摘）。</b> 「2 つが等しい」だけを見ると、判定が常に空を
         // 返すようになっても等しいまま通る ——この入力は必ず違反を生むので、それを確かめる
@@ -1752,10 +1758,20 @@ public class ResponseCacheAttributePolicyTests
         // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
         RepairKind.AuditContentsBeforeAligning =>
             "そろえる先が「中を見ない入れ物」(CDN の取得物など、中身を 1 件ずつ承認していない"
-                + "入れ物)のものがあります。綴りをそろえると その中身は検査の対象から外れ 、"
+                + "入れ物)のものがあります。綴りをそろえると、その中身は検査の対象から外れ、"
                 + "検査は緑になるのに public,max-age=3600 で配られ続けます。"
                 + "そろえる前に、中身が公開してよいものかを 1 件ずつ確かめ、"
-                + "PHI を含みうるものは wwwroot の外へ移してください。",
+                + "PHI を含みうるものは wwwroot の外へ移してください。"
+                // <b>こぼれ出た中身の種類を表へ登録させない（レビュー指摘）。</b> この入れ物は
+                // 綴りが違うぶん中まで走査されるので、CDN の取得物(.map / .woff2 / 拡張子なし)が
+                // 「承認されていない種類」として大量に並ぶ。上の登録の案内をそのまま当てると
+                // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
+                // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
+                + "この入れ物は綴りが違うぶん中まで走査されるため、その中身も未承認として"
+                + "並びます。並んだ中身の種類を "
+                + $"{nameof(ApprovedStaticFileExtensions)} へ登録して黙らせないでください"
+                + "(種別の登録はすべての入れ物に効くので、検出網が一斉に広がります)。"
+                + "先にこの入れ物の扱いを決めてから、残りを確認してください。",
         // 足し忘れを黙って通さない(案内の無い失敗文言を出さない)
         _ => throw new NotSupportedException($"{repair} に対応する案内がありません。"),
     };
@@ -1805,23 +1821,40 @@ public class ResponseCacheAttributePolicyTests
     /// 静的資産の承認表を、<b>表の名前つきで</b>すべて並べる。
     /// </summary>
     /// <remarks>
-    /// 表そのものに掛ける検査（理由が書かれているか・大小衝突が無いか・比較器が
+    /// <para>表そのものに掛ける検査（理由が書かれているか・大小衝突が無いか・比較器が
     /// 大小を区別するか）が同じ並びを必要とするので、1 か所から配る。
-    /// 各検査が並びを書き写すと、表を足したときに<b>片方だけが取り残される</b>（§6 DRY）。
+    /// 各検査が並びを書き写すと、表を足したときに<b>片方だけが取り残される</b>（§6 DRY）。</para>
+    ///
+    /// <para><b>手書きの包含リストにしない（レビュー指摘）。</b> 名前を並べる形にすると、
+    /// 5 つ目の表を足した人が登録を忘れたときに<b>その表だけが黙って照合から外れ</b>、
+    /// 登録済みどうしは一致し続けるので全件緑のまま通る（このファイルは
+    /// <c>ViewModelFlagScreens</c> でまったく同じ形の穴を記録している）。
+    /// この型が持つ「名前 → 理由」の静的な表をリフレクションで導けば、
+    /// 足した表は何もしなくても検査に入る。</para>
     /// </remarks>
-    /// <returns>表の名前と中身の組。</returns>
+    /// <returns>表の名前と中身の組（名前順）。</returns>
     private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
-        StaticAssetTables() =>
-    [
-        // 承認済みの入れ物
-        (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
-        // 中を見ない入れ物
-        (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
-        // 直下に置いてよいファイル
-        (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
-        // 入れ物の中に置いてよい種類
-        (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
-    ];
+        StaticAssetTables()
+    {
+        // この型が自分で宣言している静的なフィールドをすべて見る
+        var tables = typeof(ResponseCacheAttributePolicyTests)
+            .GetFields(BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            // 「名前 → 理由」の形の表だけを拾う(承認表はすべてこの形)
+            .Where(field => field.FieldType == typeof(IReadOnlyDictionary<string, string>))
+            // 読み手に分かる並びにする(宣言順はリフレクションでは保証されない)
+            .OrderBy(field => field.Name, StringComparer.Ordinal)
+            // 表の名前と中身の組にする
+            .Select(field => (
+                field.Name,
+                Entries: (IReadOnlyDictionary<string, string>)field.GetValue(null)!))
+            .ToList();
+
+        // 1 つも導けないなら走査が壊れている(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.NotEmpty(tables);
+
+        // 導いた組をそのまま返す
+        return tables;
+    }
 
     /// <summary>
     /// 承認表の中で、<b>大小だけが違うキーの組</b>を集める（判定の純粋関数）。
@@ -1858,12 +1891,19 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="table">名前を承認する表。</param>
     /// <param name="relativePath">判定する資産の相対パス。</param>
     /// <param name="missingCause">表に無かったときの理由（入れ物か直下のファイルかで変わる）。</param>
+    /// <param name="alignTargetIsOpaque">
+    /// そろえる先が「中を見ない入れ物」かを返す判定。<b>渡されるのは承認表側の綴り</b>
+    /// （実際に置かれている名前ではない）——そろえた<b>あと</b>にどうなるかを見るため。
+    /// 直下のファイルには中を見ない入れ物が無いので <c>_ =&gt; false</c> を渡す。
+    /// <b>既定値を持たせない</b>: 省略できると、渡し忘れた呼び出しが黙って
+    /// 「ただ綴りをそろえてください」という危ない案内へ戻る（§9 fail-closed）。
+    /// </param>
     /// <returns>承認されていなければその 1 件、承認されていれば <c>null</c>。</returns>
     private static UnapprovedStaticAsset? ClassifyByName(
         IReadOnlyDictionary<string, string> table,
         string relativePath,
         UnapprovedCause missingCause,
-        Func<string, bool>? alignTargetIsOpaque = null)
+        Func<string, bool> alignTargetIsOpaque)
     {
         // 綴りの大小を無視して承認済みの行を探す(理由は ApprovedSpellingFor の説明が正本)
         var approved = ApprovedSpellingFor(table, relativePath);
@@ -1875,7 +1915,7 @@ public class ResponseCacheAttributePolicyTests
         if (ContainsExactSpelling(table, relativePath)) return null;
 
         // そろえる先が「中を見ない入れ物」なら、直し方が危ないので別の理由で報告する
-        var cause = alignTargetIsOpaque?.Invoke(approved) == true
+        var cause = alignTargetIsOpaque(approved)
             ? UnapprovedCause.MiscasedOpaqueContainer
             : UnapprovedCause.MiscasedApprovedAsset;
 
@@ -2111,13 +2151,16 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="approvedDirectories">承認済みの入れ物の表。</param>
     /// <param name="approvedRootFiles"><c>wwwroot</c> 直下に置いてよいファイル名の表。</param>
     /// <param name="approvedExtensions">承認済みのファイル種別の表。</param>
+    /// <param name="isOpaqueDirectory">
+    /// その入れ物が「中を見ない入れ物」かを返す判定（<see cref="ClassifyByName"/> へ渡す）。
+    /// </param>
     /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
     private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
         IEnumerable<StaticAssetEntry> entries,
         IReadOnlyDictionary<string, string> approvedDirectories,
         IReadOnlyDictionary<string, string> approvedRootFiles,
         IReadOnlyDictionary<string, string> approvedExtensions,
-        Func<string, bool>? isOpaqueDirectory = null)
+        Func<string, bool> isOpaqueDirectory)
     {
         // 承認されていなかったものを順に積む入れ物
         var unapproved = new List<UnapprovedStaticAsset>();
@@ -2146,8 +2189,12 @@ public class ResponseCacheAttributePolicyTests
             if (!entry.RelativePath.Contains('/'))
             {
                 // 直下は名前そのもので 1 件ずつ承認する(理由は表の docstring を参照)
+                // 直下のファイルに「中を見ない入れ物」は無いので、常に false を渡す
                 var verdict = ClassifyByName(
-                    approvedRootFiles, entry.RelativePath, UnapprovedCause.UnapprovedRootFile);
+                    approvedRootFiles,
+                    entry.RelativePath,
+                    UnapprovedCause.UnapprovedRootFile,
+                    _ => false);
 
                 // 承認されていなければ、返ってきた 1 件をそのまま積む
                 if (verdict is not null) unapproved.Add(verdict.Value);

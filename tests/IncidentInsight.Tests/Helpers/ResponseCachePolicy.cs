@@ -161,7 +161,6 @@ public static class ResponseCachePolicy
         // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
