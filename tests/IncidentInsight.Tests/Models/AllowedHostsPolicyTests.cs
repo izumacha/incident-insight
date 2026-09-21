@@ -925,7 +925,7 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>角括弧の中身に「Host ヘッダーが運べない文字」があれば、囲んであっても死んでいる。</b>
     // HostString は ] を含む値を中身を問わずホスト部として受け取るので、この判定が無いと
-    // 警告が 1 本も出ない（実測値は IsUnusableBracketedSpelling の docstring が正本）
+    // 警告が 1 本も出ない（実測値は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
     [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
@@ -946,8 +946,15 @@ public class AllowedHostsPolicyTests
     // 運用者がタイプミスの空白を外すと 0.0.0.0 ＝全許可（issue #64）になっていた
     [InlineData("a.example.test;0.0.0 .0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // ワイルドカードにならない側も、黙らずに名指しされること
-    // （前後の空白の警告に従って直した先が、無警告のまま 400 になるのを防ぐ）
-    [InlineData("a.example.test;www.example .test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // （前後の空白の警告に従って直した先が、無警告のまま 400 になるのを防ぐ）。
+    // <b>理由は空白専用のものを名乗る（レビュー指摘）</b> ——NotABareHostname の文面は
+    // 「角括弧で囲んでも直らない」と案内するので、空白が原因の項目に付けると事実と逆になる
+    [InlineData("a.example.test;www.example .test", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
+    // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
+    // 「角括弧で囲んでも直らない」と言ってはいけない
+    [InlineData("a.example.test; ::1", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    [InlineData("a.example.test;::1 ", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
         string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
     {

@@ -695,7 +695,7 @@ public class HostFilteringShortCircuitTests
     // どの Host とも一致しえない。**この harness（TestServer）は Kestrel を通さないため
     // 同じ Host が 200 で通る**ので、ここでその Host を送って確かめることはできない
     // ——だから囲んだ側は<b>判定が名指しできているか</b>で押さえる
-    // （Kestrel の実測値は AllowedHostsPolicy.IsUnusableBracketedSpelling の docstring が正本）。
+    // （Kestrel の実測値は AllowedHostsPolicy.ContainsSpellingAHostHeaderCannotCarry の docstring が正本）。
     //
     // 判定側だけで固定すると、写している相手（フレームワークの切り出し）が変わったときに
     // 気づけないので、囲んだあとも 400 のままであることは実際の HTTP で押さえる。
@@ -746,7 +746,7 @@ public class HostFilteringShortCircuitTests
         // 「素の IPv6 でなければ死んでいる」と書くと<b>実際には一致する項目</b>を
         // 「消してよい」と案内する側へ倒れる。見逃す側を選んでいるぶん、
         // <b>運用者をここへ誘導しないことが唯一の守り</b>になる
-        // ——それがこの検査の本題（理由は IsUnusableBracketedSpelling の docstring が正本）
+        // ——それがこの検査の本題（理由は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
         Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(listWithBracketed));
 
         // <b>だから、タイプミスの側を IPv6 リテラルと名乗らない。</b>

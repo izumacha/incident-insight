@@ -462,6 +462,18 @@ public static class AllowedHostsPolicy
             return DeadEntryReason.SurroundingWhitespace;
         }
 
+        // <b>前後以外に空白が残っている項目は、空白専用の理由で名乗る（レビュー指摘）。</b>
+        // 正規化は角括弧を補うので空白は内側へ移りうる（" ::1" → "[ ::1]"）。
+        // ここを下の NotABareHostname へ落とすと、文面が
+        // 「素の IPv6 リテラルではない・角括弧で囲んでも直らない」と<b>事実と逆</b>のことを
+        // 言い出す —— " ::1" の正しい直し方は、まさに空白を外して "[::1]" と書くこと。
+        // しかも「余分なコロンを書くな」に従うと IPv6 のコロンを消すことになる
+        if (normalized.Any(char.IsWhiteSpace))
+        {
+            // 空白が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.WhitespaceInsideEntry;
+        }
+
         // ホスト部の直後がコロンなら、落とされたのは<b>実際にポート部</b>
         // （"a.test:8080" ・ "a.test:" ・ "a.test:abc" がこの形）
         if (normalized.StartsWith(comparable + PortSeparator, StringComparison.Ordinal))
@@ -705,6 +717,20 @@ public static class AllowedHostsPolicy
 
         /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
         UnbracketedIpv6Literal,
+
+        /// <summary>
+        /// 前後以外の場所に空白が残っている（<c>Host</c> ヘッダーは空白を運べない）。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SurroundingWhitespace"/> と分けてあるのは、<b>直し方の案内が違う</b>から。
+        /// あちらは「前後を落とせ」で済むが、こちらは正規化が角括弧を補った結果
+        /// 空白が<b>内側へ移った</b>形（<c>" ::1"</c> → <c>"[ ::1]"</c>）や、
+        /// 途中に空白のある形（<c>"www.example .test"</c>）を含むため、
+        /// 「どこにある空白も落とせ」と言う必要がある。
+        /// <see cref="NotABareHostname"/> へ落とすと、その文面が
+        /// 「角括弧で囲んでも直らない」と<b>事実と逆</b>のことを案内してしまう。
+        /// </remarks>
+        WhitespaceInsideEntry,
 
         /// <summary>
         /// 素のホスト名になっていない（ポートでも IPv6 リテラルでもない綴り）。
@@ -1189,6 +1215,14 @@ public static class AllowedHostsPolicy
             DeadEntryReason.UnbracketedIpv6Literal =>
                 "this is an IPv6 literal without brackets, but a Host header always carries one "
                 + "in brackets, so the two can never be equal — write it as '[::1]'",
+
+            // 空白はどこにあっても運べないので、「1 つ残らず落とせ」とだけ言う
+            DeadEntryReason.WhitespaceInsideEntry =>
+                "a Host header cannot carry whitespace, and host filtering compares it against "
+                + "the entry exactly as written, so the two can never be equal — remove every "
+                + "space from this entry (note that host filtering rewrites a bare IPv6 literal "
+                + "into brackets, so a leading space ends up inside them: ' ::1' becomes "
+                + "'[ ::1]'; write it as '[::1]')",
 
             // 原因を言い当てられない綴り ——<b>断定せず、直し方だけを案内する</b>
             DeadEntryReason.NotABareHostname =>
