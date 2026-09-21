@@ -387,11 +387,17 @@ public class SecurityHeadersMiddlewareTests
         // 1 つも読み取れないのは、書き方が変わったか検査が壊れたか ——どちらも落とす
         Assert.NotEmpty(documented);
 
+        // 実際に確かめた指示を控えておく（下の「空振りしていないか」の照合に使う）
+        var examined = new List<string>();
+
         // 1 件ずつ確かめる
         foreach (Match match in documented)
         {
             // 「実際に名乗る」と述べている文だけを見る（反例や禁止の記述は対象外）
             if (!IsAffirmativeClaim(securityDoc, match.Index)) continue;
+
+            // 確かめた 1 件として控える
+            examined.Add(match.Groups["value"].Value.Trim());
 
             // その指示を分解する
             var directives = SplitDirectives(match.Groups["value"].Value.Trim());
@@ -399,6 +405,15 @@ public class SecurityHeadersMiddlewareTests
             // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
             AssertNotLongLived(directives, $"docs/security.md の `{match.Value}`");
         }
+
+        // <b>「1 件も確かめていない」状態を落とす（レビュー指摘）。</b>
+        // 肯定の判定が何かの拍子にすべてを弾くと、この検査は<b>何も assert しないまま
+        // 緑になる</b> ——実際、否定語を箇条書き全体から探していたときは
+        // 説明文の「上書きしません」等が拒否権を持ち、文書のすべての名乗りが
+        // 対象から外れていた（実測）。手がかりを変えて、<b>兄弟の検査が固定している
+        // 静的アセットの指示</b>が確かめた中にあることを見る ——この 1 件は
+        // 文書に必ず載っている（載っていなければ兄弟の検査が先に落ちる）。
+        Assert.Contains(SecurityHeadersMiddleware.StaticAssetCacheControl, examined);
 
         // <b>整った書き方だけを見ていては足りない（レビュー指摘）。</b> 上の走査は
         // バッククォートで囲まれた指示しか拾わないので、囲まずに書いた囮
@@ -608,36 +623,75 @@ public class SecurityHeadersMiddlewareTests
         return at < doc.Length && doc[at] == ',';
     }
 
-    /// <summary>その一致が「実際に名乗る」と述べている箇条書きの中にあるかを見る。</summary>
+    /// <summary>その一致が「実際に名乗る」と述べているかを見る。</summary>
     /// <remarks>
-    /// <b>行ではなく箇条書きの単位で見る（レビュー指摘）。</b> 行だけを見ていたため、
-    /// <b>この文書自身がすでに使っている折り返し</b>（動詞が次の行へ回る書き方）では
-    /// 肯定の目印が見つからず、3 つの走査すべてがその名乗りを読み飛ばしていた ——
-    /// 実際、既存の <c>no-store</c> の名乗りが対象から外れており、
-    /// 「2 件とも確かめた」つもりで 1 件しか見ていなかった。
-    /// 折り返した囮を置けば、長期・<c>immutable</c> の名乗りを載せたまま全件緑になる。
+    /// <para><b>見るのは「一致より後ろ・同じ箇条書きの中」だけ。</b> 文書は
+    /// 「`Cache-Control: …` を名乗ります」の語順で書かれるので、名乗りの動詞は
+    /// 必ず指示のうしろに来る。空白と改行は落としてから探す ——この文書は
+    /// 動詞の手前で行を折る書き方を実際に使っており、落とさないと
+    /// 「を名乗」の 3 文字が改行とインデントで分断されて見つからない。</para>
+    ///
+    /// <para><b>否定は目印の直後だけを見る（レビュー指摘）。</b> 箇条書き全体から
+    /// 否定語を探す形にしたところ、<b>説明文に自然に現れる否定</b>
+    /// （「振り分けません」「上書きしません」「にはしません」）が拒否権を持ってしまい、
+    /// <b>この文書のすべての名乗りが対象から外れて検査が 1 つも走らなくなっていた</b>
+    /// （実測。走っていたのは「1 件は読めた」という前提の確認だけ）。
+    /// 「を名乗」は「を名乗<b>りません</b>」の一部でもある、という 1 点だけが問題なので、
+    /// 見るのは目印の<b>直後の数文字</b>に限る。</para>
+    ///
+    /// <para><b>残っている境界</b>: 動詞を指示より手前に置く語順
+    /// （「次の指示を名乗ります: `Cache-Control: …`」）は拾えない。
+    /// 綴りを足して埋めようとせず、その書き方が実際に出たら手がかりごと見直す。</para>
     /// </remarks>
     /// <param name="doc">文書全体。</param>
     /// <param name="index">一致の開始位置。</param>
-    /// <returns>肯定的な名乗りの箇条書きの中なら <c>true</c>。</returns>
+    /// <returns>肯定的に名乗っているなら <c>true</c>。</returns>
     private static bool IsAffirmativeClaim(string doc, int index)
     {
-        // その一致が載っている箇条書き 1 つ分を切り出し、<b>空白と改行を落としてから</b>見る。
-        //
-        // <b>落とさないと折り返しで目印が割れる。</b> この文書は動詞の手前で行を折る
-        // 書き方（"… を\n  名乗ります"）を実際に使っており、そのままだと
-        // 「を名乗」という 3 文字が改行とインデントで分断されて見つからない
-        // ——箇条書き単位にしただけでは、折り返した名乗りを読み飛ばしたままになる（実測）。
-        // 日本語の地の文に意味のある空白は無いので、落とす代償は無い。
-        var bullet = RemoveWhitespace(EnclosingBullet(doc, index));
+        // その一致が載っている箇条書きの、一致より後ろだけを空白抜きで見る
+        var following = RemoveWhitespace(FollowingTextInBullet(doc, index));
 
-        // 「そうしない」と述べている箇条書きは、反例なので対象にしない
-        if (NegatedClaimMarkers.Any(marker => bullet.Contains(marker, StringComparison.Ordinal))) return false;
+        // 肯定の目印を 1 つずつ確かめる
+        foreach (var marker in AffirmativeClaimMarkers)
+        {
+            // その目印が後ろに現れるか
+            var at = following.IndexOf(marker, StringComparison.Ordinal);
+            // 現れなければ次の目印へ
+            if (at < 0) continue;
 
-        // 肯定的な名乗りの目印が 1 つでもあれば、その箇条書きは「実際に名乗る」と述べている
-        return AffirmativeClaimMarkers.Any(marker => bullet.Contains(marker, StringComparison.Ordinal));
+            // 目印の直後の数文字（ここに否定の結びが来る）
+            var tailStart = at + marker.Length;
+            // 文字列の終わりを超えないようにする
+            var tail = following[tailStart..Math.Min(tailStart + NegationLookahead, following.Length)];
+
+            // 否定で結ばれていれば、これは反例なので次の目印へ
+            if (NegatedClaimMarkers.Any(n => tail.Contains(n, StringComparison.Ordinal))) continue;
+
+            // 否定で結ばれていない肯定の目印が見つかった
+            return true;
+        }
+
+        // 肯定的な名乗りは見つからなかった
+        return false;
     }
 
+    // 目印の直後、否定の結びを探す長さ（「りません」「しません」が収まる幅）。
+    // <b>広げない</b> ——広げるほど、同じ箇条書きの別の文にある否定を拾って
+    // 肯定の名乗りを取り消してしまう（実測でそうなっていた）
+    private const int NegationLookahead = 6;
+
+    /// <summary>指定位置から、その箇条書きの終わりまでを切り出す。</summary>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">切り出しの開始位置。</param>
+    /// <returns>一致より後ろ・同じ箇条書きの中の文字列。</returns>
+    private static string FollowingTextInBullet(string doc, int index)
+    {
+        // その位置を含む箇条書きの範囲を求める
+        var (_, end) = BulletBounds(doc, index);
+
+        // 一致の位置から箇条書きの終わりまでを返す
+        return doc[index..end];
+    }
 
     /// <summary>空白と改行をすべて取り除く（折り返しで目印が割れないようにするため）。</summary>
     /// <param name="text">元の文字列。</param>
@@ -646,47 +700,54 @@ public class SecurityHeadersMiddlewareTests
         // 空白でない文字だけをつなぎ直す
         string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
 
-    /// <summary>指定位置を含む箇条書き 1 つ分を切り出す。</summary>
+    /// <summary>指定位置を含む箇条書きの範囲（開始・終了の文字位置）を求める。</summary>
     /// <remarks>
-    /// 境目は行頭の <c>"- "</c>（<see cref="StaticAssetCachingBullet"/> と同じ規則）。
-    /// 箇条書きの外（地の文）にある一致は、その行だけを返す。
+    /// <b>箇条書きの境目の規則はここ 1 か所に置く（レビュー指摘）。</b> 同じ規則
+    /// （行頭の <c>"- "</c> で区切る）を 2 か所へ書き写すと、文書が別の記号の
+    /// 箇条書きへ変わったときに片方だけが直り、もう片方は<b>無関係な範囲</b>を
+    /// 見たまま静かに誤分類する（§6 DRY）。
+    /// 箇条書きの外（地の文）にある位置は、その行だけを範囲として返す。
     /// </remarks>
     /// <param name="doc">文書全体。</param>
     /// <param name="index">含めたい位置。</param>
-    /// <returns>切り出した範囲。</returns>
-    private static string EnclosingBullet(string doc, int index)
+    /// <returns>箇条書きの開始位置と、終了位置（終端は含まない）。</returns>
+    private static (int Start, int End) BulletBounds(string doc, int index)
     {
-        // 行へ分ける（境目は行頭の "- " で決まる）
-        var lines = doc.Split('\n');
+        // その位置を含む行の先頭を探す
+        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
 
-        // 位置を含む行が何行目かを数える
-        var lineIndex = 0;
-        // 消費した文字数（改行 1 文字ぶんを含める）
-        var consumed = 0;
-        // 位置を含む行に当たるまで進める
-        while (lineIndex < lines.Length - 1 && consumed + lines[lineIndex].Length < index)
+        // そこから上へたどって、箇条書きの先頭（行頭の "- "）を探す
+        var start = lineStart;
+        // 先頭に当たるか、文書の先頭に着くまで戻る
+        while (start > 0 && !IsBulletStart(doc, start))
         {
-            // その行と改行 1 文字ぶんを消費する
-            consumed += lines[lineIndex].Length + 1;
-            // 次の行へ
-            lineIndex++;
+            // 1 つ前の行の先頭へ
+            start = doc.LastIndexOf('\n', start - 2) + 1;
         }
 
-        // その行から上へたどって、箇条書きの先頭を探す
-        var start = lineIndex;
-        // 行頭が "- " の行に当たるまで戻る
-        while (start > 0 && !lines[start].StartsWith("- ", StringComparison.Ordinal)) start--;
-        // 箇条書きの外（地の文）なら、位置を含む行だけを見る
-        if (!lines[start].StartsWith("- ", StringComparison.Ordinal)) start = lineIndex;
+        // 箇条書きの外（地の文）なら、その行だけを範囲にする
+        if (!IsBulletStart(doc, start)) start = lineStart;
 
         // 次の箇条書きの手前（または文書の末尾）までが 1 つ分
-        var end = start + 1;
-        // 次の "- " に当たるまで進める
-        while (end < lines.Length && !lines[end].StartsWith("- ", StringComparison.Ordinal)) end++;
+        var end = doc.IndexOf('\n', index);
+        // 次の行から順に、箇条書きの先頭に当たるまで進める
+        while (end >= 0 && end + 1 < doc.Length && !IsBulletStart(doc, end + 1))
+        {
+            // さらに次の改行へ
+            end = doc.IndexOf('\n', end + 1);
+        }
 
-        // 切り出した範囲を 1 本の文字列に戻して返す
-        return string.Join('\n', lines[start..end]);
+        // 改行が見つからなければ文書の末尾まで
+        return (start, end < 0 ? doc.Length : end);
     }
+
+    /// <summary>その位置が箇条書きの先頭（行頭の <c>"- "</c>）かを見る。</summary>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">行の先頭位置。</param>
+    /// <returns>箇条書きの先頭なら <c>true</c>。</returns>
+    private static bool IsBulletStart(string doc, int index) =>
+        // 行頭が "- " で始まっているか
+        index + 1 < doc.Length && doc[index] == '-' && doc[index + 1] == ' ';
 
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
     /// <remarks>
