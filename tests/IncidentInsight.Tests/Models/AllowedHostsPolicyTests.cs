@@ -1023,13 +1023,23 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test; *", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
-    [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>素の "::" はワイルドカードではない（実測）。</b> AllowedHosts="::" は本物の
+    // Kestrel ＋ HostFiltering でどのホストも 400（全許可なのは "[::]" のほう）。
+    // 直すと全許可になる、と名指しするのは<b>事実と違う</b>ので、ここは IPv6 の理由で名乗る
+    // ——その文面の「'[::1]' と書け」に従うと "[::]" ＝全許可になりうるので、
+    // 文面の側にワイルドカードの注意を入れてある
+    [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
     // <b>空白が角括弧の内側へ移っても、ワイルドカードの警告から外れないこと（レビュー指摘）。</b>
     // 正規化は括弧を補うので " ::" は "[ ::]" になる。直した結果を Trim() だけで見ていた頃は
     // 内側の空白が残って [::] と一致せず、この項目だけが<b>ごく普通の「実ホスト名へ直せ」</b>の
     // 案内になっていた ——従って空白を外すと :: ＝全ホスト許可（issue #64）で、
     // <b>空白 1 つで専用警告が有害な案内に入れ替わる</b>形だった
-    [InlineData("a.example.test; ::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>数え上げの出発点は「運用者が書いた綴り」（レビュー指摘）。</b> 正規化は括弧を
+    // 補うので " ::" は "[ ::]" になるが、運用者が空白を外して着地するのは "::" ＝全拒否。
+    // 正規化後から数え上げていた頃は「[::] ＝全許可になる」と事実と違うことを言っていた
+    [InlineData("a.example.test; ::", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>運用者が角括弧を書いていれば、話は逆になる。</b> "[ ::]" の空白を外すと "[::]" ＝
+    // 実測で全ホスト許可なので、こちらは専用の理由で名乗る
     [InlineData("a.example.test;[ ::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;[:: ]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>角括弧が無くても、途中の空白は運べない（レビュー指摘）。</b>
@@ -1064,11 +1074,11 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;http://0.0.0.0:5000", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;http://0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
-    [InlineData("a.example.test;::/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;::/0", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
     // <b>直し方が 2 つ以上要る綴りも、専用警告のほうが勝つこと（レビュー指摘）。</b>
     // 1 つずつ別々に当てていた頃は、これらが WildcardOnceRepaired から外れ、
     // <b>ワイルドカードの注意を持たない文面</b>が付いていた（従うと全許可）
-    [InlineData("a.example.test; ::%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test; ::%20", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
     [InlineData("a.example.test;http://0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;%0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;//0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
@@ -1111,7 +1121,13 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;http:0.0.0.0::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>末尾のポートだけを外す直し方も要る（レビュー指摘）。</b> ":::8080" は
     // netstat が IPv6 の待受を表示する形で、最初のコロンで切る直し方では届かない
-    [InlineData("a.example.test;:::8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;:::8080", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>逆に、角括弧の後ろに付いたゴミは専用の理由で名乗ること。</b> "[::]:abc" は
+    // ポートの位置を落とすと "[::]" ＝全許可。最初のコロンで切る手も、末尾が数字のときだけ
+    // 外す手も、この形には届かない
+    [InlineData("a.example.test;[::]:abc", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>先頭に紛れた区切りのコロンも同じ。</b> ":[::]" の先頭を削ると "[::]" ＝全許可
+    [InlineData("a.example.test;:[::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // 逆に、素の IPv6 リテラル（"::1" ・ "fe80::1"）の末尾をポートと読み違えないことは、
     // 上の UnbracketedIpv6Literal のケースがそのまま固定している（重複して書かない）
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
@@ -1144,6 +1160,10 @@ public class AllowedHostsPolicyTests
     [InlineData("[::ffff:192.168.0.1]")]
     // 省略しない書き方
     [InlineData("[0:0:0:0:0:0:0:1]")]
+    // <b>IPv6 として読めない中身でも、角括弧が 1 組なら生きている（実測で 200）。</b>
+    // この 1 件が無いと、括弧の判定へ「中身が IPv6 か」を足す変異が全件緑のまま通り、
+    // <b>実際には一致する項目</b>に「消してよい」と案内する側（見逃しより重い誤り）へ倒れる
+    [InlineData("[a:b]")]
     public void BracketedPlainIpv6Literals_AreStillTreatedAsLive(string entry)
     {
         // 実ホスト名と併記する（片方が生きている、いちばん紛らわしい形）

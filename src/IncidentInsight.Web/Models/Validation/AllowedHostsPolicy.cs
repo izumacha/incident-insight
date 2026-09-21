@@ -442,7 +442,11 @@ public static class AllowedHostsPolicy
 
         // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
         // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
-        if (RepairsToWildcard(normalized))
+        // <b>数え上げの出発点は「運用者が書いた綴り」（レビュー指摘）。</b>
+        // 正規化そのものが角括弧を<b>補う</b>ので（" ::" → "[ ::]"）、正規化後から始めると
+        // 「空白を外すと [::] ＝全許可」という<b>運用者が実際にはしない直し</b>を数えてしまう。
+        // 実際に書き直されるのは生の綴りのほうで、" ::" の空白を外すと "::" ＝全拒否になる
+        if (RepairsToWildcard(entry))
         {
             // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
             return DeadEntryReason.WildcardOnceRepaired;
@@ -698,41 +702,39 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>落とすのは前後の空白だけでは足りない（レビュー指摘）。</b>
     /// 正規化は角括弧を<b>補う</b>ので、空白は<b>括弧の内側へ移りうる</b> ——
-    /// <c>" ::"</c>（区切りのうしろに空白を入れた一覧で、<c>ASPNETCORE_URLS</c> から
-    /// 写す <c>0.0.0.0</c> の IPv6 版）は <c>"[ ::]"</c> になる。
-    /// <c>Trim()</c> だけだと内側の空白が残って <c>[::]</c> と一致せず、
+    /// <c>"[ ::]"</c>（運用者が角括弧を書いた一覧の、区切りのうしろに空白が入った形）は
+    /// 空白が括弧の内側に残る。<c>Trim()</c> だけだと <c>[::]</c> と一致せず、
     /// <b>この項目だけがワイルドカードの警告から外れる</b>。
     /// そのとき付くのは「この項目を実ホスト名へ直せ」という<b>ごく普通の案内</b>で、
-    /// 従って空白を外すと <c>::</c> ＝全ホスト許可（issue #64）——
+    /// 従って空白を外すと <c>[::]</c> ＝全ホスト許可（issue #64）——
     /// 空白 1 つで、いちばん危ない形の専用警告が<b>有害な案内</b>に入れ替わる。
     /// 空白をすべて落としてから見れば、この抜け道は綴りに依存せず閉じる
     /// （落として初めてワイルドカードになる項目だけが影響を受けるので、
     /// 実ホスト名を誤って名指しすることは無い）。</para>
+    ///
+    /// <para><b>角括弧を書いていない <c>" ::"</c> は、これに当たらない（レビュー指摘）。</b>
+    /// 正規化は <c>"[ ::]"</c> を作るが、<b>運用者が空白を外して着地するのは <c>"::"</c></b>
+    /// で、実測ではそれはワイルドカードではない（理由は
+    /// <see cref="IsWildcardEntry"/> の remarks が正本）。だから数え上げの出発点は
+    /// 正規化後ではなく<b>運用者が書いた綴り</b>にしてある。</para>
     /// </remarks>
-    /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns>案内どおりに直したあとの綴り（直し方が複数あるので複数返る）。</returns>
-    private static RepairClosure RepairedSpellings(string normalized) =>
-        // 本番の上限で数え上げる（上限を変えて呼べるのはテスト用の入口だけ）
-        RepairedSpellings(normalized, MaxRepairedSpellings);
-
-    /// <summary>上限を指定して「直したら何になるか」を数え上げる。</summary>
-    /// <remarks>
-    /// 上限を引数に取るのは、<b>打ち切りの配線をテストから通せるようにする</b>ため。
-    /// 本番の上限（<see cref="MaxRepairedSpellings"/>）は実在しうる綴りでは届かない値なので、
+    ///
+    /// <para><b>上限を引数に取るのは、打ち切りの配線をテストから通せるようにするため。</b>
+    /// 本番の上限（<see cref="MaxRepairedSpellings"/>）は実在しうる綴りでは届きにくい値なので、
     /// 固定したままだと「数え上げ側が打ち切りをどう伝えるか」が一度も走らず、
     /// <b>旗を立てるのをやめても全件緑のまま</b>になる（実測）。
-    /// 判定そのものは <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> が持つ。
+    /// 判定そのものは <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> が持つ。</para>
     /// </remarks>
-    /// <param name="normalized">正規化済みの項目。</param>
+    /// <param name="entry">運用者が書いた綴り（正規化前）。</param>
     /// <param name="limit">数え上げの上限。</param>
     /// <returns>候補と、上限で打ち切ったかどうか。</returns>
-    private static RepairClosure RepairedSpellings(string normalized, int limit)
+    private static RepairClosure RepairedSpellings(string entry, int limit)
     {
         // 既に出た綴り（最初は正規化済みの項目そのもの）
-        var seen = new HashSet<string>(StringComparer.Ordinal) { normalized };
+        var seen = new HashSet<string>(StringComparer.Ordinal) { entry };
 
         // これから 1 手ずつ広げる綴りの待ち行列
-        var pending = new Queue<string>(new[] { normalized });
+        var pending = new Queue<string>(new[] { entry });
 
         // 突き合わせに使う形（ホスト部）にした候補
         var spellings = new List<string>();
@@ -743,8 +745,8 @@ public static class AllowedHostsPolicy
             // 次に広げる綴りを 1 つ取り出す
             var current = pending.Dequeue();
 
-            // 取り出した綴りを、突き合わせに使われる形にして控える
-            spellings.Add(ComparableSpelling(current));
+            // 取り出した綴りを<b>そのまま</b>控える（判定側がフレームワークと同じ正規化を掛ける）
+            spellings.Add(current);
 
             // どの直し方も 1 手ずつ試し、初めて出た綴りだけを待ち行列へ足す
             foreach (var step in RepairSteps)
@@ -758,7 +760,8 @@ public static class AllowedHostsPolicy
 
             // <b>上限に達したら、数え上げきれなかったことを旗で持って返す（レビュー指摘）。</b>
             // 以前は「候補を何件返したか」で打ち切りを見分けていたが、1 回の取り出しで
-            // 最大 8 件が <c>seen</c> へ積まれる一方 <c>spellings</c> は 1 件しか増えないため、
+            // 1 回の取り出しで<b>手の数だけ</b> <c>seen</c> へ積まれる一方
+            // <c>spellings</c> は 1 件しか増えないため、
             // <b>打ち切った時点の件数は上限より必ず少ない</b>。判定側の
             // 「件数が上限に達していたら打ち切り」は<b>一度も成り立たず</b>、
             // 打ち切った項目は「ワイルドカードは見つからなかった」として扱われていた
@@ -800,6 +803,10 @@ public static class AllowedHostsPolicy
         AfterBareScheme,
         // 末尾の ":ポート番号" だけを外す（":::8080" → "::"）
         WithoutTrailingPort,
+        // 突き合わせに使われるホスト部だけを書く（"[::]:abc" → "[::]"）
+        HostPartUnlessItAddsBrackets,
+        // 先頭に紛れた区切りのコロンを落とす（":[::]" → "[::]"）
+        TrimLeadingColons,
     };
 
     /// <summary>数え上げた候補と、上限で打ち切ったかどうか。</summary>
@@ -863,6 +870,64 @@ public static class AllowedHostsPolicy
         return false;
     }
 
+    /// <summary>先頭に紛れたコロンを落とす（<c>":[::]"</c> → <c>"[::]"</c>）。</summary>
+    /// <remarks>
+    /// <para>区切り記号を打ち間違えた一覧（<c>"a.test:[::]"</c> を <c>";"</c> で割った残り）は
+    /// 先頭にコロンが残る。運用者はそれを削るので、その着地先も候補に入れる ——
+    /// <c>":[::]"</c> の着地先は <c>"[::]"</c> ＝全ホスト許可（issue #64）。</para>
+    ///
+    /// <para><b>以前はこの形も警告できていたが、理由が間違っていた。</b>
+    /// 候補を<see cref="ComparableSpelling">ホスト部</see>で作っていた頃は、
+    /// 途中に現れる <c>"::"</c> が <c>"[::]"</c> へ化けることで<b>たまたま</b>当たっていた。
+    /// その化けは実測と食い違う（素の <c>::</c> はワイルドカードではない）ので直したが、
+    /// そのときこの綴りが巻き添えで警告を失った。<b>正しい理由で当て直す</b>のがこの手。</para>
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>先頭のコロンを落とした綴り。</returns>
+    private static string TrimLeadingColons(string value) =>
+        // 先頭に続くコロンだけを落とす（中身には触れない）
+        value.TrimStart(':');
+
+    /// <summary>
+    /// 「突き合わせに使われるホスト部だけを書く」直し方
+    /// ——ただし<b>角括弧を足す方向には働かせない</b>。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>ホスト部の切り出しは、良い直し方のモデルでもある。</b>
+    /// <c>":[::]"</c>（区切りのゴミが前に付いた形）の <c>":"</c> を落とすのは運用者が
+    /// 実際にする直しで、着地先は <c>"[::]"</c> ＝全ホスト許可（issue #64）。
+    /// これを候補に入れないと、そういう綴りが<b>ワイルドカードの注意を失う</b>（実測）。</para>
+    ///
+    /// <para><b>ただし括弧を「足した」だけの形は候補にしない。</b>
+    /// <see cref="ComparableSpelling"/> は <c>"::"</c> を <c>"[::]"</c> にするが、
+    /// 実測では<b>素の <c>::</c> はワイルドカードではない</b>（<c>AllowedHosts="::"</c> は
+    /// どのホストも 400。理由は <see cref="IsWildcardEntry"/> の remarks が正本）。
+    /// 運用者が <c>" ::"</c> の空白を外して着地するのは <c>"::"</c> であって
+    /// <c>"[::]"</c> ではないので、ここで括弧を足すと
+    /// <b>名指しした項目について事実と違うこと</b>を言うことになる。
+    /// そこで<b>元の綴りに角括弧が無いのに出力に現れた</b>ときだけ、その候補を採らない。</para>
+    ///
+    /// <para><b>「閉じ括弧の後ろを落とす」専用の手は置いていない。</b>
+    /// 一度は <c>"[::]:abc"</c>（末尾が数字でないので
+    /// <see cref="WithoutTrailingPort"/> が外せず、<see cref="TruncateAtFirstColon"/> は
+    /// 括弧の中のコロンで切ってしまう形）のために足したが、ここのホスト部の切り出しが
+    /// 同じ結果を返すため<b>9,549 通りの綴りで 1 件も結果が変わらなかった</b>（実測）。
+    /// どのテストにも守られない手は、読み手に守られていると誤解させるだけなので置かない（§6）。</para>
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>ホスト部（括弧を足すだけの形になるなら元の綴り）。</returns>
+    private static string HostPartUnlessItAddsBrackets(string value)
+    {
+        // フレームワークが Host と突き合わせるときのホスト部
+        var host = ComparableSpelling(value);
+
+        // 元に角括弧が無いのに出力へ現れたなら、それは運用者が書く直しではない
+        if (!value.Contains('[') && host.Contains('[')) return value;
+
+        // それ以外は、ホスト部だけを書いた形を候補にする
+        return host;
+    }
+
     /// <summary>角括弧を 1 つ残らず落とす（対になっていない括弧を消す直し方のモデル）。</summary>
     /// <remarks>
     /// 対になっていない角括弧（<c>"[0.0.0.0"</c>）は運用者が「余計な括弧を消す」直し方を
@@ -917,7 +982,7 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>打ち切りは件数から推測せず、数え上げた側が旗で伝える（レビュー指摘）。</b>
     /// 以前は「返ってきた候補の件数が上限に達していたら打ち切り」と見ていたが、
-    /// 1 回の取り出しで最大 9 件が内部の集合へ積まれる一方、返る候補は 1 件しか増えないため、
+    /// 1 回の取り出しで<b>手の数だけ</b>内部の集合へ積まれる一方、返る候補は 1 件しか増えないため、
     /// <b>打ち切った時点の件数は必ず上限より少ない</b>。その条件は一度も成り立たず、
     /// 打ち切った項目は静かに「ワイルドカードは見つからなかった」側へ落ちていた（実測）。</para>
     ///
@@ -932,7 +997,34 @@ public static class AllowedHostsPolicy
     /// <returns>ワイルドカードに当たった、または打ち切られて判断できないなら <c>true</c>。</returns>
     public static bool RepairsToWildcard(IEnumerable<string> repairedSpellings, bool truncated) =>
         // 打ち切っていたら判断できないので警告する側、そうでなければ実際に当たったかどうか
-        truncated || repairedSpellings.Any(spelling => Wildcards.Contains(spelling, StringComparer.Ordinal));
+        truncated || repairedSpellings.Any(IsWildcardEntry);
+
+    /// <summary>その綴りを項目として書いたら、全ホスト許可になるかを返す。</summary>
+    /// <remarks>
+    /// <para><b>ホスト部ではなく、<see cref="TryNormalizeEntry">項目の正規化</see>で見る
+    /// （レビュー指摘）。</b> 全許可かどうかを決めるのはフレームワークの
+    /// <c>IsTopLevelWildcard</c> で、それが見るのは <c>HostString.ToUriComponent()</c> を
+    /// 通した値。<see cref="ComparableSpelling"/>（<c>HostString.Host</c>）とは<b>結果が違う</b>:
+    /// <c>"::"</c> は前者では <c>"::"</c> のまま、後者では <c>"[::]"</c> になる。</para>
+    ///
+    /// <para><b>実測（本物の Kestrel ＋ HostFiltering）。</b>
+    /// <c>AllowedHosts="[::]"</c> ・ <c>"0.0.0.0"</c> ・ <c>"*"</c> は別ホストを 200 で受けるが、
+    /// <c>AllowedHosts="::"</c> は<b>どのホストも 400</b>（<c>" ::"</c> ・ <c>"[ ::]"</c> ・
+    /// <c>"::/0"</c> も同じ）。つまり<b>素の <c>::</c> はワイルドカードではない</b>。
+    /// ホスト部の綴りで突き合わせていた頃は、<c>" ::"</c> の空白を外すと
+    /// <c>"[::]"</c> ＝全許可になると<b>事実と違うこと</b>を名指しして言っていた
+    /// （実際に着地するのは <c>"::"</c> ＝全拒否。倒れる向きは安全側でも、
+    /// issue #256 が名指しした誤りと同じ形）。</para>
+    ///
+    /// <para>正規化できない綴りはワイルドカードとは呼べないので <c>false</c>
+    /// （その項目は <see cref="PermissiveReason.UnparsableEntry"/> 側が拾う）。</para>
+    /// </remarks>
+    /// <param name="spelling">直したあとの綴り（正規化前）。</param>
+    /// <returns>項目として書くと全ホスト許可になるなら <c>true</c>。</returns>
+    private static bool IsWildcardEntry(string spelling) =>
+        // フレームワークと同じ正規化を通してから、3 つのワイルドカードの綴りと突き合わせる
+        TryNormalizeEntry(spelling, out var normalized)
+        && Wildcards.Contains(normalized, StringComparer.Ordinal);
 
     /// <summary>「直したら何になるか」を数え上げる上限。</summary>
     /// <remarks>
@@ -973,9 +1065,12 @@ public static class AllowedHostsPolicy
     /// <b>最初の</b>コロンで切るのでこの形には届かない。</para>
     ///
     /// <para><b>素の IPv6 リテラルを巻き添えにしない。</b> <c>"::1"</c> の末尾も
-    /// 「コロン＋数字」の形をしているので、一見すると
-    /// <c>"::1"</c> → <c>"::"</c>（全ホスト許可）へ倒れそうに見える。
-    /// そうはならないのは、<b>外すときに最後のコロンごと落とす</b>から ——
+    /// 「コロン＋数字」の形をしているので、一見すると <c>"::1"</c> → <c>"::"</c> へ
+    /// 倒れそうに見える（<b>なお素の <c>"::"</c> はワイルドカードではない</b> ——
+    /// 実測で <c>AllowedHosts="::"</c> はどのホストも 400。以前ここは
+    /// 「全ホスト許可」と書いており、<b>存在しない危険</b>を理由に門番を勧めていた。
+    /// 理由は <see cref="IsWildcardEntry"/> の remarks が正本）。
+    /// そもそもそう倒れないのは、<b>外すときに最後のコロンごと落とす</b>から ——
     /// <c>"::1"</c> の最後のコロンは 2 文字目なので、残るのは <c>":"</c> であって
     /// <c>"::"</c> ではない。<c>"fe80::1"</c> は <c>"fe80:"</c>、
     /// <c>"0:0:0:0:0:0:0:1"</c> は <c>"0:0:0:0:0:0:0"</c> になる。
@@ -1736,7 +1831,10 @@ public static class AllowedHostsPolicy
             // 項目はトリムされないので、前後の空白がそのまま綴りの一部になっている
             DeadEntryReason.SurroundingWhitespace =>
                 "host filtering does not trim entries, so the surrounding whitespace is part of "
-                + "the entry and no Host header can ever equal it",
+                + "the entry and no Host header can ever equal it"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
 
             // Host ヘッダー側はポートを落としてから比べられるので、コロンから先がある項目は
             // 一致しえない。<b>「ポートを含む」と断定しない（レビュー指摘）</b> ——
@@ -1753,7 +1851,10 @@ public static class AllowedHostsPolicy
             // Host ヘッダーの IPv6 リテラルは必ず角括弧付きで届くので、括弧なしは一致しえない
             DeadEntryReason.UnbracketedIpv6Literal =>
                 "this is an IPv6 literal without brackets, but a Host header always carries one "
-                + "in brackets, so the two can never be equal — write it as '[::1]'",
+                + "in brackets, so the two can never be equal — write it as '[::1]'"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
 
             // 空白はどこにあっても運べないので、「1 つ残らず落とせ」とだけ言う
             DeadEntryReason.WhitespaceInsideEntry =>
@@ -1761,7 +1862,10 @@ public static class AllowedHostsPolicy
                 + "the entry exactly as written, so the two can never be equal — remove every "
                 + "space from this entry (note that host filtering rewrites a bare IPv6 literal "
                 + "into brackets, so a leading space ends up inside them: ' ::1' becomes "
-                + "'[ ::1]'; write it as '[::1]')",
+                + "'[ ::1]'; write it as '[::1]')"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
 
             // URL ごと貼られた形は、ホスト名だけを書けば直る
             DeadEntryReason.UrlInsteadOfHostname =>
@@ -1781,7 +1885,10 @@ public static class AllowedHostsPolicy
                 + "write the character it stands for ('www.example%2Ecom' becomes "
                 + "'www.example.com'). Deleting only the '%' leaves a name that still never "
                 + "matches, and this warning cannot tell you so — '[fe80::1eth0]' looks healthy "
-                + "to it while Kestrel still rejects it",
+                + "to it while Kestrel still rejects it"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
 
             // 対になっていない角括弧は、消せば直るので「消せ」とだけ言う
             DeadEntryReason.UnpairedBrackets =>
