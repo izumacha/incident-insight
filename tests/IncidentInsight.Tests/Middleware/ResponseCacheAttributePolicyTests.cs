@@ -1148,6 +1148,80 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(UnapprovedCause.UnapprovedDirectory, unapproved[2].Cause);
     }
 
+    // そろえる先が「中を見ない入れ物」かどうかで、<b>原因が分かれる</b>こと。
+    //
+    // <b>なぜ要るのか（変異で実測）。</b> 原因を分ける判定を潰しても、合成入力で文面だけを
+    // 見ているテストは通り続けた ——判定が死んだまま、`wwwroot/LIB/patients.csv` を
+    // `lib/` へ移す手順を案内する状態に戻る（検査は緑、ファイルは配られ続ける）。
+    // 実在のツリーには違反が 1 件も無いので、ここも合成入力で判定そのものを固定する。
+    [Fact]
+    public void FindUnapprovedStaticAssets_FlagsAMiscasedOpaqueContainerSeparately()
+    {
+        // 合成の承認表(中を見ない入れ物 1 つと、普通の入れ物 1 つ)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 中を見ない入れ物として下で扱うもの
+            ["lib"] = "テスト用の、中を見ない入れ物。",
+            // 中まで見る普通の入れ物
+            ["css"] = "テスト用の、中まで見る入れ物。",
+        };
+
+        // 合成の直下ファイル表(この検査では使わないので空)
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 合成の拡張子表(この検査では使わないので空)
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 大小だけが違う入れ物を 2 つ(そろえる先が中を見ない側と、そうでない側)
+        var entries = new[]
+        {
+            // そろえる先が「中を見ない入れ物」(危ない直し方になる)
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // そろえる先が中まで見る入れ物(こちらは普通の大小違い)
+            new StaticAssetEntry("CSS", IsDirectory: true),
+        };
+
+        // 「lib だけが中を見ない入れ物」という合成の判定を渡す
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions,
+            name => string.Equals(name, "lib", StringComparison.Ordinal));
+
+        // 2 件とも落ちること
+        Assert.Equal(2, unapproved.Count);
+
+        // そろえる先が中を見ない入れ物のほうは、専用の原因になること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, unapproved[0].Cause);
+
+        // そろえる先が中まで見る入れ物なら、これまでどおりの原因であること
+        Assert.Equal(UnapprovedCause.MiscasedApprovedAsset, unapproved[1].Cause);
+
+        // どちらも承認表側の綴りを添えていること(案内が比べる相手を示せる)
+        Assert.Equal("lib", unapproved[0].ApprovedSpelling);
+
+        // 中まで見る側も同じく綴りを添えていること
+        Assert.Equal("css", unapproved[1].ApprovedSpelling);
+    }
+
+    // 実在の入口が、<b>実在の「中を見ない入れ物」の表</b>を判定へ渡していること。
+    //
+    // 上の検査は合成の判定を渡すので、<b>実在の入口が渡し忘れても</b>緑のまま通る
+    // （渡し忘れると既定の null になり、危ない案内へ静かに戻る）。
+    [Fact]
+    public void FindUnapprovedStaticAssets_PassesTheRealOpaqueTableThrough()
+    {
+        // 実在の「中を見ない入れ物」(lib)と大小だけが違う入れ物を 1 つ渡す
+        var unapproved = FindUnapprovedStaticAssets([new StaticAssetEntry("LIB", IsDirectory: true)]);
+
+        // 1 件だけ落ちること
+        var flagged = Assert.Single(unapproved);
+
+        // 実在の表を見ているので、専用の原因になること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, flagged.Cause);
+    }
+
     // 判定が<b>表の比較器に左右されない</b>こと。
     //
     // <b>issue #270 の本体はここ。</b> 表ごとに `Ordinal` と `OrdinalIgnoreCase` が
@@ -1260,8 +1334,24 @@ public class ResponseCacheAttributePolicyTests
         // 綴りをそろえる案内も出ること
         Assert.Contains("どちらが正しいかを確かめて", both, StringComparison.Ordinal);
 
-        // 入れ物の中身が並ぶ理由も説明すること(数十件の一覧を前に途方に暮れさせない)
-        Assert.Contains("先に入れ物の綴りをそろえてから", both, StringComparison.Ordinal);
+        // 入れ物の中身も並ぶことを説明すること(数十件の一覧を前に途方に暮れさせない)
+        Assert.Contains("その中身も未承認として並びます", both, StringComparison.Ordinal);
+
+        // <b>そろえる先が「中を見ない入れ物」のときは、別の案内が出ること（レビュー指摘・実測）。</b>
+        // 同じ「そろえてください」を出すと、`wwwroot/LIB/patients.csv` を `lib/` へ移す手順を
+        // 教えることになり、検査は緑になるのにそのファイルは配られ続ける
+        // ——失敗文言が PHI を隠す手順を案内する形そのもの
+        var opaqueTarget = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer, "lib")]);
+
+        // そろえる前に中身を確かめるよう案内すること
+        Assert.Contains("そろえる前に", opaqueTarget, StringComparison.Ordinal);
+
+        // 「そろえれば片付く」とは読めないこと(そろえると検査から外れることを明示する)
+        Assert.Contains("検査の対象から外れ", opaqueTarget, StringComparison.Ordinal);
+
+        // こちらでも表へ登録する案内は出さないこと
+        Assert.DoesNotContain(nameof(ApprovedStaticDirectories), opaqueTarget, StringComparison.Ordinal);
 
         // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
         Assert.Contains("LIB", both, StringComparison.Ordinal);
@@ -1569,6 +1659,19 @@ public class ResponseCacheAttributePolicyTests
 
         /// <summary>承認済みの資産と綴りの大小だけが違う。</summary>
         MiscasedApprovedAsset,
+
+        /// <summary>
+        /// 綴りの大小だけが違い、しかもそろえる先が<b>中を見ない入れ物</b>。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="MiscasedApprovedAsset"/> と分けるのは、<b>直し方が危ないから</b>。
+        /// そろえる先が <c>OpaqueStaticDirectories</c> の入れ物だと、綴りをそろえた瞬間に
+        /// 中身は走査の対象から外れる ——<c>wwwroot/LIB/patients.csv</c> を
+        /// <c>lib/</c> へ移すと検査は緑になるのに、そのファイルは
+        /// <c>public,max-age=3600</c> で配られ続ける（レビューが実測）。
+        /// 同じ案内を出すと、<b>失敗文言が PHI を隠す手順を教える</b>ことになる。
+        /// </remarks>
+        MiscasedOpaqueContainer,
     }
 
     /// <summary>
@@ -1581,6 +1684,11 @@ public class ResponseCacheAttributePolicyTests
 
         /// <summary>表の綴りと実際の名前の、正しいほうへそろえる。</summary>
         AlignSpelling,
+
+        /// <summary>
+        /// そろえる前に、<b>中身が公開してよいものか</b>を 1 件ずつ確かめる。
+        /// </summary>
+        AuditContentsBeforeAligning,
     }
 
     /// <summary>未承認の 1 件を、理由つきで名指しする 1 語にする。</summary>
@@ -1596,7 +1704,7 @@ public class ResponseCacheAttributePolicyTests
     private static string NameWithCause(UnapprovedStaticAsset item)
     {
         // 大小違い以外は、相対パスと理由だけで十分
-        if (item.Cause != UnapprovedCause.MiscasedApprovedAsset)
+        if (RepairFor(item.Cause) == RepairKind.RegisterInTable)
         {
             // 相対パスと理由を並べて返す
             return $"{item.RelativePath}({CauseText(item.Cause)})";
@@ -1639,8 +1747,15 @@ public class ResponseCacheAttributePolicyTests
             $"「{CauseText(UnapprovedCause.MiscasedApprovedAsset)}」ものは表へ新しい行を足さず"
                 + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
                 + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
-                + "入れ物の綴りが違う場合はその中身も未承認として並ぶので、"
-                + "先に入れ物の綴りをそろえてから残りを確認してください。",
+                + "入れ物の綴りが違う場合はその中身も未承認として並びます。",
+        // そろえる先が中を見ない入れ物のときは、<b>そろえる前に</b>中身を確かめる。
+        // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
+        RepairKind.AuditContentsBeforeAligning =>
+            "そろえる先が「中を見ない入れ物」(CDN の取得物など、中身を 1 件ずつ承認していない"
+                + "入れ物)のものがあります。綴りをそろえると その中身は検査の対象から外れ 、"
+                + "検査は緑になるのに public,max-age=3600 で配られ続けます。"
+                + "そろえる前に、中身が公開してよいものかを 1 件ずつ確かめ、"
+                + "PHI を含みうるものは wwwroot の外へ移してください。",
         // 足し忘れを黙って通さない(案内の無い失敗文言を出さない)
         _ => throw new NotSupportedException($"{repair} に対応する案内がありません。"),
     };
@@ -1659,6 +1774,9 @@ public class ResponseCacheAttributePolicyTests
         UnapprovedCause.UnapprovedExtension => "承認されていない種類のファイル",
         // 承認済みの資産と綴りの大小だけが違う
         UnapprovedCause.MiscasedApprovedAsset => "承認済みの資産と綴りの大小が違う",
+        // 綴りの大小が違い、そろえる先が中を見ない入れ物
+        UnapprovedCause.MiscasedOpaqueContainer =>
+            "承認済みの資産と綴りの大小が違う(そろえる先は中を見ない入れ物)",
         // 足し忘れを黙って通さない(§9 fail-closed)
         _ => throw new NotSupportedException($"{cause} に対応する文言がありません。"),
     };
@@ -1677,6 +1795,8 @@ public class ResponseCacheAttributePolicyTests
         UnapprovedCause.UnapprovedExtension => RepairKind.RegisterInTable,
         // 大小違いは<b>表へ足さない</b> ——同じ資産を 2 度承認することになる
         UnapprovedCause.MiscasedApprovedAsset => RepairKind.AlignSpelling,
+        // そろえる先が中を見ない入れ物なら、そろえる前に中身を確かめる必要がある
+        UnapprovedCause.MiscasedOpaqueContainer => RepairKind.AuditContentsBeforeAligning,
         // 足し忘れを黙って通さない(既定の枝へ落として誤った案内を出さない)
         _ => throw new NotSupportedException($"{cause} に対応する直し方がありません。"),
     };
@@ -1742,7 +1862,8 @@ public class ResponseCacheAttributePolicyTests
     private static UnapprovedStaticAsset? ClassifyByName(
         IReadOnlyDictionary<string, string> table,
         string relativePath,
-        UnapprovedCause missingCause)
+        UnapprovedCause missingCause,
+        Func<string, bool>? alignTargetIsOpaque = null)
     {
         // 綴りの大小を無視して承認済みの行を探す(理由は ApprovedSpellingFor の説明が正本)
         var approved = ApprovedSpellingFor(table, relativePath);
@@ -1753,9 +1874,14 @@ public class ResponseCacheAttributePolicyTests
         // 綴りまで一致していれば承認済み(報告するものは無い)
         if (ContainsExactSpelling(table, relativePath)) return null;
 
+        // そろえる先が「中を見ない入れ物」なら、直し方が危ないので別の理由で報告する
+        var cause = alignTargetIsOpaque?.Invoke(approved) == true
+            ? UnapprovedCause.MiscasedOpaqueContainer
+            : UnapprovedCause.MiscasedApprovedAsset;
+
         // 見つかったが綴りの大小が違う。承認表側の綴りも添えて、
         // どちらをそろえるかは読み手に決めてもらう(表の綴りを正しいと決め打たない)
-        return new UnapprovedStaticAsset(relativePath, UnapprovedCause.MiscasedApprovedAsset, approved);
+        return new UnapprovedStaticAsset(relativePath, cause, approved);
     }
 
     /// <summary>
@@ -1972,7 +2098,8 @@ public class ResponseCacheAttributePolicyTests
             entries,
             ApprovedStaticDirectories,
             ApprovedStaticRootFiles,
-            ApprovedStaticFileExtensions);
+            ApprovedStaticFileExtensions,
+            IsOpaqueStaticDirectory);
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（判定の純粋関数）。
@@ -1989,7 +2116,8 @@ public class ResponseCacheAttributePolicyTests
         IEnumerable<StaticAssetEntry> entries,
         IReadOnlyDictionary<string, string> approvedDirectories,
         IReadOnlyDictionary<string, string> approvedRootFiles,
-        IReadOnlyDictionary<string, string> approvedExtensions)
+        IReadOnlyDictionary<string, string> approvedExtensions,
+        Func<string, bool>? isOpaqueDirectory = null)
     {
         // 承認されていなかったものを順に積む入れ物
         var unapproved = new List<UnapprovedStaticAsset>();
@@ -2002,7 +2130,10 @@ public class ResponseCacheAttributePolicyTests
             {
                 // 名前で承認する判定は直下のファイルと同じなので、共通の判定へ通す
                 var verdict = ClassifyByName(
-                    approvedDirectories, entry.RelativePath, UnapprovedCause.UnapprovedDirectory);
+                    approvedDirectories,
+                    entry.RelativePath,
+                    UnapprovedCause.UnapprovedDirectory,
+                    isOpaqueDirectory);
 
                 // 承認されていなければ、返ってきた 1 件をそのまま積む
                 if (verdict is not null) unapproved.Add(verdict.Value);

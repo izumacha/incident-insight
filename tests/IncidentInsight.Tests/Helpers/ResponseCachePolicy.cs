@@ -157,20 +157,22 @@ public static class ResponseCachePolicy
         Func<object, bool> matches)
     {
         // <b>走査全体</b>で同じ宣言を二重に返さないための記録(基底の 1 つの宣言は派生の数だけ見える)。
-        // 観測場所ごとの記録（seenHere）と対で使う ——2 つ持つ理由は EnsureNothingWasLost の説明が正本
+        // 観測場所ごとの記録（seenOnThisType / seenOnThisMethod）と対で使う ——
+        // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
-        // <b>いま見ている観測場所</b>(1 つの型 / 1 つのアクション)から見えた分だけを数える入れ物。
-        // 観測場所を移るたびに中身を空にして使い回す ——走査はアセンブリ中の全コントローラ・
-        // 全アクションを回るが、キャッシュ指示を宣言しているものはごく一部なので、
-        // 場所ごとに作ると大半が「1 度も使われない入れ物」になる(レビュー指摘)
-        var seenHere = new HashSet<string>(StringComparer.Ordinal);
 
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
-            // ここからがクラス側の観測場所なので、前の場所の記録を空にする
-            seenHere.Clear();
+            // <b>この観測場所（この型のクラス側）から見えた分だけ</b>を数える記録。
+            // <b>走査の外へ括り出して使い回さない（レビュー指摘）。</b> 括り出して Clear() で
+            // 使い回すと、観測場所ごとに空であることが<b>スコープではなく手で置いた Clear() の
+            // 位置</b>に依存する ——観測場所を 1 つ足したり途中に early-exit を挟んだりした瞬間に
+            // 前の場所のキーが残り、次の<b>ただ 1 つの宣言</b>が門番に当たって走査ごと落ちる
+            // （しかも失敗文言は当てはまらない直し方を案内する）。割り当ては、同じ場所で
+            // 既に走っているリフレクション呼び出しに比べれば無視できる
+            var seenOnThisType = new HashSet<string>(StringComparer.Ordinal);
 
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
@@ -188,7 +190,7 @@ public static class ResponseCachePolicy
                 var key = DeclarationKey($"type:{declaredOn}", attribute);
 
                 // まだ返していない宣言なら返す(判定はクラス側・アクション側で共通)
-                if (IsNewDeclaration(seenHere, seen, key, attribute))
+                if (IsNewDeclaration(seenOnThisType, seen, key, attribute))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
@@ -206,8 +208,8 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
-                // ここからがこのアクションの観測場所なので、前の場所の記録を空にする
-                seenHere.Clear();
+                // クラス側と同じ理由で、このアクションの観測場所ぶんをここで作る
+                var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
 
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
@@ -226,7 +228,7 @@ public static class ResponseCachePolicy
                         $"method:{declaredOn}(#{declaringMethod.MetadataToken})", attribute);
 
                     // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
-                    if (IsNewDeclaration(seenHere, seen, key, attribute))
+                    if (IsNewDeclaration(seenOnThisMethod, seen, key, attribute))
                     {
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
@@ -379,8 +381,9 @@ public static class ResponseCachePolicy
             $"{attribute.GetType().FullName} は AllowMultiple = true です。"
                 + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "
                 + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
-                + "キーへ位置を含める形へ変え、あわせて宣言元をたどる DeclaringTypeOf / "
-                + "DeclaringMethodOf の名指しも見直してください。");
+                + "キーへ位置を含める形へ変え、あわせて宣言元をたどる "
+                + $"{nameof(DeclaringTypeOf)} / {nameof(DeclaringMethodOf)} "
+                + "の名指しも見直してください。");
     }
 
     /// <summary>
