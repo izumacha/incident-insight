@@ -56,11 +56,20 @@ public abstract class TempDatabaseAppFixture : IDisposable
     /// <c>Factory.Services</c> を覗いても間に合わない ——受け取るには
     /// 起動前にプロバイダを登録しておく必要がある。
     /// </param>
+    /// <param name="configureReloadableSettings">
+    /// <b>稼働中に差し替えられる設定ソースを足したいテスト向けの差し込み口</b>（既定は何もしない）。
+    /// 上の <paramref name="settings"/> は <c>AddInMemoryCollection</c> で固定されるため、
+    /// 設定の再読み込み（<c>IConfigurationRoot.Reload</c> 相当）を再現できない ——
+    /// 再読み込みに追随する配線（issue #264）は、それを起こせないと<b>配線を消しても
+    /// 全件緑のまま通る</b>。ここで登録したソースは <paramref name="settings"/> より
+    /// <b>後ろ</b>に積むので、同じキーはこちらが勝つ。
+    /// </param>
     protected TempDatabaseAppFixture(
         string databaseFileNamePrefix,
         IReadOnlyDictionary<string, string?> settings,
         string environmentName = "Development",
-        Action<ILoggingBuilder>? configureLogging = null)
+        Action<ILoggingBuilder>? configureLogging = null,
+        Action<IConfigurationBuilder>? configureReloadableSettings = null)
     {
         // 他のテストと衝突しない一時 DB のパスを決める(リポジトリ内に DB を作らない)
         _databasePath = Path.Combine(
@@ -87,8 +96,10 @@ public abstract class TempDatabaseAppFixture : IDisposable
                     // 接続文字列だけはこのクラスが決める(派生側が一時 DB の場所を書き写さないため)
                     ["ConnectionStrings:DefaultConnection"] = $"Data Source={_databasePath}",
                 };
-                // メモリ上の設定ソースを最後に追加して既存設定を上書きする
+                // メモリ上の設定ソースを追加して既存設定を上書きする
                 config.AddInMemoryCollection(values);
+                // 稼働中に差し替えたいテストがあれば、さらに後ろへ積む（同じキーはこちらが勝つ）
+                configureReloadableSettings?.Invoke(config);
             });
         });
     }

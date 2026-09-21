@@ -6,6 +6,8 @@ using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Tests.Helpers;
 // ログのプロバイダを自作して差し込むために使う
 using Microsoft.Extensions.Logging;
+// 稼働中に差し替えられる設定ソースを自作するために使う
+using Microsoft.Extensions.Configuration;
 // テストフレームワーク
 using Xunit;
 
@@ -255,6 +257,89 @@ public class AllowedHostsStartupWarningTests
         Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
     }
 
+    // <b>稼働中に設定を緩めたら、警告を出し直すこと（issue #264）。</b>
+    //
+    // appsettings.json は既定で reloadOnChange: true で、HostFilteringOptions は
+    // ConfigurationChangeTokenSource 経由で再束縛される ——つまり運用中に
+    // AllowedHosts を "*" や "…;0.0.0.0" へ書き換えると、<b>ミドルウェアは即座に
+    // 全ホスト許可へ切り替わる</b>。起動時に 1 度しか評価していないと、そのとき
+    // 新しい警告は 1 本も出ないので、docs/security.md が案内する
+    // 「配備後は 2 本とも出ていないことを確認する」手順が<b>そのまま誤った安心</b>になる。
+    // "*;incident.example.com" を取りこぼしていた頃と同じ形の穴が、時間軸の方向に残っていた。
+    //
+    // <b>Staging で実際に起動して見る。</b> 警告は if (!IsDevelopment()) の中にあり、
+    // フィクスチャの既定（Development）では配線が 1 行も走らないので、
+    // 単体テストだけだと OnChange の購読を消しても全件緑のまま通る。
+    [Fact]
+    public void LooseningTheValueAtRuntime_EmitsThePermissiveWarningAgain()
+    {
+        // 正しく絞られた値で起動する（起動時には 1 本も出ない状態から始める）
+        using var fixture = new ReloadableWarningCapturingFixture("incident.example.test");
+
+        // 起動直後は 1 本目が出ていないこと
+        // （出ていると、以降の「増えたか」の検査が起動時の 1 本を見て緑になる）
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // <b>稼働中に全許可へ緩める。</b> ASPNETCORE_URLS を写すと自然に生まれる綴り
+        fixture.ReloadAllowedHosts("incident.example.test;0.0.0.0");
+
+        // <b>本命。</b> 再読み込みの後に 1 本目が出ていること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 緩めた<b>後</b>の値が載っていること ——起動時の値のまま出すと、
+        // 運用者は「どの設定について言われているのか」を取り違える
+        Assert.Contains(
+            AllowedHostsPolicy.DescribeValueForLog("incident.example.test;0.0.0.0"),
+            warning);
+    }
+
+    // 2 本目（一致しえない項目）も同じ引き金で出し直すこと。
+    //
+    // <b>片方だけを配線した状態にしない。</b> どちらの穴も運用者からは
+    // 「警告が出ていない」という同じ見た目になるので、1 本目だけ追随させると
+    // 「並べたのに一致しない」形が再読み込み後は黙ったままになる。
+    [Fact]
+    public void AddingANeverMatchingEntryAtRuntime_EmitsTheDeadEntryWarningAgain()
+    {
+        // 一致しえない項目が 1 つも無い値で起動する
+        using var fixture = new ReloadableWarningCapturingFixture("incident.example.test");
+
+        // 起動直後は 2 本目が出ていないこと
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // <b>稼働中に、区切りのうしろへ空白の入った一覧へ書き換える。</b>
+        // 一覧を書くときに自然に入る形で、実測では 2 件目だけが静かに 400 になる
+        fixture.ReloadAllowedHosts("incident.example.test; www.example.test");
+
+        // <b>本命。</b> 再読み込みの後に 2 本目が出ていること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // 一致しえない項目が "[ ]" で囲まれて名指しされていること
+        Assert.Contains("[ www.example.test]", warning);
+    }
+
+    // <b>同じ値のまま再読み込みが起きても、警告を増やさないこと。</b>
+    //
+    // 再読み込みの通知は AllowedHosts が変わっていなくても届く（設定ファイルの
+    // どこを直しても鳴り、ファイル監視は 1 度の書き込みで複数回鳴ることがある）。
+    // 毎回出すと<b>本当に緩めた瞬間の 1 本</b>が同じ文面の山に埋もれ、
+    // 「いつ緩んだか」を追えなくなる。
+    [Fact]
+    public void ReloadingWithoutChangingTheValue_DoesNotRepeatTheWarning()
+    {
+        // 全許可のまま起動する（起動時に 1 本目が出る状態）
+        using var fixture = new ReloadableWarningCapturingFixture("*");
+
+        // 起動時に 1 本出ていること（ここが 0 本だと、以降の検査が何も見ていない）
+        Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 値を変えずに再読み込みだけを起こす
+        fixture.ReloadAllowedHosts("*");
+
+        // <b>本命。</b> 1 本のままで、同じ警告が積み増されていないこと
+        Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+    }
+
     /// <summary>
     /// <c>Staging</c> としてアプリを起動し、起動中に出た警告を溜めておくフィクスチャ。
     /// </summary>
@@ -310,6 +395,121 @@ public class AllowedHostsStartupWarningTests
 
         /// <summary>起動中に出た警告（新しい順ではなく、出た順）。</summary>
         public IReadOnlyList<string> Warnings => _warnings;
+    }
+
+    /// <summary>
+    /// <c>Staging</c> として起動し、<b>稼働中に <c>AllowedHosts</c> を差し替えられる</b>フィクスチャ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>上の <see cref="WarningCapturingFixture"/> とは読み出し方が違う。</b>
+    /// あちらは起動時点の分を切り出して持つ（あとから増えた分に依存しないため）が、
+    /// ここで見たいのは<b>起動より後に増えた分</b>なので、溜め込み先をそのまま見せる。</para>
+    ///
+    /// <para><b>差し替え用のソースは基底の設定より後ろへ積む。</b> 基底が
+    /// <c>AddInMemoryCollection</c> で固定する値と同じキーを持つので、後ろでないと勝てない。</para>
+    /// </remarks>
+    private sealed class ReloadableWarningCapturingFixture : TempDatabaseAppFixture
+    {
+        // 稼働中に値を差し替え、再読み込みを起こすための設定ソース
+        private readonly ReloadableSettingsSource _settings;
+
+        // 起動後も増え続ける溜め込み先（切り出さずにそのまま見せる）
+        private readonly ConcurrentQueue<string> _captured;
+
+        /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
+        /// <param name="allowedHosts">起動時の <c>AllowedHosts</c> の値。</param>
+        public ReloadableWarningCapturingFixture(string allowedHosts)
+            // 溜め込み先と設定ソースはインスタンスごとに作り、private なコンストラクタへ渡す
+            // （基底のコンストラクタ引数からフィールドを参照できないため。理由は
+            //  WarningCapturingFixture のコメントが正本 ——static に置くと別のテストの
+            //  停止時ログが混ざり、Assert.Single が非決定的に落ちる）
+            : this(new ReloadableSettingsSource(allowedHosts), new ConcurrentQueue<string>())
+        {
+        }
+
+        /// <summary>設定ソースと溜め込み先を受け取って起動する（共有しないための経路）。</summary>
+        /// <param name="settings">稼働中に差し替えられる設定ソース。</param>
+        /// <param name="captured">このインスタンス専用の溜め込み先。</param>
+        private ReloadableWarningCapturingFixture(
+            ReloadableSettingsSource settings, ConcurrentQueue<string> captured)
+            : base(
+                "ii-hostreload",
+                // 起動時の値は差し替え可能なソース側が持つので、ここでは何も固定しない
+                new Dictionary<string, string?>(),
+                // 警告の分岐（!IsDevelopment()）へ入るために Staging で起動する
+                "Staging",
+                // 起動前に、溜め込むだけのプロバイダを登録する
+                logging => logging.AddProvider(new CapturingLoggerProvider(captured)),
+                // 差し替え用のソースを基底の設定より後ろへ積む
+                config => config.Add(settings))
+        {
+            // 受け取ったものを、差し替えと読み出しのために持っておく
+            _settings = settings;
+            // 溜め込み先はそのまま持つ（起動後に増えた分も見たいので切り出さない）
+            _captured = captured;
+
+            // <b>アプリの起動をここで強制する。</b> WebApplicationFactory は遅延生成で、
+            // Services / CreateClient に触れるまでパイプラインを組み立てない ——
+            // 触れずに溜め込み先を読むと、まだ何も出ていないので必ず空になる
+            _ = Factory.Services;
+        }
+
+        /// <summary>起動時と、その後の再読み込みで出た警告（出た順）。</summary>
+        public IReadOnlyList<string> Warnings => [.. _captured];
+
+        /// <summary>
+        /// 稼働中の設定を差し替え、設定の再読み込みを起こす。
+        /// </summary>
+        /// <remarks>
+        /// <b>ファイルを書き換えて監視の発火を待つ形にはしない。</b> それだと
+        /// 監視の遅延ぶんだけ待つことになり、待ち時間の長短で結果が変わる
+        /// （CI で時々落ちる検査は、いずれ無効化される）。設定プロバイダに
+        /// 直接「変わった」と言わせれば、<b>呼び出しから戻った時点で購読側は走り終えている</b>。
+        /// </remarks>
+        /// <param name="allowedHosts">差し替え後の <c>AllowedHosts</c> の値。</param>
+        public void ReloadAllowedHosts(string allowedHosts) => _settings.Replace(allowedHosts);
+    }
+
+    /// <summary>
+    /// <c>AllowedHosts</c> だけを持ち、稼働中に差し替えられる設定ソース。
+    /// </summary>
+    /// <param name="initialValue">起動時の値。</param>
+    private sealed class ReloadableSettingsSource(string initialValue) : IConfigurationSource
+    {
+        // 実体のプロバイダ（差し替えと通知はこちらが行う）
+        private readonly ReloadableProvider _provider = new(initialValue);
+
+        /// <summary>設定の組み立て時に、同じプロバイダを返す（差し替え先を 1 つに保つ）。</summary>
+        /// <param name="builder">組み立て中の設定ビルダー（ここでは使わない）。</param>
+        /// <returns>このソースのプロバイダ。</returns>
+        public IConfigurationProvider Build(IConfigurationBuilder builder) => _provider;
+
+        /// <summary>値を差し替え、設定の再読み込みを通知する。</summary>
+        /// <param name="allowedHosts">差し替え後の値。</param>
+        public void Replace(string allowedHosts) => _provider.Replace(allowedHosts);
+
+        /// <summary>1 つのキーだけを持ち、差し替えのたびに再読み込みを通知するプロバイダ。</summary>
+        /// <param name="initialValue">起動時の値。</param>
+        private sealed class ReloadableProvider(string initialValue) : ConfigurationProvider
+        {
+            /// <summary>設定の読み込み（起動時の値を 1 つ置くだけ）。</summary>
+            public override void Load() =>
+                // 起動時はこの 1 キーだけを持つ
+                Data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
+                {
+                    ["AllowedHosts"] = initialValue,
+                };
+
+            /// <summary>値を差し替え、購読側へ「変わった」と伝える。</summary>
+            /// <param name="allowedHosts">差し替え後の値。</param>
+            public void Replace(string allowedHosts)
+            {
+                // 保持している値を書き換える
+                Data["AllowedHosts"] = allowedHosts;
+                // 変更トークンを発火させる（HostFilteringOptions の再束縛はこれが引き金）
+                OnReload();
+            }
+        }
     }
 
     /// <summary>

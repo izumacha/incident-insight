@@ -16,6 +16,8 @@ using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 // リバースプロキシの転送ヘッダ復元(ForwardedHeaders / ForwardedHeadersOptions)
 using Microsoft.AspNetCore.HttpOverrides;
+// AllowedHosts の再束縛を引き金にするため、ホスト名フィルタの設定型を使う
+using Microsoft.AspNetCore.HostFiltering;
 // セキュリティ関連 HTTP ヘッダー(X-Frame-Options 等)を全レスポンスへ付与するミドルウェア
 using IncidentInsight.Web.Middleware;
 // ASP.NET Core Identity(認証・ユーザー管理)
@@ -345,127 +347,40 @@ if (!app.Environment.IsDevelopment())
     // 本番で AllowedHosts が全許可のままだと、Host ヘッダ偽装
     // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
     // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
-    var allowedHosts = app.Configuration["AllowedHosts"];
-    // 未設定・空・ワイルドカードを 1 つでも含むなら警告ログを出す。
-    // 判定を AllowedHostsPolicy に置いているのは、"*;incident.example.com" のように
-    // 「実ホスト名を足したつもりで全ホスト許可のまま」という綴りを取りこぼさないため。
-    // <b>見るべきは "*" だけではない</b> ——HostFiltering は "*" / "[::]" / "0.0.0.0" の
-    // いずれかが 1 つでもあれば全許可へ切り替わり、しかも判定は IDNA/NFKC 正規化の後で行う
-    // (全角の "０.０.０.０" も同じ)。ここを狭める変更は、直したばかりの穴を戻すことになる。
+    //
+    // <b>検査と文面は AllowedHostsWarningReporter が持つ。</b> ここは
+    // if (!IsDevelopment()) の中なのでテストから 1 行も走らず、書くと
+    // 「文面を反対の意味へ差し替えても全件緑」の状態に戻る(実測)。
     // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
     // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
-    // <b>「絞れていない」だけでなく、その原因まで運用者へ渡す。</b>
-    // IsPermissive が true になる経路は複数あり(未設定/空・ワイルドカード・
-    // 正規化できない綴り。<b>正本は PermissiveReason の値そのもの</b>で、
-    // ここで数えて書くと原因を足したときこの数字だけが古くなる)、
-    // 以前はどれでも「'*' か '[::]' か '0.0.0.0' を消せ」と
-    // 出していた ——値にワイルドカードが 1 つも無い綴り("0.0\t.0.0" のように
-    // 途中へ制御文字が紛れた形)では、<b>存在しないものを探させる案内</b>になり、
-    // しかも実際の症状(実測では毎リクエストが例外)とも噛み合わない。
-    // 文面の対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中で、
-    // 書くとテストから 1 行も走らないため(下の警告と同じ理由)
-    var permissiveReason = AllowedHostsPolicy.ClassifyPermissive(allowedHosts);
-    // 「絞れている」以外なら警告する(判定そのものは AllowedHostsPolicy が持つ)
-    // 警告に値するかの判断も AllowedHostsPolicy に持たせる ——ここで
-    // reason != NotPermissive と書くと規則の写しが 1 つ増え、「警告に値しない原因」を
-    // 足したときに片方だけが古い判断のまま残る(IsPermissive の docstring が禁じている形)
-    if (AllowedHostsPolicy.WarrantsWarning(permissiveReason))
-    {
-        // 運用者が気づけるよう Warning レベルで通知する
-        app.Logger.LogWarning(
-            "AllowedHosts is permissive in the {Environment} environment " +
-            "(current value: {AllowedHosts}). {Cause} " +
-            "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
-            "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
-            "behind a reverse proxy (issue #64).",
-            // 環境名を載せる ——この分岐は !IsDevelopment() なので Staging 等でも通る。
-            // "in Production" と決め打つと、Staging の設定ミスを本番の話と取り違える。
-            // <b>こちらも生のままでは載せない。</b> 環境名は ASPNETCORE_ENVIRONMENT 由来＝
-            // AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、同じ
-            // テンプレート展開やコピー & ペーストで改行が紛れうる(issue #258)
-            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
-            // 値を載せる ——"0.0.0.0" を書いた運用者が自分の設定だと気づけるように
-            // (AllowedHosts は秘密情報ではなく、配備先のホスト名そのもの)。
-            // <b>生のままでは載せない。</b> UnparsableEntry という分類がある時点でこの値には
-            // 制御文字が入りうるので、CR / LF が混ざると 1 本の警告がログ上は複数の
-            // レコードに見える ——docs/security.md が案内する「警告が出ていないことの確認」が
-            // 偽の継続行で破れ、ログの収集・解析がまさにその設定ミスのときに壊れる。
-            // 可視化の規則は AllowedHostsPolicy に置く(2 本の警告で書き写さないため。issue #258)
-            AllowedHostsPolicy.DescribeValueForLog(allowedHosts),
-            // その設定に合った原因の説明(直し方は原因によらず同じなので次の文で共通)
-            AllowedHostsPolicy.PermissiveCauseMessage(permissiveReason));
-    }
+    var allowedHostsWarnings =
+        new AllowedHostsWarningReporter(app.Logger, app.Environment.EnvironmentName);
 
-    // 上の警告の<b>裏返し</b>を拾う。あちらは「絞ったつもりで全部通る」形しか見ないので、
-    // 「並べたつもりで一部が通らない」形は素通りする ——踏みやすいのは区切りのうしろに
-    // 空白を入れた複数指定 "a.example.test; b.example.test" で、一覧を書くときの自然な形。
-    // フレームワークは項目をトリムしないため 2 件目はどの Host とも一致せず、実測では
-    // 1 件目が 200・2 件目が 400 になる。つまり<b>サイトは生きたまま特定のホスト名だけが
-    // 静かに落ちる</b>ので、監視にもヘルスチェックにも出ない。しかも IsPermissive は
-    // 正しく false を返すため、docs/security.md が案内する「警告が出ていないことの確認」が
-    // そのまま誤った安心になる。
-    // <b>同じ形がもう 1 つある: ポート付きの項目</b>（"incident.example.test:8080"）。
-    // 突き合わせのとき Host ヘッダー側はポートを落とされる一方、許可リストの項目は
-    // そのまま比べられるので、実測ではポートを付けて送っても一致せず毎リクエスト 400 になる。
-    // ASPNETCORE_URLS を写すとポートごと持ってくるのは自然な形なので、こちらも拾う（issue #256）。
-    // <b>判定は正規化後の綴りに対して行う。</b> 生の綴りを見ると、正規化で消える文字
-    // (角括弧 IPv6 の "]" より後ろ)を持つ項目を誤って名指しする ——実測では
-    // "[::1] " は Host: [::1] を 200 で受けるのに「消してよい」と案内し(消した運用者が
-    // IPv6 のクライアントを一斉に 400 にする)、"[::] " は全ホスト許可なのに
-    // 「どのホスト名も受け付けない」と説明していた。規則と実測は
-    // AllowedHostsPolicy の docstring が正本
-    // <b>名指しする項目と直し方は 1 本の呼び出しで受け取る。</b> 別々に呼ぶと、同じ値を
-    // 2 度割って同じ正規化を 2 周するうえ、両者が同じ項目を見ていることを保証するものが
-    // 無くなる(判定の条件を片方にだけ足す変更が通ってしまう)
-    var (neverMatching, deletionOutcome) =
-        AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
-    // 一致しえない項目が 1 つでもあれば、書いた本人にしか直せないので名指しで知らせる
-    if (neverMatching.Count > 0)
-    {
-        // 上の警告とは原因も対処も違うので、別のメッセージとして出す
-        // (同じ文面にまとめると「全許可」と「一部だけ全拒否」を取り違える)
-        // <b>名指しした項目 1 件の事実だけを述べ、一覧全体の症状は名乗らない。</b>
-        // 鳴りうる綴りで結果がばらばらだから: (a) 同じ一覧にワイルドカードがあれば全部 200、
-        // (b) 死んだ項目しか無ければ全部 400、(c) 生きた項目と混ざっていればその 1 件だけが 400、
-        // (d) 正規化できない綴りならフレームワーク自身が例外を投げる(200 でも 400 でもない)。
-        // (d) があるので「全部死んでいれば 400」とも書けない ——(d) はこの警告にも
-        // IsPermissive にも同時に載るため、断定するとその場で 2 本が食い違う。
-        //
-        // <b>直し方の案内は、消したときに何が起きるかで変える。</b> 死んだ項目を消したあと、
-        // 残る一覧がどの Host でも受け付ける状態になるなら「消す」は直し方ではない
-        // (400 が止まるので直ったように見えるが、実際は issue #64 へ移るだけ)。
-        // 化ける経路は「0 件になって ["*"] へ落ちる」と「残った項目自体がワイルドカード」の
-        // 2 つで、件数だけでは判別できない。さらに、残る項目に正規化できない綴りがあると
-        // フレームワークの結果が並び順で変わるので断定できない ——
-        // 3 値で受けるのはそのため(規則は AllowedHostsPolicy の docstring が正本)
-        // 対応表は AllowedHostsPolicy に置く ——ここは if (!IsDevelopment()) の中なので、
-        // 書くとテストから 1 行も走らない（実測で、いちばん危ない分岐の文面を
-        // 反対の意味へ差し替えても全 1000 件が緑のまま通った）
-        var howToFix = AllowedHostsPolicy.DeadEntryFixAdvice(deletionOutcome);
+    // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
+    allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
 
-        // 名指しした項目 1 件の事実と、その設定に合った直し方を出す
-        // <b>理由は項目ごとに添える（1 文にまとめない）。</b> 一致しえない理由は 1 つではなく
-        // (a) 前後の空白が残っている (b) ポートを含んでいる の 2 つがあり、混在した一覧
-        // ("a.example.test; b.example.test;c.example.test:8080") で 1 つの文面しか出せないと、
-        // <b>どの項目がなぜ落ちているか</b>を運用者が追えない。しかも文面を 1 つに決め打つと、
-        // 理由を足した瞬間にその文が<b>名指しした項目について事実と違うこと</b>を言い出す
-        // （実際この行は「これらの項目は前後に空白が残っている」と断定していた。issue #256）。
-        // 理由ごとの文面は AllowedHostsPolicy.DeadEntryCauseMessage が持つ
-        app.Logger.LogWarning(
-            "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
-            "in the {Environment} environment: {NeverMatchingEntries}. {HowToFix} (issue #64).",
-            // 何件あるかを先に出す ——値が長いときでも件数だけは読める
-            neverMatching.Count,
-            // どの環境の話かを添える(可視化を通す理由も上の警告と同じ)
-            AllowedHostsPolicy.DescribeValueForLog(app.Environment.EnvironmentName),
-            // 死んでいる項目を "[ ]" で囲んで並べる ——空白は目で見えないので、
-            // 囲まないと「なぜこれが一致しないのか」が運用者に伝わらない。
-            // 囲み方は AllowedHostsPolicy が持つ ——ここは if (!IsDevelopment()) の中で
-            // テストから 1 行も走らないので、整形を置いたままだと誰にも見られない(issue #258)
-            AllowedHostsPolicy.DescribeEntriesForLog(neverMatching),
-            // その設定に合った直し方(消してよいかどうかで文面が変わる)
-            howToFix);
-    }
+    // <b>設定の再読み込みにも追随する(issue #264)。</b> appsettings.json は既定で
+    // reloadOnChange: true で、HostFilteringOptions は ConfigurationChangeTokenSource
+    // 経由で再束縛される ——つまり<b>稼働中に "*" へ書き換えると、ミドルウェアは即座に
+    // 全ホスト許可へ切り替わる</b>。起動時に 1 度しか評価していないと、そのとき
+    // 新しい警告は 1 本も出ず、docs/security.md が案内する「警告が出ていないことの確認」が
+    // そのまま誤った安心になる(ConfigMap やボリュームで設定を配る運用では現実に起きる)。
+    //
+    // <b>引き金はフレームワーク自身の再束縛にそろえる。</b> 設定の再読み込みトークンを
+    // 直接見ると、将来フレームワークが追随をやめたときに<b>こちらだけが鳴り続け</b>、
+    // ミドルウェアは古い一覧のままなのに「全許可になった」と言い出す ——
+    // 警告が障害を作る側に回る形で、見逃しより重い。
+    //
+    // <b>値は options ではなく設定から読み直す。</b> HostFilteringOptions.AllowedHosts は
+    // 既に分割され、0 件なら ["*"] へ落とされた後の一覧なので、未設定で起動した場合に
+    // 起動時とは違う原因("1 件も残らない" ではなく "ワイルドカード")を名乗ることになる。
+    // 同じ設定について 2 つの説明が出るのを避けるため、起動時とまったく同じ読み方をする。
+    //
+    // <b>戻り値の購読は破棄しない。</b> ここで解除するとアプリが生きている間の
+    // 再読み込みを 1 度も拾えなくなる(監視そのものがアプリと同じ寿命)。
+    app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>().OnChange(_ =>
+        // 再読み込み後の値で検査し直す(同じ値なら Reporter 側が黙る)
+        allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]));
 }
 
 // セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と
