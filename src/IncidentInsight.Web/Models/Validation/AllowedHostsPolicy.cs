@@ -1,7 +1,9 @@
 // フレームワークと同じホスト名の正規化を通すために使う
 using Microsoft.AspNetCore.Http;
-// ログ用に制御文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
+// ログ用に読めない文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
 using System.Text;
+// 文字が「字として現れるか」をカテゴリで判定するために使う
+using System.Globalization;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -1084,29 +1086,36 @@ public static class AllowedHostsPolicy
     /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
     /// </summary>
     /// <remarks>
-    /// <b>条件を 1 か所に置くのは、可視化の入り口が「判定」と「組み立て」の 2 つあるから。</b>
+    /// <para><b>条件を 1 か所に置くのは、可視化の入り口が「判定」と「組み立て」の 2 つあるから。</b>
     /// <see cref="MakeInvisibleCharactersVisible"/> は「置き換えが 1 つでもあるか」を先に見てから
     /// 組み立てるので、条件を 2 度書くことになる。書き写すと<b>片方だけを広げた変更</b>が
     /// 通り、そのとき壊れ方は「広げたはずの文字が、早期 return に拾われて素通りする」＝
-    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。
+    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。</para>
+    ///
+    /// <para><b>綴りの表ではなく Unicode のカテゴリで見る。</b> 以前は
+    /// <c>char.IsControl</c> ＋ 手で並べた 2 文字（<c>U+2028</c> / <c>U+2029</c>）だったが、
+    /// それは「今まで踏んだ分だけの表」で、<b>同じ危険を持つ文字がまだ残っていた</b>
+    /// （レビュー指摘。実測で <c>U+200B</c>（幅ゼロ空白）と <c>U+202E</c>（書字方向の上書き）が
+    /// 生のまま出ていた）。前者は<b>一致しえない項目を健全な項目と見分けられなくし</b>
+    /// （<c>[ ]</c> で囲む意味が消える）、後者は<b>警告の行の残りを逆順に描かせる</b>ので、
+    /// 運用者が読む 1 行を別の内容に見せられる ——どちらも issue #263 と同じ種類の危険。
+    /// カテゴリで見れば「字として現れないもの」をまとめて捉えられ、
+    /// docstring が掲げてきた「文字ごとの対応表を持たない」にも沿う。</para>
+    ///
+    /// <para><b>残っている境界: 幅のある空白（<c>U+00A0</c> など <c>Zs</c>）は素通しにしてある。</b>
+    /// <c>Zs</c> には普通の空白（<c>U+0020</c>）も含まれるので、カテゴリごと可視化すると
+    /// <b>ごく普通の値が読めなくなる</b>。幅のある空白は<b>空白として見える</b>ぶん、
+    /// 幅ゼロの文字より危険が小さいと判断している（前後の空白は <c>[ ]</c> の囲みが見せる）。</para>
     /// </remarks>
     /// <param name="ch">判定する 1 文字。</param>
     /// <returns>可視化が要るなら <c>true</c>。</returns>
     private static bool NeedsEscaping(char ch) =>
+        // 画面・ログに<b>字として現れない</b>カテゴリなら可視化する
+        CharUnicodeInfo.GetUnicodeCategory(ch)
+            is UnicodeCategory.Control        // タブ・CR / LF・NEL など
+            or UnicodeCategory.Format         // 幅ゼロの文字（U+200B）や書字方向の上書き（U+202E）
+            or UnicodeCategory.LineSeparator  // U+2028
+            or UnicodeCategory.ParagraphSeparator; // U+2029
 
-        // 制御文字（タブ・CR / LF・NEL など。ホスト名に正当に現れることは無い）か、
-        // 制御文字ではないが行区切りとして扱われうる 2 文字なら可視化する
-        char.IsControl(ch) || ch == LineSeparator || ch == ParagraphSeparator;
 
-    /// <summary>行区切りとして扱われうるが <c>char.IsControl</c> が <c>false</c> の文字（U+2028）。</summary>
-    /// <remarks>
-    /// <b>名前を付けているのは、判定を読む人に「なぜこの 2 文字だけ特別なのか」を示すため。</b>
-    /// 裸の <c>'\u2028'</c> が条件に並んでいると、次に触る人が
-    /// 「制御文字の書き漏れ」と読んで <c>char.IsControl</c> へ畳み戻しかねない。
-    /// </remarks>
-    private const char LineSeparator = '\u2028';
-
-    /// <summary>行区切りとして扱われうるが <c>char.IsControl</c> が <c>false</c> の文字（U+2029）。</summary>
-    /// <remarks>役割は <see cref="LineSeparator"/> と同じ（段落の区切り）。</remarks>
-    private const char ParagraphSeparator = '\u2029';
 }

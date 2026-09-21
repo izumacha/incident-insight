@@ -302,7 +302,9 @@ public class SecurityHeadersMiddlewareTests
     // <b>名前は MaxAgeFamilyPrefixes から導く</b>（末尾の "=" を外して並べる）——
     // 書き下すと、定数へ指示を足したときにこちらだけが古くなる
     private static readonly string LifetimeDirectivePattern =
-        $"(?<name>{string.Join('|', MaxAgeFamilyPrefixes.Select(p => Regex.Escape(p.TrimEnd('='))))})"
+        // 直前が英数字やハイフンなら別の指示の一部（"surrogate-max-age=" 等）なので拾わない
+        @"(?<![A-Za-z0-9-])"
+        + $"(?<name>{string.Join('|', MaxAgeFamilyPrefixes.Select(p => Regex.Escape(p.TrimEnd('='))))})"
         + @"\s*=\s*(?<seconds>\d+)";
 
     [Fact]
@@ -374,6 +376,19 @@ public class SecurityHeadersMiddlewareTests
         // 「規則を 2 度書くと片方が素通りの窓口になる」形そのもの
         foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
+            // <b>カンマで他の指示とつながっている形だけを見る（レビュー指摘）。</b>
+            // 期間の綴りはキャッシュ以外の指示にも現れる ——この文書には
+            // HSTS の節があり、"Strict-Transport-Security: max-age=31536000; includeSubDomains"
+            // という<b>正しい記述</b>で赤くなっていた（実測）。直そうとしている
+            // 「正しい記述で赤くなる」形を自分で踏んでいたことになる。
+            // Cache-Control の値はカンマ区切り、HSTS はセミコロン区切りなので、
+            // カンマ隣接に絞れば実際の名乗りは拾え、HSTS は巻き込まない。
+            //
+            // <b>残っている境界</b>: 他の指示を伴わずに "max-age=… を名乗ります" とだけ
+            // 書いた囮は拾えない。ただし囲みのある名乗り（`Cache-Control: …`）は
+            // 上の走査が拾うので、残るのは「囲みも無く、他の指示も無い」場合だけ。
+            if (!IsCommaAdjacent(securityDoc, lifetime)) continue;
+
             // 秒数として読み取る。<b>int ではなく long で受ける（レビュー指摘）。</b>
             // 走査が当たるのは数字だけだが、桁数までは保証していないので
             // int だと OverflowException になり、失敗文言が案内ではなく生の例外になる
@@ -477,6 +492,21 @@ public class SecurityHeadersMiddlewareTests
         }
     }
 
+
+
+    /// <summary>その一致が、カンマで他の指示とつながっているかを見る。</summary>
+    /// <remarks>
+    /// キャッシュ指示の値はカンマ区切りで書かれる（<c>public,max-age=3600</c>）。
+    /// 期間の綴りを使う別のヘッダー（HSTS はセミコロン区切り）と見分けるための手がかり。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="match">期間の指示への一致。</param>
+    /// <returns>前か後ろがカンマなら <c>true</c>。</returns>
+    private static bool IsCommaAdjacent(string doc, Match match) =>
+        // 直前の 1 文字がカンマか
+        (match.Index > 0 && doc[match.Index - 1] == ',')
+        // 直後の 1 文字がカンマか
+        || (match.Index + match.Length < doc.Length && doc[match.Index + match.Length] == ',');
 
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
     /// <remarks>

@@ -728,6 +728,16 @@ public class AllowedHostsPolicyTests
     // char.IsControl が false なので、条件を「制御文字か」にしていると生のまま載る
     [InlineData("a.test\u2028b.test", "a.test\\u2028b.test")]
     [InlineData("a.test\u2029b.test", "a.test\\u2029b.test")]
+    // <b>行区切り以外にも「字として現れない」文字がある（レビュー指摘）。</b>
+    // U+200B（幅ゼロ空白）は<b>一致しえない項目を健全な項目と見分けられなくし</b>、
+    // U+202E（書字方向の上書き）は<b>警告の行の残りを逆順に描かせる</b>ので、
+    // 運用者が読む 1 行を別の内容に見せられる ——どちらも Format カテゴリで、
+    // char.IsControl も行区切りの 2 文字も拾わなかった
+    [InlineData("a.test\u200Bb.test", "a.test\\u200Bb.test")]
+    [InlineData("a.test\u202Eb.test", "a.test\\u202Eb.test")]
+    // 普通の空白と、幅のある空白（U+00A0）は触らない ——
+    // 空白として見えるぶん危険が小さく、カテゴリごと可視化すると普通の値が読めなくなる
+    [InlineData("a.test\u00A0b.test", "a.test\u00A0b.test")]
     public void DescribeValueForLog_MakesInvisibleCharactersVisible(string value, string expected)
     {
         // 可視化した綴りが期待どおりであること
