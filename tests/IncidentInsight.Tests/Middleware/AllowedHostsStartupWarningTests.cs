@@ -286,6 +286,37 @@ public class AllowedHostsStartupWarningTests
         Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
     }
 
+    // <b>2 本目の警告にも同じ可視化が掛かっていること（レビュー指摘）。</b>
+    //
+    // 上の 2 つの Theory はどちらも<b>1 本目</b>しか見ていない。実測でも、
+    // 2 本目に載せる環境名だけを生の値へ戻すと 1168 件すべて緑のまま通った ——
+    // CLAUDE.md が「片方だけ通しても、もう片方がレコードを割る」と書いている穴が、
+    // <b>警告 2 本のあいだに</b>そのまま残っていたことになる。
+    [Theory]
+    // CR / LF
+    [InlineData("Staging\r\nINJECTED")]
+    // NEL（U+0085）—— char.IsControl が true の行区切り
+    [InlineData("Staging\u0085INJECTED")]
+    // <b>本命。</b> char.IsControl が false の行区切り（issue #263）
+    [InlineData("Staging\u2028INJECTED")]
+    [InlineData("Staging\u2029INJECTED")]
+    public void LineSeparators_DoNotSplitTheDeadEntryWarningEither(string environmentName)
+    {
+        // 2 本目（一致しえない項目）だけが出る値で、行区切りを含む環境名のまま起動する。
+        // 区切りのうしろに空白を入れた一覧は、複数指定を書くときの自然な形
+        using var fixture = new WarningCapturingFixture(
+            "incident.example.test; www.example.test", environmentName);
+
+        // 2 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // <b>本命。</b> 2 本目の文面にも行区切りが 1 つも残っていないこと
+        Assert.DoesNotContain(warning, ch => LogRecordSplittingCharacters.Contains(ch));
+
+        // 環境名は（可視化された形で）載ること ——どの環境の話かが読めなくならないように
+        Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
+    }
+
     // <b>稼働中に設定を緩めたら、警告を出し直すこと（issue #264）。</b>
     //
     // appsettings.json は既定で reloadOnChange: true で、HostFilteringOptions は
@@ -352,8 +383,10 @@ public class AllowedHostsStartupWarningTests
     // 変更トークンの発火は CancellationTokenSource.Cancel() 経由で、集めた例外を
     // 呼び出し元へ投げ直す。本番でのその呼び出し元は設定ファイルの監視スレッドなので、
     // ここから例外が出ると<b>設定ファイルに触れただけでプロセスが落ちる</b>。
-    // 加えて、同じトークンに連なる他の購読（HostFilteringOptions 自身の再束縛を含む）も
-    // そこで打ち切られる。診断のための警告がアプリを止めるのは本末転倒で、
+    // 加えて、同じ OptionsMonitor のマルチキャストに載っている
+    // HostFilteringOptions 自身の再束縛は、最初に投げたところで打ち切られる
+    // （設定トークン側は最後まで呼んでからまとめて投げ直すので、そちらは打ち切られない）。
+    // 診断のための警告がアプリを止めるのは本末転倒で、
     // CLAUDE.md §9 の「例外時はクラッシュではなく機能を縮退して継続する」に反する。
     //
     // <b>この検査が無いと、握りの配線を消しても全件緑のまま通る</b>（実測）——
@@ -380,9 +413,30 @@ public class AllowedHostsStartupWarningTests
                     ? message.Contains(PermissiveWarningMarker) || message.Contains(CheckFailureMarker)
                     : message.Contains(PermissiveWarningMarker));
 
-        // <b>本命。</b> 稼働中に全許可へ緩める ——このとき 1 本目の警告の書き込みが失敗する。
-        // 例外がここまで戻ってくると（＝本番ならプロセスが落ちる形）、この行で落ちる
-        var reload = Record.Exception(() => fixture.ReloadAllowedHosts("*"));
+        // <b>出力先ごと落ちるケースでは、最後の手段が標準エラーへ書く。</b>
+        // 横取りしないと、<b>緑の CI ログに「検査に失敗した」という文字列と
+        // スタックトレースが毎回出る</b> ——docs/security.md が grep しろと教えている
+        // まさにその文字列なので、読み手が見慣れて無視するようになる（レビュー指摘）
+        var originalError = Console.Error;
+        // 横取り用の受け皿（このケースでだけ使う）
+        using var swallowed = new StringWriter();
+
+        // 横取りは必ず元へ戻す
+        Exception? reload;
+        try
+        {
+            // 出力先ごと落ちるケースだけ、標準エラーを受け皿へ差し替える
+            if (failEveryWrite) Console.SetError(swallowed);
+
+            // <b>本命。</b> 稼働中に全許可へ緩める ——このとき 1 本目の警告の書き込みが失敗する。
+            // 例外がここまで戻ってくると（＝本番ならプロセスが落ちる形）、この行で落ちる
+            reload = Record.Exception(() => fixture.ReloadAllowedHosts("*"));
+        }
+        finally
+        {
+            // 元の標準エラーへ戻す
+            Console.SetError(originalError);
+        }
 
         // コールバックの外へ例外が出ていないこと
         Assert.Null(reload);
@@ -494,8 +548,8 @@ public class AllowedHostsStartupWarningTests
 
         // 標準エラーを横取りして、最後の手段が何を書くかを読めるようにする
         var originalError = Console.Error;
-        // 横取り用の受け皿
-        var captured = new StringWriter();
+        // 横取り用の受け皿（プロセス全体の状態を触るテストなので、確実に捨てる）
+        using var captured = new StringWriter();
 
         // 横取りは必ず元へ戻す（他のテストの出力先を巻き込まない）
         try
@@ -733,19 +787,28 @@ public class AllowedHostsStartupWarningTests
         /// <param name="initialValue">起動時の値（<c>null</c> なら未設定）。</param>
         private sealed class ReloadableProvider(string? initialValue) : ConfigurationProvider
         {
-            /// <summary>設定の読み込み（起動時の値を 1 つ置くだけ）。</summary>
+            // <b>いま持っている値。</b> Load() がここを読むので、差し替えたあとに
+            // 設定全体の再読み込み（IConfigurationRoot.Reload）が走っても
+            // <b>起動時の値へ巻き戻らない</b> ——巻き戻ると、本番と同じ経路を試そうとした
+            // 次のテストが「差し替えたはずの値」ではなく起動時の値を見て、
+            // 緑だが何も確かめていない検査になる（レビュー指摘）
+            private string? _current = initialValue;
+
+            /// <summary>設定の読み込み（いま持っている値を 1 つ置くだけ）。</summary>
             public override void Load() =>
-                // 起動時はこの 1 キーだけを持つ
+                // この 1 キーだけを持つ（値は差し替えを反映した現在値）
                 Data = new Dictionary<string, string?>(StringComparer.OrdinalIgnoreCase)
                 {
-                    ["AllowedHosts"] = initialValue,
+                    ["AllowedHosts"] = _current,
                 };
 
             /// <summary>値を差し替え、購読側へ「変わった」と伝える。</summary>
             /// <param name="allowedHosts">差し替え後の値（<c>null</c> なら未設定）。</param>
             public void Replace(string? allowedHosts)
             {
-                // 保持している値を書き換える
+                // 次の Load() でも同じ値が出るよう、現在値を更新する
+                _current = allowedHosts;
+                // いま公開している辞書も書き換える
                 Data["AllowedHosts"] = allowedHosts;
                 // 変更トークンを発火させる（HostFilteringOptions の再束縛はこれが引き金）
                 OnReload();

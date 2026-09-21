@@ -292,11 +292,83 @@ public class SecurityHeadersMiddlewareTests
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
     {
         // 定数を解析して、指示ごとの値を取り出す
-        var directives = SecurityHeadersMiddleware.StaticAssetCacheControl
-            // カンマ区切りの各指示へ分ける
-            .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-            .ToList();
+        var directives = SplitDirectives(SecurityHeadersMiddleware.StaticAssetCacheControl);
 
+        // 期間の指示を取り出す
+        var lifetimeDirectives = LifetimeDirectives(directives);
+
+        // 期間の指示が 1 つも無ければ、キャッシュ期間の意図が読めないので落とす。
+        // <b>これは静的アセットの定数にだけ求める</b> ——no-store のように
+        // 期間を持たない指示は正当なので、下の文書全体の検査では求めない
+        Assert.NotEmpty(lifetimeDirectives);
+
+        // 長期・immutable でないことを確かめる（規則の本体は共有のヘルパーが持つ）
+        AssertNotLongLived(directives, "SecurityHeadersMiddleware.StaticAssetCacheControl");
+    }
+
+    // <b>文書が名乗るキャッシュ指示は、1 つ残らず同じ不変条件を満たすこと。</b>
+    //
+    // 上の 2 つは「静的アセットの箇条書き 1 つ」と「定数そのもの」しか見ないので、
+    // <b>別の箇条書きが長期・immutable を名乗っても止められない</b> ——実測で、
+    // OnPrepareResponse という語を含まない囮の箇条書き
+    // （"/attachments 配信は public,max-age=31536000,immutable を名乗ります"）を
+    // 手前へ足すと 1168 件すべて緑のまま通った。目印を持たないので切り出しの件数も
+    // 変わらず、本命の文も定数も動いていないためどの検査にも掛からない。
+    // つまり issue #265 で塞いだ穴が「目印を持つ囮」から「目印を持たない囮」へ
+    // 移っただけだった（レビュー指摘）。
+    //
+    // <b>運用者が読むのは文書全体</b>なので、どの箇条書きであれ
+    // 「長期・immutable を名乗る」記述が載っていること自体が守りたい状態に反する。
+    [Fact]
+    public void EveryDocumentedCacheDirective_IsNeverLongLived()
+    {
+        // 運用者向けドキュメントを読む
+        var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+
+        // 具体的な値を伴うキャッシュ指示を<b>すべて</b>取り出す。
+        // 「を名乗」等の言い回しで絞らない ——絞ると、言い回しを変えた囮が素通りする
+        var documented = Regex.Matches(securityDoc, @"`Cache-Control:\s*(?<value>[^`]+)`");
+
+        // 1 つも読み取れないのは、書き方が変わったか検査が壊れたか ——どちらも落とす
+        Assert.NotEmpty(documented);
+
+        // 1 件ずつ確かめる
+        foreach (Match match in documented)
+        {
+            // その指示を分解する
+            var directives = SplitDirectives(match.Groups["value"].Value.Trim());
+
+            // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
+            AssertNotLongLived(directives, $"docs/security.md の `{match.Value}`");
+        }
+    }
+
+    /// <summary>キャッシュ指示の文字列を、指示ごとに分ける。</summary>
+    /// <param name="cacheControl"><c>Cache-Control</c> の値。</param>
+    /// <returns>前後の空白を落とした指示の一覧。</returns>
+    private static List<string> SplitDirectives(string cacheControl) =>
+        // カンマ区切りの各指示へ分ける
+        [.. cacheControl.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+    /// <summary>保存できる時間を延ばす向きに効く指示だけを取り出す。</summary>
+    /// <param name="directives">分解済みの指示。</param>
+    /// <returns>期間を表す指示の一覧。</returns>
+    private static List<string> LifetimeDirectives(IEnumerable<string> directives) =>
+        // 接頭辞の一覧に当たるものだけを残す
+        [.. directives.Where(d => MaxAgeFamilyPrefixes.Any(p => d.StartsWith(p, StringComparison.OrdinalIgnoreCase)))];
+
+    /// <summary>
+    /// その指示が「長期でも immutable でもない」ことを確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <b>規則の本体を 1 か所に置くのは、見る対象が 2 つあるから</b>（定数そのものと、
+    /// 文書が名乗るすべての指示）。書き写すと片方にだけ上限を足す変更が通り、
+    /// そのとき<b>もう片方が素通りの窓口になる</b>（§6 DRY）。
+    /// </remarks>
+    /// <param name="directives">分解済みの指示。</param>
+    /// <param name="source">失敗文言に出す出所（どこの指示の話かを示す）。</param>
+    private static void AssertNotLongLived(IReadOnlyList<string> directives, string source)
+    {
         // immutable を付けていないこと(付けると再取得の手段が無くなる)
         Assert.DoesNotContain(
             directives,
@@ -307,28 +379,20 @@ public class SecurityHeadersMiddlewareTests
         // 上書きするので、"public,s-maxage=31536000,max-age=3600" と書けば
         // プロキシは 1 年保存するのに max-age だけを見る検査は 3600 しか見ない
         // (実測でこの形が全件緑のまま通った)。stale-* も配信を延ばす向きに効く
-        var lifetimeDirectives = directives
-            .Where(d => MaxAgeFamilyPrefixes.Any(p => d.StartsWith(p, StringComparison.OrdinalIgnoreCase)))
-            .ToList();
-
-        // 期間の指示が 1 つも無ければ、キャッシュ期間の意図が読めないので落とす
-        Assert.NotEmpty(lifetimeDirectives);
-
-        // 取り出した指示を 1 つずつ確かめる
-        foreach (var directive in lifetimeDirectives)
+        foreach (var directive in LifetimeDirectives(directives))
         {
             // 値の部分(= の後ろ)を取り出す
             var value = directive[(directive.IndexOf('=') + 1)..];
             // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
             Assert.True(
                 int.TryParse(value, out var seconds),
-                $"キャッシュ期間の値を秒数として読み取れません: {directive}");
+                $"キャッシュ期間の値を秒数として読み取れません: {directive}（{source}）");
 
             // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
             // 引き上げたいときは、まず lib/ 配下も版付き URL で参照する形へ変えること
             Assert.True(
                 seconds <= 24 * 60 * 60,
-                $"静的アセットのキャッシュ期間が長すぎます({directive})。"
+                $"キャッシュ期間が長すぎます({directive}／{source})。"
                     + "wwwroot/lib 配下は版を付けずに参照されているため、長くすると"
                     + "ライブラリの脆弱性修正後も古いファイルが利用者のキャッシュに残り続けます。"
                     + "どうしても延ばすなら、lib/ を版付き URL で参照する形へ変えたうえで、"

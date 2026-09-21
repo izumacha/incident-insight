@@ -373,8 +373,13 @@ if (!app.Environment.IsDevelopment())
     //   - 起動時 …… ログの出力先が落ちていると、警告を書けないだけで<b>起動そのものが失敗</b>する。
     //   - 再読み込み …… 変更トークンの発火は CancellationTokenSource.Cancel() 経由で
     //     例外を呼び出し元へ投げ直すので、本番ではファイル監視のスレッドで
-    //     <b>設定ファイルに触れただけでプロセスが落ちる</b>。加えて、同じトークンに連なる
-    //     他の購読（HostFilteringOptions 自身の再束縛を含む）もそこで打ち切られる。
+    //     <b>設定ファイルに触れただけでプロセスが落ちる</b>。
+    //     <b>打ち切りの範囲は「設定トークンに連なる全部」ではない（レビュー指摘）。</b>
+    //     Cancel() は throwOnFirstException: false なので、登録された購読は最後まで呼ばれ、
+    //     例外はまとめて投げ直される。打ち切られるのは<b>同じ OptionsMonitor の
+    //     マルチキャスト</b>のほう ——HostFilteringOptions の購読はここと同じ連鎖に載っており、
+    //     マルチキャストの呼び出しは最初に投げたところで止まるので、
+    //     <b>ミドルウェア自身の再束縛が走らず古い許可リストのまま残る</b>。
     // 2 か所へ書き写すと片方にだけ手当てが残るので、1 つの関数に寄せる（§6 DRY。
     // レビューで実際に「起動時だけ素通し」の非対称が指摘された）。
     void CheckAllowedHosts()
@@ -449,8 +454,26 @@ if (!app.Environment.IsDevelopment())
     //
     // <b>戻り値の購読は破棄しない。</b> ここで解除するとアプリが生きている間の
     // 再読み込みを 1 度も拾えなくなる(監視そのものがアプリと同じ寿命)。
-    app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>()
-        .OnChange(_ => CheckAllowedHosts());
+    // <b>配線そのものも診断の一部なので、ここで起動を止めない（レビュー指摘）。</b>
+    // 下の CheckAllowedHosts は 3 重の try/catch で守ってあるのに、購読を張る
+    // この 1 文が素通しだと、将来ホスト名フィルタを条件付きにした人の変更で
+    // GetRequiredService が投げ、<b>警告を配線できないというだけでアプリが起動しない</b> ——
+    // この PR が消したはずの非対称が 2 行ずれて戻ることになる。
+    try
+    {
+        // 設定の再読み込みごとに検査し直す
+        app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>()
+            .OnChange(_ => CheckAllowedHosts());
+    }
+    catch (Exception ex)
+    {
+        // 握り潰さず、何が縮退したのかまで残す（§6）——
+        // このとき起動時の 1 回だけは下で検査されるが、以降の再読み込みは拾えない
+        app.Logger.LogError(
+            ex,
+            "Failed to subscribe to configuration reloads for AllowedHosts. The permissive/" +
+            "never-matching warnings will only reflect the value seen at startup (issue #64).");
+    }
 
     // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
     CheckAllowedHosts();
