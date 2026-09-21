@@ -1039,15 +1039,57 @@ public static class AllowedHostsPolicy
         // 置き換えが要るときだけ組み立てる
         var builder = new StringBuilder(value.Length);
 
-        // 1 文字ずつ見て、読めない文字だけを置き換える
-        foreach (var ch in value)
+        // <b>符号単位ではなくコードポイント単位で見る（レビュー指摘）。</b>
+        // 1 文字（char）ずつ見ると、BMP の外にある文字は<b>サロゲートの片割れ</b>として
+        // 現れ、カテゴリは必ず Surrogate になる ——Format かどうかを見ても常に外れるので、
+        // <c>U+E0001</c>（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が
+        // 生のまま載っていた。BMP の <c>U+200B</c> だけを直した形のまま、
+        // 同じ危険が「char と コードポイントの境目」へ移っていたことになる。
+        for (var index = 0; index < value.Length; index++)
         {
+            // いま見ている符号単位
+            var unit = value[index];
+
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
-            if (ch == Backslash) builder.Append("\\\\");
-            // 読めない文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
-            else if (NeedsEscaping(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
-            // それ以外はそのまま（ホスト名として読める文字）
-            else builder.Append(ch);
+            if (unit == Backslash)
+            {
+                // 二重化して次へ
+                builder.Append("\\\\");
+                continue;
+            }
+
+            // 対になったサロゲート（BMP の外の 1 文字）なら、2 符号単位をまとめて見る
+            if (char.IsHighSurrogate(unit)
+                && index + 1 < value.Length
+                && char.IsLowSurrogate(value[index + 1]))
+            {
+                // 2 つの符号単位から本来の 1 文字を組み立てる
+                var rune = new Rune(unit, value[index + 1]);
+
+                // 字として現れないなら 8 桁で、そうでなければそのまま出す
+                if (NeedsEscaping(rune)) builder.Append("\\U").Append(rune.Value.ToString("X8"));
+                else builder.Append(unit).Append(value[index + 1]);
+
+                // 2 符号単位を消費したので 1 つ余分に進める
+                index++;
+                continue;
+            }
+
+            // <b>対になっていないサロゲートは必ず可視化する。</b> それ自体が不正な綴りで、
+            // 描画は環境任せ（多くは空白か置換文字）なので、生で出すと読み手が値を誤解する
+            if (char.IsSurrogate(unit))
+            {
+                // 片割れをそのままコードポイントとして出す
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                continue;
+            }
+
+            // ここへ来るのは BMP の普通の 1 文字（サロゲートでないので Rune にできる）
+            var single = new Rune(unit);
+
+            // 字として現れないなら 4 桁で、そうでなければそのまま出す
+            if (NeedsEscaping(single)) builder.Append("\\u").Append(((int)unit).ToString("X4"));
+            else builder.Append(unit);
         }
 
         // 可視化した綴りを返す
@@ -1072,8 +1114,12 @@ public static class AllowedHostsPolicy
     /// <param name="ch">判定する 1 文字。</param>
     /// <returns>何らかの書き換えが要るなら <c>true</c>。</returns>
     private static bool NeedsRewriting(char ch) =>
-        // \uXXXX へ直す文字か、二重化する逆斜線なら書き換えが要る
-        NeedsEscaping(ch) || ch == Backslash;
+        // 二重化する逆斜線か、
+        ch == Backslash
+        // 対になっているかを 1 文字だけでは決められないサロゲート（組み立て側が判断する）か、
+        || char.IsSurrogate(ch)
+        // 字として現れない文字なら書き換えが要る
+        || (Rune.TryCreate(ch, out var rune) && NeedsEscaping(rune));
 
     /// <summary>二重化して出す文字（逆斜線）。</summary>
     /// <remarks>
@@ -1107,11 +1153,11 @@ public static class AllowedHostsPolicy
     /// <b>ごく普通の値が読めなくなる</b>。幅のある空白は<b>空白として見える</b>ぶん、
     /// 幅ゼロの文字より危険が小さいと判断している（前後の空白は <c>[ ]</c> の囲みが見せる）。</para>
     /// </remarks>
-    /// <param name="ch">判定する 1 文字。</param>
+    /// <param name="ch">判定する 1 文字（符号単位ではなくコードポイント）。</param>
     /// <returns>可視化が要るなら <c>true</c>。</returns>
-    private static bool NeedsEscaping(char ch) =>
+    private static bool NeedsEscaping(Rune ch) =>
         // 画面・ログに<b>字として現れない</b>カテゴリなら可視化する
-        CharUnicodeInfo.GetUnicodeCategory(ch)
+        Rune.GetUnicodeCategory(ch)
             is UnicodeCategory.Control        // タブ・CR / LF・NEL など
             or UnicodeCategory.Format         // 幅ゼロの文字（U+200B）や書字方向の上書き（U+202E）
             or UnicodeCategory.LineSeparator  // U+2028

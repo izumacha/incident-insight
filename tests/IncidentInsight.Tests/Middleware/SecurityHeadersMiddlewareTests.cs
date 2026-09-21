@@ -288,6 +288,20 @@ public class SecurityHeadersMiddlewareTests
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
 
+    // 「その指示を実際に名乗る」と述べていることの目印。
+    //
+    // <b>肯定的な名乗りに絞らないと、反例が書けなくなる（レビュー指摘）。</b>
+    // 実測で、"`Cache-Control: public,max-age=31536000,immutable` は使いません。" という
+    // <b>運用手順として正しい反例</b>を足すだけで落ちた ——しかも失敗文言は
+    // 「文書が immutable を含む指示を載せています」と、その文が禁じている当のことを
+    // 書き手に向かって言う。直し方が「反例を消す」しか無い検出網は、いずれ緩められる。
+    // 兄弟の StaticAssetCacheControl_MatchesTheDocumentedDirective が既に「を名乗」で
+    // 絞っているのと同じ手がかりを使う。
+    //
+    // <b>残っている境界</b>: ここに無い言い回し（"を返します" 以外の動詞を新しく使う等）で
+    // 名乗る囮は拾えない。綴りを足して埋めようとせず、囮が実際に出たら手がかりごと見直す。
+    private static readonly string[] AffirmativeClaimMarkers = ["を名乗", "を付与", "を返"];
+
     // 付けてはいけない指示の綴り。
     // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
     // 囲みのある名乗り（指示ごとの完全一致）と、囲みの無い地の文（カンマ隣接）で
@@ -354,6 +368,9 @@ public class SecurityHeadersMiddlewareTests
         // 1 件ずつ確かめる
         foreach (Match match in documented)
         {
+            // 「実際に名乗る」と述べている文だけを見る（反例や禁止の記述は対象外）
+            if (!IsAffirmativeClaim(securityDoc, match.Index)) continue;
+
             // その指示を分解する
             var directives = SplitDirectives(match.Groups["value"].Value.Trim());
 
@@ -389,20 +406,14 @@ public class SecurityHeadersMiddlewareTests
             // 上の走査が拾うので、残るのは「囲みも無く、他の指示も無い」場合だけ。
             if (!IsCommaAdjacent(securityDoc, lifetime)) continue;
 
-            // 秒数として読み取る。<b>int ではなく long で受ける（レビュー指摘）。</b>
-            // 走査が当たるのは数字だけだが、桁数までは保証していないので
-            // int だと OverflowException になり、失敗文言が案内ではなく生の例外になる
-            // ——定数側（TryParse ＋ 明示の失敗文言）と挙動をそろえる
-            Assert.True(
-                long.TryParse(lifetime.Groups["seconds"].Value, out var seconds),
-                $"docs/security.md のキャッシュ期間を秒数として読み取れません: {lifetime.Value}");
+            // 囲みのある名乗りと同じく、肯定的に名乗っている文だけを見る
+            if (!IsAffirmativeClaim(securityDoc, lifetime.Index)) continue;
 
-            // 上限は定数側と同じ 1 日（規則の値を 2 か所へ書き写さないため定数を使う）
-            Assert.True(
-                seconds <= MaxCacheLifetimeSeconds,
-                $"docs/security.md が長すぎるキャッシュ期間を載せています({lifetime.Value})。"
-                    + "囲みの有無にかかわらず、文書は長期のキャッシュ指示を名乗りません"
-                    + "(wwwroot/lib 配下は版を付けずに参照されているため)。");
+            // <b>上限の判定は共有のヘルパーへ通す（レビュー指摘）。</b> ここで
+            // 読み取りと比較を書き下すと、上限や扱いを変えた人が片方だけを直し、
+            // <b>囲みの有無で答えが食い違う</b>状態になる（AssertNotLongLived の
+            // docstring が「書き写すと片方が素通りの窓口になる」と述べている形）
+            AssertNotLongLived([lifetime.Value], $"docs/security.md の「{lifetime.Value}」");
         }
 
         // immutable が<b>指示の並びの一部として</b>現れていないこと。
@@ -421,12 +432,18 @@ public class SecurityHeadersMiddlewareTests
         // ただし immutable は<b>単体では効かない</b>（RFC 8246。新鮮さの指示を
         // 修飾するものなので、害のある名乗りには必ず max-age 系が伴う）ため、
         // その場合は上の期間の走査が囲みの有無を問わず拾う。
+        // 肯定的に名乗っている行に限って、カンマでつながった immutable を探す
+        var immutableClaim = Regex.Matches(
+            securityDoc,
+            // 綴りは定数から組み立てる（上の完全一致の検査と同じものを見る）
+            $"[A-Za-z0-9-],{Regex.Escape(ForbiddenDirective)}|{Regex.Escape(ForbiddenDirective)},[A-Za-z0-9-]",
+            RegexOptions.IgnoreCase)
+            .Cast<Match>()
+            .Any(m => IsAffirmativeClaim(securityDoc, m.Index));
+
+        // 名乗っていれば落とす
         Assert.False(
-            Regex.IsMatch(
-                securityDoc,
-                // 綴りは定数から組み立てる（上の完全一致の検査と同じものを見る）
-                $"[A-Za-z0-9-],{Regex.Escape(ForbiddenDirective)}|{Regex.Escape(ForbiddenDirective)},[A-Za-z0-9-]",
-                RegexOptions.IgnoreCase),
+            immutableClaim,
             "docs/security.md が immutable を含むキャッシュ指示を載せています。"
                 + "版付きでない wwwroot/lib 配下を参照しているため、immutable を名乗ると"
                 + "脆弱性修正後も古いファイルを消す手段が無くなります。");
@@ -503,10 +520,68 @@ public class SecurityHeadersMiddlewareTests
     /// <param name="match">期間の指示への一致。</param>
     /// <returns>前か後ろがカンマなら <c>true</c>。</returns>
     private static bool IsCommaAdjacent(string doc, Match match) =>
-        // 直前の 1 文字がカンマか
-        (match.Index > 0 && doc[match.Index - 1] == ',')
-        // 直後の 1 文字がカンマか
-        || (match.Index + match.Length < doc.Length && doc[match.Index + match.Length] == ',');
+        // 前へ空白を読み飛ばしてカンマに当たるか
+        HasCommaBefore(doc, match.Index)
+        // 後ろへ空白を読み飛ばしてカンマに当たるか
+        || HasCommaAfter(doc, match.Index + match.Length);
+
+    /// <summary>指定位置の手前が（空白を挟んで）カンマかを見る。</summary>
+    /// <remarks>
+    /// <b>空白を読み飛ばすのが要点（レビュー指摘）。</b> 隣接だけを見ていたため、
+    /// ごく普通の空け方で書いた囮（"public, max-age=31536000 を名乗ります"）が
+    /// 素通りした（実測）。セミコロン区切りの HSTS は巻き込まないまま、
+    /// カンマ区切りの名乗りだけを拾える。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">見はじめる位置（この 1 つ手前から遡る）。</param>
+    /// <returns>カンマに当たれば <c>true</c>。</returns>
+    private static bool HasCommaBefore(string doc, int index)
+    {
+        // 空白のあいだは遡り続ける
+        var at = index - 1;
+        // 文書の先頭に着くまで
+        while (at >= 0 && char.IsWhiteSpace(doc[at])) at--;
+        // 空白でない最初の文字がカンマかどうか
+        return at >= 0 && doc[at] == ',';
+    }
+
+    /// <summary>指定位置の直後が（空白を挟んで）カンマかを見る。</summary>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">見はじめる位置。</param>
+    /// <returns>カンマに当たれば <c>true</c>。</returns>
+    private static bool HasCommaAfter(string doc, int index)
+    {
+        // 空白のあいだは進み続ける
+        var at = index;
+        // 文書の末尾に着くまで
+        while (at < doc.Length && char.IsWhiteSpace(doc[at])) at++;
+        // 空白でない最初の文字がカンマかどうか
+        return at < doc.Length && doc[at] == ',';
+    }
+
+    /// <summary>その一致が「実際に名乗る」と述べている文の中にあるかを見る。</summary>
+    /// <remarks>
+    /// <b>行の単位で見る。</b> 文書は箇条書きで書かれており、1 つの名乗りは 1 行に収まる。
+    /// 段落全体へ広げると、同じ段落にある無関係な名乗りの文が反例まで肯定文に見せてしまう。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">一致の開始位置。</param>
+    /// <returns>肯定的な名乗りの文の中なら <c>true</c>。</returns>
+    private static bool IsAffirmativeClaim(string doc, int index)
+    {
+        // その一致が載っている行の先頭を探す
+        var start = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+        // その行の終わりを探す
+        var end = doc.IndexOf('\n', index);
+        // 見つからなければ文書の末尾までが 1 行
+        if (end < 0) end = doc.Length;
+
+        // その行を切り出す
+        var line = doc[start..end];
+
+        // 肯定的な名乗りの目印が 1 つでもあれば、その文は「実際に名乗る」と述べている
+        return AffirmativeClaimMarkers.Any(marker => line.Contains(marker, StringComparison.Ordinal));
+    }
 
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
     /// <remarks>

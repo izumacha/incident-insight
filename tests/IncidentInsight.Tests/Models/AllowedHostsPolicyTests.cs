@@ -738,10 +738,34 @@ public class AllowedHostsPolicyTests
     // 普通の空白と、幅のある空白（U+00A0）は触らない ——
     // 空白として見えるぶん危険が小さく、カテゴリごと可視化すると普通の値が読めなくなる
     [InlineData("a.test\u00A0b.test", "a.test\u00A0b.test")]
+    // <b>BMP の外の「見えない文字」も可視化する（レビュー指摘）。</b> 符号単位で見ると
+    // サロゲートの片割れになり、カテゴリは必ず Surrogate になるので Format の判定を
+    // すり抜けていた ——U+E0001（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が
+    // 生のまま載っていた。コードポイント単位で見て、8 桁の形で出す
+    [InlineData("a.test\U000E0001b.test", "a.test\\U000E0001b.test")]
+    // BMP の外でも、字として現れるものはそのまま（絵文字・追加漢字など）
+    [InlineData("a.test\U0001F600b.test", "a.test\U0001F600b.test")]
     public void DescribeValueForLog_MakesInvisibleCharactersVisible(string value, string expected)
     {
         // 可視化した綴りが期待どおりであること
         Assert.Equal(expected, AllowedHostsPolicy.DescribeValueForLog(value));
+    }
+
+    // <b>対になっていないサロゲートも必ず可視化する。</b> それ自体が不正な綴りで、
+    // 描画は環境任せ（多くは空白か置換文字）なので、生で出すと読み手が値を誤解する。
+    //
+    // <b>[InlineData] では表せない。</b> xUnit は Theory の引数を直列化して配るため、
+    // 対になっていないサロゲートは途中で置換文字（U+FFFD）へ化ける ——
+    // 実測で、化けた値は「字として現れる」ので可視化されず、検査が空振りした。
+    // 文字列をテストの中で組み立てれば、その経路を通らない。
+    [Fact]
+    public void DescribeValueForLog_MakesLoneSurrogatesVisible()
+    {
+        // 対になっていない上位サロゲートを挟んだ値を、テストの中で組み立てる
+        var value = "a.test" + (char)0xD800 + "b.test";
+
+        // 4 桁のコードポイントとして可視化されること
+        Assert.Equal("a.test" + @"\uD800" + "b.test", AllowedHostsPolicy.DescribeValueForLog(value));
     }
 
     // <b>未設定は「空文字を設定した」と区別して名乗る。</b> 構造化ログの既定は
