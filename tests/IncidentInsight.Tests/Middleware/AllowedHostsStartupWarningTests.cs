@@ -56,9 +56,11 @@ public class AllowedHostsStartupWarningTests
     // 検査そのものが失敗したときに残る記録の目印（起動時・再読み込みで共通。同上）
     private const string CheckFailureMarker = "Failed to check AllowedHosts";
 
-    // 出力先を落とすテスト用プロバイダが投げる例外の文面。
-    // <b>定数にしてあるのは、最後の手段が「元の失敗」まで運んでいるかを見るため</b> ——
-    // テストと実装の 2 か所へ綴りを書き写すと、片方だけ直したときに照合が空振りする
+    // 出力先を落とすテスト用プロバイダが投げる例外の文面（テスト double であることが
+    // ログに出たときに読み手へ伝わるよう、固定の綴りにしてある）。
+    // <b>照合には使わない</b> ——「最後の手段が元の失敗まで運んでいるか」は、
+    // 元の失敗にしか現れない目印（PermissiveWarningMarker）で見る。
+    // この文面は 2 つの例外の<b>どちらにも</b>現れるので、照合に使うと区別できない
     private const string FailingSinkExceptionMessage = "The log sink is unavailable (test double).";
 
     [Fact]
@@ -617,6 +619,37 @@ public class AllowedHostsStartupWarningTests
         Assert.Contains(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
     }
 
+    // <b>2 本目も、出せなかったら次の再読み込みで出し直されること（レビュー指摘）。</b>
+    //
+    // 1 本目については AWarningLostToAFailingSink_IsRetriedOnTheNextReload が見ているが、
+    // 2 本目の持ち越しは誰も見ていなかった ——実測で、2 本目だけ旗の代入を落とす変異が
+    // 1174 件すべて緑のまま通った。そのとき出力先が一瞬落ちただけで
+    // 「a.example.test; b.example.test のうち 2 件目が静かに 400 を返している」という事実が
+    // プロセスの生涯にわたって失われる（値が変わらない限り retry されないため）。
+    [Fact]
+    public void ASecondWarningLostToAFailingSink_IsRetriedOnTheNextReload()
+    {
+        // 2 本目の書き込みを「最初の 1 回だけ」失敗させるための数え手
+        var deadEntryWrites = 0;
+
+        // 2 本目だけが出る値で起動する（一致しえない項目はあるが全許可ではない）
+        using var fixture = new WarningCapturingFixture(
+            "incident.example.test; b.example.test",
+            failLoggingWhen: message =>
+                // 2 本目の、最初の書き込みだけを落とす
+                message.Contains(DeadEntryWarningMarker) && Interlocked.Increment(ref deadEntryWrites) == 1);
+
+        // 前提: 起動時には 2 本目が残っていないこと
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+
+        // <b>同じ値のまま</b>もう一度再読み込みを起こす ——
+        // 出せなかった側を持ち越していれば、ここで出し直される
+        fixture.ReloadAllowedHosts("incident.example.test; b.example.test");
+
+        // <b>本命。</b> 失われたはずの 2 本目が出ていること
+        Assert.Contains(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
+    }
+
     // <b>片方が出せない状態が続いても、出せたほうを何度も出し直さないこと（レビュー指摘）。</b>
     //
     // 「失敗したら値を覚えない」形にすると、失敗が続く限り<b>成功したほうの警告まで</b>
@@ -768,7 +801,15 @@ public class AllowedHostsStartupWarningTests
                 new Dictionary<string, string?>(),
                 environmentName,
                 // 起動前に、溜め込むだけのプロバイダを登録する
-                logging => logging.AddProvider(new CapturingLoggerProvider(captured, failLoggingWhen)),
+                // <b>既定のプロバイダを外してから溜め込む（レビュー指摘）。</b>
+                // 残したままだと、出力先をわざと落とすテストが出す「検査に失敗した」の
+                // エラーとスタックトレースが<b>緑の CI ログへ毎回出る</b> ——
+                // docs/security.md が grep しろと教えているまさにその文字列なので、
+                // 読み手が見慣れて無視するようになる（標準エラー側だけ横取りしても、
+                // ILogger 経路がそのまま残っていた）
+                logging => logging
+                    .ClearProviders()
+                    .AddProvider(new CapturingLoggerProvider(captured, failLoggingWhen)),
                 // 差し替え用のソースを基底の設定より後ろへ積む
                 config => config.Add(settings))
         {

@@ -358,8 +358,13 @@ public class SecurityHeadersMiddlewareTests
             securityDoc, @"(?<name>max-age|s-maxage|stale-while-revalidate|stale-if-error)\s*=\s*(?<seconds>\d+)",
             RegexOptions.IgnoreCase))
         {
-            // 秒数として読み取る（この走査は数字にしか当たらないので必ず読める）
-            var seconds = int.Parse(lifetime.Groups["seconds"].Value);
+            // 秒数として読み取る。<b>int ではなく long で受ける（レビュー指摘）。</b>
+            // 走査が当たるのは数字だけだが、桁数までは保証していないので
+            // int だと OverflowException になり、失敗文言が案内ではなく生の例外になる
+            // ——定数側（TryParse ＋ 明示の失敗文言）と挙動をそろえる
+            Assert.True(
+                long.TryParse(lifetime.Groups["seconds"].Value, out var seconds),
+                $"docs/security.md のキャッシュ期間を秒数として読み取れません: {lifetime.Value}");
 
             // 上限は定数側と同じ 1 日（規則の値を 2 か所へ書き写さないため定数を使う）
             Assert.True(
@@ -373,9 +378,20 @@ public class SecurityHeadersMiddlewareTests
         //
         // <b>語そのものを禁じてはいけない。</b> この文書は「長期・`immutable` にはしません」と
         // 説明のために正しく使っており、一律に禁じると<b>正しい記述で赤くなる</b>
-        // （そういう検出網はいずれ緩められる）。カンマで他の指示とつながった形だけを見る
+        // （そういう検出網はいずれ緩められる）。
+        //
+        // <b>空白を挟まないカンマ隣接だけを見る（レビュー指摘）。</b> 以前は空白も
+        // 許していたため、「public, immutable などの指示は…」という<b>散文の列挙</b>でも
+        // 赤くなった ——直そうとしている失敗モードを自分で踏んでいた。
+        // 指示の値は空白を挟まずに書かれる（"public,max-age=3600"）ので、
+        // 隣接だけに絞れば実際の名乗りは拾え、散文は巻き込まない。
+        //
+        // <b>残っている境界</b>: "public, immutable" と空白付きで名乗る囮は拾えない。
+        // ただし immutable は<b>単体では効かない</b>（RFC 8246。新鮮さの指示を
+        // 修飾するものなので、害のある名乗りには必ず max-age 系が伴う）ため、
+        // その場合は上の期間の走査が囲みの有無を問わず拾う。
         Assert.False(
-            Regex.IsMatch(securityDoc, @"[A-Za-z0-9-]\s*,\s*immutable|immutable\s*,\s*[A-Za-z0-9-]", RegexOptions.IgnoreCase),
+            Regex.IsMatch(securityDoc, @"[A-Za-z0-9-],immutable|immutable,[A-Za-z0-9-]", RegexOptions.IgnoreCase),
             "docs/security.md が immutable を含むキャッシュ指示を載せています。"
                 + "版付きでない wwwroot/lib 配下を参照しているため、immutable を名乗ると"
                 + "脆弱性修正後も古いファイルを消す手段が無くなります。");
