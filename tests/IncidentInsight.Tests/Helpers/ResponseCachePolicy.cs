@@ -225,9 +225,17 @@ public static class ResponseCachePolicy
                     var declaringMethod = DeclaringMethodOf(method, SameKindAs(attribute, matches));
                     // その宣言が置かれている型を、名指しに使う形へそろえる
                     var declaringType = DeclarationSite(declaringMethod.DeclaringType!);
-                    // どのアクションに付いていたかが分かる表示名を作る
-                    var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}";
-                    // クラス側と同じキーの作り方（オーバーロードを分けるため宣言の同一性まで含める）
+                    // どのアクションに付いていたかが分かる表示名を作る。
+                    // <b>引数の型まで載せる（レビュー指摘）。</b> 載せないと、同じ名前の
+                    // オーバーロードが 2 つとも違反したとき失敗文言に<b>まったく同じ行が 2 本</b>並び、
+                    // 片方だけが違反なら名指しされたファイルを開いても<b>どちらを直すのか分からない</b>
+                    // ——このファイルが繰り返し塞いでいる「名指しされた場所に直すべき 1 か所が無い」形
+                    var declaredOn =
+                        $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}"
+                            + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
+                    // クラス側と同じキーの作り方（オーバーロードを分けるため宣言の同一性まで含める）。
+                    // 分けているのは<b>メタデータ行</b>であって表示名ではない ——表示名の作り方を
+                    // 変えてもキーの意味が動かないよう、同一性は今までどおりトークンで持つ
                     var key = DeclarationKey(
                         $"method:{declaredOn}(#{declaringMethod.MetadataToken})", attribute);
 
@@ -257,8 +265,9 @@ public static class ResponseCachePolicy
     ///
     /// <para><b>クラス側とアクション側で書き写さない（レビュー指摘）。</b> この走査は
     /// <c>SameKindAs</c>・門番・重複判定と、まったく同じクラス側／アクション側の非対称を
-    /// <b>3 度</b>踏んでいる。書き写すと「片方の枝だけを戻す」変異が書けてしまい、
-    /// そのたびに対の検査を足すことになる（§6 DRY）。</para>
+    /// <b>繰り返し</b>踏んでいる。書き写すと「片方の枝だけを戻す」変異が書けてしまい、
+    /// そのたびに対の検査を足すことになる（§6 DRY）。
+    /// <b>踏んだ数を書かない</b> ——対の検査を足すたびに数字だけが古くなる（CLAUDE.md §3）。</para>
     /// </remarks>
     /// <param name="seenHere">いま見ている観測場所で既に見たキー。</param>
     /// <param name="seen">走査全体で既に返したキー。</param>
@@ -365,9 +374,15 @@ public static class ResponseCachePolicy
     ///
     /// <para><b>直し方は「キーを位置まで含む形にする」だが、
     /// それだけでは足りない</b> ——宣言元をたどる
-    /// <see cref="DeclaringMethodOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
-    /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
-    /// <b>2 つをセットで見直すこと。</b></para>
+    /// <see cref="DeclaringTypeOf"/>（クラス側）と
+    /// <see cref="DeclaringMethodOf(MethodInfo, Func{object, bool})"/>（アクション側）も
+    /// 「その種類を宣言している最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
+    /// <b>キーと、鳴った経路のたどり方をセットで見直すこと。</b></para>
+    ///
+    /// <para><b>ここで経路を決め打たない（レビュー指摘）。</b> 門番はクラス側・アクション側の
+    /// どちらからも鳴るので、片方のたどり方だけを名指しすると、もう片方から鳴らされた読み手が
+    /// <b>関係の無いほうを読んで</b>本当に見直すべきたどり方を素通りする ——投げる文言から
+    /// 同じ決め打ちを外したのと同じ理由で、この説明（この repo が正本として扱う側）にも残さない。</para>
     /// </remarks>
     /// <param name="attribute">確かめる属性。</param>
     /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
@@ -416,7 +431,8 @@ public static class ResponseCachePolicy
     /// <b>宣言元をたどるときは、種類まで絞らないと別の属性で止まる。</b>
     /// <c>matches</c> が 2 種類以上に一致する述語（3 つ目のキャッシュ指示を見るように
     /// なるときの自然な形）だと、基底が A・派生が B を宣言している場合に
-    /// <c>DeclaringTypeOf</c> は A についても「派生が宣言している」と答える ——
+    /// 宣言元をたどる側（クラス側は <c>DeclaringTypeOf</c>、アクション側は
+    /// <c>DeclaringMethodOf</c>）は A についても「派生が宣言している」と答える ——
     /// 名指しされたファイルを開いても A が無く、直すべき 1 か所が出てこない。
     /// これは基底へ引き上げた宣言で一度直した形そのものなので、同じ轍を踏まない。
     /// </remarks>
@@ -426,6 +442,45 @@ public static class ResponseCachePolicy
     private static Func<object, bool> SameKindAs(object attribute, Func<object, bool> matches) =>
         // 元の条件を満たし、かつ型が同じものだけを「同じ宣言」と見なす
         candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
+
+    /// <summary>
+    /// 表示名に載せる<b>宣言の置き場所そのもの</b>のメソッドを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para>閉じた総称型（<c>G&lt;int&gt;</c> / <c>G&lt;string&gt;</c>）から見たメソッドは、
+    /// 引数の型も閉じ方ごとに違う姿（<c>Int32</c> / <c>String</c>）で見える。そのまま表示名に
+    /// 載せると、<b>1 つの宣言</b>が閉じ方によって別の名前で報告され、どの閉じ方を先に観測したかで
+    /// 文言が変わる ——名指しは開いた総称定義へそろえてあるのに、引数だけが具象のままになる。</para>
+    ///
+    /// <para>メタデータ行は閉じ方によらず同じなので、その行をモジュールから引き直せば
+    /// 宣言そのもの（<c>Export(TModel)</c>）に戻せる。引き直せない綴りでは
+    /// 受け取ったメソッドをそのまま使う（表示名が具象寄りになるだけで、報告は成り立つ）。</para>
+    /// </remarks>
+    /// <param name="declaringMethod">属性を実際に宣言しているメソッド。</param>
+    /// <returns>宣言が置かれている場所のメソッド。</returns>
+    private static MethodBase DeclarationSiteMethod(MethodInfo declaringMethod)
+    {
+        // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
+        if (declaringMethod.DeclaringType?.IsGenericType != true) return declaringMethod;
+
+        try
+        {
+            // メタデータ行から宣言そのものを引き直す(引けなければ受け取った側を使う)
+            return declaringMethod.Module.ResolveMethod(declaringMethod.MetadataToken) ?? declaringMethod;
+        }
+        catch (ArgumentException)
+        {
+            // 引き直せない綴りでは、受け取ったメソッドをそのまま表示名に使う
+            return declaringMethod;
+        }
+    }
+
+    /// <summary>メソッドの引数の型を、表示名へ載せる 1 語にする。</summary>
+    /// <param name="method">引数を並べるメソッド。</param>
+    /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
+    private static string ParameterTypeList(MethodBase method) =>
+        // 型の単純名だけを並べる(名前空間まで載せると 1 行が読めない長さになる)
+        string.Join(", ", method.GetParameters().Select(parameter => parameter.ParameterType.Name));
 
     /// <summary>
     /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
