@@ -331,8 +331,13 @@ public class SecurityHeadersMiddlewareTests
 
     // 囲みの無い地の文から期間の指示を拾う綴り。
     // <b>名前は MaxAgeFamilyPrefixes から導く</b>（末尾の "=" を外して並べる）——
-    // 書き下すと、定数へ指示を足したときにこちらだけが古くなる
-    private static readonly string LifetimeDirectivePattern =
+    // 書き下すと、定数へ指示を足したときにこちらだけが古くなる。
+    //
+    // <b>フィールドではなく、その都度組み立てるプロパティにしてある（レビュー指摘）。</b>
+    // フィールドにすると同じクラスの静的フィールドの<b>宣言順</b>に依存し、
+    // 見た目を整えるだけの並べ替えで MaxAgeFamilyPrefixes がまだ null のまま評価され、
+    // クラス全体のテストが「どこが悪いのか分からない TypeInitializationException」で赤くなる
+    private static string LifetimeDirectivePattern =>
         // 直前が英数字やハイフンなら別の指示の一部（"surrogate-max-age=" 等）なので拾わない
         @"(?<![A-Za-z0-9-])"
         + $"(?<name>{string.Join('|', MaxAgeFamilyPrefixes.Select(p => Regex.Escape(p.TrimEnd('='))))})"
@@ -603,31 +608,84 @@ public class SecurityHeadersMiddlewareTests
         return at < doc.Length && doc[at] == ',';
     }
 
-    /// <summary>その一致が「実際に名乗る」と述べている文の中にあるかを見る。</summary>
+    /// <summary>その一致が「実際に名乗る」と述べている箇条書きの中にあるかを見る。</summary>
     /// <remarks>
-    /// <b>行の単位で見る。</b> 文書は箇条書きで書かれており、1 つの名乗りは 1 行に収まる。
-    /// 段落全体へ広げると、同じ段落にある無関係な名乗りの文が反例まで肯定文に見せてしまう。
+    /// <b>行ではなく箇条書きの単位で見る（レビュー指摘）。</b> 行だけを見ていたため、
+    /// <b>この文書自身がすでに使っている折り返し</b>（動詞が次の行へ回る書き方）では
+    /// 肯定の目印が見つからず、3 つの走査すべてがその名乗りを読み飛ばしていた ——
+    /// 実際、既存の <c>no-store</c> の名乗りが対象から外れており、
+    /// 「2 件とも確かめた」つもりで 1 件しか見ていなかった。
+    /// 折り返した囮を置けば、長期・<c>immutable</c> の名乗りを載せたまま全件緑になる。
     /// </remarks>
     /// <param name="doc">文書全体。</param>
     /// <param name="index">一致の開始位置。</param>
-    /// <returns>肯定的な名乗りの文の中なら <c>true</c>。</returns>
+    /// <returns>肯定的な名乗りの箇条書きの中なら <c>true</c>。</returns>
     private static bool IsAffirmativeClaim(string doc, int index)
     {
-        // その一致が載っている行の先頭を探す
-        var start = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
-        // その行の終わりを探す
-        var end = doc.IndexOf('\n', index);
-        // 見つからなければ文書の末尾までが 1 行
-        if (end < 0) end = doc.Length;
+        // その一致が載っている箇条書き 1 つ分を切り出し、<b>空白と改行を落としてから</b>見る。
+        //
+        // <b>落とさないと折り返しで目印が割れる。</b> この文書は動詞の手前で行を折る
+        // 書き方（"… を\n  名乗ります"）を実際に使っており、そのままだと
+        // 「を名乗」という 3 文字が改行とインデントで分断されて見つからない
+        // ——箇条書き単位にしただけでは、折り返した名乗りを読み飛ばしたままになる（実測）。
+        // 日本語の地の文に意味のある空白は無いので、落とす代償は無い。
+        var bullet = RemoveWhitespace(EnclosingBullet(doc, index));
 
-        // その行を切り出す
-        var line = doc[start..end];
+        // 「そうしない」と述べている箇条書きは、反例なので対象にしない
+        if (NegatedClaimMarkers.Any(marker => bullet.Contains(marker, StringComparison.Ordinal))) return false;
 
-        // 「そうしない」と述べている行は、反例なので対象にしない
-        if (NegatedClaimMarkers.Any(marker => line.Contains(marker, StringComparison.Ordinal))) return false;
+        // 肯定的な名乗りの目印が 1 つでもあれば、その箇条書きは「実際に名乗る」と述べている
+        return AffirmativeClaimMarkers.Any(marker => bullet.Contains(marker, StringComparison.Ordinal));
+    }
 
-        // 肯定的な名乗りの目印が 1 つでもあれば、その文は「実際に名乗る」と述べている
-        return AffirmativeClaimMarkers.Any(marker => line.Contains(marker, StringComparison.Ordinal));
+
+    /// <summary>空白と改行をすべて取り除く（折り返しで目印が割れないようにするため）。</summary>
+    /// <param name="text">元の文字列。</param>
+    /// <returns>空白を 1 つも含まない文字列。</returns>
+    private static string RemoveWhitespace(string text) =>
+        // 空白でない文字だけをつなぎ直す
+        string.Concat(text.Where(ch => !char.IsWhiteSpace(ch)));
+
+    /// <summary>指定位置を含む箇条書き 1 つ分を切り出す。</summary>
+    /// <remarks>
+    /// 境目は行頭の <c>"- "</c>（<see cref="StaticAssetCachingBullet"/> と同じ規則）。
+    /// 箇条書きの外（地の文）にある一致は、その行だけを返す。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">含めたい位置。</param>
+    /// <returns>切り出した範囲。</returns>
+    private static string EnclosingBullet(string doc, int index)
+    {
+        // 行へ分ける（境目は行頭の "- " で決まる）
+        var lines = doc.Split('\n');
+
+        // 位置を含む行が何行目かを数える
+        var lineIndex = 0;
+        // 消費した文字数（改行 1 文字ぶんを含める）
+        var consumed = 0;
+        // 位置を含む行に当たるまで進める
+        while (lineIndex < lines.Length - 1 && consumed + lines[lineIndex].Length < index)
+        {
+            // その行と改行 1 文字ぶんを消費する
+            consumed += lines[lineIndex].Length + 1;
+            // 次の行へ
+            lineIndex++;
+        }
+
+        // その行から上へたどって、箇条書きの先頭を探す
+        var start = lineIndex;
+        // 行頭が "- " の行に当たるまで戻る
+        while (start > 0 && !lines[start].StartsWith("- ", StringComparison.Ordinal)) start--;
+        // 箇条書きの外（地の文）なら、位置を含む行だけを見る
+        if (!lines[start].StartsWith("- ", StringComparison.Ordinal)) start = lineIndex;
+
+        // 次の箇条書きの手前（または文書の末尾）までが 1 つ分
+        var end = start + 1;
+        // 次の "- " に当たるまで進める
+        while (end < lines.Length && !lines[end].StartsWith("- ", StringComparison.Ordinal)) end++;
+
+        // 切り出した範囲を 1 本の文字列に戻して返す
+        return string.Join('\n', lines[start..end]);
     }
 
     /// <summary>運用者向けのセキュリティ文書を読む。</summary>
