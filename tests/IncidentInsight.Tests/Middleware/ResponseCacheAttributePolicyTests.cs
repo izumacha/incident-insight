@@ -1213,8 +1213,11 @@ public class ResponseCacheAttributePolicyTests
 
     // 実在の入口が、<b>実在の「中を見ない入れ物」の表</b>を判定へ渡していること。
     //
-    // 上の検査は合成の判定を渡すので、<b>実在の入口が渡し忘れても</b>緑のまま通る
-    // （渡し忘れると既定の null になり、危ない案内へ静かに戻る）。
+    // <b>何を守っているか。</b> 判定を渡すこと自体はコンパイラが強制する（既定値を持たせて
+    // いない）が、<b>何を渡すか</b>は強制できない ——実在の入口が
+    // `IsOpaqueStaticDirectory` ではなく `_ => false` を渡す差分は、合成入力だけを見る
+    // 上の検査では緑のまま通り、`wwwroot/LIB` は「ただ綴りをそろえてください」という
+    // 危ない案内へ静かに戻る。ここはその 1 点だけを見る。
     [Fact]
     public void FindUnapprovedStaticAssets_PassesTheRealOpaqueTableThrough()
     {
@@ -1356,8 +1359,13 @@ public class ResponseCacheAttributePolicyTests
         // 「そろえれば片付く」とは読めないこと(そろえると検査から外れることを明示する)
         Assert.Contains("検査の対象から外れ", opaqueTarget, StringComparison.Ordinal);
 
-        // こちらでも表へ登録する案内は出さないこと
-        Assert.DoesNotContain(nameof(ApprovedStaticDirectories), opaqueTarget, StringComparison.Ordinal);
+        // こちらでも「表へ登録してください」という案内は出さないこと
+        Assert.DoesNotContain("理由を添えて登録します", opaqueTarget, StringComparison.Ordinal);
+
+        // 逆に、こぼれ出た中身を登録して黙らせないよう<b>止める</b>こと。
+        // 止めないと、綴りをそろえる判断をしないまま CDN の取得物の種類が
+        // 種別の表へ入り、その登録は<b>すべての入れ物に効く</b>(検出網が一斉に広がる)
+        Assert.Contains("登録して黙らせないでください", opaqueTarget, StringComparison.Ordinal);
 
         // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
         Assert.Contains("LIB", both, StringComparison.Ordinal);
@@ -1475,7 +1483,7 @@ public class ResponseCacheAttributePolicyTests
         // 文言が原因ごとに固有であること(使い回すと 2 つの原因が同じ 1 件に見える)
         Assert.Equal(texts.Count, texts.Distinct(StringComparer.Ordinal).Count());
 
-        // 直し方が 2 種類とも実際に使われていること(片方だけなら出し分けが死んでいる)
+        // 直し方がどれも実際に使われていること(使われない種類があれば出し分けが死んでいる)
         Assert.Equal(Enum.GetValues<RepairKind>().Length, repairs.Distinct().Count());
 
         // すべての直し方に案内があること(足し忘れは対応表が例外を投げて落ちる)
@@ -1539,6 +1547,48 @@ public class ResponseCacheAttributePolicyTests
             "英字を含むキーが無く、比較器を確かめられなかった表があります: "
                 + string.Join(", ", unprobed)
                 + "。大小を区別する比較器で作られていることを別の方法で固定してください。");
+    }
+
+    // 導出が、<b>判定が実際に使っている表</b>を 1 つも取りこぼしていないこと。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 導出に掛かっているのは
+    // 「1 つも導けなければ落とす」だけなので、条件を狭めて表を 1 つ落としても
+    // <b>全件緑のまま・テスト件数も不変</b>で通る（実測: 名前の前方一致を足すと
+    // OpaqueStaticDirectories が 3 つの表検査すべてから同時に消えた）。
+    // CLAUDE.md が LengthGovernedTypes_CoverEveryOwnedDbSet で確立した
+    // 「導出が効いているかは<b>導出とは独立な手がかり</b>で照合する」を当てる ——
+    // ここでの独立な手がかりは「判定と走査が実際に読んでいる表」。
+    //
+    // 床(最低限これだけは入っている)としてだけ働くので、表を足す側は
+    // 何もしなくてよい（新しい表は導出が自動で拾う）。
+    [Fact]
+    public void StaticAssetTables_CoverEveryTableTheCheckerActuallyReads()
+    {
+        // 導出が返した表の名前を集める
+        var derived = StaticAssetTables().Select(table => table.Name).ToList();
+
+        // 判定と走査が実際に読んでいる表(コードから名前を取るので、改名にも追随する)
+        var used = new[]
+        {
+            // FindUnapprovedStaticAssets が入れ物の承認に読む
+            nameof(ApprovedStaticDirectories),
+            // IsOpaqueStaticDirectory が中へ降りるかの判断に読む
+            nameof(OpaqueStaticDirectories),
+            // FindUnapprovedStaticAssets が直下のファイルの承認に読む
+            nameof(ApprovedStaticRootFiles),
+            // FindUnapprovedStaticAssets が種類の承認に読む
+            nameof(ApprovedStaticFileExtensions),
+        };
+
+        // 導出から漏れた表を、名指しの一覧付きで集める
+        var missing = used.Where(name => !derived.Contains(name, StringComparer.Ordinal)).ToList();
+
+        // 1 つも無いことを確認する(漏れた表は 3 つの表検査すべてから同時に消える)
+        Assert.True(
+            missing.Count == 0,
+            "判定が読んでいる表が、表そのものの検査の導出から漏れています: "
+                + string.Join(", ", missing)
+                + "。漏れた表は理由・大小衝突・比較器の検査すべてから同時に外れます。");
     }
 
     // 大小衝突の検出そのものが、拾う側と見逃さない側の両方で働くこと。
@@ -1750,7 +1800,10 @@ public class ResponseCacheAttributePolicyTests
         // 表へ新しい行を足すと同じ資産が 2 度承認されるので、どちらかの綴りへそろえる。
         // <b>どちらが正しいかは決め打たない</b>(名前が外部で決まっている資産もある)
         RepairKind.AlignSpelling =>
-            $"「{CauseText(UnapprovedCause.MiscasedApprovedAsset)}」ものは表へ新しい行を足さず"
+            // <b>特定の原因のラベルを焼き込まない（レビュー指摘）。</b> 同じ直し方を共有する
+            // 原因が 2 つ目になった瞬間、一覧には出ていないラベルを引用する案内になり、
+            // 読み手は「自分の項目には当てはまらない」と読む
+            "綴りの大小だけが違うものは表へ新しい行を足さず"
                 + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
                 + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
                 + "入れ物の綴りが違う場合はその中身も未承認として並びます。",
@@ -1768,9 +1821,12 @@ public class ResponseCacheAttributePolicyTests
                 // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
                 // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
                 + "この入れ物は綴りが違うぶん中まで走査されるため、その中身も未承認として"
-                + "並びます。並んだ中身の種類を "
-                + $"{nameof(ApprovedStaticFileExtensions)} へ登録して黙らせないでください"
-                + "(種別の登録はすべての入れ物に効くので、検出網が一斉に広がります)。"
+                + "並びます(中のファイルは種類として、ネストした入れ物は入れ物として)。"
+                + "並んだ中身を "
+                + $"{nameof(ApprovedStaticFileExtensions)} や "
+                + $"{nameof(ApprovedStaticDirectories)} へ登録して黙らせないでください"
+                + "(とくに種別の登録はすべての入れ物に効くので、検出網が一斉に広がります。"
+                + "入れ物の登録も、綴りをそろえる判断をしないままその入れ物を検査から外します)。"
                 + "先にこの入れ物の扱いを決めてから、残りを確認してください。",
         // 足し忘れを黙って通さない(案内の無い失敗文言を出さない)
         _ => throw new NotSupportedException($"{repair} に対応する案内がありません。"),
@@ -1839,14 +1895,18 @@ public class ResponseCacheAttributePolicyTests
         // この型が自分で宣言している静的なフィールドをすべて見る
         var tables = typeof(ResponseCacheAttributePolicyTests)
             .GetFields(BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
-            // 「名前 → 理由」の形の表だけを拾う(承認表はすべてこの形)
-            .Where(field => field.FieldType == typeof(IReadOnlyDictionary<string, string>))
             // 読み手に分かる並びにする(宣言順はリフレクションでは保証されない)
             .OrderBy(field => field.Name, StringComparer.Ordinal)
-            // 表の名前と中身の組にする
-            .Select(field => (
-                field.Name,
-                Entries: (IReadOnlyDictionary<string, string>)field.GetValue(null)!))
+            // 「名前 → 理由」の形の表だけを拾う。<b>宣言型ではなく値の型で見る（レビュー指摘）。</b>
+            // 宣言型の完全一致にすると、5 つ目の表をいちばん自然な形
+            // (`private static readonly Dictionary<string, string> ...`)で足した人の表が
+            // 黙って 3 つの検査すべてから外れる ——「手書きの包含リスト」を
+            // 「手書きの宣言型」へ置き換えただけで、登録忘れが素通りする形は残る
+            .Select(field => (field.Name, Entries: field.GetValue(null) as IReadOnlyDictionary<string, string>))
+            // 表でないフィールドは落とす
+            .Where(table => table.Entries is not null)
+            // null でないことが確定したので、そのまま組にする
+            .Select(table => (table.Name, Entries: table.Entries!))
             .ToList();
 
         // 1 つも導けないなら走査が壊れている(「見るべき対象ゼロ＝緑」を避ける)
