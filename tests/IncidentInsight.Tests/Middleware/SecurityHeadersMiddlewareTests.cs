@@ -385,17 +385,17 @@ public class SecurityHeadersMiddlewareTests
         // (b) 目印を要求した件数（空振りの照合に使う）
         var required = 0;
 
-        // 期間の指示を、囲みの有無を問わず走査する
-        foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
+        // 長期化につながる指示を、囲みの有無を問わず走査する
+        foreach (Match directive in Regex.Matches(securityDoc, MarkerRequiredDirectivePattern, RegexOptions.IgnoreCase))
         {
-            // キャッシュの指示として書かれているものだけを見る（HSTS 等を巻き込まない）
-            if (!IsCacheDirectiveContext(securityDoc, lifetime)) continue;
+            // キャッシュの名乗りとして書かれているものだけを見る（HSTS や地の文を巻き込まない）
+            if (!RequiresMarker(securityDoc, directive)) continue;
 
             // 目印を 1 件要求したことを控える
             required++;
 
             // 目印が無ければ落ちる（付いていれば名乗り／反例のどちらかに決まっている）
-            ClaimKindAfter(securityDoc, lifetime.Index + lifetime.Length, lifetime.Value);
+            ClaimKindAfter(securityDoc, directive.Index + directive.Length, directive.Value);
         }
 
         // <b>この枝も「1 件も見ていない」状態を落とす。</b>
@@ -409,23 +409,66 @@ public class SecurityHeadersMiddlewareTests
                 + "（このまま緑にすると、目印を付けない囮が素通りします）。");
     }
 
-    /// <summary>その期間の指示が、キャッシュの指示として書かれているかを見る。</summary>
+    /// <summary>目印を要求する綴り（期間の指示と <c>immutable</c>）。</summary>
     /// <remarks>
-    /// <b>カンマ隣接だけでは足りない（レビュー指摘）。</b> 指示が 1 つだけの名乗り
-    /// （"Cache-Control: max-age=31536000 を名乗ります"）はカンマを持たないので、
-    /// 目印を要求する前に読み飛ばされていた（実測で 1 年のキャッシュが素通りした）。
-    /// <b>HSTS を巻き込まないことが要点</b>で、あちらはセミコロン区切りかつ
-    /// 同じ行に <c>Cache-Control</c> が現れないので、次のどちらかで足りる:
-    /// 同じ行に <c>Cache-Control</c> があるか、カンマで他の指示とつながっているか。
+    /// <b><c>immutable</c> も走査する（レビュー指摘）。</b> 期間の指示だけを走査していたころは、
+    /// <c>public,immutable</c>（RFC 8246 上、<c>max-age</c> 無しでも成立する）を名乗る文が
+    /// 目印を 1 つも要求されず、判定にも渡されなかった（実測で全件緑）。
+    /// </remarks>
+    private static string MarkerRequiredDirectivePattern =>
+        // 期間の指示か、単語としての immutable
+        LifetimeDirectivePattern
+            + $"|(?<![A-Za-z0-9-]){Regex.Escape(ForbiddenDirective)}(?![A-Za-z0-9-])";
+
+    /// <summary>その指示が、目印を要求すべき「キャッシュの名乗り」かを見る。</summary>
+    /// <remarks>
+    /// <b>綴りの種類で判定を分ける。</b> 両方に同じ規則を当てると、どちらかの穴が必ず残る:
+    /// <list type="bullet">
+    /// <item><b>期間の指示</b>は値付き（<c>max-age=3600</c>）なので地の文にはまず現れない。
+    /// だから<b>他のヘッダーを名乗っていない限り</b>名乗りとして扱う。
+    /// 行内の <c>Cache-Control</c> やカンマ隣接だけを見る形だと、
+    /// ヘッダー名が<b>折り返しで前の行へ回った名乗り</b>が目印を要求されない
+    /// （実測で全件緑。この文書は折り返しが多いので現実的な形）。
+    /// HSTS は <c>Strict-Transport-Security:</c> と名乗るのでこの規則で外れる。</item>
+    /// <item><b><c>immutable</c></b> は単語なので地の文にも現れる
+    /// （この文書は「長期・<c>immutable</c> にはしません」と正しく使っている）。
+    /// 同じ規則を当てると<b>正しい文書で赤くなる</b>ので、名乗りの手がかり
+    /// （他の指示とカンマでつながる／同じ行で <c>Cache-Control</c> を名指す）があるときだけ見る。</item>
+    /// </list>
     /// </remarks>
     /// <param name="doc">文書全体。</param>
-    /// <param name="match">期間の指示への一致。</param>
-    /// <returns>キャッシュの指示として書かれているなら <c>true</c>。</returns>
-    private static bool IsCacheDirectiveContext(string doc, Match match) =>
-        // 同じ行に Cache-Control と書かれているか
-        LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
-        // カンマで他の指示とつながっているか
-        || IsCommaAdjacent(doc, match);
+    /// <param name="match">指示への一致。</param>
+    /// <returns>目印を要求すべきなら <c>true</c>。</returns>
+    private static bool RequiresMarker(string doc, Match match) =>
+        // 期間の指示なら、他のヘッダーを名乗っていない限り名乗りとして扱う
+        Regex.IsMatch(match.Value, LifetimeDirectivePattern, RegexOptions.IgnoreCase)
+            ? !NamesAnotherHeader(doc, match)
+            // immutable は地の文にも現れるので、名乗りの手がかりがあるときだけ見る
+            : LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
+                || IsCommaAdjacent(doc, match);
+
+    /// <summary>その指示の手前で、<c>Cache-Control</c> 以外のヘッダー名を名乗っているかを見る。</summary>
+    /// <remarks>
+    /// HSTS（<c>Strict-Transport-Security: max-age=31536000; includeSubDomains</c>）のように、
+    /// キャッシュと無関係なヘッダーが同じ綴りの期間を持つことがある。
+    /// <b>行内に <c>Cache-Control</c> が無いことを除外の根拠にしない</b>のが要点で、
+    /// それだとヘッダー名が前の行へ回った名乗りまで除外してしまう。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="match">指示への一致。</param>
+    /// <returns>他のヘッダー名を名乗っているなら <c>true</c>。</returns>
+    private static bool NamesAnotherHeader(string doc, Match match)
+    {
+        // その指示の直前にある、同じ行の綴り
+        var before = DirectiveRunBefore(doc, match.Index);
+
+        // "<名前>:" の形を探す
+        var header = Regex.Match(before, "(?<name>[A-Za-z][A-Za-z0-9-]*)[ \t]*:");
+
+        // 見つかり、かつ Cache-Control 以外なら真
+        return header.Success
+            && !header.Groups["name"].Value.Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>ヘッダー名（文脈の判定に使う）。</summary>
     private const string CacheControlHeaderName = "Cache-Control";
@@ -456,18 +499,27 @@ public class SecurityHeadersMiddlewareTests
     /// <param name="doc">文書全体。</param>
     /// <param name="tagIndex">目印の開始位置。</param>
     /// <returns>指示の並び（囲みとヘッダー名を取り除いたもの）。</returns>
-    private static string DirectiveListBefore(string doc, int tagIndex)
+    private static string DirectiveListBefore(string doc, int tagIndex) =>
+        // 切り出した綴りから、囲みとヘッダー名を取り除く
+        StripDirectiveDecoration(DirectiveRunBefore(doc, tagIndex));
+
+    /// <summary>その位置の直前にある、同じ行の指示の綴りをそのまま切り出す。</summary>
+    /// <remarks>目印から並びを取る側と、ヘッダー名を見る側が同じ遡り方を共有する（§6 DRY）。</remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">遡り始める位置。</param>
+    /// <returns>切り出した綴り（囲み・ヘッダー名を含む）。</returns>
+    private static string DirectiveRunBefore(string doc, int index)
     {
         // 同じ行の中だけを遡る
-        var lineStart = doc.LastIndexOf('\n', Math.Max(tagIndex - 1, 0)) + 1;
+        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
 
         // 指示の並びを構成しうる文字の間だけ遡る
-        var at = tagIndex;
+        var at = index;
         // 行の先頭に着くまで
         while (at > lineStart && IsDirectiveListCharacter(doc[at - 1])) at--;
 
-        // 切り出した綴りから、囲みとヘッダー名を取り除く
-        return StripDirectiveDecoration(doc[at..tagIndex]);
+        // 遡った分をそのまま返す
+        return doc[at..index];
     }
 
     /// <summary>切り出した綴りから、囲み（バッククォート）とヘッダー名を取り除く。</summary>

@@ -64,6 +64,26 @@ public sealed class AllowedHostsWarningReporter(
     public const string SubscribeFailedMessagePrefix =
         "Failed to subscribe to configuration reloads for AllowedHosts";
 
+    /// <summary>検査そのものに失敗したときに残す記録の全文。</summary>
+    /// <remarks>
+    /// <b>文面を <c>Program.cs</c> に置かない（レビュー指摘）。</b> あそこは
+    /// <c>if (!IsDevelopment())</c> の中なのでテストから 1 行も走らず、
+    /// 「次の再読み込みまで古いかもしれない」と「起動時の値しか映さない」を
+    /// <b>入れ替えても全件緑のまま通る</b> —— 運用者には実際と逆の縮退が伝わる。
+    /// こちらへ寄せれば、検査側の全文は起動テストがそのまま照合する。
+    /// </remarks>
+    public const string CheckFailedMessage =
+        CheckFailedMessagePrefix
+        + ". The permissive/never-matching warnings may be stale until the next "
+        + "configuration reload (issue #64).";
+
+    /// <summary>再読み込みの購読を張れなかったときに残す記録の全文。</summary>
+    /// <remarks>置き場所の理由は <see cref="CheckFailedMessage"/> と同じ。</remarks>
+    public const string SubscribeFailedMessage =
+        SubscribeFailedMessagePrefix
+        + ". The permissive/never-matching warnings will only reflect the value seen at "
+        + "startup (issue #64).";
+
     // 複数のスレッドから同時に呼ばれても、判定と記録が食い違わないようにする錠
     // (再読み込みの通知はアプリのスレッドプールから届き、起動時の呼び出しと重なりうる)
     private readonly object _gate = new();

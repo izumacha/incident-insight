@@ -22,18 +22,18 @@ namespace IncidentInsight.Tests.Models;
 /// </remarks>
 public class AllowedHostsWarningReporterTests
 {
+    // <b>定数をそのまま渡す（レビュー指摘）。</b> 以前は定数の<b>名前</b>を渡して
+    // リフレクションで値を引いていたが、`const string` は InlineData にそのまま書けるので
+    // 「綴りを書き写さない」目的は同じく満たせる。しかもリフレクション版にだけある壊れ方があり、
+    // `const` を `static readonly` へ直すだけで GetRawConstantValue が投げ、
+    // <b>drift ではなくリフレクションの失敗</b>として赤くなる
     [Theory]
     // 検査そのものが失敗したときの記録
-    [InlineData(nameof(AllowedHostsWarningReporter.CheckFailedMessagePrefix))]
+    [InlineData(AllowedHostsWarningReporter.CheckFailedMessagePrefix)]
     // 再読み込みの購読を張れなかったときの記録
-    [InlineData(nameof(AllowedHostsWarningReporter.SubscribeFailedMessagePrefix))]
-    public void DiagnosticMarkers_AppearInTheOperatorRunbook(string constantName)
+    [InlineData(AllowedHostsWarningReporter.SubscribeFailedMessagePrefix)]
+    public void DiagnosticMarkers_AppearInTheOperatorRunbook(string marker)
     {
-        // 名前から定数の値を取り出す(テストへ綴りを書き写さないため)
-        var marker = (string)typeof(AllowedHostsWarningReporter)
-            .GetField(constantName)!
-            .GetRawConstantValue()!;
-
         // 運用者向けドキュメントを読む（パスの正本は RepositoryPaths）
         var securityDoc = File.ReadAllText(RepositoryPaths.SecurityDoc);
 

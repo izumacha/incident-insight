@@ -53,8 +53,11 @@ public class AllowedHostsStartupWarningTests
     // 2 本目（一致しえない項目）の警告を見分ける目印（同上）
     private const string DeadEntryWarningMarker = "AllowedHosts contains";
 
-    // 検査そのものが失敗したときに残る記録の目印（起動時・再読み込みで共通。同上）
-    private const string CheckFailureMarker = "Failed to check AllowedHosts";
+    // 検査そのものが失敗したときに残る記録の全文（起動時・再読み込みで共通）。
+    // <b>綴りを書き写さず本体の定数を読む（レビュー指摘）。</b> 写しを持つと、
+    // 文面を変えたときに<b>テスト側を名指す失敗</b>が 3 箇所で同時に出る。
+    // 全文を見るのは、書き出しだけでは「どう縮退したか」の尾を誰も見ていなかったため（同上）
+    private const string CheckFailureMarker = AllowedHostsWarningReporter.CheckFailedMessage;
 
     // 出力先を落とすテスト用プロバイダが投げる例外の文面（テスト double であることが
     // ログに出たときに読み手へ伝わるよう、固定の綴りにしてある）。

@@ -440,9 +440,7 @@ if (!app.Environment.IsDevelopment())
             // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
             ReportDiagnosticFailure(
                 ex,
-                AllowedHostsWarningReporter.CheckFailedMessagePrefix +
-                ". The permissive/never-matching warnings may be stale until the next " +
-                "configuration reload (issue #64).");
+                AllowedHostsWarningReporter.CheckFailedMessage);
         }
     }
 
@@ -481,9 +479,7 @@ if (!app.Environment.IsDevelopment())
         // 置いた catch が、まさにその形になる
         ReportDiagnosticFailure(
             ex,
-            AllowedHostsWarningReporter.SubscribeFailedMessagePrefix +
-            ". The permissive/never-matching warnings will only reflect the value seen at " +
-            "startup (issue #64).");
+            AllowedHostsWarningReporter.SubscribeFailedMessage);
     }
 
     // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
