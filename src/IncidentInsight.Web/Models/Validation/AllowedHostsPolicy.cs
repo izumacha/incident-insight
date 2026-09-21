@@ -1043,11 +1043,11 @@ public static class AllowedHostsPolicy
     /// </returns>
     private static string MakeInvisibleCharactersVisible(string value)
     {
-        // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
-        if (!value.Any(NeedsRewriting)) return value;
-
-        // 置き換えが要るときだけ組み立てる
+        // 組み立て先（走り終えて何も置き換えていなければ捨てる）
         var builder = new StringBuilder(value.Length);
+
+        // 1 文字でも置き換えたか（置き換えていなければ元の文字列をそのまま返す）
+        var rewritten = false;
 
         // <b>符号単位ではなくコードポイント単位で見る（レビュー指摘）。</b>
         // 1 文字（char）ずつ見ると、BMP の外にある文字は<b>サロゲートの片割れ</b>として
@@ -1063,8 +1063,10 @@ public static class AllowedHostsPolicy
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
             if (unit == Backslash)
             {
-                // 二重化して次へ
+                // 二重化する
                 builder.Append("\\\\");
+                // 置き換えたことを控えて次へ
+                rewritten = true;
                 continue;
             }
 
@@ -1077,7 +1079,14 @@ public static class AllowedHostsPolicy
                 var rune = new Rune(unit, value[index + 1]);
 
                 // 字として現れないなら 8 桁で、そうでなければそのまま出す
-                if (NeedsEscaping(rune)) builder.Append("\\U").Append(rune.Value.ToString("X8"));
+                if (NeedsEscaping(rune))
+                {
+                    // 8 桁の綴りへ置き換える
+                    builder.Append("\\U").Append(rune.Value.ToString("X8"));
+                    // 置き換えたことを控える
+                    rewritten = true;
+                }
+                // 読める文字なので 2 符号単位をそのまま出す
                 else builder.Append(unit).Append(value[index + 1]);
 
                 // 2 符号単位を消費したので 1 つ余分に進める
@@ -1091,6 +1100,8 @@ public static class AllowedHostsPolicy
             {
                 // 片割れをそのままコードポイントとして出す
                 builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控えて次へ
+                rewritten = true;
                 continue;
             }
 
@@ -1098,42 +1109,29 @@ public static class AllowedHostsPolicy
             var single = new Rune(unit);
 
             // 字として現れないなら 4 桁で、そうでなければそのまま出す
-            if (NeedsEscaping(single)) builder.Append("\\u").Append(((int)unit).ToString("X4"));
+            if (NeedsEscaping(single))
+            {
+                // 4 桁の綴りへ置き換える
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控える
+                rewritten = true;
+            }
+            // 読める文字なのでそのまま出す
             else builder.Append(unit);
         }
 
-        // 可視化した綴りを返す
-        return builder.ToString();
+        // 1 つも置き換えていないなら、組み立てた綴りは元と同じなので元をそのまま返す
+        // （<b>ここが唯一の判定</b>。以前は「置き換えるものがあるか」を先に 1 度見てから
+        // 組み立てていたが、条件が 2 か所に分かれるため、片方だけを広げた変更が
+        // 「広げたはずの文字が早期 return に拾われて素通りする」向きに壊れうる形だった。
+        // しかも 1 文字ずつ見る述語では<b>対になったサロゲートを判断できない</b>ため、
+        // 読めるだけの絵文字 1 つで早期 return が必ず外れていた＝レビュー指摘）
+        return rewritten ? builder.ToString() : value;
     }
-
-    /// <summary>
-    /// その 1 文字を、元のまま出してはいけないか（＝何らかの書き換えが要るか）を判定する。
-    /// </summary>
-    /// <remarks>
-    /// <b>「書き換えが 1 つでもあるか」を先に見る早期 return が使う判定。</b>
-    /// 書き換えの種類は 2 つある ——読めない文字は <c>\uXXXX</c> へ、逆斜線は二重化する ——ので、
-    /// 早期 return はその<b>和</b>を見る必要がある。
-    ///
-    /// <b>以前はここを書き下していた（レビュー指摘）。</b> 早期 return 側だけが
-    /// <c>NeedsEscaping(ch) || ch == '\\'</c> と書かれていたため、
-    /// <see cref="NeedsEscaping"/> を切り出した理由（条件を 2 か所へ書き写さない）が
-    /// <b>逆斜線の側についてはそのまま残っていた</b>。二重化する文字を 1 つ足す人が
-    /// 早期 return 側を直し忘れると、「他に書き換えるものが無い値」では
-    /// <b>組み立てに入らず素通りする</b> ——広げたはずの規則が黙って元へ戻る向きの壊れ方になる。
-    /// </remarks>
-    /// <param name="ch">判定する 1 文字。</param>
-    /// <returns>何らかの書き換えが要るなら <c>true</c>。</returns>
-    private static bool NeedsRewriting(char ch) =>
-        // 二重化する逆斜線か、
-        ch == Backslash
-        // 対になっているかを 1 文字だけでは決められないサロゲート（組み立て側が判断する）か、
-        || char.IsSurrogate(ch)
-        // 字として現れない文字なら書き換えが要る
-        || (Rune.TryCreate(ch, out var rune) && NeedsEscaping(rune));
 
     /// <summary>二重化して出す文字（逆斜線）。</summary>
     /// <remarks>
-    /// 名前を付けているのは、<see cref="NeedsRewriting"/> と組み立ての 2 か所が
+    /// 名前を付けているのは、組み立てと<b>この docstring の説明</b>が
     /// <b>同じ文字</b>を指していることを読み手に示すため。
     /// </remarks>
     private const char Backslash = '\\';
@@ -1142,11 +1140,13 @@ public static class AllowedHostsPolicy
     /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
     /// </summary>
     /// <remarks>
-    /// <para><b>条件を 1 か所に置くのは、可視化の入り口が「判定」と「組み立て」の 2 つあるから。</b>
-    /// <see cref="MakeInvisibleCharactersVisible"/> は「置き換えが 1 つでもあるか」を先に見てから
-    /// 組み立てるので、条件を 2 度書くことになる。書き写すと<b>片方だけを広げた変更</b>が
-    /// 通り、そのとき壊れ方は「広げたはずの文字が、早期 return に拾われて素通りする」＝
-    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。</para>
+    /// <para><b>呼び口は組み立ての 1 か所だけにしてある。</b> 以前は
+    /// <see cref="MakeInvisibleCharactersVisible"/> が「置き換えが 1 つでもあるか」を
+    /// 先に 1 度見てから組み立てていたため、同じ条件が 2 か所に分かれていた。
+    /// 書き写した条件は<b>片方だけを広げた変更</b>で崩れ、そのとき壊れ方は
+    /// 「広げたはずの文字が、早期 return に拾われて素通りする」＝
+    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。
+    /// いまは組み立てながら「1 つでも置き換えたか」を控えるので、条件はここだけにある。</para>
     ///
     /// <para><b>綴りの表ではなく Unicode のカテゴリで見る。</b> 以前は
     /// <c>char.IsControl</c> ＋ 手で並べた 2 文字（<c>U+2028</c> / <c>U+2029</c>）だったが、

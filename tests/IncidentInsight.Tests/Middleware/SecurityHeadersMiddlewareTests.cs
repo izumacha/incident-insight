@@ -384,6 +384,9 @@ public class SecurityHeadersMiddlewareTests
         // (a) 実際に確かめた指示の並びを控えておく（空振りの照合に使う）
         var examined = new List<string>();
 
+        // (a) 切り出した綴りから実際に拾えた指示（同上。拾えていないことを落とすために使う）
+        var examinedDirectives = new List<string>();
+
         // 「実際に名乗る」の目印を 1 つずつたどる
         foreach (Match tag in Regex.Matches(securityDoc, Regex.Escape(ClaimTag)))
         {
@@ -405,15 +408,30 @@ public class SecurityHeadersMiddlewareTests
             // 確かめた 1 件として控える
             examined.Add(claimed);
 
+            // 切り出した綴りから、長期化につながる指示だけを拾う
+            var directives = DirectivesIn(claimed);
+
+            // 拾えた分を控える（下の空振りの照合に使う）
+            examinedDirectives.AddRange(directives);
+
             // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
-            AssertNotLongLived(SplitDirectives(claimed), null, $"docs/security.md の「{claimed}」");
+            AssertNotLongLived(directives, null, $"docs/security.md の「{claimed}」");
         }
 
         // <b>「1 件も確かめていない」状態を落とす。</b> 目印の読み取りが何かの拍子に
         // すべてを弾くと、この検査は<b>何も assert しないまま緑になる</b>。
         // 手がかりを変えて、<b>兄弟の検査が固定している静的アセットの指示</b>が
         // 確かめた中にあることを見る ——この 1 件は文書に必ず載っている。
-        Assert.Contains(SecurityHeadersMiddleware.StaticAssetCacheControl, examined);
+        Assert.Contains(
+            examined,
+            e => e.Contains(SecurityHeadersMiddleware.StaticAssetCacheControl, StringComparison.Ordinal));
+
+        // <b>「切り出せてはいるが、指示を 1 つも拾えていない」状態も落とす。</b>
+        // 上の照合は切り出した綴りしか見ないので、指示を拾う側（<c>DirectivesIn</c>）が
+        // 何かの拍子にすべてを取り落としても<b>緑のまま</b>になり、そのとき
+        // 長期の名乗りは 1 つも確かめられない。文書には静的アセットの期間の指示が
+        // 必ず 1 件あるので、それが拾えていることを見る
+        Assert.NotEmpty(LifetimeDirectives(examinedDirectives));
 
         // (b) 目印を要求した件数（空振りの照合に使う）
         var required = 0;
@@ -519,12 +537,27 @@ public class SecurityHeadersMiddlewareTests
         // 知っているヘッダー名のうち、<b>一番近いもの</b>を探す
         var nearest = Regex.Match(
             before,
-            $"(?<name>{string.Join('|', LifetimeBearingHeaders.Select(Regex.Escape))})[ \t]*:",
+            // <b>名前とコロンのあいだに閉じのバッククォートを許す。</b> 名前だけを囲んで
+            // 「`Strict-Transport-Security`:」と書くのはごく普通の書き方で、
+            // 許さないと<b>正しい文書が赤くなる</b>（実測）
+            $"(?<name>{string.Join('|', LifetimeBearingHeaders.Select(Regex.Escape))})[` \t]*:",
             RegexOptions.RightToLeft | RegexOptions.IgnoreCase);
 
-        // 見つかり、かつ Cache-Control 以外なら真
-        return nearest.Success
-            && !nearest.Groups["name"].Value.Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
+        // 名前が 1 つも無ければ、別のヘッダーの値ではない
+        if (!nearest.Success) return false;
+
+        // <b>名前と、いま見ている指示のあいだに別の期間の指示があれば、その名前はそちらのもの
+        // （レビュー指摘）。</b> 同じ箇条書きの中で先に HSTS を名乗っておけば、
+        // 後ろに書いた 1 年のキャッシュが目印も判定も要求されずに済んでいた（実測で全件緑）。
+        // 「名前はいちばん近い指示に掛かる」と読めば、この抜け道は綴りに依存せず閉じる
+        if (Regex.IsMatch(before[(nearest.Index + nearest.Length)..], LifetimeDirectivePattern, RegexOptions.IgnoreCase))
+        {
+            // 別の指示に掛かる名前なので、この指示は「名前なし」として扱う（fail-closed）
+            return false;
+        }
+
+        // Cache-Control 以外の名前が直前に掛かっているなら真
+        return !nearest.Groups["name"].Value.Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>期間（<c>max-age=…</c>）を値に持ちうる HTTP ヘッダー名の表。</summary>
@@ -673,6 +706,25 @@ public class SecurityHeadersMiddlewareTests
 
     /// <summary>目印を探す幅（指示の直後に置く決まりなので、長い目印 1 つ分あれば足りる）。</summary>
     private static readonly int TagWindow = Math.Max(ClaimTag.Length, CounterExampleTag.Length);
+
+    /// <summary>切り出した綴りの中から、長期化につながる指示だけを拾う。</summary>
+    /// <remarks>
+    /// <b>カンマで「分解」しない（レビュー指摘）。</b> 目印の手前を遡る切り出しは
+    /// 地の文の英単語まで巻き込むことがあり（<c>IsDirectiveListCharacter</c> は
+    /// ASCII の文字と空白を通す）、そうなると <c>CDN adds `Cache-Control: max-age=31536000`</c> が
+    /// <b>1 個の読めない token</b> になって、期間の指示が 1 つも見つからないまま通る
+    /// （実測で 1 年のキャッシュが全件緑）。<b>分解の精度に頼らず、指示そのものを探す</b>形にすれば、
+    /// 手前に何が書かれていても拾える。
+    ///
+    /// <para>走査する綴りは (b) の枝と同じ <see cref="MarkerRequiredDirectivePattern"/> ——
+    /// 「目印を要求する綴り」と「値を確かめる綴り」がずれると、その差分がそのまま死角になる。</para>
+    /// </remarks>
+    /// <param name="text">目印の手前から切り出した綴り。</param>
+    /// <returns>期間の指示と <c>immutable</c> の一覧（見つからなければ空）。</returns>
+    private static List<string> DirectivesIn(string text) =>
+        // 一致した綴りを、空白のゆらぎをそろえた形で並べる
+        [.. Regex.Matches(text, MarkerRequiredDirectivePattern, RegexOptions.IgnoreCase)
+            .Select(m => NormalizeDirective(m.Value))];
 
     /// <summary>キャッシュ指示の文字列を、指示ごとに分ける。</summary>
     /// <param name="cacheControl"><c>Cache-Control</c> の値。</param>
