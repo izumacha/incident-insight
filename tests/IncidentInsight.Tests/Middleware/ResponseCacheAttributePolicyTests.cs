@@ -866,19 +866,62 @@ public class ResponseCacheAttributePolicyTests
         var unapproved = FindUnapprovedStaticAssets(entries);
 
         // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する
-        Assert.True(
-            unapproved.Count == 0,
-            "wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: "
-                + string.Join(", ", unapproved.Select(item => $"{item.RelativePath}({item.Cause})"))
-                + "。静的ファイル配信は wwwroot 配下のすべてに "
-                + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
-                + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
-                + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
-                + "認可を通すアクションから返してください。"
-                + $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
+        Assert.True(unapproved.Count == 0, UnapprovedStaticAssetsMessage(unapproved));
+    }
+
+    /// <summary>
+    /// 未承認だったものを名指しし、<b>その原因に合った直し方</b>を案内する文面を組み立てる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>案内を原因で出し分ける理由。</b> 理由は 2 通りあり、直し方が正反対になる。
+    /// 「表に無い」なら表へ足すのが正しいが、
+    /// <see cref="MiscasedApprovedAssetCause"/>（綴りの大小だけが違う）で表へ足すと
+    /// <b>同じ資産を 2 度承認する</b>ことになり、正しくは名前のほうをそろえる。
+    /// 一律に「表へ足せ」と書くと、まさにこの検査が塞いだはずの
+    /// 「失敗文言が誤った直し方を案内する」形が残る（issue #270）。</para>
+    ///
+    /// <para><b>純粋関数にしてある理由。</b> 実在のツリーには違反が 1 件も無いので、
+    /// 呼び出し口からは案内の出し分けが一度も走らない ——
+    /// 出し分けを消しても全件緑のままになるため、合成入力で文面そのものを固定する
+    /// （このファイルが判定を純粋関数へ出しているのと同じ理由）。</para>
+    /// </remarks>
+    /// <param name="unapproved">承認されていなかったものの一覧。</param>
+    /// <returns>失敗文言。</returns>
+    private static string UnapprovedStaticAssetsMessage(
+        IReadOnlyList<UnapprovedStaticAsset> unapproved)
+    {
+        // 名指しの一覧(相対パスと、なぜ落ちたかの理由)を組み立てる
+        var named = string.Join(", ", unapproved.Select(item => $"{item.RelativePath}({item.Cause})"));
+
+        // なぜ wwwroot へ置くと危ないのかを、原因によらず共通で伝える
+        var message = $"wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: {named}"
+            + "。静的ファイル配信は wwwroot 配下のすべてに "
+            + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
+            + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
+            + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
+            + "認可を通すアクションから返してください。";
+
+        // 「表に無い」ものが 1 件でもあれば、表へ登録する案内を添える
+        if (unapproved.Any(item => item.Cause != MiscasedApprovedAssetCause))
+        {
+            // どの表へ登録するかは、落ちた場所(入れ物 / 直下 / 中のファイル)で変わる
+            message += $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
                 + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
                 + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
-                + "理由を添えて登録します。");
+                + "理由を添えて登録します。";
+        }
+
+        // 綴りの大小だけが違うものがあれば、<b>表へ足さない</b>ことまで明示する
+        if (unapproved.Any(item => item.Cause == MiscasedApprovedAssetCause))
+        {
+            // 表へ足すと同じ資産が 2 度承認されるので、直すのは名前のほう
+            message += $"「{MiscasedApprovedAssetCause}」ものは表へ足さず、"
+                + "承認済みの綴りに合わせて名前のほうを直してください"
+                + "(表へ足すと同じ資産を 2 度承認することになります)。";
+        }
+
+        // 組み立てた文面を返す
+        return message;
     }
 
     // 走査が「承認済みの入れ物の中へ実際に降りている」ことと、
@@ -1149,6 +1192,55 @@ public class ResponseCacheAttributePolicyTests
             FindUnapprovedStaticAssets(entries, lenient.Directories, lenient.RootFiles, lenient.Extensions));
     }
 
+    // 失敗文言が、<b>その原因に合った直し方</b>だけを案内すること。
+    //
+    // <b>なぜ要るのか（自己レビューで発見）。</b> 理由を分けても、失敗文言が一律に
+    // 「表へ足せ」と書いたままでは、綴りの大小が違うだけの資産について
+    // <b>同じ資産を 2 度承認させる</b>誤った直し方を案内し続ける ——
+    // issue #270 が名指しした defect がそのまま残る。
+    // 実在のツリーには違反が 1 件も無いので、出し分けは合成入力でしか通らない。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_GivesTheRepairThatMatchesTheCause()
+    {
+        // 綴りの大小だけが違うものだけが落ちた場合の文面
+        var miscasedOnly = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause)]);
+
+        // 名前のほうを直すよう案内すること
+        Assert.Contains("名前のほうを直して", miscasedOnly, StringComparison.Ordinal);
+
+        // 表へ足す案内は<b>出さない</b>こと(同じ資産を 2 度承認させないため)
+        Assert.DoesNotContain(nameof(ApprovedStaticDirectories), miscasedOnly, StringComparison.Ordinal);
+
+        // 本当に未承認のものだけが落ちた場合の文面
+        var unapprovedOnly = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("exports", UnapprovedDirectoryCause)]);
+
+        // 表へ登録するよう案内すること
+        Assert.Contains(nameof(ApprovedStaticDirectories), unapprovedOnly, StringComparison.Ordinal);
+
+        // 名前を直す案内は出さない(この原因では直し方が違う)
+        Assert.DoesNotContain("名前のほうを直して", unapprovedOnly, StringComparison.Ordinal);
+
+        // 両方が混ざった場合は、<b>どちらの案内も</b>出ること
+        var both = UnapprovedStaticAssetsMessage(
+        [
+            // 表に無いもの(表へ足すのが正しい)
+            new UnapprovedStaticAsset("exports", UnapprovedDirectoryCause),
+            // 大小だけが違うもの(名前を直すのが正しい)
+            new UnapprovedStaticAsset("LIB", MiscasedApprovedAssetCause),
+        ]);
+
+        // 表へ登録する案内が出ること
+        Assert.Contains(nameof(ApprovedStaticDirectories), both, StringComparison.Ordinal);
+
+        // 名前を直す案内も出ること
+        Assert.Contains("名前のほうを直して", both, StringComparison.Ordinal);
+
+        // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
+        Assert.Contains("LIB", both, StringComparison.Ordinal);
+    }
+
     // 「中を見ない」入れ物の判定も、綴りの大小を無視すること。
     //
     // ここを区別したままにすると、`LIB` のような綴り違いで<b>中へ降りてしまい</b>、
@@ -1296,6 +1388,13 @@ public class ResponseCacheAttributePolicyTests
     /// ——issue #270 の本体は「表ごとに比較器が違っていた」ことなので、
     /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
     /// 表は数件なので、素直に走査して構わない。</para>
+    ///
+    /// <para><b>残る境界。</b> 表が<b>大小だけが違う 2 つのキー</b>（<c>lib</c> と <c>LIB</c>）を
+    /// 同時に持つと、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する。
+    /// 実在の 4 つの表はいずれも <c>OrdinalIgnoreCase</c> で作ってあり、その綴りは
+    /// <b>初期化時に例外になる</b>ので起こらない ——先回りで分岐を足すと、実在しない事情のために
+    /// 場合分けを増やすことになる（§6「将来を見越した過度な抽象化を避ける」）。
+    /// <b>表を <c>Ordinal</c> で作り直す差分は、この前提が崩れるのでレビューで止めること。</b></para>
     /// </remarks>
     /// <param name="table">承認表（キーが承認された綴り）。</param>
     /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
