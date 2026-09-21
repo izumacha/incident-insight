@@ -233,11 +233,17 @@ public static class ResponseCachePolicy
                     var declaredOn =
                         $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}"
                             + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
-                    // クラス側と同じキーの作り方（オーバーロードを分けるため宣言の同一性まで含める）。
-                    // 分けているのは<b>メタデータ行</b>であって表示名ではない ——表示名の作り方を
-                    // 変えてもキーの意味が動かないよう、同一性は今までどおりトークンで持つ
+                    // <b>キーは表示名から作らない（レビュー指摘・実測）。</b> 表示名には
+                    // 引数の型が載るが、その綴りは「宣言の置き場所を引き直せたか」に左右される
+                    // ——引き直せない綴りでは閉じ方ごとの姿(Int32 / String)になるので、
+                    // 表示名をキーに含めると<b>1 つの宣言が閉じ方の数だけ違反として並ぶ</b>
+                    // （`DeclarationSite` を足して閉じたはずの形が、表示名を通って戻る）。
+                    // 同一性は<b>メタデータ行</b>だけで決める（同じ行なら同じ 1 つの宣言、
+                    // 別のオーバーロードなら必ず別の行）
                     var key = DeclarationKey(
-                        $"method:{declaredOn}(#{declaringMethod.MetadataToken})", attribute);
+                        $"method:{declaringType.FullName ?? declaringType.Name}"
+                            + $".{declaringMethod.Name}(#{declaringMethod.MetadataToken})",
+                        attribute);
 
                     // この観測場所の記録を、最初に要ったここで作る
                     seenOnThisMethod ??= new HashSet<string>(StringComparer.Ordinal);
@@ -452,27 +458,40 @@ public static class ResponseCachePolicy
     /// 載せると、<b>1 つの宣言</b>が閉じ方によって別の名前で報告され、どの閉じ方を先に観測したかで
     /// 文言が変わる ——名指しは開いた総称定義へそろえてあるのに、引数だけが具象のままになる。</para>
     ///
-    /// <para>メタデータ行は閉じ方によらず同じなので、その行をモジュールから引き直せば
-    /// 宣言そのもの（<c>Export(TModel)</c>）に戻せる。引き直せない綴りでは
-    /// 受け取ったメソッドをそのまま使う（表示名が具象寄りになるだけで、報告は成り立つ）。</para>
+    /// <para>メタデータ行は閉じ方によらず同じなので、開いた総称定義の側で同じ行のメソッドを
+    /// 探せば宣言そのもの（<c>Export(TModel)</c>）に戻せる。見つからない場合は
+    /// 受け取ったメソッドをそのまま使う（表示名が具象寄りになるだけ）。</para>
+    ///
+    /// <para><b>ここは表示名だけに効く（レビュー指摘）。</b> 重複除去のキーは
+    /// メタデータ行だけで決めており、この関数の結果を読まない ——引き直せなかったときに
+    /// <b>1 つの宣言が閉じ方の数だけ並ぶ</b>のを防ぐため。だからこの関数が落ちる先は
+    /// 「名前が具象寄りになる」ことだけで、報告の同一性は動かない。</para>
+    ///
+    /// <para><b>例外で分岐しない。</b> モジュールから行を引き直す形は、引けない綴りで
+    /// 例外を投げるため <c>catch</c> が要り、その <c>catch</c> は §6 が禁じている
+    /// 「黙って捨てる」形になる（記録先を持たないヘルパーなので、文脈を足して再送出すると
+    /// 表示名を作れないというだけで走査全体が止まる）。開いた定義を<b>探す</b>形にすれば
+    /// 例外の経路そのものが無くなる。</para>
     /// </remarks>
     /// <param name="declaringMethod">属性を実際に宣言しているメソッド。</param>
     /// <returns>宣言が置かれている場所のメソッド。</returns>
     private static MethodBase DeclarationSiteMethod(MethodInfo declaringMethod)
     {
-        // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
-        if (declaringMethod.DeclaringType?.IsGenericType != true) return declaringMethod;
+        // 属性を宣言しているメソッドが載っている型を取り出す
+        var declaringType = declaringMethod.DeclaringType;
 
-        try
-        {
-            // メタデータ行から宣言そのものを引き直す(引けなければ受け取った側を使う)
-            return declaringMethod.Module.ResolveMethod(declaringMethod.MetadataToken) ?? declaringMethod;
-        }
-        catch (ArgumentException)
-        {
-            // 引き直せない綴りでは、受け取ったメソッドをそのまま表示名に使う
-            return declaringMethod;
-        }
+        // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
+        if (declaringType?.IsGenericType != true) return declaringMethod;
+
+        // 開いた総称定義の側から、同じメタデータ行のメソッドを探す
+        return DeclarationSite(declaringType)
+            .GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic
+                    | BindingFlags.Instance | BindingFlags.Static)
+            // 同じ行なら、閉じ方によらず同じ 1 つの宣言
+            .FirstOrDefault(candidate => candidate.MetadataToken == declaringMethod.MetadataToken)
+            // 見つからなければ、受け取ったメソッドをそのまま表示名に使う
+            ?? declaringMethod;
     }
 
     /// <summary>メソッドの引数の型を、表示名へ載せる 1 語にする。</summary>

@@ -912,7 +912,15 @@ public class ResponseCacheAttributePolicyTests
         // <b>個別の if で分岐しない（レビュー指摘）。</b> 分岐を書き並べると、
         // 新しい直し方を足したときにどの枝にも当たらず、<b>名指しだけされて
         // 何をすればよいか 1 文字も書かれていない</b>失敗文言になる
-        foreach (var repair in unapproved.Select(item => RepairFor(item.Cause)).Distinct())
+        // <b>並べる順は「先にこれを決めてから」と言う側が先（レビュー指摘・実測）。</b>
+        // 出現順に並べると、列挙の順しだいで「表へ登録します」が先に来て、
+        // その後ろに「先にこの入れ物の扱いを決めてから、残りを確認してください」が付く
+        // ——上から読んだ人は、先に決めろと言われる前に登録を済ませてしまう。
+        // しかも順は<b>ファイルシステムの列挙順</b>で決まるので安定しない
+        foreach (var repair in unapproved
+            .Select(item => RepairFor(item.Cause))
+            .Distinct()
+            .OrderBy(RepairAdviceOrder))
         {
             // <b>どの項目に掛かる案内かを先に書く（レビュー指摘）。</b> 1 つの失敗文言に
             // 複数の案内が並ぶとき(中を見ない入れ物の中身がこぼれ出た場合がそう)、
@@ -1649,12 +1657,59 @@ public class ResponseCacheAttributePolicyTests
         // 案内が直し方ごとに固有であること(使い回すと出し分けの意味が無い)
         Assert.Equal(advice.Count, advice.Distinct(StringComparer.Ordinal).Count());
 
+        // すべての直し方に並び順があること(足し忘れは対応表が例外を投げて落ちる)
+        var orders = Enum.GetValues<RepairKind>().Select(RepairAdviceOrder).ToList();
+
+        // 並び順が直し方ごとに固有であること(同じ順だと並べ替えが安定せず、
+        // 「先にこの入れ物の扱いを決めてから」が後ろへ回りうる)
+        Assert.Equal(orders.Count, orders.Distinct().Count());
+
+        // 「そろえる前に中身を確かめる」案内が必ず先頭に来ること
+        // (これが後ろだと、上から読んだ人が先に種別の登録を済ませてしまう)
+        Assert.Equal(orders.Min(), RepairAdviceOrder(RepairKind.AuditContentsBeforeAligning));
+
         // すべての原因について「綴りが要るか」が決まっていること
         // (足し忘れは対応表が例外を投げて落ちる。決めないと失敗文言の組み立てごと落ちる)
         var carries = causes.Select(CauseCarriesApprovedSpelling).ToList();
 
         // 要る側・要らない側の<b>両方</b>が実際にあること(片方だけなら決めが死んでいる)
         Assert.Equal(2, carries.Distinct().Count());
+    }
+
+    // 失敗文言の中で、案内が<b>読む順に意味のある並び</b>で出ること。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> 以前は出現順に並べていたため、
+    // `wwwroot/exports/a.csv`（種類が未承認）と `wwwroot/LIB/patients.csv`（こぼれ出た中身）が
+    // 同時にあると「ApprovedStaticFileExtensions へ理由を添えて登録します」が先に出て、
+    // その後ろに「先にこの入れ物の扱いを決めてから、残りを確認してください」が付いた
+    // ——上から読んだ人は、先に決めろと言われる前に<b>すべての入れ物に効く</b>種別の登録を
+    // 済ませてしまう。しかも並びはファイルシステムの列挙順しだいで安定しない。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_PutsTheAuditFirst_WhateverOrderTheItemsArrivedIn()
+    {
+        // 「表へ登録」側が先に並んだ一覧を作る(レビューが再現した並び)
+        var message = UnapprovedStaticAssetsMessage(
+            [
+                // 種類が未承認(直し方は「表へ登録」)
+                new UnapprovedStaticAsset("exports/a.csv", UnapprovedCause.UnapprovedExtension),
+                // こぼれ出た中身(直し方は「そろえる前に中身を確かめる」)
+                new UnapprovedStaticAsset(
+                    "LIB/patients.csv",
+                    UnapprovedCause.ContentsOfMiscasedOpaqueContainer),
+            ]);
+
+        // どちらの案内も出ていること(片方が消えていないことを先に確かめる)
+        Assert.Contains("そろえる前に", message, StringComparison.Ordinal);
+
+        // 登録の案内も出ていること(こちらは本当に表へ足すべき項目があるため)
+        Assert.Contains("理由を添えて登録します", message, StringComparison.Ordinal);
+
+        // <b>読む順</b>: 中身を確かめる案内が、登録の案内より前にあること
+        Assert.True(
+            message.IndexOf("そろえる前に", StringComparison.Ordinal)
+                < message.IndexOf("理由を添えて登録します", StringComparison.Ordinal),
+            "「そろえる前に中身を確かめる」案内は、表への登録の案内より前に出してください"
+                + "(後ろだと、上から読んだ人が先に種別の登録を済ませてしまいます)。");
     }
 
     // 承認表が<b>大小を区別する</b>比較器で作られていること。
@@ -2087,6 +2142,28 @@ public class ResponseCacheAttributePolicyTests
         "入れ物の場合、その中身のうち一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
             + "承認済みの種類のファイルは並びません"
             + "(一覧に無いことは中身が公開してよいことを意味しません)。";
+
+    /// <summary>案内を並べる順（小さいほど先に出す）。</summary>
+    /// <remarks>
+    /// <b>「先にこれを決めてから」と言う案内を先頭に置く。</b> それより後ろに置くと、
+    /// その文が指す「先に」が文面の上で成り立たず、上から読んだ人は先に
+    /// <b>種別の表への登録</b>（すべての入れ物に効く＝検出網が一斉に広がる）を済ませてしまう。
+    /// 出現順に任せるとファイルシステムの列挙順しだいで前後するので、ここで決め切る。
+    /// </remarks>
+    /// <param name="repair">並べる直し方の種類。</param>
+    /// <returns>並べ替えに使う順序。</returns>
+    /// <exception cref="NotSupportedException">対応する順序を足し忘れている場合。</exception>
+    private static int RepairAdviceOrder(RepairKind repair) => repair switch
+    {
+        // 「先にこの入れ物の扱いを決めてから」と言う側なので、必ず先頭
+        RepairKind.AuditContentsBeforeAligning => 0,
+        // 綴りをそろえる案内は、表への登録より前に読ませる(登録は最後の手段)
+        RepairKind.AlignSpelling => 1,
+        // 表への登録は、上の 2 つを読んだあとで
+        RepairKind.RegisterInTable => 2,
+        // 足し忘れを黙って通さない(並び順が決まらないまま出さない。§9 fail-closed)
+        _ => throw new NotSupportedException($"{repair} に対応する並び順がありません。"),
+    };
 
     /// <summary>直し方の種類ごとの、失敗文言へ足す案内。</summary>
     /// <remarks>
