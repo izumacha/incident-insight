@@ -728,9 +728,6 @@ public static class AllowedHostsPolicy
     /// <returns>候補と、上限で打ち切ったかどうか。</returns>
     private static RepairClosure RepairedSpellings(string normalized, int limit)
     {
-        // 直し方の「1 手」。どれも綴りを<b>伸ばさない</b>ので、繰り返しても必ず止まる
-        var steps = RepairSteps;
-
         // 既に出た綴り（最初は正規化済みの項目そのもの）
         var seen = new HashSet<string>(StringComparer.Ordinal) { normalized };
 
@@ -750,7 +747,7 @@ public static class AllowedHostsPolicy
             spellings.Add(ComparableSpelling(current));
 
             // どの直し方も 1 手ずつ試し、初めて出た綴りだけを待ち行列へ足す
-            foreach (var step in steps)
+            foreach (var step in RepairSteps)
             {
                 // 1 手だけ直した綴り
                 var next = step(current);
@@ -766,7 +763,12 @@ public static class AllowedHostsPolicy
             // 「件数が上限に達していたら打ち切り」は<b>一度も成り立たず</b>、
             // 打ち切った項目は「ワイルドカードは見つからなかった」として扱われていた
             // ——上限を fail-closed にしたはずの変更が、そのまま fail-open のままだった（実測）
-            if (seen.Count >= limit) return new RepairClosure(spellings, true);
+            // <b>「まだ広げる先が残っている」ときだけ打ち切りと呼ぶ（レビュー指摘）。</b>
+            // pending を見ないと、ちょうど上限で数え終わった閉包まで「打ち切った」ことになり、
+            // <b>数え上げが「ワイルドカードにはならない」と示したのに「なりうる」と名指しする</b>
+            // ——issue #256 / #269 と同じ「事実と違うことを言う」形（倒れる向きは安全側だが、
+            // 名指しした項目について事実と違うことを言っているのは同じ）
+            if (pending.Count > 0 && seen.Count >= limit) return new RepairClosure(spellings, true);
         }
 
         // 最後まで数え上げられたので、打ち切りの旗は立てない
@@ -854,8 +856,11 @@ public static class AllowedHostsPolicy
         // 開きが先頭に無ければ運べない（"a[b.test" がこれ）
         if (spelling[0] != '[') return true;
 
-        // 閉じが開きより前にあれば運べない（"]a[" がこれ）
-        return spelling.IndexOf(']') < spelling.IndexOf('[');
+        // ここまで来た綴りは「1 組・開きが先頭」なので、閉じは必ず後ろにある ——運べる形。
+        // （"]a[" のように閉じが先に来る綴りは、1 つ上の「開きが先頭か」で既に弾かれている。
+        //   ここで改めて前後を比べる分岐を置いていたが、<b>その条件は決して成り立たない</b>
+        //   ——守っているように読める到達しない行になっていた。レビュー指摘・§6）
+        return false;
     }
 
     /// <summary>角括弧を 1 つ残らず落とす（対になっていない括弧を消す直し方のモデル）。</summary>
@@ -1270,7 +1275,7 @@ public static class AllowedHostsPolicy
         /// <c>"0.0.0.0:8080"</c> で、これはワイルドカードではない）。
         /// (2) 数え上げを上限で打ち切った項目は「判断できない」側からここへ倒れるので、
         /// ワイルドカードの候補が実際に見つかったとは限らない
-        /// （理由は <see cref="RepairsToWildcard(IEnumerable{string}, int)"/> の remarks）。
+        /// （理由は <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> の remarks）。
         /// どちらも「そのまま直すな・直した結果を確かめろ」という案内は正しいままなので、
         /// <b>断定だけを外す</b>。名指しした項目について事実と違うことを言わない、という
         /// このクラスの規則（issue #256）はこの理由にも同じく掛かる。
@@ -1771,7 +1776,12 @@ public static class AllowedHostsPolicy
                 "a Host header cannot carry a percent sign — neither as an IPv6 scope id "
                 + "('[fe80::1%eth0]') nor as percent-encoding ('www.example%2Ecom') — and host "
                 + "filtering compares it against the entry exactly as written, so the two can "
-                + "never be equal. Write the hostname literally, without any '%'",
+                + "never be equal. Do NOT simply delete the '%': for a scope id, drop the whole "
+                + "'%<zone>' part ('[fe80::1%eth0]' becomes '[fe80::1]'); for percent-encoding, "
+                + "write the character it stands for ('www.example%2Ecom' becomes "
+                + "'www.example.com'). Deleting only the '%' leaves a name that still never "
+                + "matches, and this warning cannot tell you so — '[fe80::1eth0]' looks healthy "
+                + "to it while Kestrel still rejects it",
 
             // 対になっていない角括弧は、消せば直るので「消せ」とだけ言う
             DeadEntryReason.UnpairedBrackets =>
