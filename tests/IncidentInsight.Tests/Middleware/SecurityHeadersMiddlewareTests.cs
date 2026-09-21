@@ -306,7 +306,11 @@ public class SecurityHeadersMiddlewareTests
     //
     // <b>残っている境界</b>: 肯定的に名乗る行がたまたま否定語を含む場合
     //（"…を名乗ります（キャッシュしないため）" 等）は見逃す。
-    private static readonly string[] NegatedClaimMarkers = ["ません", "ない", "避け"];
+    // <b>「ず」「なく」も否定（レビュー指摘）。</b> 「を名乗ることなく…」「を付与せず…」は
+    // 運用文書のごく普通の書き方で、入れていないと<b>正しい反例で赤くなる</b>（実測）。
+    // 見る範囲が動詞の言い切りまでに限られているので、
+    // 「まず」「必ず」のような語をたまたま拾う余地は小さい。
+    private static readonly string[] NegatedClaimMarkers = ["ません", "ない", "なく", "ず", "避け"];
 
     // 付けてはいけない指示の綴り。
     // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
@@ -547,10 +551,14 @@ public class SecurityHeadersMiddlewareTests
     /// <param name="source">失敗文言に出す出所（どこの指示の話かを示す）。</param>
     private static void AssertNotLongLived(IReadOnlyList<string> directives, string source)
     {
-        // immutable を付けていないこと(付けると再取得の手段が無くなる)
-        Assert.DoesNotContain(
-            directives,
-            d => d.Equals(ForbiddenDirective, StringComparison.OrdinalIgnoreCase));
+        // immutable を付けていないこと(付けると再取得の手段が無くなる)。
+        // <b>出所を失敗文言へ出す（レビュー指摘）。</b> 呼び出し口は 3 つ（定数・
+        // 囲みのある名乗り・地の文）あるので、出所が無いと「どこの指示の話か」が読めない
+        Assert.False(
+            directives.Any(d => d.Equals(ForbiddenDirective, StringComparison.OrdinalIgnoreCase)),
+            $"{ForbiddenDirective} を含むキャッシュ指示です（{source}）。"
+                + "版付きでない wwwroot/lib 配下を参照しているため、"
+                + $"{ForbiddenDirective} を名乗ると脆弱性修正後も古いファイルを消す手段が無くなります。");
 
         // 保存できる時間を表す指示を<b>すべて</b>取り出す。
         // <b>max-age だけを見てはいけない</b>: s-maxage は共有キャッシュに対して max-age を
@@ -580,8 +588,6 @@ public class SecurityHeadersMiddlewareTests
                     + "docs/security.md の記載も同じ変更セットで直してください。");
         }
     }
-
-
 
     /// <summary>その一致が、カンマで他の指示とつながっているかを見る。</summary>
     /// <remarks>
@@ -695,7 +701,6 @@ public class SecurityHeadersMiddlewareTests
     // 「ることはありません」が収まる幅にしてある
     private const int VerbTailLimit = 24;
 
-
     /// <summary>目印の直後から、その動詞が言い切られるところまでを切り出す。</summary>
     /// <param name="text">空白を落とした、一致より後ろの文字列。</param>
     /// <param name="from">目印の直後の位置。</param>
@@ -750,13 +755,16 @@ public class SecurityHeadersMiddlewareTests
         // その位置を含む行の先頭を探す
         var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
 
-        // そこから上へたどって、箇条書きの先頭（行頭の "- "）を探す
+        // <b>上へたどってよいのは「継続行」の間だけ（レビュー指摘）。</b>
+        // 条件を付けずに直前の "- " まで遡ると、<b>箇条書きの外にある地の文</b>が
+        // 手前の箇条書きの一部として扱われ、「箇条書きの中にあること」の検査が
+        // <b>原理的に落ちなくなる</b> ——実測で、静的アセットの説明を地の文へ移し、
+        // 手前に別の箇条書きを置くと、<b>無関係な箇条書きの指示</b>が
+        // 静的アセットの名乗りとして照合され、全件緑のまま通った。
+        // 継続行（行頭が空白）でたどれば、その位置を実際に含む箇条書きだけに着く。
         var start = lineStart;
-        // 先頭に当たるか、文書の先頭に着くまで戻る。
-        // <b>条件は start > 1（レビュー指摘）</b> ——start == 1 で入ると
-        // LastIndexOf('\n', -1) を呼んで例外になり、案内ではなく
-        // ArgumentOutOfRangeException でテストが落ちる（実測）
-        while (start > 1 && !IsBulletStart(doc, start))
+        // 箇条書きの先頭に当たるまで、継続行の間だけ遡る
+        while (start > 1 && !IsBulletStart(doc, start) && IsContinuationLine(doc, start))
         {
             // 1 つ前の行の先頭へ
             start = doc.LastIndexOf('\n', start - 2) + 1;
@@ -765,10 +773,10 @@ public class SecurityHeadersMiddlewareTests
         // 箇条書きの外（地の文）なら、その行だけを範囲にする
         if (!IsBulletStart(doc, start)) start = lineStart;
 
-        // 次の箇条書きの手前（または文書の末尾）までが 1 つ分
+        // 次の行から順に、箇条書きの続きでなくなるところまで進める
         var end = doc.IndexOf('\n', index);
-        // 次の行から順に、箇条書きの先頭に当たるまで進める
-        while (end >= 0 && end + 1 < doc.Length && !IsBulletStart(doc, end + 1))
+        // 継続行の間は同じ箇条書き（次の "- " も、字下げの無い地の文もここで止まる）
+        while (end >= 0 && end + 1 < doc.Length && IsContinuationLine(doc, end + 1))
         {
             // さらに次の改行へ
             end = doc.IndexOf('\n', end + 1);
@@ -777,6 +785,14 @@ public class SecurityHeadersMiddlewareTests
         // 改行が見つからなければ文書の末尾まで
         return (start, end < 0 ? doc.Length : end);
     }
+
+    /// <summary>その行が、直前の箇条書きの続き（字下げされた行）かを見る。</summary>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">行の先頭位置。</param>
+    /// <returns>継続行なら <c>true</c>。</returns>
+    private static bool IsContinuationLine(string doc, int index) =>
+        // 行頭が空白（かつ改行ではない）なら、前の行の続き
+        index < doc.Length && doc[index] != '\n' && char.IsWhiteSpace(doc[index]);
 
     /// <summary>その位置が箇条書きの先頭（行頭の <c>"- "</c>）かを見る。</summary>
     /// <param name="doc">文書全体。</param>

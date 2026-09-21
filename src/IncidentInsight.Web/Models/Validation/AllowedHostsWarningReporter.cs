@@ -48,6 +48,22 @@ namespace IncidentInsight.Web.Models.Validation;
 public sealed class AllowedHostsWarningReporter(
     ILogger logger, string environmentName, Func<string?> readCurrentValue)
 {
+    /// <summary>検査そのものが失敗したときに残す記録の書き出し。</summary>
+    /// <remarks>
+    /// <b><c>docs/security.md</c> が運用者へ「これが出ていないことを確認せよ」と
+    /// 案内している綴りなので、定数にして文書と突き合わせる（レビュー指摘）。</b>
+    /// <c>Program.cs</c> に literal で置いたままだと、言い回しを変えた瞬間に
+    /// <b>手順の grep が永久に空振りする</b> ——診断が静かに失敗している配備が
+    /// 「きれい」と読めてしまい、この節が防ごうとしている誤った安心そのものになる。
+    /// 突き合わせは <c>AllowedHostsWarningReporterTests</c> が行う。
+    /// </remarks>
+    public const string CheckFailedMessagePrefix = "Failed to check AllowedHosts";
+
+    /// <summary>再読み込みの購読を張れなかったときに残す記録の書き出し。</summary>
+    /// <remarks>役割は <see cref="CheckFailedMessagePrefix"/> と同じ。</remarks>
+    public const string SubscribeFailedMessagePrefix =
+        "Failed to subscribe to configuration reloads for AllowedHosts";
+
     // 複数のスレッドから同時に呼ばれても、判定と記録が食い違わないようにする錠
     // (再読み込みの通知はアプリのスレッドプールから届き、起動時の呼び出しと重なりうる)
     private readonly object _gate = new();
