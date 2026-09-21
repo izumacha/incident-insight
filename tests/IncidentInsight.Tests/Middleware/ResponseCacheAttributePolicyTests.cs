@@ -1074,6 +1074,10 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("lib/jquery", false)]
     // 綴りが前方一致するだけの別の入れ物(降りる)
     [InlineData("library", false)]
+    // 大小だけが違う綴り(<b>降りる</b>。承認表と違い、ここを大小無視にすると
+    // 大文字小文字を区別するファイルシステムで別の入れ物の中身が 1 件も列挙されず、
+    // 失敗文言が勧める「名前をそろえる」に従うと永久に隠れる。レビュー指摘)
+    [InlineData("LIB", false)]
     public void IsOpaqueStaticDirectory_MatchesOnlyRegisteredContainers(string relativePath, bool expected)
     {
         // 完全一致でのみ「中を見ない」と判断していることを確かめる
@@ -1163,9 +1167,13 @@ public class ResponseCacheAttributePolicyTests
         static (Dictionary<string, string> Directories,
             Dictionary<string, string> RootFiles,
             Dictionary<string, string> Extensions) Tables(StringComparer comparer) =>
-            (new Dictionary<string, string>(comparer) { ["lib"] = "入れ物。" },
-                new Dictionary<string, string>(comparer) { ["favicon.ico"] = "直下のファイル。" },
-                new Dictionary<string, string>(comparer) { [".js"] = "種類。" });
+            (
+                // 承認済みの入れ物を 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { ["lib"] = "テスト用の承認済みの入れ物。" },
+                // 承認済みの直下ファイルを 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { ["favicon.ico"] = "テスト用の直下ファイル。" },
+                // 承認済みの種類を 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { [".js"] = "テスト用の承認済みの種類。" });
 
         // 大小がそろったもの・違うもの・未承認のものを混ぜた入力
         var entries = new[]
@@ -1186,10 +1194,20 @@ public class ResponseCacheAttributePolicyTests
         // 無視する比較器で作った表でも判定する
         var lenient = Tables(StringComparer.OrdinalIgnoreCase);
 
+        // 区別する表での判定結果を取り出す
+        var strictResult = FindUnapprovedStaticAssets(
+            entries, strict.Directories, strict.RootFiles, strict.Extensions);
+
+        // 無視する表での判定結果も取り出す
+        var lenientResult = FindUnapprovedStaticAssets(
+            entries, lenient.Directories, lenient.RootFiles, lenient.Extensions);
+
+        // <b>空振り検出（レビュー指摘）。</b> 「2 つが等しい」だけを見ると、判定が常に空を
+        // 返すようになっても等しいまま通る ——この入力は必ず違反を生むので、それを確かめる
+        Assert.NotEmpty(strictResult);
+
         // どちらの表でも、落ちる一覧と理由が一字一句同じであること
-        Assert.Equal(
-            FindUnapprovedStaticAssets(entries, strict.Directories, strict.RootFiles, strict.Extensions),
-            FindUnapprovedStaticAssets(entries, lenient.Directories, lenient.RootFiles, lenient.Extensions));
+        Assert.Equal(strictResult, lenientResult);
     }
 
     // 失敗文言が、<b>その原因に合った直し方</b>だけを案内すること。
@@ -1239,24 +1257,6 @@ public class ResponseCacheAttributePolicyTests
 
         // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
         Assert.Contains("LIB", both, StringComparison.Ordinal);
-    }
-
-    // 「中を見ない」入れ物の判定も、綴りの大小を無視すること。
-    //
-    // ここを区別したままにすると、`LIB` のような綴り違いで<b>中へ降りてしまい</b>、
-    // 「名前を直せ」という 1 件の指摘の代わりに CDN 由来の数百件が違反として並ぶ
-    // （失敗文言が実際の原因を埋もれさせる）。
-    [Fact]
-    public void IsOpaqueStaticDirectory_IgnoresSpellingCase()
-    {
-        // 登録してある綴りそのものは、当然「中を見ない」側であること
-        Assert.True(IsOpaqueStaticDirectory("lib"));
-
-        // 大小だけが違う綴りでも、中へは降りないこと
-        Assert.True(IsOpaqueStaticDirectory("LIB"));
-
-        // 別の入れ物まで巻き込まないこと(前方一致にしない)
-        Assert.False(IsOpaqueStaticDirectory("library"));
     }
 
     // 「中を見ない」入れ物は、承認済みの入れ物でもあること。
@@ -1317,6 +1317,84 @@ public class ResponseCacheAttributePolicyTests
     //
     // "css" や ".CSS" と書いても突き合わせ相手(Path.GetExtension の戻り値)と形が合わず、
     // <b>その 1 行だけが何にも当たらない</b>まま表に残る(登録したつもりの種別が通らない)。
+    // パスをキーにする 2 つの表が、<b>小文字</b>で綴られていること。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> 大小違いの報告は「表のキーが正しい綴り」を
+    // 前提にしている。表側が `CSS` のように綴られていると、実在する正しい `css` のほうが
+    // 「綴りの大小が違う」と報告され、失敗文言は<b>実ファイルを `CSS` へ改名しろ</b>と案内する
+    // ——大文字小文字を区別するファイルシステムでは `~/css/site.css` の参照が全部壊れる。
+    // issue #270 が消したはずの「失敗文言が誤った直し方を案内する」形が、向きを変えて戻る。
+    // 拡張子の表は ApprovedStaticFileExtensions_AreSpelledAsExtensions が既に同じ手当てを
+    // しているので、パス側の 2 つにもそろえる。
+    [Fact]
+    public void StaticAssetPathTables_AreSpelledInLowerCase()
+    {
+        // パスをキーにする 2 つの表を、表の名前とともに順に見る
+        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
+        {
+            // 承認済みの入れ物
+            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
+            // 中を見ない入れ物
+            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
+            // 直下に置いてよいファイル
+            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
+        };
+
+        // 小文字で綴られていないキーを、表の名前付きで集める
+        var malformed = tables
+            .SelectMany(table => table.Entries.Keys
+                .Where(key => key != key.ToLowerInvariant())
+                .Select(key => $"{table.Name}[{key}]"))
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            malformed.Count == 0,
+            "静的資産の承認表のキーは小文字で書いてください(表の綴りが正しい前提で"
+                + "「大小が違う」を報告するため、表側が大文字だと実ファイルのほうを"
+                + "改名させる誤った案内になります): " + string.Join(", ", malformed));
+    }
+
+    // 承認表が、<b>大小だけが違う 2 つのキー</b>を同時に持っていないこと。
+    //
+    // <b>なぜ機械で見るのか（レビュー指摘）。</b> ApprovedSpellingFor は大小を無視して
+    // 最初に一致したキーを返すので、`lib` と `LIB` が同居すると<b>どちらが返るかが
+    // Dictionary の規定されていない列挙順に依存する</b>（同じ入れ物が承認済みにも
+    // 大小違いにもなりうる）。実在の表は OrdinalIgnoreCase なので初期化時に例外になるが、
+    // 比較器に依存しない引き方にした以上 Ordinal で作り直すことは<b>許される形</b>
+    // （姉妹の検査がまさに Ordinal の表を渡している）。前提をレビュー任せにせず固定する。
+    [Fact]
+    public void StaticAssetTables_HaveNoKeysThatDifferOnlyByCase()
+    {
+        // 4 つの表を、表の名前とともに順に見る
+        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
+        {
+            // 承認済みの入れ物
+            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
+            // 中を見ない入れ物
+            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
+            // 直下に置いてよいファイル
+            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
+            // 入れ物の中に置いてよい種類
+            (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
+        };
+
+        // 小文字にそろえると重なるキーの組を、表の名前付きで集める
+        var ambiguous = tables
+            .SelectMany(table => table.Entries.Keys
+                .GroupBy(key => key.ToLowerInvariant())
+                .Where(group => group.Count() > 1)
+                .Select(group => $"{table.Name}: {string.Join(" / ", group)}"))
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            ambiguous.Count == 0,
+            "承認表に、大小だけが違うキーを同時に載せないでください"
+                + "(どちらが一致するかが Dictionary の列挙順に依存します): "
+                + string.Join(", ", ambiguous));
+    }
+
     [Fact]
     public void ApprovedStaticFileExtensions_AreSpelledAsExtensions()
     {
@@ -1389,12 +1467,14 @@ public class ResponseCacheAttributePolicyTests
     /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
     /// 表は数件なので、素直に走査して構わない。</para>
     ///
-    /// <para><b>残る境界。</b> 表が<b>大小だけが違う 2 つのキー</b>（<c>lib</c> と <c>LIB</c>）を
-    /// 同時に持つと、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する。
-    /// 実在の 4 つの表はいずれも <c>OrdinalIgnoreCase</c> で作ってあり、その綴りは
-    /// <b>初期化時に例外になる</b>ので起こらない ——先回りで分岐を足すと、実在しない事情のために
-    /// 場合分けを増やすことになる（§6「将来を見越した過度な抽象化を避ける」）。
-    /// <b>表を <c>Ordinal</c> で作り直す差分は、この前提が崩れるのでレビューで止めること。</b></para>
+    /// <para><b>前提: 表は「承認された綴り」を持ち、大小だけが違うキーを同時に持たない。</b>
+    /// 同居すると、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する
+    /// （同じ入れ物が承認済みにも大小違いにもなりうる）。比較器に依存しない引き方にした以上、
+    /// 表を <c>Ordinal</c> で作り直すことは許される形なので、<b>レビュー任せにせず</b>
+    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> と
+    /// <c>StaticAssetPathTables_AreSpelledInLowerCase</c> が機械的に固定する
+    /// （後者が無いと、表側の綴りが大文字のときに<b>実ファイルのほうを改名しろ</b>という
+    /// 誤った案内になる ——issue #270 が消したはずの形が向きを変えて戻る）。</para>
     /// </remarks>
     /// <param name="table">承認表（キーが承認された綴り）。</param>
     /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
@@ -1534,9 +1614,14 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>中を見ない入れ物なら true。</returns>
     private static bool IsOpaqueStaticDirectory(string relativePath) =>
         // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)。
-        // 綴りの大小は無視する ——`LIB` のような綴り違いで中へ降りると、
-        // 「名前を直す」という 1 件の指摘の代わりに CDN 由来の数百件が違反として並ぶ
-        ApprovedSpellingFor(OpaqueStaticDirectories, relativePath) is not null;
+        // <b>綴りの大小もここでは無視しない（レビュー指摘）。</b> 承認表の引き方と同じく
+        // 大小を無視すると、大文字小文字を<b>区別する</b>ファイルシステムでは
+        // 別の入れ物である `LIB` の中へ降りなくなり、そこに置かれた PHI が
+        // <b>1 件も列挙されない</b>。しかも失敗文言が勧める「名前をそろえる」に従うと、
+        // その中身は永久に中を見ない `lib` へ吸収され、検査は緑になる
+        // ——覆う範囲を広げる変更が別の軸で範囲を狭めていた形(issue #254 の再来)。
+        // 表の比較器に判断させないのは ApprovedSpellingFor と同じ理由(§6 の一元管理)
+        OpaqueStaticDirectories.Keys.Any(key => string.Equals(key, relativePath, StringComparison.Ordinal));
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（実在の表を使う入口）。
