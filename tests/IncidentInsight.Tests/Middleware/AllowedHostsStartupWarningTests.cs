@@ -45,6 +45,11 @@ public class AllowedHostsStartupWarningTests
     // 再読み込み後の検査そのものが失敗したときに残る記録の目印（同上）
     private const string ReCheckFailureMarker = "Failed to re-check AllowedHosts";
 
+    // 出力先を落とすテスト用プロバイダが投げる例外の文面。
+    // <b>定数にしてあるのは、最後の手段が「元の失敗」まで運んでいるかを見るため</b> ——
+    // テストと実装の 2 か所へ綴りを書き写すと、片方だけ直したときに照合が空振りする
+    private const string FailingSinkExceptionMessage = "The log sink is unavailable (test double).";
+
     [Fact]
     public void RealHostnamesOnly_WarnAboutNothing()
     {
@@ -240,21 +245,31 @@ public class AllowedHostsStartupWarningTests
     // ASPNETCORE_ENVIRONMENT は AllowedHosts とまったく同じ「運用者が設定する外部の文字列」で、
     // 同じテンプレート展開やコピー & ペーストで改行が紛れうる。片方だけ可視化しても、
     // もう片方が 1 本の警告を複数レコードへ割る（issue #258 が塞いだはずの穴が残る）。
-    [Fact]
-    public void ControlCharactersInTheEnvironmentName_DoNotSplitTheWarningAcrossLogRecords()
+    // <b>ケースを CR / LF だけに絞ると、値の側と同じ非対称がここに残る（レビュー指摘）。</b>
+    // 実測でも、環境名の可視化だけを issue #263 以前の規則（制御文字だけを見る形）へ戻すと
+    // 1160 件すべて緑のまま通った ——"Staging\r\nINJECTED" はどちらの規則でも同じ綴りへ
+    // 可視化されるので、CR / LF の 1 ケースでは新旧の規則を区別できない。
+    [Theory]
+    // CR / LF —— テンプレート展開やコピー & ペーストで自然に生まれる形
+    [InlineData("Staging\r\nINJECTED")]
+    // NEL（U+0085）—— char.IsControl が true の行区切り。下の 2 つとの対照として置く
+    [InlineData("Staging\u0085INJECTED")]
+    // <b>本命。</b> U+2028 / U+2029 は char.IsControl が false なので、
+    // 可視化の条件を「制御文字か」に戻すと生のままログへ載る（issue #263）
+    [InlineData("Staging\u2028INJECTED")]
+    [InlineData("Staging\u2029INJECTED")]
+    public void LineSeparatorsInTheEnvironmentName_DoNotSplitTheWarningAcrossLogRecords(
+        string environmentName)
     {
-        // 改行を含む環境名で、1 本目の警告が出る設定（未設定＝全許可）のまま起動する
-        const string environmentName = "Staging\r\nINJECTED";
-
-        // その環境名で起動する
+        // その環境名で、1 本目の警告が出る設定（全許可）のまま起動する
         using var fixture = new WarningCapturingFixture("*", environmentName);
 
         // 1 本目が出ること（出ていないと、以降の検査が「無いものを見て緑」になる）
         var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
 
-        // <b>本命。</b> 警告の文面に改行が 1 つも残っていないこと
-        Assert.DoesNotContain('\r', warning);
-        Assert.DoesNotContain('\n', warning);
+        // <b>本命。</b> 警告の文面に行区切りが 1 つも残っていないこと。
+        // 一覧は値の側の検査と共有する（同じ「行を割る文字」を 2 か所へ書き写さない）
+        Assert.DoesNotContain(warning, ch => LogRecordSplittingCharacters.Contains(ch));
 
         // 環境名は（可視化された形で）載ること ——どの環境の話かが読めなくならないように
         Assert.Contains(AllowedHostsPolicy.DescribeValueForLog(environmentName), warning);
@@ -369,6 +384,88 @@ public class AllowedHostsStartupWarningTests
             // 再検査に失敗したことが記録されていること
             Assert.Contains(fixture.Warnings, w => w.Contains(ReCheckFailureMarker));
         }
+    }
+
+    // <b>出力先ごと落ちていても、失敗の事実は別の出力先へ必ず残すこと（レビュー指摘）。</b>
+    //
+    // 上の Theory は「例外が外へ出ないこと」しか見ていないので、最後の手段を
+    // 空の catch へ潰しても両ケースとも通ってしまう（実測）——そのとき
+    // AllowedHosts が黙って緩み、しかも再検査が失敗した事実がどこにも残らない。
+    // 運用者は docs/security.md の「2 本とも出ていないことの確認」をきれいなログで
+    // 通してしまう。CLAUDE.md §6 の「空の catch を作らない」に当たる形でもある。
+    [Fact]
+    public void WhenEvenTheErrorLogFails_TheFailureStillReachesStandardError()
+    {
+        // 絞られた値で起動し、起動後の書き込みはすべて落ちるようにする
+        using var fixture = new WarningCapturingFixture(
+            "incident.example.test",
+            failLoggingWhen: message =>
+                // 警告も、その失敗を記録する LogError も落とす（出力先ごと落ちている状況）
+                message.Contains(PermissiveWarningMarker) || message.Contains(ReCheckFailureMarker));
+
+        // 標準エラーを横取りして、最後の手段が何を書くかを読めるようにする
+        var originalError = Console.Error;
+        // 横取り用の受け皿
+        var captured = new StringWriter();
+
+        // 横取りは必ず元へ戻す（他のテストの出力先を巻き込まない）
+        try
+        {
+            // 標準エラーを受け皿へ差し替える
+            Console.SetError(captured);
+            // 稼働中に全許可へ緩める ——警告もその失敗の記録も書き込みに失敗する
+            fixture.ReloadAllowedHosts("*");
+        }
+        finally
+        {
+            // 元の標準エラーへ戻す
+            Console.SetError(originalError);
+        }
+
+        // 受け皿に書かれた内容を読む
+        var fallback = captured.ToString();
+
+        // <b>本命 1。</b> 「再検査が失敗した」事実そのものが残っていること
+        Assert.Contains(ReCheckFailureMarker, fallback);
+
+        // <b>本命 2。</b> 元の失敗（なぜ再検査が失敗したか）も一緒に残っていること ——
+        // 出力先が落ちた理由だけを書くと、肝心の事実がどこにも残らない
+        Assert.Contains(FailingSinkExceptionMessage, fallback);
+    }
+
+    // <b>評価済みとして覚えるのは、出し終えた後であること（レビュー指摘）。</b>
+    //
+    // 先に覚えると、出力の途中で例外が出た値がそのまま「評価済み」として残り、
+    // <b>同じ値での再読み込みでは重複抑止に当たって黙る</b> ——その値に対する警告が
+    // プロセスの生涯にわたって失われる。後で覚えれば、失敗した値は次の再読み込みで
+    // もう一度評価され、最悪でも同じ警告が 2 度出るだけで済む（過剰に出す＝安全側）。
+    //
+    // <b>並び順を入れ替える変異は、この検査が無いと全件緑のまま通る</b>（実測）。
+    [Fact]
+    public void AWarningLostToAFailingSink_IsRetriedOnTheNextReload()
+    {
+        // 1 本目の警告の書き込みを「最初の 1 回だけ」失敗させるための数え手
+        var permissiveWrites = 0;
+
+        // 絞られた値で起動する（起動時には 1 本目が出ないので、数え手は動かない）
+        using var fixture = new WarningCapturingFixture(
+            "incident.example.test",
+            failLoggingWhen: message =>
+                // 1 本目の警告の、最初の書き込みだけを落とす
+                message.Contains(PermissiveWarningMarker) && Interlocked.Increment(ref permissiveWrites) == 1);
+
+        // 1 回目: 全許可へ緩める ——警告の書き込みが失敗するので、何も残らない
+        fixture.ReloadAllowedHosts("*");
+
+        // この時点では 1 本目が残っていないこと（前提の確認。残っていると次の検査が意味を失う）
+        Assert.DoesNotContain(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 2 回目: <b>同じ値のまま</b>もう一度再読み込みを起こす。
+        // 失敗した値を「評価済み」にしていなければ、ここで評価し直される
+        fixture.ReloadAllowedHosts("*");
+
+        // <b>本命。</b> 失われたはずの警告が、次の再読み込みで出ていること
+        Assert.Contains(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
     }
 
     // <b>未設定のまま起動したら 1 本目を出すこと（レビュー指摘）。</b>
@@ -633,7 +730,7 @@ public class AllowedHostsStartupWarningTests
             if (failWhen is not null && failWhen(message))
             {
                 // 実際の出力先が落ちたときと同じく、書き込みの呼び出しから例外を投げる
-                throw new InvalidOperationException("The log sink is unavailable (test double).");
+                throw new InvalidOperationException(FailingSinkExceptionMessage);
             }
 
             // 溜め込む
