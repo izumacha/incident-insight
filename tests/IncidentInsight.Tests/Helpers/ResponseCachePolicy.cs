@@ -216,11 +216,14 @@ public static class ResponseCachePolicy
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
                     // クラス側と同じく、たどる条件をこの属性の型まで絞る
-                    var declaringType = DeclarationSite(DeclaringTypeOf(method, SameKindAs(attribute, matches)));
+                    var declaringMethod = DeclaringMethodOf(method, SameKindAs(attribute, matches));
+                    // その宣言が置かれている型を、名指しに使う形へそろえる
+                    var declaringType = DeclarationSite(declaringMethod.DeclaringType!);
                     // どのアクションに付いていたかが分かる表示名を作る
-                    var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
-                    var key = DeclarationKey($"method:{declaredOn}({method})", attribute);
+                    var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{declaringMethod.Name}";
+                    // クラス側と同じキーの作り方（オーバーロードを分けるため宣言の同一性まで含める）
+                    var key = DeclarationKey(
+                        $"method:{declaredOn}(#{declaringMethod.MetadataToken})", attribute);
 
                     // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
                     if (IsNewDeclaration(seenHere, seen, key, attribute))
@@ -398,7 +401,7 @@ public static class ResponseCachePolicy
         candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
 
     /// <summary>
-    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
+    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
     /// </summary>
     /// <remarks>
     /// <c>override</c> したメソッドでは <c>GetCustomAttributes(inherit: true)</c> が基底の属性を
@@ -412,17 +415,25 @@ public static class ResponseCachePolicy
     /// 属性が<b>途中の型</b>の <c>override</c> に付いている場合は根にも自分自身にも無く、
     /// どちらの検査も外れて具象が名指しされる。連なりを 1 段ずつ見れば、
     /// 途中の宣言も「自分自身が宣言しているか」で正しく捕まる。</para>
+    ///
+    /// <para><b>型ではなくメソッドを返す（レビュー指摘）。</b> 重複除去のキーには
+    /// オーバーロードを分けるための署名が要るが、そこへ<b>観測した</b>メソッドを使うと、
+    /// 総称の基底が <c>Export(TModel model)</c> のように型引数を受けている場合に
+    /// <c>Export(Int32)</c> と <c>Export(String)</c> で<b>キーが割れ</b>、
+    /// 1 つの宣言が閉じ方の数だけ違反として並ぶ（宣言元の型だけをそろえても閉じない）。
+    /// 宣言しているメソッドを返せば、その <c>MetadataToken</c>（同じメタデータ行なら同じ 1 つの宣言）
+    /// を署名の代わりに使えて、閉じた総称でも <c>override</c> でも同じ 1 件に畳める。</para>
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
     /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
-    /// <returns>属性を宣言している型。</returns>
-    private static Type DeclaringTypeOf(MethodInfo method, Func<object, bool> matches)
+    /// <returns>属性を宣言しているメソッド。</returns>
+    private static MethodInfo DeclaringMethodOf(MethodInfo method, Func<object, bool> matches)
     {
         // そのメソッド自身が宣言しているなら、そこが直すべき場所
         if (method.GetCustomAttributes(inherit: false).Any(matches))
         {
-            // 宣言しているメソッドの型を返す
-            return method.DeclaringType!;
+            // 宣言しているメソッドそのものを返す
+            return method;
         }
 
         // override の連なりを識別するための目印(同じ仮想メソッドはどこから見ても同じ根を持つ)
@@ -445,11 +456,11 @@ public static class ResponseCachePolicy
             if (declared is null) continue;
 
             // その定義が属性を宣言しているなら、そこが直すべき場所
-            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return type;
+            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return declared;
         }
 
-        // どこにも見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
-        return method.DeclaringType!;
+        // どこにも見つからなければ、少なくとも見えているメソッドを名指しする(黙って情報を失わない)
+        return method;
     }
 
     /// <summary>
