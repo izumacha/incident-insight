@@ -1180,5 +1180,4 @@ public static class AllowedHostsPolicy
             or UnicodeCategory.PrivateUse          // 私用領域（表示はフォント任せ＝多くは空白か豆腐）
             or UnicodeCategory.OtherNotAssigned;   // 未割り当て（同上）
 
-
 }

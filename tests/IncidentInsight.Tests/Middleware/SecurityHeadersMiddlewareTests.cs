@@ -299,11 +299,22 @@ public class SecurityHeadersMiddlewareTests
     // フィールドにすると同じクラスの静的フィールドの<b>宣言順</b>に依存し、
     // 見た目を整えるだけの並べ替えで MaxAgeFamilyPrefixes がまだ null のまま評価され、
     // クラス全体のテストが「どこが悪いのか分からない TypeInitializationException」で赤くなる
-    private static string LifetimeDirectivePattern =>
+    private static string LifetimeDirectivePattern => LazyLifetimeDirectivePattern.Value;
+
+    /// <summary><see cref="LifetimeDirectivePattern"/> の実体（最初の 1 回だけ組み立てる）。</summary>
+    /// <remarks>
+    /// <b>その都度組み立てない（レビュー指摘）。</b> 一致 1 件ごとに
+    /// <c>string.Join</c> と <c>Regex.Escape</c> をやり直すのは無駄。
+    /// <b><c>Lazy</c> にするのが要点</b>で、素の静的フィールドにすると
+    /// 同じクラスの<b>宣言順</b>に依存し、見た目を整えるだけの並べ替えで
+    /// <c>MaxAgeFamilyPrefixes</c> がまだ null のまま評価され、クラス全体のテストが
+    /// 「どこが悪いのか分からない TypeInitializationException」で赤くなる。
+    /// </remarks>
+    private static readonly Lazy<string> LazyLifetimeDirectivePattern = new(() =>
         // 直前が英数字やハイフンなら別の指示の一部（"surrogate-max-age=" 等）なので拾わない
         @"(?<![A-Za-z0-9-])"
         + $"(?<name>{string.Join('|', MaxAgeFamilyPrefixes.Select(p => Regex.Escape(p.TrimEnd('='))))})"
-        + @"\s*=\s*(?<seconds>\d+)";
+        + @"\s*=\s*(?<seconds>\d+)");
 
     [Fact]
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
@@ -319,8 +330,10 @@ public class SecurityHeadersMiddlewareTests
         // 期間を持たない指示は正当なので、下の文書全体の検査では求めない
         Assert.NotEmpty(lifetimeDirectives);
 
-        // 長期・immutable でないことを確かめる（規則の本体は共有のヘルパーが持つ）
-        AssertNotLongLived(directives, "SecurityHeadersMiddleware.StaticAssetCacheControl");
+        // 長期・immutable でないことを確かめる（規則の本体は共有のヘルパーが持つ。
+        // 取り出し済みの期間の指示を渡し、同じ絞り込みを 2 度やらない）
+        AssertNotLongLived(
+            directives, lifetimeDirectives, "SecurityHeadersMiddleware.StaticAssetCacheControl");
     }
 
     // <b>文書が名乗るキャッシュ指示は、1 つ残らず長期でも immutable でもないこと。</b>
@@ -393,7 +406,7 @@ public class SecurityHeadersMiddlewareTests
             examined.Add(claimed);
 
             // 長期・immutable でないこと（期間を持たない no-store 等はそのまま通る）
-            AssertNotLongLived(SplitDirectives(claimed), $"docs/security.md の「{claimed}」");
+            AssertNotLongLived(SplitDirectives(claimed), null, $"docs/security.md の「{claimed}」");
         }
 
         // <b>「1 件も確かめていない」状態を落とす。</b> 目印の読み取りが何かの拍子に
@@ -443,10 +456,13 @@ public class SecurityHeadersMiddlewareTests
     /// <c>public,immutable</c>（RFC 8246 上、<c>max-age</c> 無しでも成立する）を名乗る文が
     /// 目印を 1 つも要求されず、判定にも渡されなかった（実測で全件緑）。
     /// </remarks>
-    private static string MarkerRequiredDirectivePattern =>
+    private static string MarkerRequiredDirectivePattern => LazyMarkerRequiredDirectivePattern.Value;
+
+    /// <summary><see cref="MarkerRequiredDirectivePattern"/> の実体（同上、最初の 1 回だけ）。</summary>
+    private static readonly Lazy<string> LazyMarkerRequiredDirectivePattern = new(() =>
         // 期間の指示か、単語としての immutable
         LifetimeDirectivePattern
-            + $"|(?<![A-Za-z0-9-]){Regex.Escape(ForbiddenDirective)}(?![A-Za-z0-9-])";
+            + $"|(?<![A-Za-z0-9-]){Regex.Escape(ForbiddenDirective)}(?![A-Za-z0-9-])");
 
     /// <summary>その指示が、目印を要求すべき「キャッシュの名乗り」かを見る。</summary>
     /// <remarks>
@@ -475,31 +491,56 @@ public class SecurityHeadersMiddlewareTests
             : MarkdownSource.LineAt(doc, match.Index).Contains(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase)
                 || IsCommaAdjacent(doc, match);
 
-    /// <summary>その指示の手前で、<c>Cache-Control</c> 以外のヘッダー名を名乗っているかを見る。</summary>
+    /// <summary>その指示が、<c>Cache-Control</c> 以外のヘッダーの値として書かれているかを見る。</summary>
     /// <remarks>
-    /// HSTS（<c>Strict-Transport-Security: max-age=31536000; includeSubDomains</c>）のように、
-    /// キャッシュと無関係なヘッダーが同じ綴りの期間を持つことがある。
-    /// <b>行内に <c>Cache-Control</c> が無いことを除外の根拠にしない</b>のが要点で、
-    /// それだとヘッダー名が前の行へ回った名乗りまで除外してしまう。
+    /// <b>除外は「名前の表」で切る（レビュー指摘）。</b> 以前は「英数字 + コロン」なら
+    /// 何でも別のヘッダーと見なしていたため、<c>CDN:</c> や <c>nginx:</c> のような
+    /// <b>ただの見出しを手前に置くだけで名乗りが丸ごと除外された</b>（実測で 1 年のキャッシュが全件緑）。
+    /// 除外したいのは「同じ綴りの期間を持つ別の HTTP ヘッダー」だけなので、
+    /// <see cref="LifetimeBearingHeaders"/> に載っている名前だけを認める（知らない名前は fail-closed）。
+    ///
+    /// <para><b>見る範囲は行ではなく箇条書き。</b> この文書は折り返しが多く、
+    /// ヘッダー名と値が別の行へ分かれる。行だけを見る形だと、
+    /// <b>折り返した HSTS で正しい文書が赤くなり</b>（実測）、しかも失敗文言が案内する
+    /// 目印を付けても次の検査で落ちるという<b>行き止まり</b>になる。
+    /// 逆に <c>Cache-Control</c> が前の行へ回った名乗りも、この範囲なら正しく拾える。</para>
     /// </remarks>
     /// <param name="doc">文書全体。</param>
     /// <param name="match">指示への一致。</param>
-    /// <returns>他のヘッダー名を名乗っているなら <c>true</c>。</returns>
+    /// <returns>他のヘッダーの値として書かれているなら <c>true</c>。</returns>
     private static bool NamesAnotherHeader(string doc, Match match)
     {
-        // その指示の直前にある、同じ行の綴り
-        var before = DirectiveRunBefore(doc, match.Index);
+        // その指示を含む箇条書き（地の文ならその行）の範囲
+        var (start, _) = MarkdownSource.BulletBounds(doc, match.Index);
 
-        // <b>一番近いヘッダー名を見る（レビュー指摘）。</b> 先頭から探すと、
-        // 同じ綴りの手前に別のヘッダー名があるだけで（`Vary: …, Cache-Control: …`）
-        // <b>名乗りが丸ごと除外される</b> ——実測で 1 年のキャッシュが全件緑のまま通った
-        var header = Regex.Match(
-            before, "(?<name>[A-Za-z][A-Za-z0-9-]*)[ \t]*:", RegexOptions.RightToLeft);
+        // その指示より前の綴り
+        var before = doc[start..match.Index];
+
+        // 知っているヘッダー名のうち、<b>一番近いもの</b>を探す
+        var nearest = Regex.Match(
+            before,
+            $"(?<name>{string.Join('|', LifetimeBearingHeaders.Select(Regex.Escape))})[ \t]*:",
+            RegexOptions.RightToLeft | RegexOptions.IgnoreCase);
 
         // 見つかり、かつ Cache-Control 以外なら真
-        return header.Success
-            && !header.Groups["name"].Value.Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
+        return nearest.Success
+            && !nearest.Groups["name"].Value.Equals(CacheControlHeaderName, StringComparison.OrdinalIgnoreCase);
     }
+
+    /// <summary>期間（<c>max-age=…</c>）を値に持ちうる HTTP ヘッダー名の表。</summary>
+    /// <remarks>
+    /// <b>人が判断するエスケープハッチ。</b> ここに無い名前は「別のヘッダー」と見なされないので、
+    /// 期間の指示は目印を要求される（fail-closed）。本当に別のヘッダーを文書へ足す人は
+    /// ここへ 1 行加えることになり、<b>その 1 行が差分としてレビューに現れる</b>。
+    /// <c>Cache-Control</c> も載せるのは、「一番近いヘッダー名」を求めるのに候補へ入れておく必要があるため。
+    /// </remarks>
+    private static readonly string[] LifetimeBearingHeaders =
+    [
+        // キャッシュの指示そのもの（これが一番近ければ名乗り）
+        CacheControlHeaderName,
+        // HSTS（max-age を持つがキャッシュとは無関係）
+        "Strict-Transport-Security",
+    ];
 
     /// <summary>ヘッダー名（文脈の判定に使う）。</summary>
     private const string CacheControlHeaderName = "Cache-Control";
@@ -679,8 +720,15 @@ public class SecurityHeadersMiddlewareTests
     /// そのとき<b>もう片方が素通りの窓口になる</b>（§6 DRY）。
     /// </remarks>
     /// <param name="directives">分解済みの指示。</param>
+    /// <param name="lifetimeDirectives">
+    /// 取り出し済みの期間の指示（呼び出し側が既に持っているときに渡す。
+    /// 渡さなければここで取り出す）。
+    /// </param>
     /// <param name="source">失敗文言に出す出所（どこの指示の話かを示す）。</param>
-    private static void AssertNotLongLived(IReadOnlyList<string> directives, string source)
+    private static void AssertNotLongLived(
+        IReadOnlyList<string> directives,
+        IReadOnlyList<string>? lifetimeDirectives,
+        string source)
     {
         // immutable を付けていないこと(付けると再取得の手段が無くなる)。
         // <b>出所を失敗文言へ出す（レビュー指摘）。</b> 呼び出し口は 3 つ（定数・
@@ -696,7 +744,7 @@ public class SecurityHeadersMiddlewareTests
         // 上書きするので、"public,s-maxage=31536000,max-age=3600" と書けば
         // プロキシは 1 年保存するのに max-age だけを見る検査は 3600 しか見ない
         // (実測でこの形が全件緑のまま通った)。stale-* も配信を延ばす向きに効く
-        foreach (var directive in LifetimeDirectives(directives))
+        foreach (var directive in lifetimeDirectives ?? LifetimeDirectives(directives))
         {
             // 値の部分(= の後ろ)を取り出す
             var value = directive[(directive.IndexOf('=') + 1)..];
@@ -746,10 +794,12 @@ public class SecurityHeadersMiddlewareTests
     /// <returns>カンマに当たれば <c>true</c>。</returns>
     private static bool HasCommaBefore(string doc, int index)
     {
-        // 空白のあいだは遡り続ける
+        // <b>行はまたがない（レビュー指摘）。</b> 改行も空白なので、条件を付けないと
+        // 前の行の末尾のカンマに届いてしまい、地の文を折り返して書いただけで
+        // <b>正しい文書が赤くなる</b>（実測）。同じファイルの他の走査も行で止めている
         var at = index - 1;
-        // 文書の先頭に着くまで
-        while (at >= 0 && char.IsWhiteSpace(doc[at])) at--;
+        // 同じ行の空白のあいだは遡り続ける
+        while (at >= 0 && doc[at] != '\n' && char.IsWhiteSpace(doc[at])) at--;
         // 空白でない最初の文字がカンマかどうか
         return at >= 0 && doc[at] == ',';
     }
@@ -760,10 +810,10 @@ public class SecurityHeadersMiddlewareTests
     /// <returns>カンマに当たれば <c>true</c>。</returns>
     private static bool HasCommaAfter(string doc, int index)
     {
-        // 空白のあいだは進み続ける
+        // 行はまたがない（遡る側と同じ理由。レビュー指摘）
         var at = index;
-        // 文書の末尾に着くまで
-        while (at < doc.Length && char.IsWhiteSpace(doc[at])) at++;
+        // 同じ行の空白のあいだは進み続ける
+        while (at < doc.Length && doc[at] != '\n' && char.IsWhiteSpace(doc[at])) at++;
         // 空白でない最初の文字がカンマかどうか
         return at < doc.Length && doc[at] == ',';
     }

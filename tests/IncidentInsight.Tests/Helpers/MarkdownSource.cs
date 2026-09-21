@@ -40,8 +40,10 @@ internal static class MarkdownSource
     /// <param name="index">含めたい位置。</param>
     /// <returns>行の先頭位置。</returns>
     internal static int LineStart(string doc, int index) =>
-        // 手前の改行の次からがその行
-        doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+        // <b>先頭はそのまま 0 を返す（レビュー指摘）。</b> 以前は 0 へ丸めてから探していたため、
+        // 改行で始まる文書の先頭を聞くと<b>問い合わせた位置より後ろ</b>の 1 を返し、
+        // 囲みの数え上げや箇条書きの遡りが黙って別の行を見る
+        index <= 0 ? 0 : doc.LastIndexOf('\n', index - 1) + 1;
 
     /// <summary>その位置を含む 1 行を切り出す。</summary>
     /// <param name="doc">文書全体。</param>
