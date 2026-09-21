@@ -390,11 +390,23 @@ if (!app.Environment.IsDevelopment())
         catch (Exception ex)
         {
             // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
-            app.Logger.LogError(
-                ex,
-                "Failed to re-check AllowedHosts after a configuration reload. " +
-                "The permissive/never-matching warnings may be stale until the next reload " +
-                "(issue #64).");
+            try
+            {
+                app.Logger.LogError(
+                    ex,
+                    "Failed to re-check AllowedHosts after a configuration reload. " +
+                    "The permissive/never-matching warnings may be stale until the next reload " +
+                    "(issue #64).");
+            }
+            catch (Exception loggingFailure)
+            {
+                // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
+                // ここから投げるとファイル監視のスレッドまで例外が戻り、
+                // 設定ファイルに触れただけでプロセスが落ちる ——この try/catch を
+                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る
+                Console.Error.WriteLine(
+                    "Failed to log an AllowedHosts re-check failure: " + loggingFailure);
+            }
         }
     });
 

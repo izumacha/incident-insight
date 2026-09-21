@@ -82,15 +82,19 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
                 return;
             }
 
-            // 次回の比較のために、いま評価する値を覚えておく
-            _lastEvaluatedValue = allowedHosts;
-            // 以降は「前回の値がある」状態になる
-            _hasEvaluated = true;
-
             // 「絞ったつもりで全部通る」形を拾う(1 本目)
             ReportPermissiveValue(allowedHosts);
             // 「並べたつもりで一部が通らない」形を拾う(2 本目)
             ReportNeverMatchingEntries(allowedHosts);
+
+            // <b>覚えるのは出し終えてから。</b> 先に覚えると、出力の途中で例外が出た値が
+            // 「評価済み」として残り、<b>同じ値での再読み込みでは黙る</b> ——
+            // 警告が永久に失われる側の壊れ方になる。後で覚えれば、失敗した値は
+            // 次の再読み込みでもう一度評価され、最悪でも同じ警告が 2 度出るだけ
+            // （過剰に出す＝安全側。この判定が一貫して取っている向き）。
+            _lastEvaluatedValue = allowedHosts;
+            // 以降は「前回の値がある」状態になる
+            _hasEvaluated = true;
         }
     }
 
