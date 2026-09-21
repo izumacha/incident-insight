@@ -1,7 +1,9 @@
 // フレームワークと同じホスト名の正規化を通すために使う
 using Microsoft.AspNetCore.Http;
-// ログ用に制御文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
+// ログ用に読めない文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
 using System.Text;
+// 文字が「字として現れるか」をカテゴリで判定するために使う
+using System.Globalization;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -1002,40 +1004,180 @@ public static class AllowedHostsPolicy
         "no Host header can ever equal this entry; inspect the entry itself";
 
     /// <summary>
-    /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
+    /// 目に見えない文字（制御文字と、行区切りとして扱われうる文字）を、ログで読める綴りへ置き換える。
     /// </summary>
     /// <remarks>
-    /// <para><b>制御文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
+    /// <para><b>文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
     /// 名前付きにして残りを別扱いにすると、表と実際の文字集合が少しずつずれていく。
-    /// <c>\uXXXX</c> の 1 規則なら、どの制御文字でも同じ読み方で済む。</para>
+    /// コードポイントをそのまま書く形なら、どの文字でも同じ読み方で済む。</para>
+    ///
+    /// <para><b>綴りは 2 つある（レビュー指摘）。</b> BMP の中は <c>\uXXXX</c>（4 桁）、
+    /// BMP の外は <c>\UXXXXXXXX</c>（大文字 U ＋ 8 桁）で、C# / .NET の書き方にそろえてある。
+    /// <b>4 桁だけだと思って読み書きしないこと</b> ——たとえば <c>\U000E0001</c> を
+    /// 4 桁として解くと <c>\U000E</c> ＋ 文字列 <c>0001</c> になり、
+    /// 運用者が読む値を静かに壊す（この仕組み自体が防ごうとしていることと同じ）。</para>
     ///
     /// <para><b>逆斜線そのものも置き換える。</b> そうしないと、値に文字どおり
     /// <c>\u0009</c> と書いた場合と、タブが 1 文字入っている場合が<b>同じ見た目</b>になり、
     /// 運用者は自分の設定のどちらなのかを判別できない。ホスト名に逆斜線が
     /// 正当に現れることは無いので、読みにくくなる実害も無い。</para>
+    ///
+    /// <para><b>条件は <c>char.IsControl</c> では足りない。</b> 守りたいのは
+    /// 「1 本の警告がログ上は複数のレコードに見える」ことを防ぐ点（issue #258）で、
+    /// そこで効くのは<b>行区切りとして扱われうるか</b>であって
+    /// 「制御文字か」ではない。<c>U+2028</c>（LINE SEPARATOR）と
+    /// <c>U+2029</c>（PARAGRAPH SEPARATOR）は<b><c>char.IsControl</c> が <c>false</c></b> なのに、
+    /// これらを行の区切りとして扱う処理系が実在する（このリポジトリ自身の
+    /// <c>CSharpCommentScanner.SplitLines</c> の docstring が、解析器は
+    /// <c>\r\n</c> ・ <c>\r</c> ・ <c>\n</c> に加えて <c>U+0085</c> ・ <c>U+2028</c> ・ <c>U+2029</c> でも
+    /// 行を分けると明記している。JSON / JS ベースのログビューアも同じ）。
+    /// <b>非対称なのが要点</b>で、同じ役割の <c>U+0085</c>（NEL）は
+    /// <c>char.IsControl</c> が <c>true</c> なので以前から置き換えられており、
+    /// <c>U+2028</c> / <c>U+2029</c> だけが生のまま載っていた（issue #263）。</para>
     /// </remarks>
     /// <param name="value">可視化したい文字列。</param>
-    /// <returns>制御文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    /// <returns>
+    /// 読めない文字を <c>\uXXXX</c>（BMP）または <c>\UXXXXXXXX</c>（それ以外の面）へ、
+    /// 逆斜線を <c>\\</c> へ置き換えた文字列。<b>幅は 2 通りある</b> ——
+    /// 4 桁固定と読むと、運用者が読む値を静かに壊す（詳しくは remarks）。
+    /// </returns>
     private static string MakeInvisibleCharactersVisible(string value)
     {
-        // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
-        if (!value.Any(ch => char.IsControl(ch) || ch == '\\')) return value;
-
-        // 置き換えが要るときだけ組み立てる
+        // 組み立て先（走り終えて何も置き換えていなければ捨てる）
         var builder = new StringBuilder(value.Length);
 
-        // 1 文字ずつ見て、読めない文字だけを置き換える
-        foreach (var ch in value)
+        // 1 文字でも置き換えたか（置き換えていなければ元の文字列をそのまま返す）
+        var rewritten = false;
+
+        // <b>符号単位ではなくコードポイント単位で見る（レビュー指摘）。</b>
+        // 1 文字（char）ずつ見ると、BMP の外にある文字は<b>サロゲートの片割れ</b>として
+        // 現れ、カテゴリは必ず Surrogate になる ——Format かどうかを見ても常に外れるので、
+        // <c>U+E0001</c>（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が
+        // 生のまま載っていた。BMP の <c>U+200B</c> だけを直した形のまま、
+        // 同じ危険が「char と コードポイントの境目」へ移っていたことになる。
+        for (var index = 0; index < value.Length; index++)
         {
+            // いま見ている符号単位
+            var unit = value[index];
+
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
-            if (ch == '\\') builder.Append("\\\\");
-            // 制御文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
-            else if (char.IsControl(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
-            // それ以外はそのまま（ホスト名として読める文字）
-            else builder.Append(ch);
+            if (unit == Backslash)
+            {
+                // 二重化する
+                builder.Append("\\\\");
+                // 置き換えたことを控えて次へ
+                rewritten = true;
+                continue;
+            }
+
+            // 対になったサロゲート（BMP の外の 1 文字）なら、2 符号単位をまとめて見る
+            if (char.IsHighSurrogate(unit)
+                && index + 1 < value.Length
+                && char.IsLowSurrogate(value[index + 1]))
+            {
+                // 2 つの符号単位から本来の 1 文字を組み立てる
+                var rune = new Rune(unit, value[index + 1]);
+
+                // 字として現れないなら 8 桁で、そうでなければそのまま出す
+                if (NeedsEscaping(rune))
+                {
+                    // 8 桁の綴りへ置き換える
+                    builder.Append("\\U").Append(rune.Value.ToString("X8"));
+                    // 置き換えたことを控える
+                    rewritten = true;
+                }
+                // 読める文字なので 2 符号単位をそのまま出す
+                else builder.Append(unit).Append(value[index + 1]);
+
+                // 2 符号単位を消費したので 1 つ余分に進める
+                index++;
+                continue;
+            }
+
+            // <b>対になっていないサロゲートは必ず可視化する。</b> それ自体が不正な綴りで、
+            // 描画は環境任せ（多くは空白か置換文字）なので、生で出すと読み手が値を誤解する
+            if (char.IsSurrogate(unit))
+            {
+                // 片割れをそのままコードポイントとして出す
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控えて次へ
+                rewritten = true;
+                continue;
+            }
+
+            // ここへ来るのは BMP の普通の 1 文字（サロゲートでないので Rune にできる）
+            var single = new Rune(unit);
+
+            // 字として現れないなら 4 桁で、そうでなければそのまま出す
+            if (NeedsEscaping(single))
+            {
+                // 4 桁の綴りへ置き換える
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控える
+                rewritten = true;
+            }
+            // 読める文字なのでそのまま出す
+            else builder.Append(unit);
         }
 
-        // 可視化した綴りを返す
-        return builder.ToString();
+        // 1 つも置き換えていないなら、組み立てた綴りは元と同じなので元をそのまま返す
+        // （<b>ここが唯一の判定</b>。以前は「置き換えるものがあるか」を先に 1 度見てから
+        // 組み立てていたが、条件が 2 か所に分かれるため、片方だけを広げた変更が
+        // 「広げたはずの文字が早期 return に拾われて素通りする」向きに壊れうる形だった。
+        // しかも 1 文字ずつ見る述語では<b>対になったサロゲートを判断できない</b>ため、
+        // 読めるだけの絵文字 1 つで早期 return が必ず外れていた＝レビュー指摘）
+        return rewritten ? builder.ToString() : value;
     }
+
+    /// <summary>二重化して出す文字（逆斜線）。</summary>
+    /// <remarks>
+    /// 名前を付けているのは、組み立てと<b>この docstring の説明</b>が
+    /// <b>同じ文字</b>を指していることを読み手に示すため。
+    /// </remarks>
+    private const char Backslash = '\\';
+
+    /// <summary>
+    /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>呼び口は組み立ての 1 か所だけにしてある。</b> 以前は
+    /// <see cref="MakeInvisibleCharactersVisible"/> が「置き換えが 1 つでもあるか」を
+    /// 先に 1 度見てから組み立てていたため、同じ条件が 2 か所に分かれていた。
+    /// 書き写した条件は<b>片方だけを広げた変更</b>で崩れ、そのとき壊れ方は
+    /// 「広げたはずの文字が、早期 return に拾われて素通りする」＝
+    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。
+    /// いまは組み立てながら「1 つでも置き換えたか」を控えるので、条件はここだけにある。</para>
+    ///
+    /// <para><b>綴りの表ではなく Unicode のカテゴリで見る。</b> 以前は
+    /// <c>char.IsControl</c> ＋ 手で並べた 2 文字（<c>U+2028</c> / <c>U+2029</c>）だったが、
+    /// それは「今まで踏んだ分だけの表」で、<b>同じ危険を持つ文字がまだ残っていた</b>
+    /// （レビュー指摘。実測で <c>U+200B</c>（幅ゼロ空白）と <c>U+202E</c>（書字方向の上書き）が
+    /// 生のまま出ていた）。前者は<b>一致しえない項目を健全な項目と見分けられなくし</b>
+    /// （<c>[ ]</c> で囲む意味が消える）、後者は<b>警告の行の残りを逆順に描かせる</b>ので、
+    /// 運用者が読む 1 行を別の内容に見せられる ——どちらも issue #263 と同じ種類の危険。
+    /// カテゴリで見れば「字として現れないもの」をまとめて捉えられ、
+    /// docstring が掲げてきた「文字ごとの対応表を持たない」にも沿う。</para>
+    ///
+    /// <para><b>私用領域（<c>Co</c>）と未割り当て（<c>Cn</c>）も含める（レビュー指摘）。</b>
+    /// どちらも表示がフォント任せで、多くの環境では空白か豆腐になる ——
+    /// <c>U+200B</c> を可視化する理由（一致しえない項目を健全な項目と見分けられなくする）が
+    /// そのまま当てはまる。ホスト名にこれらが正当に現れることは無いので、代償も無い。</para>
+    ///
+    /// <para><b>残っている境界: 幅のある空白（<c>U+00A0</c> など <c>Zs</c>）は素通しにしてある。</b>
+    /// <c>Zs</c> には普通の空白（<c>U+0020</c>）も含まれるので、カテゴリごと可視化すると
+    /// <b>ごく普通の値が読めなくなる</b>。幅のある空白は<b>空白として見える</b>ぶん、
+    /// 幅ゼロの文字より危険が小さいと判断している（前後の空白は <c>[ ]</c> の囲みが見せる）。</para>
+    /// </remarks>
+    /// <param name="ch">判定する 1 文字（符号単位ではなくコードポイント）。</param>
+    /// <returns>可視化が要るなら <c>true</c>。</returns>
+    private static bool NeedsEscaping(Rune ch) =>
+        // 画面・ログに<b>字として現れない</b>カテゴリなら可視化する
+        Rune.GetUnicodeCategory(ch)
+            is UnicodeCategory.Control        // タブ・CR / LF・NEL など
+            or UnicodeCategory.Format         // 幅ゼロの文字（U+200B）や書字方向の上書き（U+202E）
+            or UnicodeCategory.LineSeparator  // U+2028
+            or UnicodeCategory.ParagraphSeparator  // U+2029
+            or UnicodeCategory.PrivateUse          // 私用領域（表示はフォント任せ＝多くは空白か豆腐）
+            or UnicodeCategory.OtherNotAssigned;   // 未割り当て（同上）
+
 }

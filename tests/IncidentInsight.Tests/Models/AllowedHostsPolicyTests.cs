@@ -720,10 +720,62 @@ public class AllowedHostsPolicyTests
     [InlineData("incident.example.test;www.example.test", "incident.example.test;www.example.test")]
     // 前後の空白は制御文字ではないので触らない（"[ ]" の囲みが見せる役目を持つ）
     [InlineData(" a.test", " a.test")]
+    // <b>NEL（U+0085）は char.IsControl が true なので、以前から置き換えられていた。</b>
+    // 下の 2 つと並べてあるのは、この 3 文字が「同じ役割なのに判定だけが違う」組だから ——
+    // 条件を char.IsControl へ畳み戻す変異は、この行を通したまま下の 2 行で落ちる
+    [InlineData("a.test\u0085b.test", "a.test\\u0085b.test")]
+    // <b>本命（issue #263）。</b> U+2028 / U+2029 は行区切りとして扱われうるのに
+    // char.IsControl が false なので、条件を「制御文字か」にしていると生のまま載る
+    [InlineData("a.test\u2028b.test", "a.test\\u2028b.test")]
+    [InlineData("a.test\u2029b.test", "a.test\\u2029b.test")]
+    // <b>行区切り以外にも「字として現れない」文字がある（レビュー指摘）。</b>
+    // U+200B（幅ゼロ空白）は<b>一致しえない項目を健全な項目と見分けられなくし</b>、
+    // U+202E（書字方向の上書き）は<b>警告の行の残りを逆順に描かせる</b>ので、
+    // 運用者が読む 1 行を別の内容に見せられる ——どちらも Format カテゴリで、
+    // char.IsControl も行区切りの 2 文字も拾わなかった
+    [InlineData("a.test\u200Bb.test", "a.test\\u200Bb.test")]
+    [InlineData("a.test\u202Eb.test", "a.test\\u202Eb.test")]
+    // 普通の空白と、幅のある空白（U+00A0）は触らない ——
+    // 空白として見えるぶん危険が小さく、カテゴリごと可視化すると普通の値が読めなくなる
+    [InlineData("a.test\u00A0b.test", "a.test\u00A0b.test")]
+    // 私用領域（U+E000）と未割り当て（U+FDD0）も可視化する ——
+    // どちらも表示がフォント任せで、多くの環境では空白か豆腐になる。
+    // <b>未割り当ての例に非文字（U+FDD0）を選ぶ（レビュー指摘）。</b>
+    // Greek ブロックの空き（U+0378 など「まだ割り当てられていないだけ」の位置）は
+    // 将来の Unicode で<b>実際に埋まりうる</b>ので、期待値を固定すると
+    // ランタイム（ICU / CharUnicodeInfo の表）を上げただけで、
+    // <b>壊れていないのに赤くなる</b>。U+FDD0 は Unicode が<b>恒久的に</b>
+    // 文字を割り当てないと定めた範囲（noncharacter）なので、カテゴリ Cn が動かない
+    [InlineData("a.test\uE000b.test", "a.test\\uE000b.test")]
+    [InlineData("a.test\uFDD0b.test", "a.test\\uFDD0b.test")]
+    // <b>BMP の外の「見えない文字」も可視化する（レビュー指摘）。</b> 符号単位で見ると
+    // サロゲートの片割れになり、カテゴリは必ず Surrogate になるので Format の判定を
+    // すり抜けていた ——U+E0001（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が
+    // 生のまま載っていた。コードポイント単位で見て、8 桁の形で出す
+    [InlineData("a.test\U000E0001b.test", "a.test\\U000E0001b.test")]
+    // BMP の外でも、字として現れるものはそのまま（絵文字・追加漢字など）
+    [InlineData("a.test\U0001F600b.test", "a.test\U0001F600b.test")]
     public void DescribeValueForLog_MakesInvisibleCharactersVisible(string value, string expected)
     {
         // 可視化した綴りが期待どおりであること
         Assert.Equal(expected, AllowedHostsPolicy.DescribeValueForLog(value));
+    }
+
+    // <b>対になっていないサロゲートも必ず可視化する。</b> それ自体が不正な綴りで、
+    // 描画は環境任せ（多くは空白か置換文字）なので、生で出すと読み手が値を誤解する。
+    //
+    // <b>[InlineData] では表せない。</b> xUnit は Theory の引数を直列化して配るため、
+    // 対になっていないサロゲートは途中で置換文字（U+FFFD）へ化ける ——
+    // 実測で、化けた値は「字として現れる」ので可視化されず、検査が空振りした。
+    // 文字列をテストの中で組み立てれば、その経路を通らない。
+    [Fact]
+    public void DescribeValueForLog_MakesLoneSurrogatesVisible()
+    {
+        // 対になっていない上位サロゲートを挟んだ値を、テストの中で組み立てる
+        var value = "a.test" + (char)0xD800 + "b.test";
+
+        // 4 桁のコードポイントとして可視化されること
+        Assert.Equal("a.test" + @"\uD800" + "b.test", AllowedHostsPolicy.DescribeValueForLog(value));
     }
 
     // <b>未設定は「空文字を設定した」と区別して名乗る。</b> 構造化ログの既定は

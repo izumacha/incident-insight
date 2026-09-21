@@ -55,6 +55,15 @@ internal static class RepositoryPaths
     /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
 
+    /// <summary>運用者向けのセキュリティ文書（<c>docs/security.md</c>）。</summary>
+    /// <remarks>
+    /// <b>2 つのテストが読むのでここに置く（レビュー指摘）。</b> 文書は実装との
+    /// 突き合わせに使われており（キャッシュ指示・診断の綴り）、パスを読み手ごとに
+    /// 書き写すと、改名・分割したときに片方だけが直り、もう片方は見つからないか
+    /// <b>古いファイルを読み続ける</b>（§6「パスは名前付き定数にし単一の参照元に置く」）。
+    /// </remarks>
+    public static string SecurityDoc => Path.Combine(Root, "docs", "security.md");
+
     /// <summary>
     /// Razor ビュー(Web プロジェクト配下の全 <c>.cshtml</c>。ビルド生成物は除く)を再帰的に列挙する。
     ///
