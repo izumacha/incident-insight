@@ -1154,6 +1154,11 @@ public static class AllowedHostsPolicy
     /// カテゴリで見れば「字として現れないもの」をまとめて捉えられ、
     /// docstring が掲げてきた「文字ごとの対応表を持たない」にも沿う。</para>
     ///
+    /// <para><b>私用領域（<c>Co</c>）と未割り当て（<c>Cn</c>）も含める（レビュー指摘）。</b>
+    /// どちらも表示がフォント任せで、多くの環境では空白か豆腐になる ——
+    /// <c>U+200B</c> を可視化する理由（一致しえない項目を健全な項目と見分けられなくする）が
+    /// そのまま当てはまる。ホスト名にこれらが正当に現れることは無いので、代償も無い。</para>
+    ///
     /// <para><b>残っている境界: 幅のある空白（<c>U+00A0</c> など <c>Zs</c>）は素通しにしてある。</b>
     /// <c>Zs</c> には普通の空白（<c>U+0020</c>）も含まれるので、カテゴリごと可視化すると
     /// <b>ごく普通の値が読めなくなる</b>。幅のある空白は<b>空白として見える</b>ぶん、
@@ -1167,7 +1172,9 @@ public static class AllowedHostsPolicy
             is UnicodeCategory.Control        // タブ・CR / LF・NEL など
             or UnicodeCategory.Format         // 幅ゼロの文字（U+200B）や書字方向の上書き（U+202E）
             or UnicodeCategory.LineSeparator  // U+2028
-            or UnicodeCategory.ParagraphSeparator; // U+2029
+            or UnicodeCategory.ParagraphSeparator  // U+2029
+            or UnicodeCategory.PrivateUse          // 私用領域（表示はフォント任せ＝多くは空白か豆腐）
+            or UnicodeCategory.OtherNotAssigned;   // 未割り当て（同上）
 
 
 }

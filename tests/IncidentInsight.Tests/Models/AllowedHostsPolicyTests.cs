@@ -738,6 +738,10 @@ public class AllowedHostsPolicyTests
     // 普通の空白と、幅のある空白（U+00A0）は触らない ——
     // 空白として見えるぶん危険が小さく、カテゴリごと可視化すると普通の値が読めなくなる
     [InlineData("a.test\u00A0b.test", "a.test\u00A0b.test")]
+    // 私用領域（U+E000）と未割り当て（U+0378）も可視化する ——
+    // どちらも表示がフォント任せで、多くの環境では空白か豆腐になる
+    [InlineData("a.test\uE000b.test", "a.test\\uE000b.test")]
+    [InlineData("a.test\u0378b.test", "a.test\\u0378b.test")]
     // <b>BMP の外の「見えない文字」も可視化する（レビュー指摘）。</b> 符号単位で見ると
     // サロゲートの片割れになり、カテゴリは必ず Surrogate になるので Format の判定を
     // すり抜けていた ——U+E0001（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が

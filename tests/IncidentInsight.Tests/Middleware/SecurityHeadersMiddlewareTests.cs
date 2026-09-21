@@ -224,9 +224,6 @@ public class SecurityHeadersMiddlewareTests
     /// <returns>仕組みを説明している箇条書き 1 つ分の文字列。</returns>
     private static string StaticAssetCachingBullet(string doc)
     {
-        // 行単位で見る(箇条書きの境目は行頭の "- " で決まる)
-        var lines = doc.Split('\n');
-
         // 仕組みの名前が書かれている行を<b>すべて</b>探す。
         //
         // <b>ここで「最初の 1 件」を採ってはいけない(レビュー指摘)。</b> それをやると、
@@ -237,10 +234,9 @@ public class SecurityHeadersMiddlewareTests
         // 当たって「ちょうど 1 件」も値の一致も成立し、<b>1157 件すべて緑のまま通った</b>。
         // そのとき docs/security.md は、この 2 本の検査が守っているはずの不変条件
         // （長期にしない・immutable を付けない）と正面から矛盾する内容を名乗っていた。
-        var anchors = lines
-            // 仕組みの名前を含む行の位置だけを残す
-            .Select((line, index) => (Line: line, Index: index))
-            .Where(entry => entry.Line.Contains(StaticAssetCachingMechanism, StringComparison.Ordinal))
+        var anchors = Regex.Matches(doc, Regex.Escape(StaticAssetCachingMechanism))
+            // 文字位置だけを残す（行番号ではなく、BulletBounds が受け取れる形）
+            .Select(match => match.Index)
             .ToList();
 
         // ちょうど 1 件であること ——0 件なら目印が読めておらず、2 件以上ならどの箇条書きを
@@ -255,27 +251,20 @@ public class SecurityHeadersMiddlewareTests
                 + "目印をより細かくしてください"
                 + "(最初の一致で済ませると、守るべき記述が黙って入れ替わります)。");
 
-        // ちょうど 1 件と分かったので、その行の位置を取り出す
-        var anchor = anchors[0].Index;
+        // <b>箇条書きの境目は BulletBounds が持つ（レビュー指摘）。</b> 同じ規則を
+        // ここへ書き写すと、文書が別の記号の箇条書きへ変わったときに片方だけが直り、
+        // もう片方は無関係な範囲を見たまま静かに誤分類する（§6 DRY）
+        var (start, end) = BulletBounds(doc, anchors[0]);
 
-        // その行から上へたどって、その箇条書きの先頭(行頭の "- ")を見つける
-        var start = anchor;
-        // 先頭に当たるまで 1 行ずつ戻る
-        while (start >= 0 && !lines[start].StartsWith("- ", StringComparison.Ordinal)) start--;
-        // 箇条書きの中に無い(＝地の文に書かれている)なら、範囲を決められないので落とす
+        // 箇条書きの中にあること（地の文に書かれていると範囲を決められない）
         Assert.True(
-            start >= 0,
+            IsBulletStart(doc, start),
             $"docs/security.md の {StaticAssetCachingMechanism} の説明が箇条書きの中にありません。"
                 + "切り出しは行頭の \"- \" を境目にしているので、書き方を変えたなら"
                 + "この切り出しも同じ変更セットで直してください。");
 
-        // 次の箇条書きの手前(または文書の末尾)までがこの箇条書き
-        var end = start + 1;
-        // 次の "- " に当たるまで 1 行ずつ進む
-        while (end < lines.Length && !lines[end].StartsWith("- ", StringComparison.Ordinal)) end++;
-
-        // 切り出した範囲を 1 本の文字列に戻して返す
-        return string.Join('\n', lines[start..end]);
+        // 切り出した範囲を返す
+        return doc[start..end];
     }
 
     // 定数が、docstring の述べている不変条件(短い期間・immutable なし)を満たしていること。
@@ -428,6 +417,9 @@ public class SecurityHeadersMiddlewareTests
         // 囲みの無い地の文では拾えない</b>状態を作る（実測で、"surrogate-control=" を
         // 足して囲みなしで名乗らせると 10 件すべて緑のまま通った）——
         // 「規則を 2 度書くと片方が素通りの窓口になる」形そのもの
+        // 地の文の枝が実際に見た件数（空振りしていないかの照合に使う）
+        var scannedInProse = 0;
+
         foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
             // <b>カンマで他の指示とつながっている形だけを見る（レビュー指摘）。</b>
@@ -445,6 +437,9 @@ public class SecurityHeadersMiddlewareTests
 
             // 囲みのある名乗りと同じく、肯定的に名乗っている文だけを見る
             if (!IsAffirmativeClaim(securityDoc, lifetime.Index)) continue;
+
+            // この枝も 1 件は実際に見たことを控える（下の空振り検出に使う）
+            scannedInProse++;
 
             // <b>上限の判定は共有のヘルパーへ通す（レビュー指摘）。</b> ここで
             // 読み取りと比較を書き下すと、上限や扱いを変えた人が片方だけを直し、
@@ -473,6 +468,19 @@ public class SecurityHeadersMiddlewareTests
         // ただし immutable は<b>単体では効かない</b>（RFC 8246。新鮮さの指示を
         // 修飾するものなので、害のある名乗りには必ず max-age 系が伴う）ため、
         // その場合は上の期間の走査が囲みの有無を問わず拾う。
+        // <b>地の文の枝も「1 件も見ていない」状態を落とす（レビュー指摘）。</b>
+        // 実測で、IsCommaAdjacent を常に false にしても全件緑のまま通り、
+        // その状態では囲みなしの囮が素通りした ——違反 0 件で緑になる検査は、
+        // 別の手がかりで「実際に見たこと」を固定しないと黙って死ぬ。
+        // この文書には静的アセットの名乗り（`public,max-age=3600`）があり、
+        // その max-age はカンマ隣接なので、必ず 1 件は数えられる。
+        Assert.True(
+            scannedInProse > 0,
+            "囲みの無い地の文の走査が 1 件も見ていません。"
+                + "docs/security.md にはカンマでつながった期間の指示が少なくとも 1 つあるはずなので、"
+                + "走査の条件（綴り・カンマ隣接・肯定の名乗り）が狭すぎないか確かめてください"
+                + "（このまま緑にすると、囲みの無い囮が素通りします）。");
+
         // 肯定的に名乗っている行に限って、カンマでつながった immutable を探す
         var immutableClaim = Regex.Matches(
             securityDoc,
@@ -659,10 +667,8 @@ public class SecurityHeadersMiddlewareTests
             // 現れなければ次の目印へ
             if (at < 0) continue;
 
-            // 目印の直後の数文字（ここに否定の結びが来る）
-            var tailStart = at + marker.Length;
-            // 文字列の終わりを超えないようにする
-            var tail = following[tailStart..Math.Min(tailStart + NegationLookahead, following.Length)];
+            // 目印の直後から、その動詞が言い切られるところまで（ここに否定の結びが来る）
+            var tail = VerbTail(following, at + marker.Length);
 
             // 否定で結ばれていれば、これは反例なので次の目印へ
             if (NegatedClaimMarkers.Any(n => tail.Contains(n, StringComparison.Ordinal))) continue;
@@ -675,10 +681,38 @@ public class SecurityHeadersMiddlewareTests
         return false;
     }
 
-    // 目印の直後、否定の結びを探す長さ（「りません」「しません」が収まる幅）。
-    // <b>広げない</b> ——広げるほど、同じ箇条書きの別の文にある否定を拾って
-    // 肯定の名乗りを取り消してしまう（実測でそうなっていた）
-    private const int NegationLookahead = 6;
+    // 否定を探す範囲の打ち切り（動詞が言い切られる前に現れる区切り）。
+    // <b>固定の文字数では足りない（レビュー指摘）。</b> 6 文字にしていたところ、
+    // 「を名乗ることはありません」のような<b>ごく普通の否定</b>が範囲から外れ、
+    // 正しい反例で赤くなった（実測）。一方、範囲を文末まで広げると
+    // 「…を名乗ります(この経路には no-store を付けません)。」のような
+    // <b>括弧の中の無関係な否定</b>が肯定の名乗りを取り消す。
+    // そこで<b>動詞が言い切られるところ</b>（句読点・括弧・コロン）で打ち切る。
+    private static readonly char[] VerbTailBoundaries =
+        ['。', '、', '(', ')', '（', '）', ':', '：', ';', '；'];
+
+    // 動詞の言い切りを探す上限（区切りが 1 つも無い書き方への保険）。
+    // 「ることはありません」が収まる幅にしてある
+    private const int VerbTailLimit = 24;
+
+
+    /// <summary>目印の直後から、その動詞が言い切られるところまでを切り出す。</summary>
+    /// <param name="text">空白を落とした、一致より後ろの文字列。</param>
+    /// <param name="from">目印の直後の位置。</param>
+    /// <returns>否定の結びを探す範囲。</returns>
+    private static string VerbTail(string text, int from)
+    {
+        // 上限を超えない終わりの位置
+        var limit = Math.Min(from + VerbTailLimit, text.Length);
+
+        // 区切りに当たるまで進める
+        var at = from;
+        // 区切りでない間は進み続ける
+        while (at < limit && !VerbTailBoundaries.Contains(text[at])) at++;
+
+        // 目印の直後から、区切り（または上限）までを返す
+        return text[from..at];
+    }
 
     /// <summary>指定位置から、その箇条書きの終わりまでを切り出す。</summary>
     /// <param name="doc">文書全体。</param>
@@ -718,8 +752,11 @@ public class SecurityHeadersMiddlewareTests
 
         // そこから上へたどって、箇条書きの先頭（行頭の "- "）を探す
         var start = lineStart;
-        // 先頭に当たるか、文書の先頭に着くまで戻る
-        while (start > 0 && !IsBulletStart(doc, start))
+        // 先頭に当たるか、文書の先頭に着くまで戻る。
+        // <b>条件は start > 1（レビュー指摘）</b> ——start == 1 で入ると
+        // LastIndexOf('\n', -1) を呼んで例外になり、案内ではなく
+        // ArgumentOutOfRangeException でテストが落ちる（実測）
+        while (start > 1 && !IsBulletStart(doc, start))
         {
             // 1 つ前の行の先頭へ
             start = doc.LastIndexOf('\n', start - 2) + 1;
