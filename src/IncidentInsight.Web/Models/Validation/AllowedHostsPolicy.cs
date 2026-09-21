@@ -717,7 +717,6 @@ public static class AllowedHostsPolicy
     /// で、実測ではそれはワイルドカードではない（理由は
     /// <see cref="IsWildcardEntry"/> の remarks が正本）。だから数え上げの出発点は
     /// 正規化後ではなく<b>運用者が書いた綴り</b>にしてある。</para>
-    /// </remarks>
     ///
     /// <para><b>上限を引数に取るのは、打ち切りの配線をテストから通せるようにするため。</b>
     /// 本番の上限（<see cref="MaxRepairedSpellings"/>）は実在しうる綴りでは届きにくい値なので、
