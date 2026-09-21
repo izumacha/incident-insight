@@ -403,9 +403,18 @@ if (!app.Environment.IsDevelopment())
                 // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
                 // ここから投げるとファイル監視のスレッドまで例外が戻り、
                 // 設定ファイルに触れただけでプロセスが落ちる ——この try/catch を
-                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る
+                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
+                //
+                // <b>元の失敗（ex）も必ず一緒に出す（レビュー指摘）。</b> 出力先が
+                // 落ちた理由（loggingFailure）だけを書くと、<b>肝心の
+                // 「AllowedHosts の再検査が失敗した」事実がどこにも残らない</b> ——
+                // 運用者は docs/security.md の「2 本とも出ていないことの確認」を
+                // きれいなログで通してしまい、絞り込みが緩んだ可能性に気づけない。
                 Console.Error.WriteLine(
-                    "Failed to log an AllowedHosts re-check failure: " + loggingFailure);
+                    "Failed to re-check AllowedHosts after a configuration reload, and the "
+                    + "failure could not be logged. The permissive/never-matching warnings may "
+                    + "be stale until the next reload (issue #64). Original failure: " + ex
+                    + " | Logging failure: " + loggingFailure);
             }
         }
     });

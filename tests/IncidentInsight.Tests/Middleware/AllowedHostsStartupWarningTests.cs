@@ -42,6 +42,9 @@ public class AllowedHostsStartupWarningTests
     // 2 本目（一致しえない項目）の警告を見分ける目印（同上）
     private const string DeadEntryWarningMarker = "AllowedHosts contains";
 
+    // 再読み込み後の検査そのものが失敗したときに残る記録の目印（同上）
+    private const string ReCheckFailureMarker = "Failed to re-check AllowedHosts";
+
     [Fact]
     public void RealHostnamesOnly_WarnAboutNothing()
     {
@@ -274,7 +277,7 @@ public class AllowedHostsStartupWarningTests
     public void LooseningTheValueAtRuntime_EmitsThePermissiveWarningAgain()
     {
         // 正しく絞られた値で起動する（起動時には 1 本も出ない状態から始める）
-        using var fixture = new ReloadableWarningCapturingFixture("incident.example.test");
+        using var fixture = new WarningCapturingFixture("incident.example.test");
 
         // 起動直後は 1 本目が出ていないこと
         // （出ていると、以降の「増えたか」の検査が起動時の 1 本を見て緑になる）
@@ -302,7 +305,7 @@ public class AllowedHostsStartupWarningTests
     public void AddingANeverMatchingEntryAtRuntime_EmitsTheDeadEntryWarningAgain()
     {
         // 一致しえない項目が 1 つも無い値で起動する
-        using var fixture = new ReloadableWarningCapturingFixture("incident.example.test");
+        using var fixture = new WarningCapturingFixture("incident.example.test");
 
         // 起動直後は 2 本目が出ていないこと
         Assert.DoesNotContain(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
@@ -316,6 +319,56 @@ public class AllowedHostsStartupWarningTests
 
         // 一致しえない項目が "[ ]" で囲まれて名指しされていること
         Assert.Contains("[ www.example.test]", warning);
+    }
+
+    // <b>再読み込みの検査が失敗しても、例外を呼び出し元へ通さないこと（レビュー指摘）。</b>
+    //
+    // 変更トークンの発火は CancellationTokenSource.Cancel() 経由で、集めた例外を
+    // 呼び出し元へ投げ直す。本番でのその呼び出し元は設定ファイルの監視スレッドなので、
+    // ここから例外が出ると<b>設定ファイルに触れただけでプロセスが落ちる</b>。
+    // 加えて、同じトークンに連なる他の購読（HostFilteringOptions 自身の再束縛を含む）も
+    // そこで打ち切られる。診断のための警告がアプリを止めるのは本末転倒で、
+    // CLAUDE.md §9 の「例外時はクラッシュではなく機能を縮退して継続する」に反する。
+    //
+    // <b>この検査が無いと、握りの配線を消しても全件緑のまま通る</b>（実測）——
+    // どのケースもコールバックを失敗させていなかったため。
+    //
+    // <b>失敗する場所を 2 通り見る。</b> 警告そのものの書き込みが落ちる場合と、
+    // <b>それを記録しようとした LogError まで落ちる</b>場合（ログの出力先ごと
+    // 落ちている状況）で、後者は最後の手段（別の出力先へ吐いて必ず戻る）を通る。
+    [Theory]
+    // 1 本目の警告の書き込みだけが落ちる
+    [InlineData(false)]
+    // 警告も、その失敗を記録する LogError も落ちる（出力先ごと落ちている状況）
+    [InlineData(true)]
+    public void AFailingLogSink_DoesNotPropagateOutOfTheReloadCallback(bool failEveryWrite)
+    {
+        // 絞られた値で起動し、起動時には何も書き込ませない
+        // （起動時に落とすとアプリの組み立て自体が失敗し、見たい経路へ到達しない）
+        using var fixture = new WarningCapturingFixture(
+            "incident.example.test",
+            failLoggingWhen: message =>
+                // 出力先ごと落ちている状況では、起動後のどの書き込みも失敗させる。
+                // そうでなければ、1 本目の警告だけを失敗させる
+                failEveryWrite
+                    ? message.Contains(PermissiveWarningMarker) || message.Contains(ReCheckFailureMarker)
+                    : message.Contains(PermissiveWarningMarker));
+
+        // <b>本命。</b> 稼働中に全許可へ緩める ——このとき 1 本目の警告の書き込みが失敗する。
+        // 例外がここまで戻ってくると（＝本番ならプロセスが落ちる形）、この行で落ちる
+        var reload = Record.Exception(() => fixture.ReloadAllowedHosts("*"));
+
+        // コールバックの外へ例外が出ていないこと
+        Assert.Null(reload);
+
+        // <b>握り潰してはいない</b>こと ——出力先が生きているほうのケースでは、
+        // 失敗の事実が文脈付きで記録されている（§6「エラーを握り潰さない」）。
+        // 出力先ごと落ちているケースでは記録も残せないので、そこは求めない
+        if (!failEveryWrite)
+        {
+            // 再検査に失敗したことが記録されていること
+            Assert.Contains(fixture.Warnings, w => w.Contains(ReCheckFailureMarker));
+        }
     }
 
     // <b>未設定のまま起動したら 1 本目を出すこと（レビュー指摘）。</b>
@@ -332,7 +385,7 @@ public class AllowedHostsStartupWarningTests
     public void UnsetValue_StillEmitsThePermissiveWarning()
     {
         // AllowedHosts が解決できない（未設定の）状態で起動する
-        using var fixture = new ReloadableWarningCapturingFixture(null);
+        using var fixture = new WarningCapturingFixture(null);
 
         // 1 本目が出ていること
         var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
@@ -352,7 +405,7 @@ public class AllowedHostsStartupWarningTests
     public void ReloadingWithoutChangingTheValue_DoesNotRepeatTheWarning()
     {
         // 全許可のまま起動する（起動時に 1 本目が出る状態）
-        using var fixture = new ReloadableWarningCapturingFixture("*");
+        using var fixture = new WarningCapturingFixture("*");
 
         // 起動時に 1 本出ていること（ここが 0 本だと、以降の検査が何も見ていない）
         Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
@@ -365,21 +418,50 @@ public class AllowedHostsStartupWarningTests
     }
 
     /// <summary>
-    /// <c>Staging</c> としてアプリを起動し、起動中に出た警告を溜めておくフィクスチャ。
+    /// <c>Staging</c> としてアプリを起動し、出た警告を溜めておくフィクスチャ。
     /// </summary>
     /// <remarks>
-    /// <b>プロバイダは起動前に登録する。</b> 起動時のログはアプリの組み立て中に出るので、
-    /// 起動後に <c>Factory.Services</c> を覗いても間に合わない。
+    /// <para><b>プロバイダは起動前に登録する。</b> 起動時のログはアプリの組み立て中に出るので、
+    /// 起動後に <c>Factory.Services</c> を覗いても間に合わない。</para>
+    ///
+    /// <para><b>起動時だけを見るテストと、再読み込みまで見るテストで 1 つにしてある。</b>
+    /// 以前は 2 クラスに分かれていたが、非自明な仕掛け（溜め込み先をインスタンスごとに
+    /// 持たせる private コンストラクタ・<c>Staging</c> での起動・プロバイダの登録・
+    /// 遅延生成を打ち切る <c>_ = Factory.Services;</c>）を<b>そっくり書き写していた</b> ——
+    /// どれかを直す人は 2 か所を直す必要があり、説明のコメントが付いていない側の写しを
+    /// 触った人は「なぜこの形なのか」を知りようがない（§6 DRY。
+    /// <see cref="TempDatabaseAppFixture"/> の docstring 自体が、同じ重複を一度やった記録）。</para>
     /// </remarks>
     private sealed class WarningCapturingFixture : TempDatabaseAppFixture
     {
-        // このインスタンスが起動したときに溜まった分だけを見せる
-        private readonly string[] _warnings;
+        // 稼働中に値を差し替え、再読み込みを起こすための設定ソース
+        private readonly ReloadableSettingsSource _settings;
 
-        /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
-        /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
-        public WarningCapturingFixture(string allowedHosts, string environmentName = "Staging")
-            // <b>溜め込み先はインスタンスごとに作り、ここから配る。</b>
+        // 起動後も増え続ける溜め込み先
+        private readonly ConcurrentQueue<string> _captured;
+
+        /// <summary>指定した許可リストで起動する。</summary>
+        /// <param name="allowedHosts">
+        /// 起動時の <c>AllowedHosts</c> の値。<b><c>null</c> は「未設定」</b>を表す ——
+        /// リポジトリの <c>appsettings.json</c> は既定の <c>"*"</c> を持つので、
+        /// キーごと省くだけでは未設定を再現できない（そちらが読まれる）。
+        /// 値を <c>null</c> にした項目を最後に積むことで、設定の解決結果を未設定にする。
+        /// </param>
+        /// <param name="environmentName">
+        /// 起動する環境名（既定は <c>Staging</c>）。警告の分岐（<c>!IsDevelopment()</c>）へ
+        /// 入るために既定は <c>Staging</c> で、環境名そのものを検証したいときだけ差し替える。
+        /// </param>
+        /// <param name="failLoggingWhen">
+        /// ログの出力先が落ちている状況を作るための判定（既定は何も落とさない）。
+        /// <b>本番の経路を再現するために要る</b> ——再読み込みのコールバックから例外が出ると、
+        /// 変更トークンの発火（<c>CancellationTokenSource.Cancel()</c>）が呼び出し元へ
+        /// 投げ直すので、<b>設定ファイルに触れただけでプロセスが落ちる</b>。
+        /// </param>
+        public WarningCapturingFixture(
+            string? allowedHosts,
+            string environmentName = "Staging",
+            Func<string, bool>? failLoggingWhen = null)
+            // <b>溜め込み先と設定ソースはインスタンスごとに作り、ここから配る。</b>
             // 基底のコンストラクタ引数はインスタンスのフィールドを参照できないので、
             // 以前は static なキューを共有していた ——ところがホストは Dispose() まで
             // 生きたまま同じキューへ書き続けるので、<b>停止時に出た Warning
@@ -388,87 +470,31 @@ public class AllowedHostsStartupWarningTests
             // Assert.Empty(...) のような検査を足した瞬間に<b>非決定的に落ち、
             // しかも無関係なテストを名指しする</b>。private なコンストラクタへ
             // 1 度渡せば、共有そのものが無くなる
-            : this(allowedHosts, environmentName, new ConcurrentQueue<string>())
-        {
-        }
-
-        /// <summary>溜め込み先を受け取って起動する（共有しないための経路）。</summary>
-        /// <param name="allowedHosts">検証したい <c>AllowedHosts</c> の値。</param>
-        /// <param name="environmentName">起動する環境名（既定は <c>Staging</c>）。</param>
-        /// <param name="captured">このインスタンス専用の溜め込み先。</param>
-        private WarningCapturingFixture(
-            string allowedHosts, string environmentName, ConcurrentQueue<string> captured)
-            : base(
-                "ii-hostwarn",
-                new Dictionary<string, string?> { ["AllowedHosts"] = allowedHosts },
-                // 警告の分岐（!IsDevelopment()）へ入るために既定は Staging。
-                // 環境名そのものを検証したいときだけ、呼び出し側が差し替える
+            : this(
+                new ReloadableSettingsSource(allowedHosts),
+                new ConcurrentQueue<string>(),
                 environmentName,
-                // 起動前に、溜め込むだけのプロバイダを登録する
-                logging => logging.AddProvider(new CapturingLoggerProvider(captured)))
-        {
-            // <b>アプリの起動をここで強制する。</b> WebApplicationFactory は遅延生成で、
-            // Services / CreateClient に触れるまでパイプラインを組み立てない ——
-            // 触れずに溜め込み先を読むと、まだ何も出ていないので必ず空になる（実測）
-            _ = Factory.Services;
-
-            // 起動が済んだ時点で溜まっている分を切り出して持つ
-            // （読み出しは 1 度きりにして、あとから増えた分に依存しない）
-            _warnings = [.. captured];
-        }
-
-        /// <summary>起動中に出た警告（新しい順ではなく、出た順）。</summary>
-        public IReadOnlyList<string> Warnings => _warnings;
-    }
-
-    /// <summary>
-    /// <c>Staging</c> として起動し、<b>稼働中に <c>AllowedHosts</c> を差し替えられる</b>フィクスチャ。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>上の <see cref="WarningCapturingFixture"/> とは読み出し方が違う。</b>
-    /// あちらは起動時点の分を切り出して持つ（あとから増えた分に依存しないため）が、
-    /// ここで見たいのは<b>起動より後に増えた分</b>なので、溜め込み先をそのまま見せる。</para>
-    ///
-    /// <para><b>差し替え用のソースは基底の設定より後ろへ積む。</b> 基底が
-    /// <c>AddInMemoryCollection</c> で固定する値と同じキーを持つので、後ろでないと勝てない。</para>
-    /// </remarks>
-    private sealed class ReloadableWarningCapturingFixture : TempDatabaseAppFixture
-    {
-        // 稼働中に値を差し替え、再読み込みを起こすための設定ソース
-        private readonly ReloadableSettingsSource _settings;
-
-        // 起動後も増え続ける溜め込み先（切り出さずにそのまま見せる）
-        private readonly ConcurrentQueue<string> _captured;
-
-        /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
-        /// <param name="allowedHosts">
-        /// 起動時の <c>AllowedHosts</c> の値。<b><c>null</c> は「未設定」</b>を表す ——
-        /// リポジトリの <c>appsettings.json</c> は既定の <c>"*"</c> を持つので、
-        /// キーごと省くだけでは未設定を再現できない（そちらが読まれる）。
-        /// 値を <c>null</c> にした項目を最後に積むことで、設定の解決結果を未設定にする。
-        /// </param>
-        public ReloadableWarningCapturingFixture(string? allowedHosts)
-            // 溜め込み先と設定ソースはインスタンスごとに作り、private なコンストラクタへ渡す
-            // （基底のコンストラクタ引数からフィールドを参照できないため。理由は
-            //  WarningCapturingFixture のコメントが正本 ——static に置くと別のテストの
-            //  停止時ログが混ざり、Assert.Single が非決定的に落ちる）
-            : this(new ReloadableSettingsSource(allowedHosts), new ConcurrentQueue<string>())
+                failLoggingWhen)
         {
         }
 
         /// <summary>設定ソースと溜め込み先を受け取って起動する（共有しないための経路）。</summary>
         /// <param name="settings">稼働中に差し替えられる設定ソース。</param>
         /// <param name="captured">このインスタンス専用の溜め込み先。</param>
-        private ReloadableWarningCapturingFixture(
-            ReloadableSettingsSource settings, ConcurrentQueue<string> captured)
+        /// <param name="environmentName">起動する環境名。</param>
+        /// <param name="failLoggingWhen">ログの出力先を落とす判定（<c>null</c> なら落とさない）。</param>
+        private WarningCapturingFixture(
+            ReloadableSettingsSource settings,
+            ConcurrentQueue<string> captured,
+            string environmentName,
+            Func<string, bool>? failLoggingWhen)
             : base(
-                "ii-hostreload",
+                "ii-hostwarn",
                 // 起動時の値は差し替え可能なソース側が持つので、ここでは何も固定しない
                 new Dictionary<string, string?>(),
-                // 警告の分岐（!IsDevelopment()）へ入るために Staging で起動する
-                "Staging",
+                environmentName,
                 // 起動前に、溜め込むだけのプロバイダを登録する
-                logging => logging.AddProvider(new CapturingLoggerProvider(captured)),
+                logging => logging.AddProvider(new CapturingLoggerProvider(captured, failLoggingWhen)),
                 // 差し替え用のソースを基底の設定より後ろへ積む
                 config => config.Add(settings))
         {
@@ -479,7 +505,7 @@ public class AllowedHostsStartupWarningTests
 
             // <b>アプリの起動をここで強制する。</b> WebApplicationFactory は遅延生成で、
             // Services / CreateClient に触れるまでパイプラインを組み立てない ——
-            // 触れずに溜め込み先を読むと、まだ何も出ていないので必ず空になる
+            // 触れずに溜め込み先を読むと、まだ何も出ていないので必ず空になる（実測）
             _ = Factory.Services;
         }
 
@@ -545,12 +571,17 @@ public class AllowedHostsStartupWarningTests
     /// <c>Warning</c> 以上のメッセージを、整形済みの 1 本の文字列として溜めるプロバイダ。
     /// </summary>
     /// <param name="sink">溜め込み先。</param>
-    private sealed class CapturingLoggerProvider(ConcurrentQueue<string> sink) : ILoggerProvider
+    /// <param name="failWhen">
+    /// 出力先が落ちている状況を作るための判定（<c>null</c> なら落とさない）。
+    /// 整形済みの本文を受け取り、<c>true</c> を返したものは書き込みの代わりに例外を投げる。
+    /// </param>
+    private sealed class CapturingLoggerProvider(
+        ConcurrentQueue<string> sink, Func<string, bool>? failWhen = null) : ILoggerProvider
     {
         /// <summary>カテゴリごとのロガーを作る（どのカテゴリでも同じ溜め込み先を使う）。</summary>
         /// <param name="categoryName">ログのカテゴリ名（ここでは使わない）。</param>
         /// <returns>溜め込むだけのロガー。</returns>
-        public ILogger CreateLogger(string categoryName) => new CapturingLogger(sink);
+        public ILogger CreateLogger(string categoryName) => new CapturingLogger(sink, failWhen);
 
         /// <summary>解放するものは無い。</summary>
         public void Dispose()
@@ -563,7 +594,7 @@ public class AllowedHostsStartupWarningTests
     /// <c>Warning</c> 以上を整形して溜めるだけのロガー。
     /// </summary>
     /// <param name="sink">溜め込み先。</param>
-    private sealed class CapturingLogger(ConcurrentQueue<string> sink) : ILogger
+    private sealed class CapturingLogger(ConcurrentQueue<string> sink, Func<string, bool>? failWhen) : ILogger
     {
         /// <summary>スコープは使わない。</summary>
         /// <typeparam name="TState">スコープの状態の型。</typeparam>
@@ -593,10 +624,20 @@ public class AllowedHostsStartupWarningTests
             // Warning 未満は見ない（起動時の情報ログで埋もれさせない）
             if (!IsEnabled(logLevel)) return;
 
-            // <b>プレースホルダを埋めた最終的な文面を溜める。</b> 構造化ログの
+            // <b>プレースホルダを埋めた最終的な文面を作る。</b> 構造化ログの
             // 引数を個別に見ると、テンプレートと引数の並びが入れ替わった退行
             // （運用者が読む文面が壊れる形）を拾えない
-            sink.Enqueue(formatter(state, exception));
+            var message = formatter(state, exception);
+
+            // 出力先が落ちている状況を作るテストのために、指定された本文だけ書き込みを失敗させる
+            if (failWhen is not null && failWhen(message))
+            {
+                // 実際の出力先が落ちたときと同じく、書き込みの呼び出しから例外を投げる
+                throw new InvalidOperationException("The log sink is unavailable (test double).");
+            }
+
+            // 溜め込む
+            sink.Enqueue(message);
         }
     }
 }
