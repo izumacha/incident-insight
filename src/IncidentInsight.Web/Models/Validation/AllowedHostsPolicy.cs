@@ -446,7 +446,7 @@ public static class AllowedHostsPolicy
         // さらに<b>角括弧の中身がそのまま Host ヘッダーに載りうる</b>なら、その項目は一致しうる
         if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
             && string.Equals(normalized, comparable, StringComparison.Ordinal)
-            && !CannotBeCarriedByAHostHeader(normalized))
+            && !ContainsSpellingAHostHeaderCannotCarry(normalized))
         {
             // 生きている項目なので理由は無い
             return null;
@@ -477,6 +477,16 @@ public static class AllowedHostsPolicy
         {
             // 空白が原因であることを、そのまま運用者への文面へ運ぶ
             return DeadEntryReason.WhitespaceInsideEntry;
+        }
+
+        // <b>パーセント記号も専用の理由で名乗る（レビュー指摘）。</b>
+        // 下の NotABareHostname の文面は「ポートも余分なコロンも書くな」と案内するが、
+        // "www.example%2Ecom" にはどちらも無い ——名指しした項目について事実と違うことを
+        // 言う形（issue #256 が名指しした誤り）になるので、ここで分ける
+        if (normalized.Contains(PercentSign))
+        {
+            // パーセント記号が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.PercentSignInEntry;
         }
 
         // ホスト部の直後がコロンなら、落とされたのは<b>実際にポート部</b>
@@ -548,44 +558,6 @@ public static class AllowedHostsPolicy
         // ScopeId を見る形は<b>実行機のインターフェース表に依存</b>し、
         // fe80::1%eth0 の分類が配備先ごとに変わる（"%25" を使う綴りも 0 になる）
         && !ContainsSpellingAHostHeaderCannotCarry(value);
-
-    /// <summary>
-    /// その項目が「正規化後もホスト部と一致するが、<c>Host</c> ヘッダーには載りえない綴り」かを見る。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>ここが「生きている」の判定を 1 段厳しくしている（レビュー指摘）。</b>
-    /// <see cref="ComparableSpelling"/> が委ねている <see cref="HostString"/> は、
-    /// <c>]</c> を含む値を<b>中身を問わず</b>ホスト部として受け取り、
-    /// 途中の空白もそのまま通す。そのため <c>[fe80::1%eth0]</c> ・ <c>[::1 ]</c> ・
-    /// <c>0.0.0 .0</c> は「正規化後の綴り＝ホスト部」になり、
-    /// **この判定が無いと「生きている」に分類され、2 本目の警告が 1 本も出ない**。</para>
-    ///
-    /// <para><b>どこまで拾うかの線引きは <see cref="ContainsSpellingAHostHeaderCannotCarry"/>
-    /// の remarks が正本</b>（実測と、そこで止める理由）。</para>
-    ///
-    /// <para><b>実測（本物の Kestrel へ生の <c>Host</c> ヘッダーを送って計測）。</b>
-    /// 受け付けられるのは<b>素の IPv6 リテラルを囲んだ綴りだけ</b>だった:
-    /// <c>[::1]</c> ・ <c>[fe80::1]</c> ・ <c>[::ffff:192.168.0.1]</c> ・
-    /// <c>[0:0:0:0:0:0:0:1]</c> ・ <c>[1:2:3:4:5:6:7:8]</c> は <b>200</b>、
-    /// <c>[foo]</c> ・ <c>[www.example.test:8080:]</c> ・ <c>[fe80::1%eth0]</c> ・
-    /// <c>[::1%25eth0]</c> は <b>400</b>（Kestrel が要求行の時点で弾くのでアプリには届かない）。</para>
-    ///
-    /// <para><b>テストの <c>WebApplicationFactory</c>（TestServer）では計測できない。</b>
-    /// あちらは Kestrel を通さないので <c>Host: [www.example.test:8080:]</c> が
-    /// <b>200 で通る</b>（実測）。この食い違いに気づかないと、「囲んだ綴りは実際に一致する」と
-    /// 結論して<b>この判定ごと落としてしまう</b>（実際に一度そう書いた ——
-    /// 統合テストの「実測」は TestServer の挙動であって、本番の Kestrel のそれではない）。</para>
-    /// </remarks>
-    /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns><c>Host</c> ヘッダーに載りえない綴りなら <c>true</c>。</returns>
-    private static bool CannotBeCarriedByAHostHeader(string normalized) =>
-        // <b>空白はどこにあっても運べない（レビュー指摘）。</b> 以前は角括弧の中だけを見ていたため、
-        // 括弧の無い項目の<b>途中</b>の空白（"0.0.0 .0" ・ "www.example .test"）が
-        // 「生きている」のまま黙っていた ——前者は運用者がタイプミスの空白を外すと
-        // 0.0.0.0 ＝全許可（issue #64）になり、後者は前後の空白の警告に従って直した先が
-        // <b>無警告のまま 400</b>（＝警告が自分で自分を黙らせる形）だった。
-        // 実測でも本物の Kestrel は Host: 0 .0.0.0 を 400 で弾く
-        ContainsSpellingAHostHeaderCannotCarry(normalized);
 
     /// <summary>
     /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
@@ -690,8 +662,39 @@ public static class AllowedHostsPolicy
     /// <param name="normalized">正規化済みの項目。</param>
     /// <returns>案内どおりに直したあとの綴り。</returns>
     private static string RepairedSpelling(string normalized) =>
-        // 空白をすべて落としてからホスト部を取る（空白とポートの両方を一度に外した形）
-        ComparableSpelling(RemoveWhitespace(normalized));
+        // 運べない文字（空白・"%" 以降）を落としてからホスト部を取る
+        // （空白・パーセント・ポートをまとめて外した形）
+        ComparableSpelling(TruncateAtPercentSign(RemoveWhitespace(normalized)));
+
+    /// <summary>最初のパーセント記号より後ろを落とす。</summary>
+    /// <remarks>
+    /// <para><b>空白と同じ穴が <c>%</c> 側にも残っていた（レビュー指摘）。</b>
+    /// <c>"0.0.0.0%20"</c> は、運用者が末尾の読めない部分を削れば <c>0.0.0.0</c> ＝
+    /// 全ホスト許可（issue #64）になるのに、<see cref="RemoveWhitespace"/> だけでは
+    /// <c>"0.0.0.0%20"</c> のままで <see cref="DeadEntryReason.WildcardOnceRepaired"/> に
+    /// 当たらず、<b>ごく普通の「実ホスト名へ直せ」</b>の案内が付いていた
+    /// （<c>"[::]%20"</c> のほうは括弧のおかげで当たっていたので、<b>非対称</b>でもあった）。</para>
+    ///
+    /// <para><b>落とすのは「<c>%</c> 以降」で、<c>%</c> だけを抜かない。</b>
+    /// 抜くと <c>"0.0.0.0%20"</c> は <c>"0.0.0.020"</c> になり、運用者が実際に行う直し方
+    /// （読めない末尾ごと削る）と食い違う ——この関数が答えるのは
+    /// 「直したら何になるか」なので、実際の直し方に寄せる。</para>
+    ///
+    /// <para><b>誤検知の側へは倒れない。</b> 影響を受けるのは「<c>%</c> の手前が
+    /// ちょうどワイルドカードの綴り」の項目だけで、その項目に
+    /// 「そのまま直すな」と言うのは正しい。<c>"a.test%20"</c> ・ <c>"%0.0.0.0"</c> は
+    /// 落とした結果がワイルドカードではないので、これまでどおりの理由で名乗る。</para>
+    /// </remarks>
+    /// <param name="value">空白を落とした後の綴り。</param>
+    /// <returns>最初の <c>%</c> より前の部分（<c>%</c> が無ければ元の綴り）。</returns>
+    private static string TruncateAtPercentSign(string value)
+    {
+        // 最初のパーセント記号の位置を探す
+        var at = value.IndexOf(PercentSign);
+
+        // 見つからなければそのまま、見つかればその手前までを返す
+        return at < 0 ? value : value[..at];
+    }
 
     /// <summary>綴りから空白をすべて取り除く。</summary>
     /// <remarks>
@@ -736,6 +739,17 @@ public static class AllowedHostsPolicy
         /// 「角括弧で囲んでも直らない」と<b>事実と逆</b>のことを案内してしまう。
         /// </remarks>
         WhitespaceInsideEntry,
+
+        /// <summary>
+        /// パーセント記号を含む（<c>Host</c> ヘッダーはこの文字を運べない）。
+        /// </summary>
+        /// <remarks>
+        /// IPv6 のスコープ区切り（<c>[fe80::1%eth0]</c>）でも percent-encoding
+        /// （<c>www.example%2Ecom</c>）でも、実測では <c>Host</c> ヘッダーが 400 になる。
+        /// <see cref="NotABareHostname"/> へ落とすと、その文面が「ポートも余分なコロンも
+        /// 書くな」と<b>その項目には当てはまらないこと</b>を案内してしまう。
+        /// </remarks>
+        PercentSignInEntry,
 
         /// <summary>
         /// 素のホスト名になっていない（ポートでも IPv6 リテラルでもない綴り）。
@@ -1228,6 +1242,13 @@ public static class AllowedHostsPolicy
                 + "space from this entry (note that host filtering rewrites a bare IPv6 literal "
                 + "into brackets, so a leading space ends up inside them: ' ::1' becomes "
                 + "'[ ::1]'; write it as '[::1]')",
+
+            // パーセント記号は用途を問わず運べないので、「書かない」とだけ言う
+            DeadEntryReason.PercentSignInEntry =>
+                "a Host header cannot carry a percent sign — neither as an IPv6 scope id "
+                + "('[fe80::1%eth0]') nor as percent-encoding ('www.example%2Ecom') — and host "
+                + "filtering compares it against the entry exactly as written, so the two can "
+                + "never be equal. Write the hostname literally, without any '%'",
 
             // 原因を言い当てられない綴り ——<b>断定せず、直し方だけを案内する</b>
             DeadEntryReason.NotABareHostname =>

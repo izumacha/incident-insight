@@ -922,17 +922,17 @@ public class AllowedHostsPolicyTests
     [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>スコープ付き IPv6 を「角括弧で囲め」と案内しない。</b> 本物の Kestrel は
     // Host: [fe80::1%eth0] を 400 で弾くので、囲んでも一致するようにはならない
-    [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
     // <b>角括弧の中身に「Host ヘッダーが運べない文字」があれば、囲んであっても死んでいる。</b>
     // HostString は ] を含む値を中身を問わずホスト部として受け取るので、この判定が無いと
     // 警告が 1 本も出ない（実測値は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
-    [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
-    [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
+    [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
     // <b>% は角括弧の外でも運べない（レビュー指摘）。</b> 「普通のホスト名では
     // percent-encoding として合法だから」と角括弧の中だけを見ていた頃は、この形が
     // 警告 2 本とも出ないまま 400 になっていた（実測で Kestrel は Host: www.example%2Ecom を
     // 400 で弾く。比較のため a_b.test ・ a~b.test ・ xn--bcher-kva.test は 200）
-    [InlineData("a.example.test;www.example%2Ecom", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    [InlineData("a.example.test;www.example%2Ecom", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
@@ -955,6 +955,12 @@ public class AllowedHostsPolicyTests
     // <b>理由は空白専用のものを名乗る（レビュー指摘）</b> ——NotABareHostname の文面は
     // 「角括弧で囲んでも直らない」と案内するので、空白が原因の項目に付けると事実と逆になる
     [InlineData("a.example.test;www.example .test", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>% の手前がワイルドカードの形も、「そのまま直すな」の側で名乗ること（レビュー指摘）。</b>
+    // 運用者が読めない末尾（%20）を削ると 0.0.0.0 ＝全許可（issue #64）になる。
+    // 空白について閉じた穴が % 側に残っており、しかも "[::]%20" は括弧のおかげで
+    // 当たっていたので非対称でもあった
+    [InlineData("a.example.test;0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[::]%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
     // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
     // 「角括弧で囲んでも直らない」と言ってはいけない
