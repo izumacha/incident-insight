@@ -683,15 +683,22 @@ public class HostFilteringShortCircuitTests
     // 末尾コロンのタイプミス（ASPNETCORE_URLS や host:port:path の写しで生まれる）が
     // <b>UnbracketedIpv6Literal と名乗り、角括弧で囲めと案内される</b>。
     //
-    // <b>従うと何が起きるかがこの検査の本題。</b> 囲んだ綴りは
-    // <c>Host: [www.example.test:8080:]</c> なら実際に一致するので判定は「生きている」＝
-    // 2 本目の警告が消える。一方、運用者が並べたかった <c>www.example.test</c> は 400 のまま。
+    // <b>従うと何が起きるかがこの検査の本題。</b> 囲んでも、運用者が並べたかった
+    // <c>www.example.test</c> は 400 のまま ——それでいて、以前は囲んだ綴りが
+    // 「生きている」に分類され<b>2 本目の警告が消えて</b>いた。
     // つまり<b>案内に従うほど「警告が出ていない＝絞れている」が誤った安心になる</b> ——
     // AllowedHostsPolicy の docstring が「見逃しより重い」と書いている、
     // 警告が障害を作る側に回る形そのもの。
     //
+    // <b>囲んだ綴りが「生きている」のではない（レビュー指摘）。</b> 本物の Kestrel は
+    // <c>Host: [www.example.test:8080:]</c> を<b>400 で弾く</b>（実測）ので、囲んだ項目も
+    // どの Host とも一致しえない。**この harness（TestServer）は Kestrel を通さないため
+    // 同じ Host が 200 で通る**ので、ここでその Host を送って確かめることはできない
+    // ——だから囲んだ側は<b>判定が名指しできているか</b>で押さえる
+    // （Kestrel の実測値は AllowedHostsPolicy.IsUnusableBracketedSpelling の docstring が正本）。
+    //
     // 判定側だけで固定すると、写している相手（フレームワークの切り出し）が変わったときに
-    // 気づけないので、囲んだあとも 400 のままであることを実際の HTTP で押さえる。
+    // 気づけないので、囲んだあとも 400 のままであることは実際の HTTP で押さえる。
     [Fact]
     public async Task BracketingANonIpv6Entry_SilencesTheWarning_WithoutMakingTheHostReachable()
     {
@@ -733,13 +740,15 @@ public class HostFilteringShortCircuitTests
                 (await SendWithHostAsync(client, SecondHost)).StatusCode);
         }
 
-        // <b>それなのに 2 本目の警告は消える。</b> 囲んだ綴りは Host: [www.example.test:8080:] で
-        // 実際に一致するため、判定としては「生きている」で正しい ——だからこそ、
-        // ここへ運用者を誘導する案内を出してはいけない（囲んだ項目を死んだ項目として
-        // 名指しする「直し方」は取れない。実在しうる Host に一致するので誤検知になる）
-        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(listWithBracketed));
+        // <b>囲んだ項目も、ちゃんと死んだ項目として名指しされること。</b>
+        // 以前はここが空で、運用者は「警告が消えた＝直った」と読めてしまっていた
+        var deadAfterBracketing = Assert.Single(
+            AllowedHostsPolicy.InspectNeverMatchingEntries(listWithBracketed).Entries);
+        Assert.Equal(bracketed, deadAfterBracketing.Value);
+        Assert.Equal(
+            AllowedHostsPolicy.DeadEntryReason.NotABareHostname, deadAfterBracketing.Reason);
 
-        // <b>だから、タイプミスの側を IPv6 リテラルと名乗らない。</b>
+        // <b>そして、タイプミスの側を IPv6 リテラルと名乗らない。</b>
         // 原因を言い当てられない綴りは断定せず、素のホスト名を書けとだけ案内する
         var dead = Assert.Single(
             AllowedHostsPolicy.InspectNeverMatchingEntries(listWithTypo).Entries);

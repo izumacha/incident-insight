@@ -437,9 +437,11 @@ public static class AllowedHostsPolicy
         // フレームワークが Host と突き合わせるときに使う綴り（ホスト部だけ）を取り出す
         var comparable = ComparableSpelling(normalized);
 
-        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致するなら、その項目は一致しうる
+        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致し、
+        // さらに<b>角括弧の中身がそのまま Host ヘッダーに載りうる</b>なら、その項目は一致しうる
         if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
-            && string.Equals(normalized, comparable, StringComparison.Ordinal))
+            && string.Equals(normalized, comparable, StringComparison.Ordinal)
+            && !IsUnusableBracketedSpelling(normalized))
         {
             // 生きている項目なので理由は無い
             return null;
@@ -516,11 +518,49 @@ public static class AllowedHostsPolicy
     /// 取りこぼすか、逆に上の <c>www.example.com:8080:</c> を拾う。</para>
     /// </remarks>
     /// <param name="value">正規化済みの項目。</param>
-    /// <returns>IPv6 アドレスとして読めるなら <c>true</c>。</returns>
+    /// <returns>素の（スコープの付かない）IPv6 アドレスとして読めるなら <c>true</c>。</returns>
     private static bool IsIpv6Literal(string value) =>
         // アドレスとして読めて、かつそれが IPv6 であること（IPv4 は角括弧を取らない）
         IPAddress.TryParse(value, out var address)
-        && address.AddressFamily == AddressFamily.InterNetworkV6;
+        && address.AddressFamily == AddressFamily.InterNetworkV6
+        // <b>スコープ付き（fe80::1%eth0）は除く（レビュー指摘）。</b>
+        // 案内どおり角括弧で囲んでも Kestrel が Host ヘッダーごと弾くので、
+        // 「囲めば一致する」は事実にならない（実測は IsUnusableBracketedSpelling が正本）
+        && address.ScopeId == 0;
+
+    /// <summary>
+    /// その項目が「角括弧で囲んであるが、<c>Host</c> ヘッダーには載りえない綴り」かを見る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>ここが「生きている」の判定を 1 段厳しくしている（レビュー指摘）。</b>
+    /// <see cref="ComparableSpelling"/> が委ねている <see cref="HostString"/> は、
+    /// <c>]</c> を含む値を<b>中身を問わず</b>ホスト部として受け取る。そのため
+    /// <c>[www.example.com:8080:]</c> ・ <c>[foo]</c> ・ <c>[fe80::1%eth0]</c> は
+    /// 「正規化後の綴り＝ホスト部」になり、**この判定が無いと「生きている」に分類され、
+    /// 2 本目の警告が 1 本も出ない**。</para>
+    ///
+    /// <para><b>実測（本物の Kestrel へ生の <c>Host</c> ヘッダーを送って計測）。</b>
+    /// 受け付けられるのは<b>素の IPv6 リテラルを囲んだ綴りだけ</b>だった:
+    /// <c>[::1]</c> ・ <c>[fe80::1]</c> ・ <c>[::ffff:192.168.0.1]</c> ・
+    /// <c>[0:0:0:0:0:0:0:1]</c> ・ <c>[1:2:3:4:5:6:7:8]</c> は <b>200</b>、
+    /// <c>[foo]</c> ・ <c>[www.example.test:8080:]</c> ・ <c>[fe80::1%eth0]</c> ・
+    /// <c>[::1%25eth0]</c> は <b>400</b>（Kestrel が要求行の時点で弾くのでアプリには届かない）。</para>
+    ///
+    /// <para><b>テストの <c>WebApplicationFactory</c>（TestServer）では計測できない。</b>
+    /// あちらは Kestrel を通さないので <c>Host: [www.example.test:8080:]</c> が
+    /// <b>200 で通る</b>（実測）。この食い違いに気づかないと、「囲んだ綴りは実際に一致する」と
+    /// 結論して<b>この判定ごと落としてしまう</b>（実際に一度そう書いた ——
+    /// 統合テストの「実測」は TestServer の挙動であって、本番の Kestrel のそれではない）。</para>
+    /// </remarks>
+    /// <param name="normalized">正規化済みの項目。</param>
+    /// <returns>角括弧付きだが <c>Host</c> に載りえない綴りなら <c>true</c>。</returns>
+    private static bool IsUnusableBracketedSpelling(string normalized) =>
+        // 角括弧で囲まれていて（開きと閉じの両方があり、中身が 1 文字以上）
+        normalized.Length > 2
+        && normalized[0] == '['
+        && normalized[^1] == ']'
+        // その中身が素の IPv6 リテラルでないなら、Host ヘッダーには載りえない
+        && !IsIpv6Literal(normalized[1..^1]);
 
     /// <summary>
     /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
@@ -1064,11 +1104,12 @@ public static class AllowedHostsPolicy
 
             // 原因を言い当てられない綴り ——<b>断定せず、直し方だけを案内する</b>
             DeadEntryReason.NotABareHostname =>
-                "this entry is not a bare hostname, and host filtering compares the Host "
-                + "header's host part against the entry exactly as written, so the two can "
-                + "never be equal — write one plain hostname with no port and no stray colons "
-                + "(and do NOT simply wrap it in brackets: that spelling silences this warning "
-                + "without making the hostname you meant to allow reachable)",
+                "this entry is neither a bare hostname nor a plain IPv6 literal in brackets, "
+                + "and host filtering compares the Host header's host part against the entry "
+                + "exactly as written, so the two can never be equal — write one plain hostname "
+                + "with no port and no stray colons (brackets are only for a plain IPv6 literal "
+                + "such as '[::1]'; wrapping anything else in brackets does not make the "
+                + "hostname you meant to allow reachable)",
 
             // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
             DeadEntryReason.WildcardOnceRepaired =>

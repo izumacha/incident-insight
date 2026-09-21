@@ -165,13 +165,13 @@ public class AllowedHostsPolicyTests
     // 捨てられるのは "]" の直後が :port でないときだけ。ポートが続けば空白は残るので、
     // こちらは従来どおり死んだ項目として名指しする（実測: "[fe80::1]:8080 " はそのまま）
     [InlineData("incident.example.test;[fe80::1]:8080 ", "[fe80::1]:8080 ")]
-    // <b>残っている境界: 括弧の内側へ入った空白は名指しできない。</b> 素の IPv6 を書くと
+    // <b>かつての「残っている境界」が閉じた（issue #269）。</b> 素の IPv6 を書くと
     // HostString が括弧を補うので、実測では "::1 " → "[::1 ]" となり空白が<b>内側</b>へ入る。
-    // 正規化後の前後には空白が無いのでここでは拾えないが、Host ヘッダーは解析の時点で
-    // 空白を持たないため実際には一致しない＝<b>見逃す側</b>の誤り。
-    // 取りこぼしは docs/security.md が「前後の空白しか検出できない」と断っているとおりで、
-    // 逆向き（生きている項目を「消してよい」と案内する）より安全なのでこの形を選んでいる
-    [InlineData("incident.example.test;::1 ", "")]
+    // 正規化後の前後には空白が無いので<b>空白としては</b>拾えないままだが、
+    // 「角括弧の中身が素の IPv6 リテラルでなければ死んでいる」を足したことで
+    // （"::1 " は IPAddress で読めない）この綴りも名指しできるようになった
+    // ——Host ヘッダーは解析の時点で空白を持てないので、実際に一致しない項目である
+    [InlineData("incident.example.test;::1 ", "::1 ")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
     [InlineData(";;", "")]
@@ -920,6 +920,14 @@ public class AllowedHostsPolicyTests
     // <b>逆側の取り違え。</b> 角括弧を足されない綴りを一律 PortSuffix と名乗ると、
     // ポートを 1 つも含まない項目に「ポートを外せ」と案内することになる
     [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>スコープ付き IPv6 を「角括弧で囲め」と案内しない。</b> 本物の Kestrel は
+    // Host: [fe80::1%eth0] を 400 で弾くので、囲んでも一致するようにはならない
+    [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>角括弧で囲んだだけの綴りは「生きている」ではない。</b> HostString は ] を含む値を
+    // 中身を問わずホスト部として受け取るので、この判定が無いと警告が 1 本も出ない
+    // （Kestrel は Host: [foo] も 400。実測値は IsUnusableBracketedSpelling の docstring が正本）
+    [InlineData("a.example.test;[foo]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    [InlineData("a.example.test;[b.example.test:8080:]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
@@ -936,6 +944,34 @@ public class AllowedHostsPolicyTests
 
         // その 1 件に添う理由が、期待どおりであること
         Assert.Equal(expectedReason, dead.Reason);
+    }
+
+    // <b>角括弧の扱いを厳しくした代償で、生きている項目を巻き込んでいないこと。</b>
+    //
+    // 「角括弧の中身が素の IPv6 リテラルでなければ死んでいる」を足したので、
+    // <b>本当に一致する綴りまで「消してよい」と案内していないか</b>を対で押さえる
+    // ——生きている項目を名指しするのは、見逃しより重い誤り（このクラスの docstring が正本）。
+    // 並べた綴りはいずれも、本物の Kestrel が Host ヘッダーとして 200 で受け付けることを
+    // 実測してある（実測値は AllowedHostsPolicy.IsUnusableBracketedSpelling の docstring）。
+    [Theory]
+    // 短縮形のループバック
+    [InlineData("[::1]")]
+    // リンクローカル（スコープ無し）
+    [InlineData("[fe80::1]")]
+    // IPv4 射影アドレス
+    [InlineData("[::ffff:192.168.0.1]")]
+    // 省略しない書き方
+    [InlineData("[0:0:0:0:0:0:0:1]")]
+    public void BracketedPlainIpv6Literals_AreStillTreatedAsLive(string entry)
+    {
+        // 実ホスト名と併記する（片方が生きている、いちばん紛らわしい形）
+        var allowedHosts = $"a.example.test;{entry}";
+
+        // どの項目も「一致しえない」と名指しされないこと
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts));
+
+        // 全許可でもないこと（絞り込みは効いている）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 
     // <b>いちばん危ない形: 案内どおりに直すと全ホスト許可になる項目（レビュー指摘）。</b>
