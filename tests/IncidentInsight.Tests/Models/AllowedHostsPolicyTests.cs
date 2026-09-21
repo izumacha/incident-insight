@@ -1128,8 +1128,16 @@ public class AllowedHostsPolicyTests
         // 文面が、そのまま直すことを<b>止めて</b>いること（読み手が踏む一歩を封じる）
         var cause = AllowedHostsPolicy.DeadEntryCauseMessage(
             AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired);
-        Assert.Contains("do NOT", cause, StringComparison.Ordinal);
-        Assert.Contains("Replace it with a real hostname", cause, StringComparison.Ordinal);
+        Assert.Contains("NOT tidy this entry up", cause, StringComparison.Ordinal);
+        Assert.Contains("replace it with a real hostname", cause, StringComparison.Ordinal);
+
+        // <b>文面が「必ずワイルドカードになる」と断定していないこと（レビュー指摘）。</b>
+        // 直し方は複数あり、そのうち 1 つが着地するだけ（"0.0.0.0:8080" はポートだけ外せば
+        // "0.0.0.0" だが、"0.0.0.0:8080:" は外し方しだいで別の死んだ項目にもなる）。
+        // さらに数え上げを打ち切った項目は「判断できない」側からここへ倒れるので、
+        // 断定すると名指しした項目について事実と違うことを言う形（issue #256）になる
+        Assert.Contains("can land on a wildcard", cause, StringComparison.Ordinal);
+        Assert.DoesNotContain("whichever way", cause, StringComparison.Ordinal);
     }
 
 }

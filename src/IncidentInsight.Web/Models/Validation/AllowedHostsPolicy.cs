@@ -1148,7 +1148,19 @@ public static class AllowedHostsPolicy
         /// </remarks>
         NotABareHostname,
 
-        /// <summary>直すとワイルドカードになる（＝書き直すと全ホスト許可になる）。</summary>
+        /// <summary>直すとワイルドカードになりうる（＝書き直すと全ホスト許可になりうる）。</summary>
+        /// <remarks>
+        /// <b>文面は「必ずそうなる」と断定しない（レビュー指摘）。</b> 理由が 2 つある。
+        /// (1) 直し方は複数あり、そのうち<b>少なくとも 1 つ</b>がワイルドカードへ着地する、
+        /// というのがこの分類の意味（<c>"0.0.0.0:8080:"</c> はポートだけ外せば
+        /// <c>"0.0.0.0:8080"</c> で、これはワイルドカードではない）。
+        /// (2) 数え上げを上限で打ち切った項目は「判断できない」側からここへ倒れるので、
+        /// ワイルドカードの候補が実際に見つかったとは限らない
+        /// （理由は <see cref="RepairsToWildcard(IEnumerable{string}, int)"/> の remarks）。
+        /// どちらも「そのまま直すな・直した結果を確かめろ」という案内は正しいままなので、
+        /// <b>断定だけを外す</b>。名指しした項目について事実と違うことを言わない、という
+        /// このクラスの規則（issue #256）はこの理由にも同じく掛かる。
+        /// </remarks>
         WildcardOnceRepaired,
     }
 
@@ -1660,11 +1672,11 @@ public static class AllowedHostsPolicy
 
             // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
             DeadEntryReason.WildcardOnceRepaired =>
-                "this entry does not match as written, and the hostname inside it is a wildcard "
-                + "('*', '[::]' or '0.0.0.0') — do NOT tidy it up, because whichever way you "
-                + "clean it (dropping whitespace, a port, stray colons, a '%', a scheme or a "
-                + "path) the repaired entry disables host filtering entirely (issue #64). "
-                + "Replace it with a real hostname, or delete it",
+                "this entry does not match as written, and cleaning it up (dropping whitespace, "
+                + "a port, stray colons, a '%', a scheme or a path) can land on a wildcard "
+                + "('*', '[::]' or '0.0.0.0'), which would disable host filtering entirely "
+                + "(issue #64). Do NOT tidy this entry up — check what you would be left with, "
+                + "and replace it with a real hostname or delete the entry",
 
             // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
             _ => FallbackDeadEntryCauseMessage,
