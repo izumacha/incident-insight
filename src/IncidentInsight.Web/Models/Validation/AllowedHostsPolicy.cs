@@ -454,7 +454,7 @@ public static class AllowedHostsPolicy
 
         // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
         // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
-        if (Wildcards.Contains(RepairedSpelling(normalized), StringComparer.Ordinal))
+        if (RepairedSpellings(normalized).Any(spelling => Wildcards.Contains(spelling, StringComparer.Ordinal)))
         {
             // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
             return DeadEntryReason.WildcardOnceRepaired;
@@ -539,6 +539,13 @@ public static class AllowedHostsPolicy
     /// <c>docs/security.md</c> の確認手順が誤った安心になる ——
     /// このクラスが繰り返し避けている<b>警告が障害を作る側に回る</b>形そのもの。</para>
     ///
+    /// <para><b>スコープ付き（<c>fe80::1%eth0</c>）はここでは見ない。</b> 案内どおり
+    /// 角括弧で囲んでも Kestrel が <c>Host</c> ヘッダーごと弾くので「囲めば一致する」は
+    /// 事実にならないが、その手当ては<b>手前の <see cref="DeadEntryReason.PercentSignInEntry"/>
+    /// の分岐</b>が行う（<c>%</c> を含む項目はここへ来ない）。
+    /// <b>同じ規則を 2 か所に書かない</b> ——書くと条件を直したときに片方が取り残される
+    /// （<see cref="IsNeverMatchingEntry"/> の docstring が禁じている形。レビュー指摘）。</para>
+    ///
     /// <para><b>判定は自前で書かず <see cref="IPAddress"/> に委ねる。</b>
     /// 「コロンが 2 つ以上」「16 進とコロンだけ」といった近似は、
     /// 埋め込み IPv4（<c>::ffff:192.168.0.1</c>）やスコープ付き（<c>fe80::1%eth0</c>）で
@@ -549,15 +556,7 @@ public static class AllowedHostsPolicy
     private static bool IsIpv6Literal(string value) =>
         // アドレスとして読めて、かつそれが IPv6 であること（IPv4 は角括弧を取らない）
         IPAddress.TryParse(value, out var address)
-        && address.AddressFamily == AddressFamily.InterNetworkV6
-        // <b>スコープ付き（fe80::1%eth0）は除く（レビュー指摘）。</b>
-        // 案内どおり角括弧で囲んでも Kestrel が Host ヘッダーごと弾くので、
-        // 「囲めば一致する」は事実にならない。
-        // <b>除き方は ScopeId ではなく綴りで見る（レビュー指摘）。</b>
-        // IPAddress.TryParse はスコープ名が解決できないと ScopeId を 0 にして成功するため、
-        // ScopeId を見る形は<b>実行機のインターフェース表に依存</b>し、
-        // fe80::1%eth0 の分類が配備先ごとに変わる（"%25" を使う綴りも 0 になる）
-        && !ContainsSpellingAHostHeaderCannotCarry(value);
+        && address.AddressFamily == AddressFamily.InterNetworkV6;
 
     /// <summary>
     /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
@@ -603,8 +602,23 @@ public static class AllowedHostsPolicy
     /// <param name="spelling">角括弧の中身（または項目そのもの）。</param>
     /// <returns>運べない文字を含むなら <c>true</c>。</returns>
     private static bool ContainsSpellingAHostHeaderCannotCarry(string spelling) =>
-        // 空白（ヘッダー値の解析で切れる）か、スコープの区切り（実測で 400）を含むか
-        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == PercentSign);
+        // 実測で Host ヘッダーに載らないと確かめた文字を 1 つでも含むか
+        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == PercentSign || ch == PathSeparator);
+
+    /// <summary>URL のパスの区切り（<c>https://incident.example.test/</c> の <c>/</c>）。</summary>
+    /// <remarks>
+    /// <b>貼り付けた URL を拾うために見る（レビュー指摘）。</b> 実測では
+    /// <c>Host: https://incident.example.test:8443</c> も <c>a/b.test</c> も
+    /// <c>a.test/</c> も <b>400</b>。この形が要るのは、<c>AllowedHosts</c> へ
+    /// <b>ブラウザのアドレスバーから URL ごと貼る</b>のが自然な間違いだから ——
+    /// ポート付きの URL は正規化で <c>[https://…:8443]</c> になり、
+    /// 「正規化後の綴り＝ホスト部」に化けるので、<c>/</c> を見ないと
+    /// <b>警告 2 本とも黙ったまま</b>その名前が 400 になる。
+    /// （<c>?</c> ・ <c>@</c> ・ <c>#</c> ・ <c>,</c> も同じく 400 だったが足していない ——
+    /// 綴りを増やすほど「この版の Kestrel ではこうだった」という主張が増えるので、
+    /// <b>実際に運用者が書く形が見つかった文字だけ</b>を足す。）
+    /// </remarks>
+    private const char PathSeparator = '/';
 
     /// <summary>
     /// パーセント記号（IPv6 のスコープ区切り <c>fe80::1%eth0</c> と percent-encoding の両方）。
@@ -628,7 +642,7 @@ public static class AllowedHostsPolicy
     private static string ComparableSpelling(string normalized) => new HostString(normalized).Host;
 
     /// <summary>
-    /// その項目を案内どおりに直したときに残る綴り（＝実際に突き合わされることになる綴り）を返す。
+    /// その項目を案内どおりに直したときに残りうる綴り（＝実際に突き合わされることになる綴り）を返す。
     /// </summary>
     /// <remarks>
     /// <para><b>「消したら何が起きるか」だけでは足りない。</b>
@@ -660,11 +674,23 @@ public static class AllowedHostsPolicy
     /// 実ホスト名を誤って名指しすることは無い）。</para>
     /// </remarks>
     /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns>案内どおりに直したあとの綴り。</returns>
-    private static string RepairedSpelling(string normalized) =>
-        // 運べない文字（空白・"%" 以降）を落としてからホスト部を取る
-        // （空白・パーセント・ポートをまとめて外した形）
-        ComparableSpelling(TruncateAtPercentSign(RemoveWhitespace(normalized)));
+    /// <returns>案内どおりに直したあとの綴り（直し方が複数あるので複数返る）。</returns>
+    private static IEnumerable<string> RepairedSpellings(string normalized)
+    {
+        // まず空白を落とす（どの直し方でも共通。案内が必ず求めるもの）
+        var withoutWhitespace = RemoveWhitespace(normalized);
+
+        // (a) 読めない末尾ごと削る形（"0.0.0.0%20" → "0.0.0.0"）
+        yield return ComparableSpelling(TruncateAtPercentSign(withoutWhitespace));
+
+        // (b) パーセント記号だけを抜く形（"%0.0.0.0" → "0.0.0.0"）。
+        // <b>2 通り見るのが要点（レビュー指摘）。</b> 文面は「'%' を書くな」と言うので
+        // 運用者は (b) をしうるのに、(a) しか見ていないと "%0.0.0.0" が
+        // WildcardOnceRepaired に当たらず<b>ごく普通の案内</b>が付いていた
+        // ——直した瞬間に全ホスト許可（issue #64）。
+        // 多く報告する側（「そのまま直すな」）へ倒れるので、誤検知の害も無い
+        yield return ComparableSpelling(withoutWhitespace.Replace(PercentSign.ToString(), string.Empty));
+    }
 
     /// <summary>最初のパーセント記号より後ろを落とす。</summary>
     /// <remarks>
@@ -699,7 +725,7 @@ public static class AllowedHostsPolicy
     /// <summary>綴りから空白をすべて取り除く。</summary>
     /// <remarks>
     /// 前後だけでなく途中の空白も落とすのは、正規化が角括弧を補うと
-    /// 空白が内側へ移るため（理由は <see cref="RepairedSpelling"/> の remarks が正本）。
+    /// 空白が内側へ移るため（理由は <see cref="RepairedSpellings"/> の remarks が正本）。
     /// </remarks>
     /// <param name="value">元の綴り。</param>
     /// <returns>空白を 1 つも含まない綴り。</returns>

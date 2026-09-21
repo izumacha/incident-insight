@@ -961,6 +961,17 @@ public class AllowedHostsPolicyTests
     // 当たっていたので非対称でもあった
     [InlineData("a.example.test;0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;[::]%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>「% を抜く」側の直し方でもワイルドカードになる形（レビュー指摘）。</b>
+    // 文面は「'%' を書くな」と案内するので運用者はこちらをしうるのに、
+    // 「% 以降を削る」モデルしか見ていないと専用警告から外れていた
+    [InlineData("a.example.test;%0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>アドレスバーから URL ごと貼った形が黙らないこと（レビュー指摘）。</b>
+    // ポート付きの URL は正規化で "[https://…:8443]" になり「正規化後の綴り＝ホスト部」に
+    // 化けるので、"/" を運べない文字に入れないと警告 2 本とも出ないまま 400 になる
+    [InlineData("a.example.test;https://b.example.test:8443", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // ポートを書かない URL は、綴りとしては "https:" がポート区切りに見えるので
+    // PortSuffix になる（名指しはされるので黙る形にはならない）
+    [InlineData("a.example.test;https://b.example.test", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
     // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
     // 「角括弧で囲んでも直らない」と言ってはいけない
