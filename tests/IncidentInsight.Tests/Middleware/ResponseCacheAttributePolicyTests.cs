@@ -865,8 +865,12 @@ public class ResponseCacheAttributePolicyTests
         // 承認済みの表に無いものを集める
         var unapproved = FindUnapprovedStaticAssets(entries);
 
-        // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する
-        Assert.True(unapproved.Count == 0, UnapprovedStaticAssetsMessage(unapproved));
+        // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する。
+        // <b>組み立ては落ちるときだけ（レビュー指摘）。</b> Assert.True の引数として渡すと
+        // 緑の走行でも毎回組み立てられ、「確認していないものがあります: 」という
+        // <b>事実と違う文言</b>を作ったうえで捨てる。しかも組み立ては fail-closed に
+        // 例外を投げうるので、成功経路に投げる処理を置くことになる
+        if (unapproved.Count > 0) Assert.Fail(UnapprovedStaticAssetsMessage(unapproved));
     }
 
     /// <summary>
@@ -1564,9 +1568,13 @@ public class ResponseCacheAttributePolicyTests
                 // 実体が Dictionary なら、どの比較器で作られたかを直接読める
                 if (entries is Dictionary<string, string> concrete)
                 {
-                    // 大小を区別する比較器であることを、比較器そのもので確かめる
+                    // <b>ここも挙動で見る（レビュー指摘）。</b> `Comparer.Equals(StringComparer.Ordinal)`
+                    // は string どうしの比較ではなく<b>参照の一致</b>になるため、
+                    // 既定の比較器（EqualityComparer&lt;string&gt;.Default）で作った
+                    // 大小を区別する表まで赤くする ——直しようの無い要求になる。
+                    // 大小だけが違う 2 つの文字列を「別物」と答えるかで確かめる
                     Assert.True(
-                        concrete.Comparer.Equals(StringComparer.Ordinal),
+                        !concrete.Comparer.Equals("a", "A"),
                         $"{name} は大小を無視する比較器で作られています。"
                             + "初期化子は重複キーを上書きするため、大小だけが違う行を足すと"
                             + "既存の行が黙って消えます。StringComparer.Ordinal で作ってください。");
@@ -1599,6 +1607,53 @@ public class ResponseCacheAttributePolicyTests
             "英字を含むキーが無く、比較器を確かめられなかった表があります: "
                 + string.Join(", ", unprobed)
                 + "。大小を区別する比較器で作られていることを別の方法で固定してください。");
+    }
+
+    // 導出の絞り込みが、<b>アクセシビリティで表を落とさない</b>こと。
+    //
+    // <b>なぜ合成の型で見るのか（レビュー指摘・実測）。</b> 実在の表はすべて private なので、
+    // 絞り込みを `NonPublic` だけへ狭めても<b>全件緑のまま・テスト件数も不変</b>で通る。
+    // 狭めた状態で 5 つ目の表を public で宣言した人だけが、理由・大小衝突・比較器の
+    // 3 つの検査から黙って外れる ——このファイルが随所で塞いでいる
+    // 「導出が静かに狭まり、ガードも一緒に狭まる」形。
+    [Fact]
+    public void StaticAssetTablesIn_SeesTablesWhateverTheirAccessibility()
+    {
+        // 公開・非公開の表を 1 つずつ持つ合成の型から導出する
+        var derived = StaticAssetTablesIn(typeof(TableAccessibilityProbe))
+            .Select(table => table.Name)
+            .ToList();
+
+        // 非公開の表が見えること
+        Assert.Contains(TableAccessibilityProbe.PrivateProbeTableName, derived, StringComparer.Ordinal);
+
+        // <b>公開された表も見えること</b>(ここが狭まると public の表だけが黙って外れる)
+        Assert.Contains(nameof(TableAccessibilityProbe.PublicProbeTable), derived, StringComparer.Ordinal);
+
+        // 表でないフィールドは拾わないこと(名前 → 説明 の形だけを対象にする)
+        Assert.DoesNotContain(nameof(TableAccessibilityProbe.NotATable), derived, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// 導出のアクセシビリティの絞り込みを確かめるためだけの、合成の型。
+    /// </summary>
+    private static class TableAccessibilityProbe
+    {
+        /// <summary>公開された表（導出から外れてはいけない）。</summary>
+        public static readonly IReadOnlyDictionary<string, string> PublicProbeTable =
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["a"] = "理由。" };
+
+        /// <summary>表ではないフィールド（拾ってはいけない）。</summary>
+        public static readonly string NotATable = "表ではない。";
+
+        /// <summary>非公開の表の名前を、テストから名指しするための定数。</summary>
+        public const string PrivateProbeTableName = nameof(privateProbeTable);
+
+        /// <summary>非公開の表（導出から外れてはいけない）。</summary>
+#pragma warning disable IDE1006 // 名前は nameof で参照するため、意図的に小文字で持つ
+        private static readonly IReadOnlyDictionary<string, string> privateProbeTable =
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["b"] = "理由。" };
+#pragma warning restore IDE1006
     }
 
     // 導出が、<b>判定が実際に使っている表</b>を 1 つも取りこぼしていないこと。
@@ -1988,10 +2043,24 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <returns>表の名前と中身の組（名前順）。</returns>
     private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
-        StaticAssetTables()
+        StaticAssetTables() => StaticAssetTablesIn(typeof(ResponseCacheAttributePolicyTests));
+
+    /// <summary>
+    /// 渡された型が持つ「名前 → 説明」の静的な表を、名前つきで並べる（導出の本体）。
+    /// </summary>
+    /// <remarks>
+    /// <b>型を引数で受けるのは、絞り込みを合成入力で固定するため（レビュー指摘）。</b>
+    /// 実在の表がすべて private なので、アクセシビリティの絞り込みを
+    /// <c>NonPublic</c> だけへ狭めても<b>全件緑のまま・テスト件数も不変</b>で通っていた
+    /// （5 つ目の表を public で宣言した人だけが黙って検査から外れる）。
+    /// </remarks>
+    /// <param name="owner">表を宣言している型。</param>
+    /// <returns>表の名前と中身の組（名前順）。</returns>
+    private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
+        StaticAssetTablesIn(Type owner)
     {
-        // この型が自分で宣言している静的なフィールドをすべて見る
-        var tables = typeof(ResponseCacheAttributePolicyTests)
+        // その型が自分で宣言している静的なフィールドをすべて見る
+        var tables = owner
             // <b>公開されているフィールドも見る（レビュー指摘）。</b> NonPublic だけに絞ると、
             // 表を public で宣言した瞬間に 3 つの検査すべてから黙って外れる
             // ——docstring が書いていない 2 つ目の逃げ道になる(このファイルの姉妹の導出も
