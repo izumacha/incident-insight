@@ -352,11 +352,72 @@ if (!app.Environment.IsDevelopment())
     // if (!IsDevelopment()) の中なのでテストから 1 行も走らず、書くと
     // 「文面を反対の意味へ差し替えても全件緑」の状態に戻る(実測)。
     // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
-    // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する
-    var allowedHostsWarnings =
-        new AllowedHostsWarningReporter(app.Logger, app.Environment.EnvironmentName);
+    // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する。
+    //
+    // <b>値そのものではなく「読み方」を渡す。</b> 呼び出し側が読んでから渡すと
+    // 読み取りが Reporter の錠の外になり、再読み込みが立て続けに届いたときに
+    // 記憶が実際の設定とずれる ——そのとき次に本当に緩めても重複抑止に当たって
+    // 1 本も出ない（issue #264 が塞いだ fail-open が競合の形で戻る。レビュー指摘）。
+    //
+    // <b>読み方は起動時と再読み込みで同じ。</b> HostFilteringOptions.AllowedHosts は
+    // 既に分割され、0 件なら ["*"] へ落とされた後の一覧なので、未設定で起動した場合に
+    // 起動時とは違う原因("1 件も残らない" ではなく "ワイルドカード")を名乗ることになる。
+    // 同じ設定について 2 つの説明が出るのを避けるため、設定から素の値を読む。
+    var allowedHostsWarnings = new AllowedHostsWarningReporter(
+        app.Logger,
+        app.Environment.EnvironmentName,
+        () => app.Configuration["AllowedHosts"]);
 
-    // <b>購読を先に張ってから、起動時の値を検査する（レビュー指摘）。</b>
+    // <b>検査で例外を出さない（§9 fail-safe）。</b> 呼び出し口は 2 つあり、
+    // どちらも「診断のための警告がアプリを止める」形になってはいけない:
+    //   - 起動時 …… ログの出力先が落ちていると、警告を書けないだけで<b>起動そのものが失敗</b>する。
+    //   - 再読み込み …… 変更トークンの発火は CancellationTokenSource.Cancel() 経由で
+    //     例外を呼び出し元へ投げ直すので、本番ではファイル監視のスレッドで
+    //     <b>設定ファイルに触れただけでプロセスが落ちる</b>。加えて、同じトークンに連なる
+    //     他の購読（HostFilteringOptions 自身の再束縛を含む）もそこで打ち切られる。
+    // 2 か所へ書き写すと片方にだけ手当てが残るので、1 つの関数に寄せる（§6 DRY。
+    // レビューで実際に「起動時だけ素通し」の非対称が指摘された）。
+    void CheckAllowedHosts()
+    {
+        // 検査そのものは Reporter に任せる（同じ値なら Reporter 側が黙る）
+        try
+        {
+            // 現在の設定で 2 本の警告を出し直す
+            allowedHostsWarnings.ReportIfValueChanged();
+        }
+        catch (Exception ex)
+        {
+            // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
+            try
+            {
+                // 失敗の事実を、通常のログとして残す
+                app.Logger.LogError(
+                    ex,
+                    "Failed to check AllowedHosts. The permissive/never-matching warnings may " +
+                    "be stale until the next configuration reload (issue #64).");
+            }
+            catch (Exception loggingFailure)
+            {
+                // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
+                // ここから投げると起動が失敗するか、ファイル監視のスレッドまで例外が戻り、
+                // 設定ファイルに触れただけでプロセスが落ちる ——この try/catch を
+                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
+                //
+                // <b>元の失敗（ex）も必ず一緒に出す。</b> 出力先が落ちた理由
+                // （loggingFailure）だけを書くと、<b>肝心の「AllowedHosts の検査が
+                // 失敗した」事実がどこにも残らない</b> ——運用者は docs/security.md の
+                // 「2 本とも出ていないことの確認」をきれいなログで通してしまい、
+                // 絞り込みが緩んだ可能性に気づけない。
+                Console.Error.WriteLine(
+                    "Failed to check AllowedHosts, and the failure could not be logged. "
+                    + "The permissive/never-matching warnings may be stale until the next "
+                    + "configuration reload (issue #64). Original failure: " + ex
+                    + " | Logging failure: " + loggingFailure);
+            }
+        }
+    }
+
+    // <b>購読を先に張ってから、起動時の検査をする（レビュー指摘）。</b>
     // 逆順にすると、その 2 文の間に届いた再読み込みを拾う購読がまだ無く、
     // しかも Reporter は「前回と同じ値」を覚えているので<b>以降も出し直さない</b> ——
     // ConfigMap やボリュームの投影がちょうどその瞬間に着地して "*" へ変わると、
@@ -368,59 +429,13 @@ if (!app.Environment.IsDevelopment())
     // ミドルウェアは古い一覧のままなのに「全許可になった」と言い出す ——
     // 警告が障害を作る側に回る形で、見逃しより重い。
     //
-    // <b>値は options ではなく設定から読み直す。</b> HostFilteringOptions.AllowedHosts は
-    // 既に分割され、0 件なら ["*"] へ落とされた後の一覧なので、未設定で起動した場合に
-    // 起動時とは違う原因("1 件も残らない" ではなく "ワイルドカード")を名乗ることになる。
-    // 同じ設定について 2 つの説明が出るのを避けるため、起動時とまったく同じ読み方をする。
-    //
     // <b>戻り値の購読は破棄しない。</b> ここで解除するとアプリが生きている間の
     // 再読み込みを 1 度も拾えなくなる(監視そのものがアプリと同じ寿命)。
-    app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>().OnChange(_ =>
-    {
-        // <b>このコールバックから例外を出さない（レビュー指摘）。</b> 変更トークンの発火は
-        // CancellationTokenSource.Cancel() 経由で、集めた例外を呼び出し元へ投げ直す ——
-        // 本番でのその呼び出し元はファイル監視のスレッドなので、<b>設定ファイルに触れただけで
-        // プロセスが落ちる</b>。診断のための警告がアプリを止めるのは本末転倒で、
-        // CLAUDE.md §9 の「例外時はクラッシュではなく機能を縮退して継続する」に反する。
-        try
-        {
-            // 再読み込み後の値で検査し直す(同じ値なら Reporter 側が黙る)
-            allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
-        }
-        catch (Exception ex)
-        {
-            // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
-            try
-            {
-                app.Logger.LogError(
-                    ex,
-                    "Failed to re-check AllowedHosts after a configuration reload. " +
-                    "The permissive/never-matching warnings may be stale until the next reload " +
-                    "(issue #64).");
-            }
-            catch (Exception loggingFailure)
-            {
-                // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
-                // ここから投げるとファイル監視のスレッドまで例外が戻り、
-                // 設定ファイルに触れただけでプロセスが落ちる ——この try/catch を
-                // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
-                //
-                // <b>元の失敗（ex）も必ず一緒に出す（レビュー指摘）。</b> 出力先が
-                // 落ちた理由（loggingFailure）だけを書くと、<b>肝心の
-                // 「AllowedHosts の再検査が失敗した」事実がどこにも残らない</b> ——
-                // 運用者は docs/security.md の「2 本とも出ていないことの確認」を
-                // きれいなログで通してしまい、絞り込みが緩んだ可能性に気づけない。
-                Console.Error.WriteLine(
-                    "Failed to re-check AllowedHosts after a configuration reload, and the "
-                    + "failure could not be logged. The permissive/never-matching warnings may "
-                    + "be stale until the next reload (issue #64). Original failure: " + ex
-                    + " | Logging failure: " + loggingFailure);
-            }
-        }
-    });
+    app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>()
+        .OnChange(_ => CheckAllowedHosts());
 
     // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
-    allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
+    CheckAllowedHosts();
 }
 
 // セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と

@@ -27,13 +27,26 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 件数ではなく有無を見るので、埋もれること自体は誤った安心にはならないが、
 /// 「いつ緩んだか」を追えなくする。</para>
 /// </remarks>
+/// <param name="readCurrentValue">
+/// <c>AllowedHosts</c> の現在値を読む関数（未設定なら <c>null</c> を返す）。
+///
+/// <b>値そのものではなく「読み方」を受け取るのが要点（レビュー指摘）。</b>
+/// 呼び出し側が読んでから渡す形だと、<b>読み取りが錠の外</b>になる ——
+/// 再読み込みが立て続けに 2 回届くと、A が新しい値を読んだ直後に横取りされ、
+/// B が（さらに新しい）値を読んで「前回と同じ」で戻り、そのあと A が
+/// <b>もう古くなった値</b>で警告を出して記憶を上書きしうる。記憶が実際の設定と
+/// ずれると、<b>次に本当に緩めたときに重複抑止へ当たって 1 本も出ない</b> ——
+/// issue #264 がまさに塞いだ fail-open が、競合の形で戻ってくる。
+/// 読み取りごと錠の中へ入れれば「読んで・比べて・出して・覚える」が不可分になる。
+/// </param>
 /// <param name="logger">警告の出力先。</param>
 /// <param name="environmentName">
 /// 起動している環境の名前。
 /// <b>"in Production" と決め打たない</b> ——この警告は <c>!IsDevelopment()</c> で出るので
 /// <c>Staging</c> でも鳴り、決め打つと Staging の設定ミスを本番の話と取り違える。
 /// </param>
-public sealed class AllowedHostsWarningReporter(ILogger logger, string environmentName)
+public sealed class AllowedHostsWarningReporter(
+    ILogger logger, string environmentName, Func<string?> readCurrentValue)
 {
     // 複数のスレッドから同時に呼ばれても、判定と記録が食い違わないようにする錠
     // (再読み込みの通知はアプリのスレッドプールから届き、起動時の呼び出しと重なりうる)
@@ -62,8 +75,7 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
     /// 未設定（<c>null</c>）のまま起動したときに 1 本も出なくなる ——
     /// それはまさに全許可の状態で、いちばん警告が要る場合。
     /// </remarks>
-    /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
-    public void ReportIfValueChanged(string? allowedHosts)
+    public void ReportIfValueChanged()
     {
         // <b>判定・記録・出力をまとめて 1 つの錠の中で行う。</b>
         // 判定と記録だけを守って出力を外へ出すと、値の違う 2 回の評価が<b>出た順と逆に</b>
@@ -75,6 +87,11 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
         // どちらも待たされて困る経路ではないので受け入れられる（レビュー指摘）。
         lock (_gate)
         {
+            // <b>現在値の読み取りも錠の中で行う。</b> 外で読んでから渡すと、
+            // 読んだ瞬間と記憶を更新する瞬間の間に別の再読み込みが割り込め、
+            // 記憶が実際の設定とずれる（詳細はコンストラクタ引数の docstring）
+            var allowedHosts = readCurrentValue();
+
             // 2 回目以降で値が前回と同じなら、何も出さずに戻る
             if (_hasEvaluated && string.Equals(_lastEvaluatedValue, allowedHosts, StringComparison.Ordinal))
             {

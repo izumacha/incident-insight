@@ -42,8 +42,8 @@ public class AllowedHostsStartupWarningTests
     // 2 本目（一致しえない項目）の警告を見分ける目印（同上）
     private const string DeadEntryWarningMarker = "AllowedHosts contains";
 
-    // 再読み込み後の検査そのものが失敗したときに残る記録の目印（同上）
-    private const string ReCheckFailureMarker = "Failed to re-check AllowedHosts";
+    // 検査そのものが失敗したときに残る記録の目印（起動時・再読み込みで共通。同上）
+    private const string CheckFailureMarker = "Failed to check AllowedHosts";
 
     // 出力先を落とすテスト用プロバイダが投げる例外の文面。
     // <b>定数にしてあるのは、最後の手段が「元の失敗」まで運んでいるかを見るため</b> ——
@@ -366,7 +366,7 @@ public class AllowedHostsStartupWarningTests
                 // 出力先ごと落ちている状況では、起動後のどの書き込みも失敗させる。
                 // そうでなければ、1 本目の警告だけを失敗させる
                 failEveryWrite
-                    ? message.Contains(PermissiveWarningMarker) || message.Contains(ReCheckFailureMarker)
+                    ? message.Contains(PermissiveWarningMarker) || message.Contains(CheckFailureMarker)
                     : message.Contains(PermissiveWarningMarker));
 
         // <b>本命。</b> 稼働中に全許可へ緩める ——このとき 1 本目の警告の書き込みが失敗する。
@@ -382,8 +382,46 @@ public class AllowedHostsStartupWarningTests
         if (!failEveryWrite)
         {
             // 再検査に失敗したことが記録されていること
-            Assert.Contains(fixture.Warnings, w => w.Contains(ReCheckFailureMarker));
+            Assert.Contains(fixture.Warnings, w => w.Contains(CheckFailureMarker));
         }
+    }
+
+    // <b>起動時の検査が失敗しても、起動そのものは止めないこと（レビュー指摘）。</b>
+    //
+    // 呼び出し口は起動時と再読み込みの 2 つあり、以前は再読み込み側にだけ
+    // 例外の手当てがあった。ログの出力先が落ちている状態（読み取り専用や満杯の
+    // ボリュームを指したファイル出力、起動時にまだ届かないネットワーク出力）では、
+    // <b>診断のための警告を書けないというだけでアプリが起動できなくなる</b> ——
+    // CLAUDE.md §9 の「例外時はクラッシュではなく機能を縮退して継続する」に反する。
+    //
+    // <b>この非対称は検出網が無いと見えない。</b> 既存の検査はどれも再読み込み側でしか
+    // 出力先を落としていなかった（起動時に落とすとフィクスチャの構築自体が失敗する）。
+    [Fact]
+    public void AFailingLogSinkAtStartup_DoesNotPreventTheAppFromStarting()
+    {
+        // 全許可のまま起動する ——起動時に 1 本目の警告を書こうとして失敗する状況
+        var startup = Record.Exception(() => new WarningCapturingFixture(
+            "*",
+            failLoggingWhen: message =>
+                // 1 本目の警告の書き込みだけを落とす（その失敗の記録は残せる状態にする）
+                message.Contains(PermissiveWarningMarker)));
+
+        // <b>本命。</b> 起動が例外で止まっていないこと
+        Assert.Null(startup);
+    }
+
+    // <b>起動時の失敗も、握り潰さず記録すること。</b>
+    // 上の検査は「起動できること」しか見ないので、例外を黙って捨てる実装でも通る。
+    [Fact]
+    public void AFailingLogSinkAtStartup_StillRecordsTheFailure()
+    {
+        // 上と同じ状況で起動し、溜まった記録を読む
+        using var fixture = new WarningCapturingFixture(
+            "*",
+            failLoggingWhen: message => message.Contains(PermissiveWarningMarker));
+
+        // 検査に失敗したことが、文脈付きで残っていること
+        Assert.Contains(fixture.Warnings, w => w.Contains(CheckFailureMarker));
     }
 
     // <b>出力先ごと落ちていても、失敗の事実は別の出力先へ必ず残すこと（レビュー指摘）。</b>
@@ -401,7 +439,7 @@ public class AllowedHostsStartupWarningTests
             "incident.example.test",
             failLoggingWhen: message =>
                 // 警告も、その失敗を記録する LogError も落とす（出力先ごと落ちている状況）
-                message.Contains(PermissiveWarningMarker) || message.Contains(ReCheckFailureMarker));
+                message.Contains(PermissiveWarningMarker) || message.Contains(CheckFailureMarker));
 
         // 標準エラーを横取りして、最後の手段が何を書くかを読めるようにする
         var originalError = Console.Error;
@@ -426,7 +464,7 @@ public class AllowedHostsStartupWarningTests
         var fallback = captured.ToString();
 
         // <b>本命 1。</b> 「再検査が失敗した」事実そのものが残っていること
-        Assert.Contains(ReCheckFailureMarker, fallback);
+        Assert.Contains(CheckFailureMarker, fallback);
 
         // <b>本命 2。</b> 元の失敗（なぜ再検査が失敗したか）も一緒に残っていること ——
         // 出力先が落ちた理由だけを書くと、肝心の事実がどこにも残らない
