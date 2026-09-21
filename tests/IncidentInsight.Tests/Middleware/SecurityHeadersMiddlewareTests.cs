@@ -388,6 +388,14 @@ public class SecurityHeadersMiddlewareTests
         // 長期化につながる指示を、囲みの有無を問わず走査する
         foreach (Match directive in Regex.Matches(securityDoc, MarkerRequiredDirectivePattern, RegexOptions.IgnoreCase))
         {
+            // <b>コードブロック（``` で囲んだ設定例）の中は見ない（レビュー指摘）。</b>
+            // あそこでは HTML コメントが<b>そのまま表示される</b>ので、目印を要求すると
+            // 「正しい短期の nginx 設定例を足しただけで CI が赤くなり、
+            // 案内される直し方に従うと運用者がコピペする設定へコメントが混ざる」
+            // ——この repo が繰り返し避けている<b>実行不能な指示</b>になる（実測で赤くなった）。
+            // 代償は下の「残る境界」に書いてある
+            if (IsInsideFencedBlock(securityDoc, directive.Index)) continue;
+
             // キャッシュの名乗りとして書かれているものだけを見る（HSTS や地の文を巻き込まない）
             if (!RequiresMarker(securityDoc, directive)) continue;
 
@@ -395,7 +403,7 @@ public class SecurityHeadersMiddlewareTests
             required++;
 
             // 目印が無ければ落ちる（付いていれば名乗り／反例のどちらかに決まっている）
-            ClaimKindAfter(securityDoc, directive.Index + directive.Length, directive.Value);
+            AssertMarkerPresent(securityDoc, directive.Index + directive.Length, directive.Value);
         }
 
         // <b>この枝も「1 件も見ていない」状態を落とす。</b>
@@ -462,8 +470,11 @@ public class SecurityHeadersMiddlewareTests
         // その指示の直前にある、同じ行の綴り
         var before = DirectiveRunBefore(doc, match.Index);
 
-        // "<名前>:" の形を探す
-        var header = Regex.Match(before, "(?<name>[A-Za-z][A-Za-z0-9-]*)[ \t]*:");
+        // <b>一番近いヘッダー名を見る（レビュー指摘）。</b> 先頭から探すと、
+        // 同じ綴りの手前に別のヘッダー名があるだけで（`Vary: …, Cache-Control: …`）
+        // <b>名乗りが丸ごと除外される</b> ——実測で 1 年のキャッシュが全件緑のまま通った
+        var header = Regex.Match(
+            before, "(?<name>[A-Za-z][A-Za-z0-9-]*)[ \t]*:", RegexOptions.RightToLeft);
 
         // 見つかり、かつ Cache-Control 以外なら真
         return header.Success
@@ -544,16 +555,6 @@ public class SecurityHeadersMiddlewareTests
         return trimmed;
     }
 
-    /// <summary>文書が指示をどう扱っているか（実際に名乗るのか、反例なのか）。</summary>
-    private enum ClaimKind
-    {
-        /// <summary>実際にその指示を名乗る。</summary>
-        Claim,
-
-        /// <summary>してはいけない例として挙げている。</summary>
-        CounterExample,
-    }
-
     /// <summary>実際に名乗っていることを示す目印（HTML コメントなので表示に出ない）。</summary>
     private const string ClaimTag = "<!--cache-claim-->";
 
@@ -561,7 +562,7 @@ public class SecurityHeadersMiddlewareTests
     private const string CounterExampleTag = "<!--cache-counter-example-->";
 
     /// <summary>
-    /// 指示の直後に置かれた目印を読み、文書がその指示をどう扱っているかを返す。
+    /// 指示の直後に、扱いを示す目印（名乗り／反例）が置かれていることを確かめる。
     /// </summary>
     /// <remarks>
     /// <b>目印が無ければ落とす（fail-closed）。</b> 「たぶん反例だろう」と読み飛ばすと、
@@ -572,8 +573,7 @@ public class SecurityHeadersMiddlewareTests
     /// <param name="doc">文書全体。</param>
     /// <param name="after">指示の直後の位置。</param>
     /// <param name="directive">失敗文言に出す、その指示の綴り。</param>
-    /// <returns>文書がその指示をどう扱っているか。</returns>
-    private static ClaimKind ClaimKindAfter(string doc, int after, string directive)
+    private static void AssertMarkerPresent(string doc, int after, string directive)
     {
         // 目印は<b>指示の並び全体の後ろ</b>に置く決まり。1 件の期間の指示に当たったときは
         // 同じ並びの残り（",immutable" など）と閉じのバッククォートが手前に挟まるので、
@@ -594,11 +594,12 @@ public class SecurityHeadersMiddlewareTests
         // 認めると「指示を囲みで閉じ、目印を別の囲みへ入れる」形で囮を逃がせられる
         var tagged = !IsInsideCodeSpan(doc, at);
 
-        // 「名乗る」の目印があればそれ
-        if (tagged && window.StartsWith(ClaimTag, StringComparison.Ordinal)) return ClaimKind.Claim;
+        // 「名乗る」の目印があれば、ここではこれ以上見ない
+        // （値そのものは、目印を起点に並び全体を読む (a) の枝が確かめる）
+        if (tagged && window.StartsWith(ClaimTag, StringComparison.Ordinal)) return;
 
-        // 「反例」の目印があればそれ
-        if (tagged && window.StartsWith(CounterExampleTag, StringComparison.Ordinal)) return ClaimKind.CounterExample;
+        // 「反例」の目印があれば、この指示は文書が名乗っていないので通す
+        if (tagged && window.StartsWith(CounterExampleTag, StringComparison.Ordinal)) return;
 
         // どちらも無ければ、どう扱うべきか決められないので落とす
         Assert.Fail(
@@ -608,9 +609,6 @@ public class SecurityHeadersMiddlewareTests
                 + "（どちらも HTML コメントなので表示には出ません）。"
                 + "文章の言い回しから推し量る形は、書き方を変えるたびに"
                 + "誤って赤くなるか黙って緑になるかのどちらかになるため採りません。");
-
-        // Assert.Fail は必ず投げるので、ここには来ない
-        return ClaimKind.CounterExample;
     }
 
     /// <summary>指示の並び（<c>public,max-age=3600</c> 等）を構成しうる文字かを見る。</summary>
@@ -653,6 +651,36 @@ public class SecurityHeadersMiddlewareTests
         // 奇数なら囲みの中にいる
         return backticks % 2 == 1;
     }
+
+    /// <summary>その位置が Markdown のコードブロック（``` で囲んだ領域）の中かを見る。</summary>
+    /// <remarks>
+    /// <b>行単位の囲みの判定とは別の関心</b> ——ブロックの中の行はバッククォートを
+    /// 1 つも持たないので、<see cref="IsInsideCodeSpan"/> は地の文と判定する。
+    /// 先頭から ``` の出現を数え、奇数番目のあとならブロックの中とする。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <param name="index">見たい位置。</param>
+    /// <returns>コードブロックの中なら <c>true</c>。</returns>
+    private static bool IsInsideFencedBlock(string doc, int index)
+    {
+        // 囲いの綴りがこれまでに何回現れたか
+        var fences = 0;
+
+        // 文書の先頭からその位置までを見る
+        for (var at = doc.IndexOf(CodeFence, StringComparison.Ordinal);
+             at >= 0 && at < index;
+             at = doc.IndexOf(CodeFence, at + CodeFence.Length, StringComparison.Ordinal))
+        {
+            // 1 つ数える
+            fences++;
+        }
+
+        // 奇数なら閉じていない＝ブロックの中にいる
+        return fences % 2 == 1;
+    }
+
+    /// <summary>コードブロックの囲いの綴り。</summary>
+    private const string CodeFence = "```";
 
     /// <summary>目印を探す幅（指示の直後に置く決まりなので、長い目印 1 つ分あれば足りる）。</summary>
     private static readonly int TagWindow = Math.Max(ClaimTag.Length, CounterExampleTag.Length);
@@ -859,8 +887,13 @@ public class SecurityHeadersMiddlewareTests
     /// <remarks>パスの正本は <see cref="RepositoryPaths.SecurityDoc"/>（読み手が 2 つあるため）。</remarks>
     /// <returns>文書全体。</returns>
     private static string ReadSecurityDoc() =>
-        // 共有のパスから読む
-        File.ReadAllText(RepositoryPaths.SecurityDoc);
+        // <b>改行を LF へそろえてから返す（レビュー指摘）。</b> この repo に .gitattributes は無く、
+        // Windows の既定（core.autocrlf=true）でチェックアウトすると CRLF になる。
+        // すると空行の行頭が CR になり、「空白だけの行は継続行」という判定が
+        // <b>空行まで継続行と読む</b> ——箇条書きの境目が消え、照合の範囲が
+        // 黙って隣の箇条書きまで広がる。判定を 1 箇所ずつ直すと取りこぼしが出るので、
+        // <b>読み口でそろえる</b>（§10「判定ロジックは共有層に置きテストで担保する」）
+        File.ReadAllText(RepositoryPaths.SecurityDoc).Replace("\r\n", "\n");
 
     /// <summary>
     /// 指定した応答フィーチャーだけを持つ最小構成の <see cref="HttpContext"/> を作る。
