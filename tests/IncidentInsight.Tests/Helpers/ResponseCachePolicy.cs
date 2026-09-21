@@ -156,12 +156,17 @@ public static class ResponseCachePolicy
         Assembly ownAssembly,
         Func<object, bool> matches)
     {
-        // 同じ宣言を二重に数えないための記録(基底の 1 つのアクションは派生の数だけ見える)
+        // <b>走査全体</b>で同じ宣言を二重に返さないための記録(基底の 1 つの宣言は派生の数だけ見える)。
+        // 観測場所ごとの記録（seenOnThisType / seenOnThisMethod）と対で使う ——
+        // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
+            // <b>この 1 つの型から見えた分だけ</b>を数える記録(全体の記録とは別に持つ理由は下記)
+            var seenOnThisType = new HashSet<string>(StringComparer.Ordinal);
+
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
             foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
@@ -174,18 +179,30 @@ public static class ResponseCachePolicy
                 var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
-                // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
                 // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
-                if (seen.Add(DeclarationKey($"type:{declaredOn}", attribute)))
+                var key = DeclarationKey($"type:{declaredOn}", attribute);
+
+                // <b>同じ型の走査の中で</b>同じキーが 2 度出たら、それは本当に 2 つの宣言
+                // (1 つの型から見える属性は、継承して見えたものも含めて 1 度ずつしか現れない)
+                if (!seenOnThisType.Add(key))
                 {
-                    // クラス側の宣言として返す
-                    yield return new AttributeDeclaration(declaredOn, attribute);
-                }
-                else
-                {
-                    // 畳んだので、それが「失って良い重複」だったことを確かめる
+                    // 畳むと 2 個目が違反の一覧へ到達しないので、門番に判断させる
                     EnsureNothingWasLost(attribute);
+
+                    // 複数付けられない属性なら畳んでよい重複なので、次の属性へ
+                    continue;
                 }
+
+                // ここから先は「別の派生型から同じ 1 つの宣言を見ている」かどうかの判断。
+                // 既に返した宣言元なら黙って畳む(何も失っていない。issue #255 / #269)
+                if (!seen.Add(key))
+                {
+                    // 同じ宣言を 2 件に見せないよう、返さずに次の属性へ
+                    continue;
+                }
+
+                // クラス側の宣言として返す
+                yield return new AttributeDeclaration(declaredOn, attribute);
             }
 
             // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
@@ -199,6 +216,9 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
+                // クラス側と同じく、<b>この 1 つのアクションから見えた分だけ</b>を数える記録
+                var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
+
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
                 {
@@ -210,16 +230,27 @@ public static class ResponseCachePolicy
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
                     // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
-                    if (seen.Add(DeclarationKey($"method:{declaredOn}({method})", attribute)))
+                    var key = DeclarationKey($"method:{declaredOn}({method})", attribute);
+
+                    // クラス側と同じく、<b>同じアクションの走査の中で</b>重なったものだけが本当の重複
+                    if (!seenOnThisMethod.Add(key))
                     {
-                        // アクション側の宣言として返す
-                        yield return new AttributeDeclaration(declaredOn, attribute);
-                    }
-                    else
-                    {
-                        // クラス側と同じ理由で、畳んだ 1 件が重複だったことを確かめる
+                        // 畳むと 2 個目が違反の一覧へ到達しないので、門番に判断させる
                         EnsureNothingWasLost(attribute);
+
+                        // 複数付けられない属性なら畳んでよい重複なので、次の属性へ
+                        continue;
                     }
+
+                    // 別の派生型から同じ 1 つの宣言を見ているだけなら、黙って畳む
+                    if (!seen.Add(key))
+                    {
+                        // 同じ宣言を 2 件に見せないよう、返さずに次の属性へ
+                        continue;
+                    }
+
+                    // アクション側の宣言として返す
+                    yield return new AttributeDeclaration(declaredOn, attribute);
                 }
             }
         }
@@ -273,7 +304,17 @@ public static class ResponseCachePolicy
     /// 前者だと、複数付けられる属性が<b>1 つしか付いていなくても</b>走査全体が落ち、
     /// アセンブリ中の本物の違反が 1 件も報告されなくなる（しかも失敗文言は違反ではなく
     /// キーの話をする）。畳んだ瞬間＝実際に 1 件失った瞬間に鳴らせば、
-    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para><b>直し方は「キーを位置まで含む形にする」だが、
+    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para>
+    ///
+    /// <para><b>だから呼び出し側は「観測場所ごと」の記録で判断する（issue #255 / #269）。</b>
+    /// 走査全体の記録だけでキーの重なりを見ると、<b>同じ 1 つの宣言を 2 つの派生型から
+    /// 見ただけ</b>でも重なる ——<c>AllowMultiple = true</c> かつ継承される指示属性を
+    /// 抽象基底へ<b>1 回だけ</b>付けて 2 つ派生させると、2 つ目の派生を見た時点でここが投げ、
+    /// キャッシュ関連の検出網が<b>まとめて例外で止まる</b>。しかも失敗文言は
+    /// 「キーへ位置を含めろ」と案内するが、<b>宣言は 1 つしか無い</b>のでその助言は当てはまらない
+    /// （正しいコードで赤くなる検出網は、いずれ検査ごと緩められる）。
+    /// 1 つの型・1 つのアクションから見える属性は、継承して見えたものも含めて
+    /// <b>1 度ずつしか現れない</b>ので、同じ観測場所で 2 度重なったときだけが本当の損失になる。</para><b>直し方は「キーを位置まで含む形にする」だが、
     /// それだけでは足りない</b> ——宣言元をたどる
     /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
     /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。

@@ -2720,6 +2720,89 @@ public class ResponseCacheAttributePolicyTests
         Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
     }
 
+    // 複数付けられる属性を<b>基底へ 1 回だけ</b>付けて 2 つ派生させたとき、門番が鳴らないこと。
+    //
+    // <b>なぜ要るのか（issue #269 / #255）。</b> 重複の判定を走査全体の記録だけで行うと、
+    // 「同じ 1 つの宣言を 2 つの派生型から見た」だけでキーが重なり、門番が投げる ——
+    // アセンブリの走査そのものが止まり、キャッシュ関連の検査が<b>本物の違反 0 件ではなく
+    // 例外で</b>落ちる。しかも失敗文言は「キーへ位置を含めろ」と案内するのに、
+    // 宣言は 1 つしか無いのでその助言は当てはまらない。
+    // <b>正しいコードで赤くなる検出網は、いずれ検査ごと緩められる。</b>
+    [Fact]
+    public void AttributeScan_DoesNotFail_WhenOneRepeatableDeclarationIsSeenThroughTwoDerivedTypes()
+    {
+        // 基底が 1 つだけ宣言した属性を、2 つの派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SharedRepeatableProbeLeafA), typeof(SharedRepeatableProbeLeafB)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること(派生の数だけ並べない)
+        var declared = Assert.Single(declarations);
+
+        // 名指しは継承して見えた派生ではなく、実際に宣言している基底であること
+        Assert.Contains(
+            nameof(SharedRepeatableProbeBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+
+        // 中身も読めること(取り違えた宣言を返していない)
+        Assert.Equal("shared", ((RepeatableProbeAttribute)declared.Attribute).Policy);
+    }
+
+    // アクション側でも、基底の 1 つの宣言を 2 つの派生から見ただけでは鳴らないこと。
+    //
+    // <b>なぜ別に要るのか。</b> 観測場所ごとの記録はクラス側とアクション側で別々に持つので、
+    // 片方だけを走査全体の記録へ戻す変異がありうる（この走査は SameKindAs と門番で、
+    // まったく同じクラス側／アクション側の非対称を実際に 2 度踏んでいる）。
+    [Fact]
+    public void AttributeScan_DoesNotFail_WhenOneRepeatableActionDeclarationIsSeenThroughTwoDerivedTypes()
+    {
+        // 基底のアクションが 1 つだけ宣言した属性を、2 つの派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SharedRepeatableActionProbeLeafA), typeof(SharedRepeatableActionProbeLeafB)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しは実際に宣言している基底であること
+        Assert.Contains(
+            nameof(SharedRepeatableActionProbeBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+
+        // 中身も読めること
+        Assert.Equal("shared-action", ((RepeatableProbeAttribute)declared.Attribute).Policy);
+    }
+
+    // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
+    //
+    // <b>なぜ要るのか。</b> issue #269 の直し方は誤検知を消す方向なので、行きすぎると
+    // 「畳んで 1 件失っても黙る」fail-open へ倒れる ——許す側の宣言が 2 個目だと
+    // <b>検査は緑のまま PHI を含みうる応答に共有キャッシュ可能な指示が残る</b>。
+    // 基底が 2 つ宣言していれば、派生 1 つから見ただけでも同じ観測場所で重なるので落ちる。
+    [Fact]
+    public void AttributeScan_StillRefusesToScan_WhenTheBaseCarriesTwoRepeatableDeclarations()
+    {
+        // 基底が 2 つ宣言した属性を、派生型から走査すると落ちること
+        var error = Assert.Throws<NotSupportedException>(() =>
+            ResponseCachePolicy
+                .AttributeDeclarationsOn(
+                    [typeof(RepeatedKindOnBaseProbeLeaf)],
+                    typeof(ResponseCacheAttributePolicyTests).Assembly,
+                    a => a is RepeatableProbeAttribute)
+                .ToList());
+
+        // 何が問題かが失敗文言から分かること
+        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+    }
+
     // アクション側でも、宣言元をたどる条件が<b>その属性の型</b>まで絞られていること。
     //
     // <b>なぜクラス側の検査では足りないのか（実測）。</b> 種類が階層で分かれる形の合成は
@@ -2959,7 +3042,7 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <remarks>
     /// 実在のキャッシュ指示属性はいずれも <c>AllowMultiple = false</c> なので、
-    /// 門番（<c>EnsureDedupKeyCanSeparate</c>）が働く経路は合成入力でしか通せない。
+    /// 門番（<c>EnsureNothingWasLost</c>）が働く経路は合成入力でしか通せない。
     /// <b>だから合成する</b> ——実在の属性だけを渡している限り、門番を消しても全件緑のまま通る。
     /// </remarks>
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
@@ -2987,6 +3070,53 @@ public class ResponseCacheAttributePolicyTests
         [RepeatableProbe("b")]
         public IActionResult Probe() => NoContent();
     }
+
+    /// <summary>複数付けられる属性を<b>1 つだけ</b>宣言する抽象基底。</summary>
+    /// <remarks>
+    /// 目印(shared)は、2 つの派生から見ても<b>この 1 つの宣言</b>が返っていることを
+    /// 見分けるために持つ。
+    /// </remarks>
+    [RepeatableProbe("shared")]
+    private abstract class SharedRepeatableProbeBase : ControllerBase;
+
+    /// <summary>基底の 1 つの宣言をそのまま継承する具象（1 つ目）。</summary>
+    private sealed class SharedRepeatableProbeLeafA : SharedRepeatableProbeBase;
+
+    /// <summary>基底の 1 つの宣言をそのまま継承する具象（2 つ目）。</summary>
+    private sealed class SharedRepeatableProbeLeafB : SharedRepeatableProbeBase;
+
+    /// <summary>複数付けられる属性を<b>アクションへ 1 つだけ</b>宣言する抽象基底。</summary>
+    private abstract class SharedRepeatableActionProbeBase : ControllerBase
+    {
+        /// <summary>複数付けられる属性を 1 つだけ持つ、virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [RepeatableProbe("shared-action")]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションを素で override する具象（1 つ目）。</summary>
+    private sealed class SharedRepeatableActionProbeLeafA : SharedRepeatableActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションを素で override する具象（2 つ目）。</summary>
+    private sealed class SharedRepeatableActionProbeLeafB : SharedRepeatableActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>複数付けられる属性を<b>2 つ</b>宣言する抽象基底。</summary>
+    [RepeatableProbe("a")]
+    [RepeatableProbe("b")]
+    private abstract class RepeatedKindOnBaseProbeBase : ControllerBase;
+
+    /// <summary>基底の 2 つの宣言を継承するだけの具象。</summary>
+    private sealed class RepeatedKindOnBaseProbeLeaf : RepeatedKindOnBaseProbeBase;
 
     /// <summary>
     /// 「種類を問わない走査」を検証するためだけの、2 種類目の属性。
