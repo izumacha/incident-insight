@@ -1393,6 +1393,12 @@ public class ResponseCacheAttributePolicyTests
         // こちらでも「表へ登録してください」という案内は出さないこと
         Assert.DoesNotContain("理由を添えて登録します", opaqueTarget, StringComparison.Ordinal);
 
+        // <b>中身が一覧に全部は並ばない注意が、この枝にも付くこと（レビュー指摘・実測）。</b>
+        // 共有の定数にしたのに、こちらの呼び出しを落としても全件緑で通っていた ——
+        // 案内が「中身を確かめてから」なのに、一覧が空でも安全とは限らないことが
+        // <b>いちばん効く枝</b>で抜け落ちる
+        Assert.Contains("承認済みの種類のファイルは並びません", opaqueTarget, StringComparison.Ordinal);
+
         // 逆に、こぼれ出た中身を登録して黙らせないよう<b>止める</b>こと。
         // 止めないと、綴りをそろえる判断をしないまま CDN の取得物の種類が
         // 種別の表へ入り、その登録は<b>すべての入れ物に効く</b>(検出網が一斉に広がる)
@@ -1410,6 +1416,17 @@ public class ResponseCacheAttributePolicyTests
 
         // 何が足りないのかが分かる文言であること
         Assert.Contains("承認表側の綴り", missingSpelling.Message, StringComparison.Ordinal);
+
+        // <b>そろえる先が中を見ない入れ物の側も同じであること（レビュー指摘・実測）。</b>
+        // 片方しか固定していないと、こちらの原因だけ「綴りは要らない」へ変えても
+        // 全件緑で通り、案内は「中身を確かめてから」と言うのに<b>どの入れ物へそろえるのかが
+        // どこにも出ない</b>状態になる
+        var opaqueMissingSpelling = Assert.Throws<NotSupportedException>(() =>
+            UnapprovedStaticAssetsMessage(
+                [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer)]));
+
+        // こちらも何が足りないのかが分かる文言であること
+        Assert.Contains("承認表側の綴り", opaqueMissingSpelling.Message, StringComparison.Ordinal);
     }
 
     // 「中を見ない」入れ物は、承認済みの入れ物でもあること。
@@ -1935,7 +1952,10 @@ public class ResponseCacheAttributePolicyTests
     /// 見落としたまま綴りをそろえることになる。</para>
     /// </remarks>
     private const string ContentsNotFullyListedCaveat =
-        "その中身のうち、一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
+        // <b>「入れ物の場合」と明示する（レビュー指摘）。</b> この案内は直し方ごとに出るので、
+        // 大小違いが<b>直下のファイル</b>(FAVICON.ICO 等)だけのときにも付く ——
+        // 範囲を書かないと、中身を持たない項目について「その中身は…」と語ることになる
+        "入れ物の場合、その中身のうち一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
             + "承認済みの種類のファイルは並びません"
             + "(一覧に無いことは中身が公開してよいことを意味しません)。";
 
@@ -1983,6 +2003,8 @@ public class ResponseCacheAttributePolicyTests
                 // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
                 + "この入れ物は綴りが違うぶん中まで走査されます。"
                 // AlignSpelling 側とまったく同じ注意なので、共有の 1 か所から出す
+                // (この枝ではいちばん効く注意 ——案内が「中身を確かめてから」なのに、
+                //  一覧が空でも中身が安全とは限らないため)
                 + ContentsNotFullyListedCaveat
                 + "並んだ中身を "
                 + $"{nameof(ApprovedStaticFileExtensions)} や "
