@@ -169,9 +169,11 @@ public static class ResponseCachePolicy
             // 使い回すと、観測場所ごとに空であることが<b>スコープではなく手で置いた Clear() の
             // 位置</b>に依存する ——観測場所を 1 つ足したり途中に early-exit を挟んだりした瞬間に
             // 前の場所のキーが残り、次の<b>ただ 1 つの宣言</b>が門番に当たって走査ごと落ちる
-            // （しかも失敗文言は当てはまらない直し方を案内する）。割り当ては、同じ場所で
-            // 既に走っているリフレクション呼び出しに比べれば無視できる
-            var seenOnThisType = new HashSet<string>(StringComparer.Ordinal);
+            // （しかも失敗文言は当てはまらない直し方を案内する）。
+            // <b>実体は最初に要ったときに作る</b>(レビュー指摘) ——走査はアセンブリ中の
+            // 全コントローラ・全アクションを回るが、キャッシュ指示を宣言しているものはごく一部。
+            // スコープはこのままなので、観測場所ごとに空であることは変わらない
+            HashSet<string>? seenOnThisType = null;
 
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
@@ -187,6 +189,9 @@ public static class ResponseCachePolicy
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
                 // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
                 var key = DeclarationKey($"type:{declaredOn}", attribute);
+
+                // この観測場所の記録を、最初に要ったここで作る
+                seenOnThisType ??= new HashSet<string>(StringComparer.Ordinal);
 
                 // まだ返していない宣言なら返す(判定はクラス側・アクション側で共通)
                 if (IsNewDeclaration(seenOnThisType, seen, key, attribute))
@@ -207,8 +212,8 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
-                // クラス側と同じ理由で、このアクションの観測場所ぶんをここで作る
-                var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
+                // クラス側と同じ理由で、このアクションの観測場所ぶんを持つ(実体は最初に要ったとき)
+                HashSet<string>? seenOnThisMethod = null;
 
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
@@ -225,6 +230,9 @@ public static class ResponseCachePolicy
                     // クラス側と同じキーの作り方（オーバーロードを分けるため宣言の同一性まで含める）
                     var key = DeclarationKey(
                         $"method:{declaredOn}(#{declaringMethod.MetadataToken})", attribute);
+
+                    // この観測場所の記録を、最初に要ったここで作る
+                    seenOnThisMethod ??= new HashSet<string>(StringComparer.Ordinal);
 
                     // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
                     if (IsNewDeclaration(seenOnThisMethod, seen, key, attribute))
@@ -382,7 +390,14 @@ public static class ResponseCachePolicy
                 + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
                 + "キーへ位置を含める形へ変え、あわせて宣言元をたどる "
                 + $"{nameof(DeclaringTypeOf)} / {nameof(DeclaringMethodOf)} "
-                + "の名指しも見直してください。");
+                + "の名指しと、"
+                // <b>ここも同じ変更セットで見直す（レビュー指摘）。</b> キーへ位置を入れると、
+                // 走査全体の畳み込みは「同じ宣言がどの派生から見ても同じ位置に現れる」ことに
+                // 依存する ——GetCustomAttributes の並び順は規定されていないので、
+                // 派生ごとに順が違えば 1 つの宣言が具象の数だけ並ぶ形が戻る
+                + $"{nameof(IsNewDeclaration)} の走査全体の畳み込み"
+                + "(位置を入れると、派生ごとに並び順が違ったときに同じ宣言が複数件に見えます)"
+                + "も見直してください。");
     }
 
     /// <summary>

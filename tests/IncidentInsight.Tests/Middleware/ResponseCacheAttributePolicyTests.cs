@@ -1494,6 +1494,13 @@ public class ResponseCacheAttributePolicyTests
 
         // 案内が直し方ごとに固有であること(使い回すと出し分けの意味が無い)
         Assert.Equal(advice.Count, advice.Distinct(StringComparer.Ordinal).Count());
+
+        // すべての原因について「綴りが要るか」が決まっていること
+        // (足し忘れは対応表が例外を投げて落ちる。決めないと失敗文言の組み立てごと落ちる)
+        var carries = causes.Select(CauseCarriesApprovedSpelling).ToList();
+
+        // 要る側・要らない側の<b>両方</b>が実際にあること(片方だけなら決めが死んでいる)
+        Assert.Equal(2, carries.Distinct().Count());
     }
 
     // 承認表が<b>大小を区別する</b>比較器で作られていること。
@@ -1520,10 +1527,28 @@ public class ResponseCacheAttributePolicyTests
             var probe = entries.Keys.FirstOrDefault(key =>
                 !string.Equals(key, key.ToUpperInvariant(), StringComparison.Ordinal));
 
-            // 英字を含むキーが無い表は、この方法では確かめられないので名指しして次へ
+            // 英字を含むキーが無い表は、引いて確かめられないので比較器そのものを読む。
+            // <b>ここで落とすと行き止まりになる（レビュー指摘）</b> ——「別の方法で固定して
+            // ください」と言われても、このファイルに他の手段は無い。緑にする道は
+            // 「表を導出から外す」か「検査を緩める」しか残らず、どちらもこの検査が
+            // 塞いでいる穴を開け直す
             if (probe is null)
             {
-                // 確かめられなかった表として記録する(下でまとめて落とす)
+                // 実体が Dictionary なら、どの比較器で作られたかを直接読める
+                if (entries is Dictionary<string, string> concrete)
+                {
+                    // 大小を区別する比較器であることを、比較器そのもので確かめる
+                    Assert.True(
+                        concrete.Comparer.Equals(StringComparer.Ordinal),
+                        $"{name} は大小を無視する比較器で作られています。"
+                            + "初期化子は重複キーを上書きするため、大小だけが違う行を足すと"
+                            + "既存の行が黙って消えます。StringComparer.Ordinal で作ってください。");
+
+                    // 確かめられたので次の表へ
+                    continue;
+                }
+
+                // 比較器も読めない形なら、確かめられなかった表として記録する
                 unprobed.Add(name);
 
                 // 次の表へ
@@ -1663,7 +1688,7 @@ public class ResponseCacheAttributePolicyTests
         // 1 つも無いことを、名指しの一覧付きで確認する
         Assert.True(
             ambiguous.Count == 0,
-            "承認表に、大小だけが違うキーを同時に載せないでください"
+            "この型の表に、大小だけが違うキーを同時に載せないでください"
                 + "(どちらが一致するかが Dictionary の列挙順に依存します): "
                 + string.Join(", ", ambiguous));
     }
@@ -1747,6 +1772,33 @@ public class ResponseCacheAttributePolicyTests
         AuditContentsBeforeAligning,
     }
 
+    /// <summary>その原因が、承認表側の綴りを必ず伴うかを返す。</summary>
+    /// <remarks>
+    /// <b>案内の種類から推し量らない（レビュー指摘）。</b> 「登録してください以外なら綴りが要る」と
+    /// 書くと、綴りを必要としない原因を新しい直し方とともに足した瞬間に、
+    /// <see cref="NameWithCause"/> が<b>失敗文言の組み立てごと落ちる</b> ——
+    /// その走査で見つかった<b>他のすべての違反</b>まで一覧から消える。
+    /// 要否は原因そのものの性質なので、原因ごとに決める。
+    /// </remarks>
+    /// <param name="cause">落ちた原因。</param>
+    /// <returns>承認表側の綴りを伴うなら <c>true</c>。</returns>
+    /// <exception cref="NotSupportedException">対応する決めを足し忘れている場合。</exception>
+    private static bool CauseCarriesApprovedSpelling(UnapprovedCause cause) => cause switch
+    {
+        // 表に無いものは、比べる相手が無い
+        UnapprovedCause.UnapprovedDirectory => false,
+        // 直下のファイルも同じ
+        UnapprovedCause.UnapprovedRootFile => false,
+        // 種類も同じ
+        UnapprovedCause.UnapprovedExtension => false,
+        // 大小違いは、比べる相手(表の綴り)を必ず示す
+        UnapprovedCause.MiscasedApprovedAsset => true,
+        // そろえる先が中を見ない入れ物の場合も同じ
+        UnapprovedCause.MiscasedOpaqueContainer => true,
+        // 足し忘れを黙って通さない(§9 fail-closed)
+        _ => throw new NotSupportedException($"{cause} に綴りが要るかどうかの決めがありません。"),
+    };
+
     /// <summary>未承認の 1 件を、理由つきで名指しする 1 語にする。</summary>
     /// <remarks>
     /// <b>大小違いのときは承認表側の綴りを必ず添える。</b> 添えないと、
@@ -1759,8 +1811,8 @@ public class ResponseCacheAttributePolicyTests
     /// <exception cref="NotSupportedException">大小違いなのに承認表側の綴りが無い場合。</exception>
     private static string NameWithCause(UnapprovedStaticAsset item)
     {
-        // 大小違い以外は、相対パスと理由だけで十分
-        if (RepairFor(item.Cause) == RepairKind.RegisterInTable)
+        // 承認表側の綴りが要らない原因は、相対パスと理由だけで十分
+        if (!CauseCarriesApprovedSpelling(item.Cause))
         {
             // 相対パスと理由を並べて返す
             return $"{item.RelativePath}({CauseText(item.Cause)})";
@@ -1820,8 +1872,14 @@ public class ResponseCacheAttributePolicyTests
                 // 「承認されていない種類」として大量に並ぶ。上の登録の案内をそのまま当てると
                 // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
                 // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
-                + "この入れ物は綴りが違うぶん中まで走査されるため、その中身も未承認として"
-                + "並びます(中のファイルは種類として、ネストした入れ物は入れ物として)。"
+                + "この入れ物は綴りが違うぶん中まで走査されますが、"
+                // <b>「中身も並ぶ」と約束しない（レビュー指摘・実測）。</b> 承認済みの種類
+                // (.js / .css)のファイルは<b>一覧に並ばない</b> ——並んだものだけを見て
+                // 「残りは確認済み」と読むと、`LIB/patient-list.js` を見落としたまま
+                // 綴りをそろえることになる(一覧に無いことは安全を意味しない)
+                + "一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
+                + "承認済みの種類のファイルは並びません(一覧に無いことは"
+                + "中身が公開してよいことを意味しません)。"
                 + "並んだ中身を "
                 + $"{nameof(ApprovedStaticFileExtensions)} や "
                 + $"{nameof(ApprovedStaticDirectories)} へ登録して黙らせないでください"
@@ -1880,6 +1938,13 @@ public class ResponseCacheAttributePolicyTests
     /// <para>表そのものに掛ける検査（理由が書かれているか・大小衝突が無いか・比較器が
     /// 大小を区別するか）が同じ並びを必要とするので、1 か所から配る。
     /// 各検査が並びを書き写すと、表を足したときに<b>片方だけが取り残される</b>（§6 DRY）。</para>
+    ///
+    /// <para><b>対象は「この型が持つ 名前 → 説明 の静的な表」すべて（レビュー指摘）。</b>
+    /// 値の形から「承認表かどうか」は見分けられないので、無関係な表をここへ足すと
+    /// 同じ 3 つの要求（理由が空でない・大小衝突が無い・大小を区別する比較器）が掛かる。
+    /// <b>それでよい</b>と決めている ——どれもこの型の表であれば等しく妥当な要求で、
+    /// 掛けたくない表は<b>使う関数の中で宣言すれば</b>（静的フィールドにしなければ）対象から外れる。
+    /// 見分けようとして名前や宣言型で絞ると、次に表を足す人の書き方しだいで黙って外れる。</para>
     ///
     /// <para><b>手書きの包含リストにしない（レビュー指摘）。</b> 名前を並べる形にすると、
     /// 5 つ目の表を足した人が登録を忘れたときに<b>その表だけが黙って照合から外れ</b>、
