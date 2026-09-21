@@ -1437,7 +1437,7 @@ public class ResponseCacheAttributePolicyTests
                 + string.Join(", ", missing));
     }
 
-    // 4 つの表のすべてに、空でない理由が書かれていること。
+    // この型が持つ承認表のすべてに、空でない理由が書かれていること。
     //
     // 理由を誰も読まないままにすると、空文字を入れるだけで検査を黙らせられる
     // (LengthGovernanceExclusions_AllHaveAReason と同じ扱い)。
@@ -1545,7 +1545,7 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void StaticAssetTables_AreBuiltWithACaseSensitiveComparer()
     {
-        // 4 つの表を、表の名前とともに順に見る
+        // 承認表を、表の名前とともに順に見る
         var tables = StaticAssetTables();
 
         // 英字を含むキーが無く、確かめられなかった表の名前を集める
@@ -1639,9 +1639,17 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     private static class TableAccessibilityProbe
     {
-        /// <summary>公開された表（導出から外れてはいけない）。</summary>
-        public static readonly IReadOnlyDictionary<string, string> PublicProbeTable =
-            new Dictionary<string, string>(StringComparer.Ordinal) { ["a"] = "理由。" };
+        /// <summary>
+        /// 公開された表（導出から外れてはいけない）。
+        /// </summary>
+        /// <remarks>
+        /// <b>具象型で宣言してある（レビュー指摘）。</b> 両方をインターフェイス型で宣言すると、
+        /// 導出を<b>宣言型の完全一致</b>へ狭めても緑のまま通り、5 つ目の表をいちばん自然な形
+        /// (<c>private static readonly Dictionary&lt;string, string&gt; ...</c>)で足した人だけが
+        /// 3 つの検査から黙って外れる ——実測で全件緑だった。
+        /// </remarks>
+        public static readonly Dictionary<string, string> PublicProbeTable =
+            new(StringComparer.Ordinal) { ["a"] = "理由。" };
 
         /// <summary>表ではないフィールド（拾ってはいけない）。</summary>
         public static readonly string NotATable = "表ではない。";
@@ -1913,6 +1921,24 @@ public class ResponseCacheAttributePolicyTests
         return $"{item.RelativePath}({CauseText(item.Cause)}: 表の綴りは {item.ApprovedSpelling})";
     }
 
+    /// <summary>
+    /// 入れ物の中身が<b>一覧に全部は並ばない</b>ことの注意（両方の案内が共有する）。
+    /// </summary>
+    /// <remarks>
+    /// <b>枝ごとに書き写さない（レビュー指摘）。</b> 綴りが違う入れ物の中身がどう扱われるかは
+    /// 2 つの案内で同じなのに、別々の言い回しで書いていた ——片方だけを直す変更が通り、
+    /// もう片方が古い約束を言い続ける（§6 DRY。このファイルが <c>StaticAssetTables()</c> を
+    /// 切り出したのと同じ理由）。
+    ///
+    /// <para>「中身も並びます」とだけ書くと、並んでいないことを「確認済み」と読まれ、
+    /// 承認済みの拡張子を名乗る PHI（このファイルが「残る境界」として記録している形）を
+    /// 見落としたまま綴りをそろえることになる。</para>
+    /// </remarks>
+    private const string ContentsNotFullyListedCaveat =
+        "その中身のうち、一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
+            + "承認済みの種類のファイルは並びません"
+            + "(一覧に無いことは中身が公開してよいことを意味しません)。";
+
     /// <summary>直し方の種類ごとの、失敗文言へ足す案内。</summary>
     /// <remarks>
     /// <b>呼び出し側で <c>if</c> を書き並べない（レビュー指摘）。</b> 分岐を並べると、
@@ -1940,13 +1966,8 @@ public class ResponseCacheAttributePolicyTests
             "綴りの大小だけが違うものは表へ新しい行を足さず"
                 + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
                 + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
-                // <b>「中身も並ぶ」と約束しない（レビュー指摘）。</b> 中を見ない入れ物の案内と
-                // 同じ理由で、承認済みの種類(.js / .css)のファイルは一覧に並ばない ——
-                // 並んでいないことを「中身は確認済み」と読むと、承認済みの拡張子を名乗る
-                // PHI（このファイルが「残る境界」として記録している形）を見落とす
-                + "入れ物の綴りが違う場合、その中身のうち承認されていない種類のファイルと"
-                + "ネストした入れ物は一覧に並びますが、承認済みの種類のファイルは並びません"
-                + "(一覧に無いことは中身が公開してよいことを意味しません)。",
+                // 入れ物の中身がどう扱われるかは、両方の枝で同じ注意が要る(共有の 1 か所から)
+                + ContentsNotFullyListedCaveat,
         // そろえる先が中を見ない入れ物のときは、<b>そろえる前に</b>中身を確かめる。
         // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
         RepairKind.AuditContentsBeforeAligning =>
@@ -1960,14 +1981,9 @@ public class ResponseCacheAttributePolicyTests
                 // 「承認されていない種類」として大量に並ぶ。上の登録の案内をそのまま当てると
                 // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
                 // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
-                + "この入れ物は綴りが違うぶん中まで走査されますが、"
-                // <b>「中身も並ぶ」と約束しない（レビュー指摘・実測）。</b> 承認済みの種類
-                // (.js / .css)のファイルは<b>一覧に並ばない</b> ——並んだものだけを見て
-                // 「残りは確認済み」と読むと、`LIB/patient-list.js` を見落としたまま
-                // 綴りをそろえることになる(一覧に無いことは安全を意味しない)
-                + "一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
-                + "承認済みの種類のファイルは並びません(一覧に無いことは"
-                + "中身が公開してよいことを意味しません)。"
+                + "この入れ物は綴りが違うぶん中まで走査されます。"
+                // AlignSpelling 側とまったく同じ注意なので、共有の 1 か所から出す
+                + ContentsNotFullyListedCaveat
                 + "並んだ中身を "
                 + $"{nameof(ApprovedStaticFileExtensions)} や "
                 + $"{nameof(ApprovedStaticDirectories)} へ登録して黙らせないでください"
@@ -3998,6 +4014,40 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(43, ((ResponseCacheAttribute)declared.Attribute).Duration);
     }
 
+    // 同じ型の<b>オーバーロード</b>が、別々の宣言として返ること。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> キーの署名部分（宣言しているメソッドの
+    // `MetadataToken`）を落として `method:{declaredOn}()` にしても<b>全件緑のまま通った</b>。
+    // その状態だと `Export()` と `Export(long id)` の片方しか違反の一覧へ到達せず、
+    // 許す側の宣言がもう片方だと<b>検査は緑のまま PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る</b>。キーが署名を分ける性質は、この走査が
+    // 総称型の畳み込みへ移った時点で「full な署名文字列」から乗り換えたものなので、
+    // 乗り換え先でも成り立っていることを固定する。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsOfTheSameActionApart()
+    {
+        // 同じ名前のアクションを 2 つ持ち、それぞれに宣言がある合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OverloadedActionProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること(片方が畳まれて消えていない)
+        Assert.Equal(2, declarations.Count);
+
+        // 引数なしの側の宣言が読めること
+        Assert.Contains(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 51 });
+
+        // 引数ありの側の宣言も読めること
+        Assert.Contains(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 52 });
+    }
+
     // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
     //
     // <b>なぜ要るのか。</b> issue #269 の直し方は誤検知を消す方向なので、行きすぎると
@@ -4396,6 +4446,22 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>基底の 2 つの宣言を継承するだけの具象。</summary>
     private sealed class RepeatedKindOnBaseProbeLeaf : RepeatedKindOnBaseProbeBase;
+
+    /// <summary>同じ名前のアクションを 2 つ持ち、それぞれが宣言を持つ合成コントローラ。</summary>
+    /// <remarks>期間の値(51 / 52)は、どちらのオーバーロードかを見分けるための目印。</remarks>
+    private sealed class OverloadedActionProbeController : ControllerBase
+    {
+        /// <summary>引数なしのオーバーロード。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 51, NoStore = true)]
+        public IActionResult Export() => NoContent();
+
+        /// <summary>引数ありのオーバーロード。</summary>
+        /// <param name="id">見分けるためだけの引数。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 52, NoStore = true)]
+        public IActionResult Export(long id) => NoContent();
+    }
 
     /// <summary>複数付けられる属性を<b>アクションへ 2 つ</b>宣言する抽象基底。</summary>
     private abstract class RepeatedKindOnBaseActionProbeBase : ControllerBase
