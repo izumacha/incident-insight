@@ -22,9 +22,6 @@ internal static class MarkdownSource
     /// <summary>コードブロックの囲いを始める最小の綴り。</summary>
     private const string CodeFence = "```";
 
-    /// <summary>囲いの行として認める字下げの上限（CommonMark の規則）。</summary>
-    private const int MaxFenceIndent = 3;
-
     /// <summary>Markdown を読み、改行を LF へそろえて返す。</summary>
     /// <remarks>
     /// <b>読み口を共有するのが要点（レビュー指摘）。</b> パスだけを共有して
@@ -114,6 +111,18 @@ internal static class MarkdownSource
         // 文書の末尾まで数えて偶数か
         CountFenceLines(doc, doc.Length) % 2 == 0;
 
+    /// <summary>文書全体にある、囲いの行の数を返す。</summary>
+    /// <remarks>
+    /// 利用側の<b>空振り検出</b>のために公開している ——囲いを 1 つも見つけられないと
+    /// <see cref="IsInsideFencedBlock"/> も <see cref="FencesAreBalanced"/> も、違反 0 件で
+    /// <b>両方とも黙って死ぬ</b>（実測。字下げの上限を置いていた版がその状態だった）。
+    /// </remarks>
+    /// <param name="doc">文書全体。</param>
+    /// <returns>囲いの行の数。</returns>
+    internal static int FenceLineCount(string doc) =>
+        // 末尾まで数える
+        CountFenceLines(doc, doc.Length);
+
     /// <summary>指定位置より前にある、囲いの行の数を数える。</summary>
     /// <param name="doc">文書全体。</param>
     /// <param name="index">ここより前を数える。</param>
@@ -148,10 +157,16 @@ internal static class MarkdownSource
     /// <returns>囲いの行なら <c>true</c>。</returns>
     private static bool IsFenceLine(string doc, int lineStart)
     {
-        // 字下げを読み飛ばす（3 桁までは囲いとして有効）
+        // <b>字下げの上限を置かない（レビュー指摘）。</b> CommonMark の「3 桁まで」は
+        // <b>最上位の規則</b>で、番号付きリストの中の囲いはその項目の本文位置から数える。
+        // docs/security.md の囲いは実際に 5 桁字下げされており、上限を置いた版では
+        // <b>1 つも数えられず、ブロックを逃す処理も偶奇の検査も両方とも死んでいた</b>（実測）。
+        // 本文位置を正しく数えるにはリストの入れ子を読む必要があり、
+        // それはこの repo が繰り返し避けている「近似を育てる」道なので、
+        // <b>行頭の空白を桁数を問わず読み飛ばす</b>（行の途中の ``` は引き続き数えない）
         var at = lineStart;
-        // 半角空白の間だけ進む
-        while (at < doc.Length && at - lineStart < MaxFenceIndent && doc[at] == ' ') at++;
+        // 行頭の空白の間だけ進む
+        while (at < doc.Length && doc[at] is ' ' or '\t') at++;
 
         // そこから ``` で始まっているか
         return string.CompareOrdinal(doc, at, CodeFence, 0, CodeFence.Length) == 0;
@@ -186,8 +201,18 @@ internal static class MarkdownSource
             start = doc.LastIndexOf('\n', start - 2) + 1;
         }
 
-        // 箇条書きの外（地の文）なら、その行だけを範囲にする
-        if (!IsBulletStart(doc, start)) start = lineStart;
+        // 箇条書きの外（地の文）なら、その行だけを範囲にする。
+        // <b>下へも伸ばさない（レビュー指摘）。</b> 以前は上への探索だけを止めて
+        // 下へは継続行をたどっており、<b>docstring が約束した「その行だけ」と食い違っていた</b> ——
+        // 約束を信じた 2 人目の利用者が、意図していない字下げのブロックまで読む
+        if (!IsBulletStart(doc, start))
+        {
+            // その行の終わりを探す
+            var proseEnd = doc.IndexOf('\n', index);
+
+            // 行 1 本だけを範囲として返す
+            return (lineStart, proseEnd < 0 ? doc.Length : proseEnd);
+        }
 
         // 次の行から順に、箇条書きの続きでなくなるところまで進める
         var end = doc.IndexOf('\n', index);

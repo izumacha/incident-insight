@@ -352,6 +352,16 @@ public class SecurityHeadersMiddlewareTests
         // 囲いの数が奇数だと、それ以降が丸ごと「ブロックの中」になって
         // <b>目印の要求が黙って外れる</b>。しかも下の空振り検出は囲いより手前の
         // 指示 1 件で満たされてしまうので、この穴を拾えない（実測で全件緑）
+        // <b>囲いを 1 つも見ていない状態も落とす（レビュー指摘）。</b> 判定とは
+        // <b>独立な手がかり</b>（本文に囲いの綴りがあるか）と突き合わせる ——
+        // 実測で、字下げの上限を置いた版はこの文書の囲い（5 桁字下げ）を 1 つも数えられず、
+        // ブロックを逃す処理も偶奇の検査も<b>両方とも黙って死んでいた</b>
+        Assert.True(
+            !securityDoc.Contains("```", StringComparison.Ordinal)
+                || MarkdownSource.FenceLineCount(securityDoc) > 0,
+            "docs/security.md にコードブロックの綴りがあるのに、囲いの行を 1 つも数えられていません。"
+                + "このままだと、設定例を逃す処理も囲いの偶奇の検査も黙って効かなくなります。");
+
         Assert.True(
             MarkdownSource.FencesAreBalanced(securityDoc),
             "docs/security.md のコードブロックの囲い（```）が閉じていません。"
@@ -516,8 +526,8 @@ public class SecurityHeadersMiddlewareTests
     /// <returns>切り出した綴り（囲み・ヘッダー名を含む）。</returns>
     private static string DirectiveRunBefore(string doc, int index)
     {
-        // 同じ行の中だけを遡る
-        var lineStart = doc.LastIndexOf('\n', Math.Max(index - 1, 0)) + 1;
+        // 同じ行の中だけを遡る（行の切り出しの規則は共有側が正本。§6 DRY）
+        var lineStart = MarkdownSource.LineStart(doc, index);
 
         // 指示の並びを構成しうる文字の間だけ遡る
         var at = index;
