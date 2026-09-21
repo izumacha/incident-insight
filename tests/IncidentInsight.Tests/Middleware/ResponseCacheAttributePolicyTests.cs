@@ -910,6 +910,19 @@ public class ResponseCacheAttributePolicyTests
         // 何をすればよいか 1 文字も書かれていない</b>失敗文言になる
         foreach (var repair in unapproved.Select(item => RepairFor(item.Cause)).Distinct())
         {
+            // <b>どの項目に掛かる案内かを先に書く（レビュー指摘）。</b> 1 つの失敗文言に
+            // 複数の案内が並ぶとき(中を見ない入れ物の中身がこぼれ出た場合がそう)、
+            // 一方は「表へ登録します」、もう一方は「登録して黙らせないでください」と
+            // <b>正反対のことを言う</b> ——どちらがどの項目の話かを書かないと、
+            // 上から読んだ人が最初の案内を全項目へ当ててしまう
+            var governed = unapproved
+                .Where(item => RepairFor(item.Cause) == repair)
+                .Select(item => CauseText(item.Cause))
+                .Distinct(StringComparer.Ordinal);
+
+            // 案内の前に、その案内が掛かる理由の名前を並べる
+            message += $"【{string.Join("・", governed)}】について: ";
+
             // 直し方ごとの案内を、足し忘れれば落ちる対応表から引く
             message += RepairAdvice(repair);
         }
@@ -1343,8 +1356,22 @@ public class ResponseCacheAttributePolicyTests
         // 綴りをそろえる案内も出ること
         Assert.Contains("どちらが正しいかを確かめて", both, StringComparison.Ordinal);
 
-        // 入れ物の中身も並ぶことを説明すること(数十件の一覧を前に途方に暮れさせない)
-        Assert.Contains("その中身も未承認として並びます", both, StringComparison.Ordinal);
+        // 入れ物の中身の扱いを説明しつつ、<b>並ばないものがある</b>ことまで書くこと。
+        // 「中身も並びます」とだけ書くと、並んでいない＝確認済みと読まれ、
+        // 承認済みの拡張子を名乗る PHI(このファイルが「残る境界」として記録している形)を
+        // 見落としたまま綴りをそろえることになる
+        Assert.Contains("承認済みの種類のファイルは並びません", both, StringComparison.Ordinal);
+
+        // <b>どの項目に掛かる案内かが書かれていること。</b> 複数の案内が並ぶとき、
+        // 一方は「表へ登録します」もう一方は「登録して黙らせないでください」と正反対を言う ——
+        // 見出しが無いと、上から読んだ人が最初の案内を全項目へ当ててしまう
+        Assert.Contains($"【{CauseText(UnapprovedCause.UnapprovedDirectory)}】について:", both, StringComparison.Ordinal);
+
+        // 大小違いの側にも、それ用の見出しが付くこと
+        Assert.Contains(
+            $"【{CauseText(UnapprovedCause.MiscasedApprovedAsset)}】について:",
+            both,
+            StringComparison.Ordinal);
 
         // <b>そろえる先が「中を見ない入れ物」のときは、別の案内が出ること（レビュー指摘・実測）。</b>
         // 同じ「そろえてください」を出すと、`wwwroot/LIB/patients.csv` を `lib/` へ移す手順を
@@ -1858,7 +1885,13 @@ public class ResponseCacheAttributePolicyTests
             "綴りの大小だけが違うものは表へ新しい行を足さず"
                 + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
                 + "どちらが正しいかを確かめて、正しいほうへそろえてください。"
-                + "入れ物の綴りが違う場合はその中身も未承認として並びます。",
+                // <b>「中身も並ぶ」と約束しない（レビュー指摘）。</b> 中を見ない入れ物の案内と
+                // 同じ理由で、承認済みの種類(.js / .css)のファイルは一覧に並ばない ——
+                // 並んでいないことを「中身は確認済み」と読むと、承認済みの拡張子を名乗る
+                // PHI（このファイルが「残る境界」として記録している形）を見落とす
+                + "入れ物の綴りが違う場合、その中身のうち承認されていない種類のファイルと"
+                + "ネストした入れ物は一覧に並びますが、承認済みの種類のファイルは並びません"
+                + "(一覧に無いことは中身が公開してよいことを意味しません)。",
         // そろえる先が中を見ない入れ物のときは、<b>そろえる前に</b>中身を確かめる。
         // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
         RepairKind.AuditContentsBeforeAligning =>
@@ -1959,7 +1992,13 @@ public class ResponseCacheAttributePolicyTests
     {
         // この型が自分で宣言している静的なフィールドをすべて見る
         var tables = typeof(ResponseCacheAttributePolicyTests)
-            .GetFields(BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            // <b>公開されているフィールドも見る（レビュー指摘）。</b> NonPublic だけに絞ると、
+            // 表を public で宣言した瞬間に 3 つの検査すべてから黙って外れる
+            // ——docstring が書いていない 2 つ目の逃げ道になる(このファイルの姉妹の導出も
+            // まさにこの理由で Public を含めている)
+            .GetFields(
+                BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Static | BindingFlags.DeclaredOnly)
             // 読み手に分かる並びにする(宣言順はリフレクションでは保証されない)
             .OrderBy(field => field.Name, StringComparer.Ordinal)
             // 「名前 → 理由」の形の表だけを拾う。<b>宣言型ではなく値の型で見る（レビュー指摘）。</b>
