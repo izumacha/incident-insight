@@ -356,15 +356,12 @@ if (!app.Environment.IsDevelopment())
     var allowedHostsWarnings =
         new AllowedHostsWarningReporter(app.Logger, app.Environment.EnvironmentName);
 
-    // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
-    allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
-
-    // <b>設定の再読み込みにも追随する(issue #264)。</b> appsettings.json は既定で
-    // reloadOnChange: true で、HostFilteringOptions は ConfigurationChangeTokenSource
-    // 経由で再束縛される ——つまり<b>稼働中に "*" へ書き換えると、ミドルウェアは即座に
-    // 全ホスト許可へ切り替わる</b>。起動時に 1 度しか評価していないと、そのとき
-    // 新しい警告は 1 本も出ず、docs/security.md が案内する「警告が出ていないことの確認」が
-    // そのまま誤った安心になる(ConfigMap やボリュームで設定を配る運用では現実に起きる)。
+    // <b>購読を先に張ってから、起動時の値を検査する（レビュー指摘）。</b>
+    // 逆順にすると、その 2 文の間に届いた再読み込みを拾う購読がまだ無く、
+    // しかも Reporter は「前回と同じ値」を覚えているので<b>以降も出し直さない</b> ——
+    // ConfigMap やボリュームの投影がちょうどその瞬間に着地して "*" へ変わると、
+    // 全許可のまま 1 本も警告が出ない状態が固定される。先に張る代償は無い
+    // （購読が起動時の値で鳴っても、下の検査と同じ値なので Reporter 側が黙る）。
     //
     // <b>引き金はフレームワーク自身の再束縛にそろえる。</b> 設定の再読み込みトークンを
     // 直接見ると、将来フレームワークが追随をやめたときに<b>こちらだけが鳴り続け</b>、
@@ -379,8 +376,30 @@ if (!app.Environment.IsDevelopment())
     // <b>戻り値の購読は破棄しない。</b> ここで解除するとアプリが生きている間の
     // 再読み込みを 1 度も拾えなくなる(監視そのものがアプリと同じ寿命)。
     app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>().OnChange(_ =>
-        // 再読み込み後の値で検査し直す(同じ値なら Reporter 側が黙る)
-        allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]));
+    {
+        // <b>このコールバックから例外を出さない（レビュー指摘）。</b> 変更トークンの発火は
+        // CancellationTokenSource.Cancel() 経由で、集めた例外を呼び出し元へ投げ直す ——
+        // 本番でのその呼び出し元はファイル監視のスレッドなので、<b>設定ファイルに触れただけで
+        // プロセスが落ちる</b>。診断のための警告がアプリを止めるのは本末転倒で、
+        // CLAUDE.md §9 の「例外時はクラッシュではなく機能を縮退して継続する」に反する。
+        try
+        {
+            // 再読み込み後の値で検査し直す(同じ値なら Reporter 側が黙る)
+            allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
+        }
+        catch (Exception ex)
+        {
+            // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
+            app.Logger.LogError(
+                ex,
+                "Failed to re-check AllowedHosts after a configuration reload. " +
+                "The permissive/never-matching warnings may be stale until the next reload " +
+                "(issue #64).");
+        }
+    });
+
+    // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
+    allowedHostsWarnings.ReportIfValueChanged(app.Configuration["AllowedHosts"]);
 }
 
 // セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と

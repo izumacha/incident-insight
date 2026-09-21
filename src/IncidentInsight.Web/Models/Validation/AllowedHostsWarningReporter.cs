@@ -39,7 +39,16 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
     // (再読み込みの通知はアプリのスレッドプールから届き、起動時の呼び出しと重なりうる)
     private readonly object _gate = new();
 
-    // 1 度でも評価したか(初回は「前回の値」が無いので、必ず評価する側へ倒すために要る)
+    // 1 度でも評価したか。
+    //
+    // <b>この旗を外すと、いちばん警告が要る場合だけ黙る。</b> 未設定のまま起動すると
+    // allowedHosts は null で、比較対象の初期値も null なので、旗が無いと
+    // <b>初回の呼び出しがそのまま「前回と同じ」に当たり 1 本も出ない</b> ——
+    // そのとき HostFiltering は ["*"] へ落ちて全許可（issue #64）なので、
+    // 「警告が出ていない＝絞れている」という確認手順がそのまま誤った安心になる。
+    // 旗を落とす変異は AllowedHostsStartupWarningTests の
+    // UnsetValue_StillEmitsThePermissiveWarning が落とす（レビュー指摘。
+    // 以前はどのケースも文字列を渡していたので、この不変条件に検出網が無かった）。
     private bool _hasEvaluated;
 
     // 直近に評価した値(同じ値で鳴り続けないための比較対象)
@@ -56,7 +65,14 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
     /// <param name="allowedHosts"><c>AllowedHosts</c> の設定値（未設定なら <c>null</c>）。</param>
     public void ReportIfValueChanged(string? allowedHosts)
     {
-        // 判定と記録の間に別のスレッドが割り込むと、同じ値で 2 本出たり 1 本も出なかったりする
+        // <b>判定・記録・出力をまとめて 1 つの錠の中で行う。</b>
+        // 判定と記録だけを守って出力を外へ出すと、値の違う 2 回の評価が<b>出た順と逆に</b>
+        // ログへ並びうる（A が "*" を記録した直後に横取りされ、B が実ホスト名を評価して
+        // 何も出さず、そのあと A が "*" の警告を書く ——運用者のログでは「もう直した設定」に
+        // 対して全許可の警告が最新として残る）。この仕組みの目的は「いつ緩んだか」を
+        // 追えることなので、順序が狂うのはそのまま目的を損なう。
+        // 出力を錠の中へ入れる代償は、呼ばれるのが起動時と設定の再読み込みだけで、
+        // どちらも待たされて困る経路ではないので受け入れられる（レビュー指摘）。
         lock (_gate)
         {
             // 2 回目以降で値が前回と同じなら、何も出さずに戻る
@@ -70,12 +86,12 @@ public sealed class AllowedHostsWarningReporter(ILogger logger, string environme
             _lastEvaluatedValue = allowedHosts;
             // 以降は「前回の値がある」状態になる
             _hasEvaluated = true;
-        }
 
-        // 「絞ったつもりで全部通る」形を拾う(1 本目)
-        ReportPermissiveValue(allowedHosts);
-        // 「並べたつもりで一部が通らない」形を拾う(2 本目)
-        ReportNeverMatchingEntries(allowedHosts);
+            // 「絞ったつもりで全部通る」形を拾う(1 本目)
+            ReportPermissiveValue(allowedHosts);
+            // 「並べたつもりで一部が通らない」形を拾う(2 本目)
+            ReportNeverMatchingEntries(allowedHosts);
+        }
     }
 
     /// <summary>

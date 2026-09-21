@@ -227,14 +227,36 @@ public class SecurityHeadersMiddlewareTests
         // 行単位で見る(箇条書きの境目は行頭の "- " で決まる)
         var lines = doc.Split('\n');
 
-        // 仕組みの名前が書かれている行を探す
-        var anchor = Array.FindIndex(lines, line => line.Contains(StaticAssetCachingMechanism, StringComparison.Ordinal));
-        // 見つからなければ、どの箇条書きを守るのか決められないので落とす
+        // 仕組みの名前が書かれている行を<b>すべて</b>探す。
+        //
+        // <b>ここで「最初の 1 件」を採ってはいけない(レビュー指摘)。</b> それをやると、
+        // 塞いだはずの穴が<b>1 段上（切り出しの側）へそのまま移る</b> ——実測で、
+        // 2 つ目の配信ルート(CLAUDE.md が現実的な例として挙げている /attachments 用の
+        // UseStaticFiles)を説明する箇条書きを手前へ足し、同時に本命の文を
+        // public,max-age=31536000,immutable へ書き換えると、切り出しが囮の箇条書きへ
+        // 当たって「ちょうど 1 件」も値の一致も成立し、<b>1157 件すべて緑のまま通った</b>。
+        // そのとき docs/security.md は、この 2 本の検査が守っているはずの不変条件
+        // （長期にしない・immutable を付けない）と正面から矛盾する内容を名乗っていた。
+        var anchors = lines
+            // 仕組みの名前を含む行の位置だけを残す
+            .Select((line, index) => (Line: line, Index: index))
+            .Where(entry => entry.Line.Contains(StaticAssetCachingMechanism, StringComparison.Ordinal))
+            .ToList();
+
+        // ちょうど 1 件であること ——0 件なら目印が読めておらず、2 件以上ならどの箇条書きを
+        // 守るのか決められない。どちらも「守るべき記述が分からない」状態なので落とす(fail-closed)
         Assert.True(
-            anchor >= 0,
-            $"docs/security.md に {StaticAssetCachingMechanism} の説明が見つかりませんでした。"
+            anchors.Count == 1,
+            $"docs/security.md に {StaticAssetCachingMechanism} の説明がちょうど 1 件ありませんでした"
+                + $"(見つかった件数: {anchors.Count})。"
                 + "静的アセットのキャッシュ指示を説明している箇所の目印なので、"
-                + "書き方を変えたならこの切り出しも同じ変更セットで直してください。");
+                + "0 件なら書き方を変えた側と同じ変更セットでこの切り出しも直してください。"
+                + "2 件以上（配信ルートが増えた等）なら、どの箇条書きを守るのかを決めて"
+                + "目印をより細かくしてください"
+                + "(最初の一致で済ませると、守るべき記述が黙って入れ替わります)。");
+
+        // ちょうど 1 件と分かったので、その行の位置を取り出す
+        var anchor = anchors[0].Index;
 
         // その行から上へたどって、その箇条書きの先頭(行頭の "- ")を見つける
         var start = anchor;

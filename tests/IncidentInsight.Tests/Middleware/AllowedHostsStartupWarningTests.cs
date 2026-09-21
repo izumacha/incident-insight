@@ -318,6 +318,30 @@ public class AllowedHostsStartupWarningTests
         Assert.Contains("[ www.example.test]", warning);
     }
 
+    // <b>未設定のまま起動したら 1 本目を出すこと（レビュー指摘）。</b>
+    //
+    // Reporter は「前回と同じ値なら黙る」ので、<b>初回だけは必ず評価する</b>という旗を
+    // 持っている。その旗を落とすと、未設定（値が null）のときだけ
+    // 「前回の値（既定の null）と同じ」に当たって<b>1 本も出なくなる</b> ——
+    // そのとき HostFiltering は ["*"] へ落ちて全許可（issue #64）なので、
+    // いちばん警告が要る場合だけ黙ることになる。
+    //
+    // <b>以前はこの不変条件に検出網が無かった。</b> 既存のケースはどれも文字列を渡して
+    // いたため、旗を外す変異が 1157 件すべて緑のまま通った（実測）。
+    [Fact]
+    public void UnsetValue_StillEmitsThePermissiveWarning()
+    {
+        // AllowedHosts が解決できない（未設定の）状態で起動する
+        using var fixture = new ReloadableWarningCapturingFixture(null);
+
+        // 1 本目が出ていること
+        var warning = Assert.Single(fixture.Warnings, w => w.Contains(PermissiveWarningMarker));
+
+        // 「未設定」として名乗られていること ——空文字を設定した場合と区別が付くように
+        // （期待値は判定側の定数から取る。文面の綴りをテストへ書き写さないため）
+        Assert.Contains(AllowedHostsPolicy.UnsetValueForLog, warning);
+    }
+
     // <b>同じ値のまま再読み込みが起きても、警告を増やさないこと。</b>
     //
     // 再読み込みの通知は AllowedHosts が変わっていなくても届く（設定ファイルの
@@ -417,8 +441,13 @@ public class AllowedHostsStartupWarningTests
         private readonly ConcurrentQueue<string> _captured;
 
         /// <summary>指定した許可リストで <c>Staging</c> として起動する。</summary>
-        /// <param name="allowedHosts">起動時の <c>AllowedHosts</c> の値。</param>
-        public ReloadableWarningCapturingFixture(string allowedHosts)
+        /// <param name="allowedHosts">
+        /// 起動時の <c>AllowedHosts</c> の値。<b><c>null</c> は「未設定」</b>を表す ——
+        /// リポジトリの <c>appsettings.json</c> は既定の <c>"*"</c> を持つので、
+        /// キーごと省くだけでは未設定を再現できない（そちらが読まれる）。
+        /// 値を <c>null</c> にした項目を最後に積むことで、設定の解決結果を未設定にする。
+        /// </param>
+        public ReloadableWarningCapturingFixture(string? allowedHosts)
             // 溜め込み先と設定ソースはインスタンスごとに作り、private なコンストラクタへ渡す
             // （基底のコンストラクタ引数からフィールドを参照できないため。理由は
             //  WarningCapturingFixture のコメントが正本 ——static に置くと別のテストの
@@ -467,14 +496,14 @@ public class AllowedHostsStartupWarningTests
         /// 直接「変わった」と言わせれば、<b>呼び出しから戻った時点で購読側は走り終えている</b>。
         /// </remarks>
         /// <param name="allowedHosts">差し替え後の <c>AllowedHosts</c> の値。</param>
-        public void ReloadAllowedHosts(string allowedHosts) => _settings.Replace(allowedHosts);
+        public void ReloadAllowedHosts(string? allowedHosts) => _settings.Replace(allowedHosts);
     }
 
     /// <summary>
     /// <c>AllowedHosts</c> だけを持ち、稼働中に差し替えられる設定ソース。
     /// </summary>
-    /// <param name="initialValue">起動時の値。</param>
-    private sealed class ReloadableSettingsSource(string initialValue) : IConfigurationSource
+    /// <param name="initialValue">起動時の値（<c>null</c> は「キーはあるが値が無い」＝未設定を表す）。</param>
+    private sealed class ReloadableSettingsSource(string? initialValue) : IConfigurationSource
     {
         // 実体のプロバイダ（差し替えと通知はこちらが行う）
         private readonly ReloadableProvider _provider = new(initialValue);
@@ -486,11 +515,11 @@ public class AllowedHostsStartupWarningTests
 
         /// <summary>値を差し替え、設定の再読み込みを通知する。</summary>
         /// <param name="allowedHosts">差し替え後の値。</param>
-        public void Replace(string allowedHosts) => _provider.Replace(allowedHosts);
+        public void Replace(string? allowedHosts) => _provider.Replace(allowedHosts);
 
         /// <summary>1 つのキーだけを持ち、差し替えのたびに再読み込みを通知するプロバイダ。</summary>
-        /// <param name="initialValue">起動時の値。</param>
-        private sealed class ReloadableProvider(string initialValue) : ConfigurationProvider
+        /// <param name="initialValue">起動時の値（<c>null</c> なら未設定）。</param>
+        private sealed class ReloadableProvider(string? initialValue) : ConfigurationProvider
         {
             /// <summary>設定の読み込み（起動時の値を 1 つ置くだけ）。</summary>
             public override void Load() =>
@@ -501,8 +530,8 @@ public class AllowedHostsStartupWarningTests
                 };
 
             /// <summary>値を差し替え、購読側へ「変わった」と伝える。</summary>
-            /// <param name="allowedHosts">差し替え後の値。</param>
-            public void Replace(string allowedHosts)
+            /// <param name="allowedHosts">差し替え後の値（<c>null</c> なら未設定）。</param>
+            public void Replace(string? allowedHosts)
             {
                 // 保持している値を書き換える
                 Data["AllowedHosts"] = allowedHosts;
