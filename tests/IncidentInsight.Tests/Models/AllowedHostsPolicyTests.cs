@@ -165,13 +165,13 @@ public class AllowedHostsPolicyTests
     // 捨てられるのは "]" の直後が :port でないときだけ。ポートが続けば空白は残るので、
     // こちらは従来どおり死んだ項目として名指しする（実測: "[fe80::1]:8080 " はそのまま）
     [InlineData("incident.example.test;[fe80::1]:8080 ", "[fe80::1]:8080 ")]
-    // <b>残っている境界: 括弧の内側へ入った空白は名指しできない。</b> 素の IPv6 を書くと
+    // <b>かつての「残っている境界」が閉じた（issue #269）。</b> 素の IPv6 を書くと
     // HostString が括弧を補うので、実測では "::1 " → "[::1 ]" となり空白が<b>内側</b>へ入る。
-    // 正規化後の前後には空白が無いのでここでは拾えないが、Host ヘッダーは解析の時点で
-    // 空白を持たないため実際には一致しない＝<b>見逃す側</b>の誤り。
-    // 取りこぼしは docs/security.md が「前後の空白しか検出できない」と断っているとおりで、
-    // 逆向き（生きている項目を「消してよい」と案内する）より安全なのでこの形を選んでいる
-    [InlineData("incident.example.test;::1 ", "")]
+    // 正規化後の前後には空白が無いので「前後の空白」としては拾えないが、
+    // 「Host ヘッダーが運べない文字（空白・%）を含む項目は死んでいる」を足したことで
+    // 名指しできるようになった（理由は WhitespaceInsideEntry。下の Theory が固定する）
+    // ——実測でも本物の Kestrel は Host: [::1 ] を 400 で弾く
+    [InlineData("incident.example.test;::1 ", "::1 ")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
     [InlineData(";;", "")]
@@ -903,6 +903,74 @@ public class AllowedHostsPolicyTests
     // <b>名指しした項目に添う理由が、その項目の事実と合っていること。</b>
     // 理由を取り違えると、警告は「出ている」のに運用者は違うところを直す ——
     // 存在しないものを探させる案内（1 本目の警告が PermissiveReason を持つ理由）と同じ形。
+    // <b>数え上げを打ち切ったときは「判断できない」ので警告する側へ倒すこと。</b>
+    // 上限は実在しうる綴りで届きにくい値にしてあるほど、この分岐は本物の項目を並べた
+    // テストから通らなくなる（＝ここを「見つからなかった」側へ書き換えても全件緑になる）。
+    // だから判定を純粋関数として直接固定する。上限の値そのものに正しさは預けていない
+    // （理由は MaxRepairedSpellings の remarks が正本。<b>ここに値を書き写さない</b> ——
+    //  以前は「上限（256）・実測の最大 46 通り」と書いており、どちらも古くなっていた）。
+    // 見つからなかった扱いにすると、上限に届くような綴りだけが<b>ワイルドカードの注意を
+    // 持たない文面</b>になり、運用者が案内どおり直すと全ホスト許可（issue #64）——
+    // <b>上限そのものが fail-open の口</b>になる。
+    // <b>数え上げ側と判定側の「配線」も固定する（レビュー指摘）。</b>
+    // 上の Theory が見ているのは判定そのものだけで、<b>数え上げ側が打ち切りをどう伝えるか</b>は
+    // 通らない ——本番の上限は実在しうる綴りでは届かないので、旗を立てるのをやめる変異が
+    // 全件緑のまま通った（実測）。上限を引数で下げて、その配線を実際に走らせる。
+    // 以前はこの配線が「返ってきた候補の件数が上限に達していたら打ち切り」という
+    // <b>推測</b>で、1 回の取り出しで最大 9 件が内部の集合へ積まれる一方 候補は 1 件しか
+    // 増えないため、<b>条件は一度も成り立たなかった</b>（＝上限が fail-open の口だった）。
+    [Fact]
+    public void RepairsToWildcard_ReportsUndecided_WhenTheSearchItselfWasTruncated()
+    {
+        // ワイルドカードにはならないが、直し方が何通りもある綴り（URL ごと貼った形）
+        const string normalized = "http://b.example.test/x";
+
+        // 上限を十分に取れば「ワイルドカードにはならない」と正しく答える
+        Assert.False(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 4096));
+
+        // 上限を下げて<b>途中で</b>打ち切らせると、同じ綴りでも「判断できない＝警告する」へ倒れる
+        Assert.True(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 3));
+    }
+
+    // <b>「ちょうど上限で数え終わった」ときは打ち切りではない（レビュー指摘）。</b>
+    // 待ち行列を見ずに件数だけで打ち切りを決めると、<b>数え上げが「ワイルドカードには
+    // ならない」と示した項目</b>まで「なりうる」と名指しすることになる ——倒れる向きは
+    // 安全側だが、名指しした項目について事実と違うことを言っているのは
+    // issue #256 / #269 と同じ誤り。
+    // 上の Fact は「途中で打ち切る」側しか通らないので、この境界を別に固定する。
+    [Fact]
+    public void RepairsToWildcard_DoesNotCallAFullyEnumeratedSearchTruncated()
+    {
+        // 直し方が 1 通りしか無い（どの手を当てても綴りが変わらない）ホスト名
+        const string normalized = "b.example.test";
+
+        // 上限を 1 まで下げても、広げる先が残っていないので打ち切りではない
+        Assert.False(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 1));
+    }
+
+    [Theory]
+    // ワイルドカードに当たれば、打ち切りかどうかに関係なく true
+    [InlineData(new[] { "a.example.test", "0.0.0.0" }, false, true)]
+    [InlineData(new[] { "a.example.test", "[::]" }, true, true)]
+    [InlineData(new[] { "*" }, false, true)]
+    // 当たらず、打ち切ってもいないなら false（＝ふつうの「死んだ項目」）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, false, false)]
+    [InlineData(new string[0], false, false)]
+    // 当たらないまま打ち切ったなら、判断できないので true（警告する側へ倒す）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, true, true)]
+    [InlineData(new string[0], true, true)]
+    public void RepairsToWildcard_TreatsATruncatedSearchAsUndecided(
+        string[] repairedSpellings,
+        bool truncated,
+        bool expected)
+    {
+        // 合成した候補の並びと打ち切りの旗で、判定そのものを呼ぶ
+        var actual = AllowedHostsPolicy.RepairsToWildcard(repairedSpellings, truncated);
+
+        // 期待どおりに倒れているか（打ち切りは「見つからなかった」ではない）
+        Assert.Equal(expected, actual);
+    }
+
     [Theory]
     // 区切りのうしろの空白（一覧を書くときに自然に入る形）
     [InlineData("a.example.test; b.example.test", AllowedHostsPolicy.DeadEntryReason.SurroundingWhitespace)]
@@ -912,11 +980,164 @@ public class AllowedHostsPolicyTests
     // <b>ポートは 1 つも無いので、ここを PortSuffix と名乗ってはいけない</b>
     [InlineData("a.example.test;fe80::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
     [InlineData("a.example.test;::1", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
+    // <b>コロンが 2 つ以上あるだけの綴りは IPv6 ではない（issue #269）。</b>
+    // HostString のホスト部の切り出しは IPv6 かどうかを問わず角括弧で包むので、
+    // 「角括弧を足されたか」だけで決めると、この末尾コロンのタイプミスが
+    // 「角括弧で囲め」と案内される ——従うと警告だけが消えて 400 は残る
+    [InlineData("a.example.test;b.example.test:8080:", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>逆側の取り違え。</b> 角括弧を足されない綴りを一律 PortSuffix と名乗ると、
+    // ポートを 1 つも含まない項目に「ポートを外せ」と案内することになる。
+    // この綴りは対になっていない角括弧なので、専用の理由で名乗る（下記）
+    [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    // <b>対になっていない角括弧は、警告 2 本とも黙っていた（レビュー指摘）。</b>
+    // 実測では "[0.0.0.0" ・ "0.0.0.0]" ・ "[*" ・ "*]" ・ "[::" ・ "a[b.test" ・ "[[a]]" は
+    // どれも Kestrel が 400 で弾くのに、どちらの警告にも掛からなかった。しかも運用者が
+    // 余計な括弧を消すと 0.0.0.0 / * / :: ＝全ホスト許可（issue #64）。
+    // 直すとワイルドカードになる綴りは、いちばん危ない形として先に名乗る
+    [InlineData("a.example.test;[0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[*", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;*]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // ワイルドカードにならない側も、黙らずに専用の理由で名指しされること
+    [InlineData("a.example.test;[b.example.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    [InlineData("a.example.test;b.example[.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    [InlineData("a.example.test;[[b.example.test]]", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    // <b>1 組・先頭・閉じが後の形は拾わない（中身から受け付け方は言い当てられない）。</b>
+    // "[a:b]" は実測で 200 なので、ここを広げると<b>実際には一致する項目</b>を
+    // 「消してよい」と案内する側（見逃しより重い誤り）へ倒れる
+    [InlineData("a.example.test;[b.example.test]x", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>スコープ付き IPv6 を「角括弧で囲め」と案内しない。</b> 本物の Kestrel は
+    // Host: [fe80::1%eth0] を 400 で弾くので、囲んでも一致するようにはならない
+    [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
+    // <b>角括弧の中身に「Host ヘッダーが運べない文字」があれば、囲んであっても死んでいる。</b>
+    // HostString は ] を含む値を中身を問わずホスト部として受け取るので、この判定が無いと
+    // 警告が 1 本も出ない（実測値は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
+    [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
+    [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
+    // <b>% は角括弧の外でも運べない（レビュー指摘）。</b> 「普通のホスト名では
+    // percent-encoding として合法だから」と角括弧の中だけを見ていた頃は、この形が
+    // 警告 2 本とも出ないまま 400 になっていた（実測で Kestrel は Host: www.example%2Ecom を
+    // 400 で弾く。比較のため a_b.test ・ a~b.test ・ xn--bcher-kva.test は 200）
+    [InlineData("a.example.test;www.example%2Ecom", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test; *", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
-    [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>素の "::" はワイルドカードではない（実測）。</b> AllowedHosts="::" は本物の
+    // Kestrel ＋ HostFiltering でどのホストも 400（全許可なのは "[::]" のほう）。
+    // 直すと全許可になる、と名指しするのは<b>事実と違う</b>ので、ここは IPv6 の理由で名乗る
+    // ——その文面の「'[::1]' と書け」に従うと "[::]" ＝全許可になりうるので、
+    // 文面の側にワイルドカードの注意を入れてある
+    [InlineData("a.example.test;::", AllowedHostsPolicy.DeadEntryReason.UnbracketedIpv6Literal)]
+    // <b>空白が角括弧の内側へ移っても、ワイルドカードの警告から外れないこと（レビュー指摘）。</b>
+    // 正規化は括弧を補うので " ::" は "[ ::]" になる。直した結果を Trim() だけで見ていた頃は
+    // 内側の空白が残って [::] と一致せず、この項目だけが<b>ごく普通の「実ホスト名へ直せ」</b>の
+    // 案内になっていた ——従って空白を外すと :: ＝全ホスト許可（issue #64）で、
+    // <b>空白 1 つで専用警告が有害な案内に入れ替わる</b>形だった
+    // <b>数え上げの出発点は「運用者が書いた綴り」（レビュー指摘）。</b> 正規化は括弧を
+    // 補うので " ::" は "[ ::]" になるが、運用者が空白を外して着地するのは "::" ＝全拒否。
+    // 正規化後から数え上げていた頃は「[::] ＝全許可になる」と事実と違うことを言っていた
+    [InlineData("a.example.test; ::", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>運用者が角括弧を書いていれば、話は逆になる。</b> "[ ::]" の空白を外すと "[::]" ＝
+    // 実測で全ホスト許可なので、こちらは専用の理由で名乗る
+    [InlineData("a.example.test;[ ::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[:: ]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>角括弧が無くても、途中の空白は運べない（レビュー指摘）。</b>
+    // 以前は角括弧の中だけを見ていたため "0.0.0 .0" は無警告のままで、
+    // 運用者がタイプミスの空白を外すと 0.0.0.0 ＝全許可（issue #64）になっていた
+    [InlineData("a.example.test;0.0.0 .0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // ワイルドカードにならない側も、黙らずに名指しされること
+    // （前後の空白の警告に従って直した先が、無警告のまま 400 になるのを防ぐ）。
+    // <b>理由は空白専用のものを名乗る（レビュー指摘）</b> ——NotABareHostname の文面は
+    // 「角括弧で囲んでも直らない」と案内するので、空白が原因の項目に付けると事実と逆になる
+    [InlineData("a.example.test;www.example .test", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>% の手前がワイルドカードの形も、「そのまま直すな」の側で名乗ること（レビュー指摘）。</b>
+    // 運用者が読めない末尾（%20）を削ると 0.0.0.0 ＝全許可（issue #64）になる。
+    // 空白について閉じた穴が % 側に残っており、しかも "[::]%20" は括弧のおかげで
+    // 当たっていたので非対称でもあった
+    [InlineData("a.example.test;0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[::]%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>「% を抜く」側の直し方でもワイルドカードになる形（レビュー指摘）。</b>
+    // 文面は「'%' を書くな」と案内するので運用者はこちらをしうるのに、
+    // 「% 以降を削る」モデルしか見ていないと専用警告から外れていた
+    [InlineData("a.example.test;%0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>アドレスバーから URL ごと貼った形が黙らないこと（レビュー指摘）。</b>
+    // ポート付きの URL は正規化で "[https://…:8443]" になり「正規化後の綴り＝ホスト部」に
+    // 化けるので、"/" を運べない文字に入れないと警告 2 本とも出ないまま 400 になる。
+    // <b>理由は URL 専用のものを名乗る</b> ——ポートを書かない形は "https:" が
+    // ポート区切りに見えるため、分けないと「ポートを外せ」と事実と違う案内になる
+    [InlineData("a.example.test;https://b.example.test:8443", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
+    [InlineData("a.example.test;https://b.example.test", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
+    // <b>URL / CIDR の形でも、直すとワイルドカードになるなら専用警告のほうが勝つこと
+    // （レビュー指摘）。</b> これが無いと、ASPNETCORE_URLS をそのまま貼った形のほうが
+    // スキームを外した "0.0.0.0:5000" より弱い案内になるという逆転が起きる
+    [InlineData("a.example.test;http://0.0.0.0:5000", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;http://0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;::/0", AllowedHostsPolicy.DeadEntryReason.UrlInsteadOfHostname)]
+    // <b>直し方が 2 つ以上要る綴りも、専用警告のほうが勝つこと（レビュー指摘）。</b>
+    // 1 つずつ別々に当てていた頃は、これらが WildcardOnceRepaired から外れ、
+    // <b>ワイルドカードの注意を持たない文面</b>が付いていた（従うと全許可）
+    [InlineData("a.example.test; ::%20", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    [InlineData("a.example.test;http://0.0.0.0%20", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;%0.0.0.0/0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;//0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>正規化で空白が角括弧の内側へ移った形も同じ理由で名乗る。</b>
+    // " ::1" は "[ ::1]" になる ——正しい直し方は「空白を外して [::1] と書く」ことなので、
+    // 「角括弧で囲んでも直らない」と言ってはいけない
+    [InlineData("a.example.test; ::1", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    [InlineData("a.example.test;::1 ", AllowedHostsPolicy.DeadEntryReason.WhitespaceInsideEntry)]
+    // <b>コロンが 2 つ以上ある形でも、専用警告のほうが勝つこと（レビュー指摘）。</b>
+    // ホスト部の切り出しはコロンが 2 つ以上ある値を<b>丸ごと</b>角括弧で包むので、
+    // ComparableSpelling だけではポートが 1 つも落ちず、これらは NotABareHostname に
+    // なっていた ——その文面「ポートも余分なコロンも書くな」に従うと 0.0.0.0 ＝
+    // 全ホスト許可（issue #64）。コロンが 1 つの "0.0.0.0:8080" は正しく警告されており、
+    // <b>非対称</b>でもあった
+    [InlineData("a.example.test;0.0.0.0:8080:", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0:8080:9090", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>"//" を打ち損ねた URL も同じ（レビュー指摘）。</b> "http:0.0.0.0" はホスト部が
+    // "http" になるため URL 用の直し方（"://" と "/" を見る）では届かず、
+    // 「ポートを外してホスト名だけを書け」という案内に従うと 0.0.0.0 になっていた
+    [InlineData("a.example.test;http:0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;https:*", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>逆に、ごく普通の host:port をスキームと読み違えないこと。</b>
+    // コロンの手前が英字だけのときしかスキームと見なさないので、ドット・数字・ハイフンを
+    // 含む綴りは頭を落とされず、これまでどおりポートの理由で名乗る
+    [InlineData("a.example.test;192.168.0.1:80", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    [InlineData("a.example.test;https:b.example.test", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // <b>スキームの判定を広げると、ごく普通のホスト名が「直すとワイルドカードになる」と
+    // 名指しされる。</b> "b.example.test:0.0.0.0" の正しい直し方は "b.example.test" で、
+    // ワイルドカードにはならない ——英字だけという条件を外すとここが
+    // WildcardOnceRepaired へ倒れる（条件そのものを固定するための境界のケース。
+    // 実測でも、条件を外した変異はこの 1 件が無いと全件緑のまま通った）
+    [InlineData("a.example.test;b.example.test:0.0.0.0", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    [InlineData("a.example.test;192.168.0.1:0.0.0.0", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // <b>直し方は「順番を決め打った組み合わせ」ではなく閉包で当てること（レビュー指摘）。</b>
+    // "http:0.0.0.0:8080:" は「スキームを外す」→「コロンから先を落とす」の<b>順</b>が要る。
+    // 決め打ちの順番で数え上げていた頃はここが NotABareHostname になり、その文面
+    // 「ポートも余分なコロンも書くな」に従うと 0.0.0.0 ＝全ホスト許可（issue #64）だった
+    [InlineData("a.example.test;http:0.0.0.0:8080:", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;http:0.0.0.0::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>末尾のポートだけを外す直し方も要る（レビュー指摘）。</b> ":::8080" は
+    // netstat が IPv6 の待受を表示する形で、最初のコロンで切る直し方では届かない
+    [InlineData("a.example.test;:::8080", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>逆に、角括弧の後ろに付いたゴミは専用の理由で名乗ること。</b> "[::]:abc" は
+    // ポートの位置を落とすと "[::]" ＝全許可。最初のコロンで切る手も、末尾が数字のときだけ
+    // 外す手も、この形には届かない
+    [InlineData("a.example.test;[::]:abc", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>先頭に紛れた区切りのコロンも同じ。</b> ":[::]" の先頭を削ると "[::]" ＝全許可
+    [InlineData("a.example.test;:[::]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>直し方の手を減らすときに、覆えているかを確かめるための綴り。</b>
+    // 括弧を二重に書いた形（外側を外しても、全部外しても着地は全許可）と、
+    // ポートが数値として読めない形（ホスト部の切り出しが落としてくれる）。
+    // 手を 1 つ外しても<b>これらが警告を失わないこと</b>を確かめてから減らすこと
+    [InlineData("a.example.test;[[::]]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[[0.0.0.0]]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0:99999", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[::]:99999", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // 逆に、素の IPv6 リテラル（"::1" ・ "fe80::1"）の末尾をポートと読み違えないことは、
+    // 上の UnbracketedIpv6Literal のケースがそのまま固定している（重複して書かない）
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
         string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
     {
@@ -928,6 +1149,39 @@ public class AllowedHostsPolicyTests
 
         // その 1 件に添う理由が、期待どおりであること
         Assert.Equal(expectedReason, dead.Reason);
+    }
+
+    // <b>角括弧の扱いを厳しくした代償で、生きている項目を巻き込んでいないこと。</b>
+    //
+    // 角括弧の項目に「中身に空白か % があれば死んでいる」を足したので、
+    // <b>本当に一致する綴りまで「消してよい」と案内していないか</b>を対で押さえる
+    // ——生きている項目を名指しするのは、見逃しより重い誤り（このクラスの docstring が正本）。
+    // 並べた綴りはいずれも、本物の Kestrel が Host ヘッダーとして 200 で受け付けることを
+    // 実測してある（実測値は AllowedHostsPolicy.ContainsSpellingAHostHeaderCannotCarry の
+    // docstring が正本。そこには「IPv6 として正しいかとは無関係」だった実測も載せてある）。
+    [Theory]
+    // 短縮形のループバック
+    [InlineData("[::1]")]
+    // リンクローカル（スコープ無し）
+    [InlineData("[fe80::1]")]
+    // IPv4 射影アドレス
+    [InlineData("[::ffff:192.168.0.1]")]
+    // 省略しない書き方
+    [InlineData("[0:0:0:0:0:0:0:1]")]
+    // <b>IPv6 として読めない中身でも、角括弧が 1 組なら生きている（実測で 200）。</b>
+    // この 1 件が無いと、括弧の判定へ「中身が IPv6 か」を足す変異が全件緑のまま通り、
+    // <b>実際には一致する項目</b>に「消してよい」と案内する側（見逃しより重い誤り）へ倒れる
+    [InlineData("[a:b]")]
+    public void BracketedPlainIpv6Literals_AreStillTreatedAsLive(string entry)
+    {
+        // 実ホスト名と併記する（片方が生きている、いちばん紛らわしい形）
+        var allowedHosts = $"a.example.test;{entry}";
+
+        // どの項目も「一致しえない」と名指しされないこと
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(allowedHosts));
+
+        // 全許可でもないこと（絞り込みは効いている）
+        Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
     }
 
     // <b>いちばん危ない形: 案内どおりに直すと全ホスト許可になる項目（レビュー指摘）。</b>
@@ -958,8 +1212,16 @@ public class AllowedHostsPolicyTests
         // 文面が、そのまま直すことを<b>止めて</b>いること（読み手が踏む一歩を封じる）
         var cause = AllowedHostsPolicy.DeadEntryCauseMessage(
             AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired);
-        Assert.Contains("do NOT", cause, StringComparison.Ordinal);
-        Assert.Contains("Replace it with a real hostname", cause, StringComparison.Ordinal);
+        Assert.Contains("NOT tidy this entry up", cause, StringComparison.Ordinal);
+        Assert.Contains("replace it with a real hostname", cause, StringComparison.Ordinal);
+
+        // <b>文面が「必ずワイルドカードになる」と断定していないこと（レビュー指摘）。</b>
+        // 直し方は複数あり、そのうち 1 つが着地するだけ（"0.0.0.0:8080" はポートだけ外せば
+        // "0.0.0.0" だが、"0.0.0.0:8080:" は外し方しだいで別の死んだ項目にもなる）。
+        // さらに数え上げを打ち切った項目は「判断できない」側からここへ倒れるので、
+        // 断定すると名指しした項目について事実と違うことを言う形（issue #256）になる
+        Assert.Contains("can land on a wildcard", cause, StringComparison.Ordinal);
+        Assert.DoesNotContain("whichever way", cause, StringComparison.Ordinal);
     }
 
 }
