@@ -2,6 +2,7 @@
 using Microsoft.AspNetCore.Mvc;
 // 属性とアクションをリフレクションで走査するために使う
 using System.Reflection;
+using System.Text.RegularExpressions;
 
 // このヘルパーが属する名前空間
 namespace IncidentInsight.Tests.Helpers;
@@ -17,7 +18,7 @@ namespace IncidentInsight.Tests.Helpers;
 /// 2 か所が同じ基準を使うため。基準を書き写すと、片方だけを緩めたときに
 /// もう片方が黙って別の答えを出す(CLAUDE.md §6 DRY)。
 /// </remarks>
-public static class ResponseCachePolicy
+public static partial class ResponseCachePolicy
 {
     /// <summary>
     /// <c>[ResponseCache]</c> が名乗っている内容と、それが許されるかどうかの判定結果。
@@ -156,12 +157,25 @@ public static class ResponseCachePolicy
         Assembly ownAssembly,
         Func<object, bool> matches)
     {
-        // 同じ宣言を二重に数えないための記録(基底の 1 つのアクションは派生の数だけ見える)
+        // <b>走査全体</b>で同じ宣言を二重に返さないための記録(基底の 1 つの宣言は派生の数だけ見える)。
+        // 観測場所ごとの記録（seenOnThisType / seenOnThisMethod）と対で使う ——
+        // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
         var seen = new HashSet<string>(StringComparer.Ordinal);
 
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
+            // <b>この観測場所（この型のクラス側）から見えた分だけ</b>を数える記録。
+            // <b>走査の外へ括り出して使い回さない（レビュー指摘）。</b> 括り出して Clear() で
+            // 使い回すと、観測場所ごとに空であることが<b>スコープではなく手で置いた Clear() の
+            // 位置</b>に依存する ——観測場所を 1 つ足したり途中に early-exit を挟んだりした瞬間に
+            // 前の場所のキーが残り、次の<b>ただ 1 つの宣言</b>が門番に当たって走査ごと落ちる
+            // （しかも失敗文言は当てはまらない直し方を案内する）。
+            // <b>実体は最初に要ったときに作る</b>(レビュー指摘) ——走査はアセンブリ中の
+            // 全コントローラ・全アクションを回るが、キャッシュ指示を宣言しているものはごく一部。
+            // スコープはこのままなので、観測場所ごとに空であることは変わらない
+            HashSet<string>? seenOnThisType = null;
+
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
             foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
@@ -171,20 +185,26 @@ public static class ResponseCachePolicy
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
                 // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
-                var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
+                var declaringType = DeclarationSite(DeclaringTypeOf(controller, SameKindAs(attribute, matches)));
                 // どこに付いていたかが分かる表示名を作る
-                var declaredOn = declaringType.FullName ?? declaringType.Name;
-                // 同じ宣言元の<b>同じ属性</b>を既に返していなければ返す(派生の数だけ並べない)。
-                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
-                if (seen.Add(DeclarationKey($"type:{declaredOn}", attribute)))
+                // <b>名指しは TypeDisplayName を通す（レビュー指摘）。</b> 素の FullName だと
+                // 総称型が `GenericProbeBase`1` という<b>メタデータの綴り</b>のまま出て、
+                // 引数側（同じ 1 行の中）がソースの綴りなのと食い違う
+                var declaredOn = TypeDisplayName(declaringType);
+                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本。
+                // <b>表示名から作らない</b>のはアクション側と同じ理由 ——名指しの綴りを変えても
+                // 同一性の意味が動かないよう、キーはメタデータの綴りだけで決める
+                var key = DeclarationKey(
+                    $"type:{declaringType.FullName ?? declaringType.Name}", attribute);
+
+                // この観測場所の記録を、最初に要ったここで作る
+                seenOnThisType ??= new HashSet<string>(StringComparer.Ordinal);
+
+                // まだ返していない宣言なら返す(判定はクラス側・アクション側で共通)
+                if (IsNewDeclaration(seenOnThisType, seen, key, attribute))
                 {
                     // クラス側の宣言として返す
                     yield return new AttributeDeclaration(declaredOn, attribute);
-                }
-                else
-                {
-                    // 畳んだので、それが「失って良い重複」だったことを確かめる
-                    EnsureNothingWasLost(attribute);
                 }
             }
 
@@ -199,6 +219,9 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
+                // クラス側と同じ理由で、このアクションの観測場所ぶんを持つ(実体は最初に要ったとき)
+                HashSet<string>? seenOnThisMethod = null;
+
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
                 {
@@ -206,24 +229,104 @@ public static class ResponseCachePolicy
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
                     // クラス側と同じく、たどる条件をこの属性の型まで絞る
-                    var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
-                    // どのアクションに付いていたかが分かる表示名を作る
-                    var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
-                    // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
-                    if (seen.Add(DeclarationKey($"method:{declaredOn}({method})", attribute)))
+                    var declaringMethod = DeclaringMethodOf(method, SameKindAs(attribute, matches));
+                    // その宣言が置かれている型を、名指しに使う形へそろえる
+                    var declaringType = DeclarationSite(declaringMethod.DeclaringType!);
+                    // <b>キーは表示名から作らない（レビュー指摘・実測）。</b> 表示名には
+                    // 引数の型が載るが、その綴りは「宣言の置き場所を引き直せたか」に左右される
+                    // ——引き直せない綴りでは閉じ方ごとの姿(Int32 / String)になるので、
+                    // 表示名をキーに含めると<b>1 つの宣言が閉じ方の数だけ違反として並ぶ</b>
+                    // （`DeclarationSite` を足して閉じたはずの形が、表示名を通って戻る）。
+                    // 同一性は<b>メタデータ行</b>だけで決める（同じ行なら同じ 1 つの宣言、
+                    // 別のオーバーロードなら必ず別の行）
+                    var key = DeclarationKey(
+                        $"method:{declaringType.FullName ?? declaringType.Name}"
+                            + $".{declaringMethod.Name}(#{declaringMethod.MetadataToken})",
+                        attribute);
+
+                    // この観測場所の記録を、最初に要ったここで作る
+                    seenOnThisMethod ??= new HashSet<string>(StringComparer.Ordinal);
+
+                    // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
+                    if (IsNewDeclaration(seenOnThisMethod, seen, key, attribute))
                     {
+                        // 表示名は<b>返す分だけ</b>組み立てる（レビュー指摘）。畳まれて捨てられる分まで
+                        // 先に作ると、総称の基底へ 1 つ付けた宣言を N 個の具象から観測するたびに
+                        // 宣言の置き場所を探すリフレクション走査が N 回走る（返るのは 1 件なのに）。
+                        // キーが表示名を読まなくなったので、ここまで遅らせられる。
+                        // <b>引数の型まで載せる</b>のは、載せないと同じ名前のオーバーロードが
+                        // 2 つとも違反したとき<b>まったく同じ行が 2 本</b>並び、片方だけが違反なら
+                        // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため
+                        var declaredOn =
+                            $"{TypeDisplayName(declaringType)}.{declaringMethod.Name}"
+                                + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
+
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
-                    }
-                    else
-                    {
-                        // クラス側と同じ理由で、畳んだ 1 件が重複だったことを確かめる
-                        EnsureNothingWasLost(attribute);
                     }
                 }
             }
         }
     }
+
+    /// <summary>
+    /// その宣言を<b>まだ返していない</b>かを判定し、返してよければ <c>true</c> を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para>判定は 2 段。<b>同じ観測場所で</b>キーが重なったら、それは本当に 2 つの宣言なので
+    /// <see cref="EnsureNothingWasLost"/> に判断させる（1 つの型・1 つのアクションから見える属性は、
+    /// 継承して見えたものも含めて 1 度ずつしか現れない）。重ならなければ、あとは
+    /// <b>別の派生型から同じ 1 つの宣言を見ている</b>だけかどうかで、既に返していれば黙って畳む
+    /// （issue #255 / #269）。</para>
+    ///
+    /// <para><b>クラス側とアクション側で書き写さない（レビュー指摘）。</b> この走査は
+    /// <c>SameKindAs</c>・門番・重複判定と、まったく同じクラス側／アクション側の非対称を
+    /// <b>繰り返し</b>踏んでいる。書き写すと「片方の枝だけを戻す」変異が書けてしまい、
+    /// そのたびに対の検査を足すことになる（§6 DRY）。
+    /// <b>踏んだ数を書かない</b> ——対の検査を足すたびに数字だけが古くなる（CLAUDE.md §3）。</para>
+    /// </remarks>
+    /// <param name="seenHere">いま見ている観測場所で既に見たキー。</param>
+    /// <param name="seen">走査全体で既に返したキー。</param>
+    /// <param name="key">この宣言のキー。</param>
+    /// <param name="attribute">この宣言の属性（門番に渡す）。</param>
+    /// <returns>宣言として返してよいなら <c>true</c>。</returns>
+    private static bool IsNewDeclaration(
+        HashSet<string> seenHere,
+        HashSet<string> seen,
+        string key,
+        object attribute)
+    {
+        // 同じ観測場所で 2 度目なら、畳むと 2 個目が違反の一覧へ到達しない
+        if (!seenHere.Add(key))
+        {
+            // 失って良い重複かどうかを門番に判断させる(複数付けられる属性なら落ちる)
+            EnsureNothingWasLost(attribute);
+
+            // 複数付けられない属性なら畳んでよい重複なので、返さない
+            return false;
+        }
+
+        // 走査全体でまだ返していなければ返してよい(既に返していれば同じ宣言なので畳む)
+        return seen.Add(key);
+    }
+
+    /// <summary>
+    /// 宣言元の型を、<b>名指しとキーに使う形</b>へそろえる。
+    /// </summary>
+    /// <remarks>
+    /// <b>総称型は開いた定義へ戻す（レビュー指摘）。</b> 総称の抽象基底に 1 つだけ付けた宣言は、
+    /// <c>ExportBase&lt;Pdf&gt;</c> と <c>ExportBase&lt;Csv&gt;</c> のように<b>閉じた型ごとに
+    /// 別の <c>FullName</c></b> を持つため、そのままキーに使うと走査全体の記録で畳まれず
+    /// <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しは
+    /// <c>ExportBase`1[[…, Version=1.0.0.0, …]]</c> のようなアセンブリ修飾名になり、
+    /// <b>開けるファイルを指さない</b> ——この関数と走査全体の記録が防ぐために存在する形そのもの。
+    /// 開いた定義へ戻せば、宣言が 1 つであることも、直すべき 1 か所も正しく出る。
+    /// </remarks>
+    /// <param name="declaringType">属性を宣言している型。</param>
+    /// <returns>名指しとキーに使う型。</returns>
+    private static Type DeclarationSite(Type declaringType) =>
+        // 閉じた総称型なら開いた定義へ、それ以外はそのまま
+        declaringType.IsGenericType ? declaringType.GetGenericTypeDefinition() : declaringType;
 
     /// <summary>
     /// 「宣言元 × 属性の種類」という、重複除去のキーを作る。
@@ -273,11 +376,29 @@ public static class ResponseCachePolicy
     /// 前者だと、複数付けられる属性が<b>1 つしか付いていなくても</b>走査全体が落ち、
     /// アセンブリ中の本物の違反が 1 件も報告されなくなる（しかも失敗文言は違反ではなく
     /// キーの話をする）。畳んだ瞬間＝実際に 1 件失った瞬間に鳴らせば、
-    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para><b>直し方は「キーを位置まで含む形にする」だが、
+    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para>
+    ///
+    /// <para><b>だから呼び出し側は「観測場所ごと」の記録で判断する（issue #255 / #269）。</b>
+    /// 走査全体の記録だけでキーの重なりを見ると、<b>同じ 1 つの宣言を 2 つの派生型から
+    /// 見ただけ</b>でも重なる ——<c>AllowMultiple = true</c> かつ継承される指示属性を
+    /// 抽象基底へ<b>1 回だけ</b>付けて 2 つ派生させると、2 つ目の派生を見た時点でここが投げ、
+    /// キャッシュ関連の検出網が<b>まとめて例外で止まる</b>。しかも失敗文言は
+    /// 「キーへ位置を含めろ」と案内するが、<b>宣言は 1 つしか無い</b>のでその助言は当てはまらない
+    /// （正しいコードで赤くなる検出網は、いずれ検査ごと緩められる）。
+    /// 1 つの型・1 つのアクションから見える属性は、継承して見えたものも含めて
+    /// <b>1 度ずつしか現れない</b>ので、同じ観測場所で 2 度重なったときだけが本当の損失になる。</para>
+    ///
+    /// <para><b>直し方は「キーを位置まで含む形にする」だが、
     /// それだけでは足りない</b> ——宣言元をたどる
-    /// <see cref="DeclaringTypeOf(MethodInfo, Func{object, bool})"/> も「その種類を宣言している
-    /// 最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
-    /// <b>2 つをセットで見直すこと。</b>
+    /// <see cref="DeclaringTypeOf"/>（クラス側）と
+    /// <see cref="DeclaringMethodOf(MethodInfo, Func{object, bool})"/>（アクション側）も
+    /// 「その種類を宣言している最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
+    /// <b>キーと、鳴った経路のたどり方をセットで見直すこと。</b></para>
+    ///
+    /// <para><b>ここで経路を決め打たない（レビュー指摘）。</b> 門番はクラス側・アクション側の
+    /// どちらからも鳴るので、片方のたどり方だけを名指しすると、もう片方から鳴らされた読み手が
+    /// <b>関係の無いほうを読んで</b>本当に見直すべきたどり方を素通りする ——投げる文言から
+    /// 同じ決め打ちを外したのと同じ理由で、この説明（この repo が正本として扱う側）にも残さない。</para>
     /// </remarks>
     /// <param name="attribute">確かめる属性。</param>
     /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
@@ -296,9 +417,27 @@ public static class ResponseCachePolicy
         // 複数付けられる属性が畳まれた＝2 個目以降が違反の一覧へ到達しないので落とす(§9 fail-closed)
         throw new NotSupportedException(
             $"{attribute.GetType().FullName} は AllowMultiple = true です。"
-                + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じ宣言元に 2 つ付いていると "
+                + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じキーへ 2 つ落ちると "
                 + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
-                + "キーへ位置を含める形へ変え、あわせて DeclaringTypeOf の名指しも見直してください。");
+                // <b>どちらの経路から来たかを決め打たない（レビュー指摘）。</b>
+                // 門番はクラス側とアクション側の両方から呼ばれるので、片方の仕組み
+                // （DeclaringTypeOf）を名指しすると、もう片方から来たときに
+                // <b>関わっていない仕組み</b>を説明することになる。
+                // 2 つが別の段にある形も同じで、宣言元をたどる仕組みは
+                // 「その種類を宣言している最初の段」で止まるため同じキーへ落ちる
+                + "2 つが同じ場所にあるとは限りません(基底と派生に 1 つずつでも、"
+                + "宣言元をたどる仕組みが「その種類を宣言している最初の段」で止まるため "
+                + "同じキーになります)。"
+                + "キーへ位置を含める形へ変え、あわせて宣言元をたどる "
+                + $"{nameof(DeclaringTypeOf)} / {nameof(DeclaringMethodOf)} "
+                + "の名指し(最初の段で止めてよいか)と、"
+                // <b>ここも同じ変更セットで見直す（レビュー指摘）。</b> キーへ位置を入れると、
+                // 走査全体の畳み込みは「同じ宣言がどの派生から見ても同じ位置に現れる」ことに
+                // 依存する ——GetCustomAttributes の並び順は規定されていないので、
+                // 派生ごとに順が違えば 1 つの宣言が具象の数だけ並ぶ形が戻る
+                + $"{nameof(IsNewDeclaration)} の走査全体の畳み込み"
+                + "(位置を入れると、派生ごとに並び順が違ったときに同じ宣言が複数件に見えます)"
+                + "も見直してください。");
     }
 
     /// <summary>
@@ -308,7 +447,8 @@ public static class ResponseCachePolicy
     /// <b>宣言元をたどるときは、種類まで絞らないと別の属性で止まる。</b>
     /// <c>matches</c> が 2 種類以上に一致する述語（3 つ目のキャッシュ指示を見るように
     /// なるときの自然な形）だと、基底が A・派生が B を宣言している場合に
-    /// <c>DeclaringTypeOf</c> は A についても「派生が宣言している」と答える ——
+    /// 宣言元をたどる側（クラス側は <c>DeclaringTypeOf</c>、アクション側は
+    /// <c>DeclaringMethodOf</c>）は A についても「派生が宣言している」と答える ——
     /// 名指しされたファイルを開いても A が無く、直すべき 1 か所が出てこない。
     /// これは基底へ引き上げた宣言で一度直した形そのものなので、同じ轍を踏まない。
     /// </remarks>
@@ -320,7 +460,151 @@ public static class ResponseCachePolicy
         candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
 
     /// <summary>
-    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
+    /// 表示名に載せる<b>宣言の置き場所そのもの</b>のメソッドを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para>閉じた総称型（<c>G&lt;int&gt;</c> / <c>G&lt;string&gt;</c>）から見たメソッドは、
+    /// 引数の型も閉じ方ごとに違う姿（<c>Int32</c> / <c>String</c>）で見える。そのまま表示名に
+    /// 載せると、<b>1 つの宣言</b>が閉じ方によって別の名前で報告され、どの閉じ方を先に観測したかで
+    /// 文言が変わる ——名指しは開いた総称定義へそろえてあるのに、引数だけが具象のままになる。</para>
+    ///
+    /// <para>メタデータ行は閉じ方によらず同じなので、開いた総称定義の側で同じ行のメソッドを
+    /// 探せば宣言そのもの（<c>Export(TModel)</c>）に戻せる。見つからない場合は
+    /// 受け取ったメソッドをそのまま使う（表示名が具象寄りになるだけ）。</para>
+    ///
+    /// <para><b>ここは表示名だけに効く（レビュー指摘）。</b> 重複除去のキーは
+    /// メタデータ行だけで決めており、この関数の結果を読まない ——引き直せなかったときに
+    /// <b>1 つの宣言が閉じ方の数だけ並ぶ</b>のを防ぐため。だからこの関数が落ちる先は
+    /// 「名前が具象寄りになる」ことだけで、報告の同一性は動かない。</para>
+    ///
+    /// <para><b>例外で分岐しない。</b> モジュールから行を引き直す形は、引けない綴りで
+    /// 例外を投げるため <c>catch</c> が要り、その <c>catch</c> は §6 が禁じている
+    /// 「黙って捨てる」形になる（記録先を持たないヘルパーなので、文脈を足して再送出すると
+    /// 表示名を作れないというだけで走査全体が止まる）。開いた定義を<b>探す</b>形にすれば
+    /// 例外の経路そのものが無くなる。</para>
+    /// </remarks>
+    /// <param name="declaringMethod">属性を実際に宣言しているメソッド。</param>
+    /// <returns>宣言が置かれている場所のメソッド。</returns>
+    private static MethodBase DeclarationSiteMethod(MethodInfo declaringMethod)
+    {
+        // 属性を宣言しているメソッドが載っている型を取り出す
+        var declaringType = declaringMethod.DeclaringType;
+
+        // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
+        if (declaringType?.IsGenericType != true) return declaringMethod;
+
+        // 開いた総称定義が<b>自分で宣言した</b>メソッドの中から、同じメタデータ行のものを探す。
+        // <b>DeclaredOnly を外さない（レビュー指摘・実測）。</b> 外すと候補に基底
+        // (Mvc.Core / CoreLib)のメソッドが 180 件あまり混ざり、<b>メタデータ行はモジュール内でしか
+        // 一意でない</b>ので、数値が偶然一致する別モジュールのメソッドを拾いうる
+        // ——表示名に無関係な署名が載り、名指しされたファイルにその綴りが存在しない形になる。
+        // いま当たらないのは GetMethods の返す順がたまたまそうだからで、順は規定されていない
+        // (このリポジトリは宣言順に依存して一度事故を起こしている)
+        return DeclarationSite(declaringType)
+            .GetMethods(
+                BindingFlags.Public | BindingFlags.NonPublic
+                    | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            // 同じ行なら、閉じ方によらず同じ 1 つの宣言
+            .FirstOrDefault(candidate => candidate.MetadataToken == declaringMethod.MetadataToken)
+            // 見つからなければ、受け取ったメソッドをそのまま表示名に使う
+            ?? declaringMethod;
+    }
+
+    /// <summary>メソッドの引数の型を、表示名へ載せる 1 語にする。</summary>
+    /// <remarks>
+    /// <b>単純名で並べない（レビュー指摘・実測）。</b> 名前空間だけが違う同名の型
+    /// （MVC では <c>Models.Incident</c> と <c>ViewModels.Incident</c> のような対が普通に起きる）を
+    /// 受けるオーバーロードは、単純名だと <c>Export(Incident)</c> で<b>一字一句同じ</b>になり、
+    /// 引数を載せた理由（どちらを直すのか分かるようにする）がその形でだけ失われる。
+    /// <b>どちらが衝突するかは兄弟のオーバーロードを見ないと決められない</b>ので、
+    /// 条件で出し分けず一律に完全修飾名で並べる（宣言元の型も完全修飾名で名乗っており、そろう）。
+    /// 型引数（<c>TModel</c>）は完全修飾名を持たないので、そのときだけ単純名になる。
+    /// </remarks>
+    /// <param name="method">引数を並べるメソッド。</param>
+    /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
+    private static string ParameterTypeList(MethodBase method) =>
+        // 型ごとの綴りは TypeDisplayName が決める(素の FullName を使わない理由はそちらの説明が正本)
+        string.Join(
+            ", ",
+            method.GetParameters().Select(parameter => TypeDisplayName(parameter.ParameterType)));
+
+    /// <summary>型を、表示名へ載せる読める 1 語にする。</summary>
+    /// <remarks>
+    /// <para><b>素の <c>FullName</c> を使わない（レビュー指摘・実測）。</b> 構築済みの総称型の
+    /// <c>FullName</c> は<b>アセンブリ修飾名</b>を含むので、<c>DateTime?</c> を受けるアクションは
+    /// <c>System.Nullable`1[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, …]]</c>
+    /// と名乗る ——<see cref="DeclarationSite"/> の説明が「<b>開けるファイルを指さない</b>」として
+    /// 退けた綴りそのもので、しかもこの repo は期間・enum の絞り込みを
+    /// <c>Nullable&lt;T&gt;</c> で受けることを規約で求めている（いちばん出やすい形）。</para>
+    ///
+    /// <para><b><c>FullName ?? Name</c> でも足りない（レビュー指摘・実測）。</b> 開いた総称
+    /// （<c>List&lt;T1&gt;</c>）は <c>FullName</c> を持たないので <c>Name</c> へ落ち、
+    /// <c>List`1</c> だけが残る ——総称の基底で <c>Export(List&lt;T1&gt;)</c> と
+    /// <c>Export(List&lt;T2&gt;)</c> を分けているオーバーロードが<b>同じ名前</b>になり、
+    /// 引数を載せた理由がその形でだけ失われる。</para>
+    ///
+    /// <para>そこで型引数まで自分で組み立てる。名前空間は残し（単純名だけだと
+    /// 名前空間違いの同名の型が衝突する）、アセンブリ修飾名は載せない。</para>
+    /// </remarks>
+    /// <param name="type">綴りにする型。</param>
+    /// <returns>表示名へ載せる 1 語。</returns>
+    private static string TypeDisplayName(Type type)
+    {
+        // 型引数(TModel / T1)はそれ自身が名前なので、そのまま使う
+        if (type.IsGenericParameter) return type.Name;
+
+        // <b>参照渡し(ref / out / in)とポインタは、包んでいる殻を剥いてから綴る（レビュー指摘・実測）。</b>
+        // 剥かないと総称でも配列でもない扱いになり、素の FullName へ落ちて
+        // `System.Nullable`1[[System.DateTime, …, Version=8.0.0.0, …]]&` という
+        // <b>開けるファイルを指さない</b>綴りがそのまま出る(走査はアクション以外の公開メソッドも見る)
+        if (type.IsByRef) return TypeDisplayName(type.GetElementType()!) + "&";
+
+        // ポインタも同じ理由で剥く
+        if (type.IsPointer) return TypeDisplayName(type.GetElementType()!) + "*";
+
+        // 配列は要素の綴りに角括弧を付ける(要素が型引数でも読める形になる)
+        if (type.IsArray)
+        {
+            // <b>次元を落とさない（レビュー指摘・実測）。</b> 落とすと int[,] が int[] と
+            // 同じ綴りになり、2 つのオーバーロードが同じ 1 行として並ぶ
+            var rank = type.GetArrayRank();
+
+            // 次元の数だけカンマを入れた角括弧を作る(1 次元なら [] のまま)
+            var brackets = "[" + new string(',', rank - 1) + "]";
+
+            // 要素の綴りに角括弧を足して返す
+            return TypeDisplayName(type.GetElementType()!) + brackets;
+        }
+
+        // 総称でなければ、名前空間付きの名前をそのまま使う(持たなければ単純名)
+        if (!type.IsGenericType) return type.FullName ?? type.Name;
+
+        // 総称は、開いた定義の名前から `1 のような個数の印を落とす
+        var definition = type.GetGenericTypeDefinition();
+
+        // 名前空間付きの名前を取り出す(開いた定義は FullName を持つ)
+        var rawName = definition.FullName ?? definition.Name;
+
+        // <b>最初の印で切らない（レビュー指摘・実測）。</b> 総称型の中に入れ子にした型は
+        // `Ns+Outer`1+Inner` の形で、最初の印までで切ると入れ子の段(+Inner)ごと落ちて
+        // Outer&lt;int&gt;.Inner と Outer&lt;int&gt;.Other が<b>同じ綴り</b>になる
+        // ——引数の型を載せた理由がその形でだけ失われる。印だけを取り除く
+        var name = ArityTicks().Replace(rawName, string.Empty);
+
+        // 型引数も同じ規則で綴る(入れ子の総称でも読める形になる)
+        var arguments = string.Join(", ", type.GetGenericArguments().Select(TypeDisplayName));
+
+        // 名前と型引数を組み立てて返す
+        return $"{name}<{arguments}>";
+    }
+
+    /// <summary>総称の個数の印（<c>`1</c>）を見つける正規表現。</summary>
+    /// <returns>個数の印に一致する正規表現。</returns>
+    [GeneratedRegex("`[0-9]+")]
+    private static partial Regex ArityTicks();
+
+    /// <summary>
+    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
     /// </summary>
     /// <remarks>
     /// <c>override</c> したメソッドでは <c>GetCustomAttributes(inherit: true)</c> が基底の属性を
@@ -334,17 +618,25 @@ public static class ResponseCachePolicy
     /// 属性が<b>途中の型</b>の <c>override</c> に付いている場合は根にも自分自身にも無く、
     /// どちらの検査も外れて具象が名指しされる。連なりを 1 段ずつ見れば、
     /// 途中の宣言も「自分自身が宣言しているか」で正しく捕まる。</para>
+    ///
+    /// <para><b>型ではなくメソッドを返す（レビュー指摘）。</b> 重複除去のキーには
+    /// オーバーロードを分けるための署名が要るが、そこへ<b>観測した</b>メソッドを使うと、
+    /// 総称の基底が <c>Export(TModel model)</c> のように型引数を受けている場合に
+    /// <c>Export(Int32)</c> と <c>Export(String)</c> で<b>キーが割れ</b>、
+    /// 1 つの宣言が閉じ方の数だけ違反として並ぶ（宣言元の型だけをそろえても閉じない）。
+    /// 宣言しているメソッドを返せば、その <c>MetadataToken</c>（同じメタデータ行なら同じ 1 つの宣言）
+    /// を署名の代わりに使えて、閉じた総称でも <c>override</c> でも同じ 1 件に畳める。</para>
     /// </remarks>
     /// <param name="method">属性が見えているアクションメソッド。</param>
     /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
-    /// <returns>属性を宣言している型。</returns>
-    private static Type DeclaringTypeOf(MethodInfo method, Func<object, bool> matches)
+    /// <returns>属性を宣言しているメソッド。</returns>
+    private static MethodInfo DeclaringMethodOf(MethodInfo method, Func<object, bool> matches)
     {
         // そのメソッド自身が宣言しているなら、そこが直すべき場所
         if (method.GetCustomAttributes(inherit: false).Any(matches))
         {
-            // 宣言しているメソッドの型を返す
-            return method.DeclaringType!;
+            // 宣言しているメソッドそのものを返す
+            return method;
         }
 
         // override の連なりを識別するための目印(同じ仮想メソッドはどこから見ても同じ根を持つ)
@@ -367,11 +659,11 @@ public static class ResponseCachePolicy
             if (declared is null) continue;
 
             // その定義が属性を宣言しているなら、そこが直すべき場所
-            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return type;
+            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return declared;
         }
 
-        // どこにも見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
-        return method.DeclaringType!;
+        // どこにも見つからなければ、少なくとも見えているメソッドを名指しする(黙って情報を失わない)
+        return method;
     }
 
     /// <summary>
