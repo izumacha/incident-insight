@@ -1285,9 +1285,15 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void OpaqueStaticDirectories_AreAlsoApproved()
     {
-        // 承認表に載っていない「中を見ない入れ物」を集める
+        // 承認表に載っていない「中を見ない入れ物」を集める。
+        // <b>大小を無視して引かない（レビュー指摘）。</b> IsOpaqueStaticDirectory は完全一致で
+        // 判断するので、2 つの表が `Lib` と `lib` のように食い違っていると、
+        // 「中を見ない」と登録したつもりの入れ物が承認表側では別物として扱われる。
+        // 大小を無視して引くとこの食い違いが素通りし、しかも失敗文言が勧める
+        // 「入れ物の綴りをそろえる」に従うと今度は中へ降りて数百件が並ぶ(実測)
         var missing = OpaqueStaticDirectories.Keys
-            .Where(name => ApprovedSpellingFor(ApprovedStaticDirectories, name) is null)
+            .Where(name => !ApprovedStaticDirectories.Keys
+                .Any(approved => string.Equals(approved, name, StringComparison.Ordinal)))
             .ToList();
 
         // 1 つも無いことを、名指しの一覧付きで確認する
@@ -3157,6 +3163,61 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal("shared-action", ((RepeatableProbeAttribute)declared.Attribute).Policy);
     }
 
+    // <b>総称の</b>抽象基底へ 1 回だけ付けた宣言も、1 件として畳まれること。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> 宣言元を閉じた総称型のまま扱うと、
+    // `ExportBase<Pdf>` と `ExportBase<Csv>` は別の FullName を持つので走査全体の記録で畳まれず、
+    // <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しはアセンブリ修飾名になり
+    // <b>開けるファイルを指さない</b> ——重複除去と DeclaringTypeOf が防ぐために
+    // 存在する形そのものが、総称型を通して戻っていた。
+    [Fact]
+    public void AttributeScan_FoldsOneDeclarationOnAGenericBase_AcrossItsClosedForms()
+    {
+        // 総称の基底が 1 つだけ宣言した属性を、閉じ方の違う 2 つの具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(GenericProbeLeafPdf), typeof(GenericProbeLeafCsv)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しが<b>開いた定義</b>であること(閉じた型のアセンブリ修飾名ではない)
+        Assert.Contains("GenericProbeBase", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 閉じ方（型引数）が名指しに混ざっていないこと ——混ざると開けるファイルを指さない
+        Assert.DoesNotContain("Version=", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 中身も読めること(取り違えた宣言を返していない)
+        Assert.Equal(41, ((ResponseCacheAttribute)declared.Attribute).Duration);
+    }
+
+    // アクション側でも、総称の基底の 1 つの宣言が畳まれること。
+    //
+    // クラス側と同じ非対称（片方の枝だけ直す）を作らないために対で置く。
+    [Fact]
+    public void AttributeScan_FoldsOneActionDeclarationOnAGenericBase_AcrossItsClosedForms()
+    {
+        // 総称の基底のアクションが 1 つだけ宣言した属性を、2 つの具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(GenericActionProbeLeafPdf), typeof(GenericActionProbeLeafCsv)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しが開いた定義であること
+        Assert.Contains("GenericActionProbeBase", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 中身も読めること
+        Assert.Equal(42, ((ResponseCacheAttribute)declared.Attribute).Duration);
+    }
+
     // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
     //
     // <b>なぜ要るのか。</b> issue #269 の直し方は誤検知を消す方向なので、行きすぎると
@@ -3480,6 +3541,45 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>基底のアクションを素で override する具象（2 つ目）。</summary>
     private sealed class SharedRepeatableActionProbeLeafB : SharedRepeatableActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>クラスへ 1 つだけ宣言する<b>総称の</b>抽象基底。</summary>
+    /// <typeparam name="T">閉じ方を変えるためだけの型引数。</typeparam>
+    /// <remarks>期間の値(41)は、この経路で拾えたことを見分けるための目印。</remarks>
+    [ResponseCache(Duration = 41, NoStore = true)]
+    private abstract class GenericProbeBase<T> : ControllerBase;
+
+    /// <summary>1 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericProbeLeafPdf : GenericProbeBase<int>;
+
+    /// <summary>2 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericProbeLeafCsv : GenericProbeBase<string>;
+
+    /// <summary>アクションへ 1 つだけ宣言する<b>総称の</b>抽象基底。</summary>
+    /// <typeparam name="T">閉じ方を変えるためだけの型引数。</typeparam>
+    /// <remarks>期間の値(42)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class GenericActionProbeBase<T> : ControllerBase
+    {
+        /// <summary>属性を 1 つだけ持つ、virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 42, NoStore = true)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>1 つ目の閉じ方で基底のアクションを素で override する具象。</summary>
+    private sealed class GenericActionProbeLeafPdf : GenericActionProbeBase<int>
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>2 つ目の閉じ方で基底のアクションを素で override する具象。</summary>
+    private sealed class GenericActionProbeLeafCsv : GenericActionProbeBase<string>
     {
         /// <summary>属性を持たない override。</summary>
         /// <returns>内容を持たない結果。</returns>

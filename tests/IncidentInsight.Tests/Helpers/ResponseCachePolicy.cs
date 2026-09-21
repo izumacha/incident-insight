@@ -157,15 +157,20 @@ public static class ResponseCachePolicy
         Func<object, bool> matches)
     {
         // <b>走査全体</b>で同じ宣言を二重に返さないための記録(基底の 1 つの宣言は派生の数だけ見える)。
-        // 観測場所ごとの記録（seenOnThisType / seenOnThisMethod）と対で使う ——
-        // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
+        // 観測場所ごとの記録（seenHere）と対で使う ——2 つ持つ理由は EnsureNothingWasLost の説明が正本
         var seen = new HashSet<string>(StringComparer.Ordinal);
+
+        // <b>いま見ている観測場所</b>(1 つの型 / 1 つのアクション)から見えた分だけを数える入れ物。
+        // 観測場所を移るたびに中身を空にして使い回す ——走査はアセンブリ中の全コントローラ・
+        // 全アクションを回るが、キャッシュ指示を宣言しているものはごく一部なので、
+        // 場所ごとに作ると大半が「1 度も使われない入れ物」になる(レビュー指摘)
+        var seenHere = new HashSet<string>(StringComparer.Ordinal);
 
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
-            // <b>この 1 つの型から見えた分だけ</b>を数える記録(全体の記録とは別に持つ理由は下記)
-            var seenOnThisType = new HashSet<string>(StringComparer.Ordinal);
+            // ここからがクラス側の観測場所なので、前の場所の記録を空にする
+            seenHere.Clear();
 
             // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
             // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
@@ -176,37 +181,19 @@ public static class ResponseCachePolicy
                 // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
                 // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
                 // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
-                var declaringType = DeclaringTypeOf(controller, SameKindAs(attribute, matches));
+                var declaringType = DeclarationSite(DeclaringTypeOf(controller, SameKindAs(attribute, matches)));
                 // どこに付いていたかが分かる表示名を作る
                 var declaredOn = declaringType.FullName ?? declaringType.Name;
                 // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本
                 var key = DeclarationKey($"type:{declaredOn}", attribute);
 
-                // <b>同じ型の走査の中で</b>同じキーが 2 度出たら、それは本当に 2 つの宣言
-                // (1 つの型から見える属性は、継承して見えたものも含めて 1 度ずつしか現れない)
-                if (!seenOnThisType.Add(key))
+                // まだ返していない宣言なら返す(判定はクラス側・アクション側で共通)
+                if (IsNewDeclaration(seenHere, seen, key, attribute))
                 {
-                    // 畳むと 2 個目が違反の一覧へ到達しないので、門番に判断させる
-                    EnsureNothingWasLost(attribute);
-
-                    // 複数付けられない属性なら畳んでよい重複なので、次の属性へ
-                    continue;
+                    // クラス側の宣言として返す
+                    yield return new AttributeDeclaration(declaredOn, attribute);
                 }
-
-                // ここから先は「別の派生型から同じ 1 つの宣言を見ている」かどうかの判断。
-                // 既に返した宣言元なら黙って畳む(何も失っていない。issue #255 / #269)
-                if (!seen.Add(key))
-                {
-                    // 同じ宣言を 2 件に見せないよう、返さずに次の属性へ
-                    continue;
-                }
-
-                // クラス側の宣言として返す
-                yield return new AttributeDeclaration(declaredOn, attribute);
             }
-
-            // アクションごとの記録に使い回す入れ物(中身は各アクションの手前で空にする)
-            var seenOnThisMethod = new HashSet<string>(StringComparer.Ordinal);
 
             // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
             foreach (var method in controller.GetMethods(BindingFlags.Public | BindingFlags.Instance))
@@ -219,11 +206,8 @@ public static class ResponseCachePolicy
                     continue;
                 }
 
-                // クラス側と同じく、<b>この 1 つのアクションから見えた分だけ</b>を数える。
-                // 入れ物は使い回して中身だけ空にする ——走査はアセンブリ中の全アクションを
-                // 回るが、キャッシュ指示を宣言しているものはごく一部なので、
-                // メソッドごとに作ると大半が「1 度も使われない入れ物」になる(レビュー指摘)
-                seenOnThisMethod.Clear();
+                // ここからがこのアクションの観測場所なので、前の場所の記録を空にする
+                seenHere.Clear();
 
                 // そのメソッドに付いた属性を読む
                 foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
@@ -232,35 +216,80 @@ public static class ResponseCachePolicy
                     // override の場合は method.DeclaringType が派生になるので、
                     // 属性を実際に宣言しているメソッドまでさかのぼる
                     // クラス側と同じく、たどる条件をこの属性の型まで絞る
-                    var declaringType = DeclaringTypeOf(method, SameKindAs(attribute, matches));
+                    var declaringType = DeclarationSite(DeclaringTypeOf(method, SameKindAs(attribute, matches)));
                     // どのアクションに付いていたかが分かる表示名を作る
                     var declaredOn = $"{declaringType.FullName ?? declaringType.Name}.{method.Name}";
                     // クラス側と同じキーの作り方（宣言元にシグネチャまで含める点だけが違う）
                     var key = DeclarationKey($"method:{declaredOn}({method})", attribute);
 
-                    // クラス側と同じく、<b>同じアクションの走査の中で</b>重なったものだけが本当の重複
-                    if (!seenOnThisMethod.Add(key))
+                    // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
+                    if (IsNewDeclaration(seenHere, seen, key, attribute))
                     {
-                        // 畳むと 2 個目が違反の一覧へ到達しないので、門番に判断させる
-                        EnsureNothingWasLost(attribute);
-
-                        // 複数付けられない属性なら畳んでよい重複なので、次の属性へ
-                        continue;
+                        // アクション側の宣言として返す
+                        yield return new AttributeDeclaration(declaredOn, attribute);
                     }
-
-                    // 別の派生型から同じ 1 つの宣言を見ているだけなら、黙って畳む
-                    if (!seen.Add(key))
-                    {
-                        // 同じ宣言を 2 件に見せないよう、返さずに次の属性へ
-                        continue;
-                    }
-
-                    // アクション側の宣言として返す
-                    yield return new AttributeDeclaration(declaredOn, attribute);
                 }
             }
         }
     }
+
+    /// <summary>
+    /// その宣言を<b>まだ返していない</b>かを判定し、返してよければ <c>true</c> を返す。
+    /// </summary>
+    /// <remarks>
+    /// <para>判定は 2 段。<b>同じ観測場所で</b>キーが重なったら、それは本当に 2 つの宣言なので
+    /// <see cref="EnsureNothingWasLost"/> に判断させる（1 つの型・1 つのアクションから見える属性は、
+    /// 継承して見えたものも含めて 1 度ずつしか現れない）。重ならなければ、あとは
+    /// <b>別の派生型から同じ 1 つの宣言を見ている</b>だけかどうかで、既に返していれば黙って畳む
+    /// （issue #255 / #269）。</para>
+    ///
+    /// <para><b>クラス側とアクション側で書き写さない（レビュー指摘）。</b> この走査は
+    /// <c>SameKindAs</c>・門番・重複判定と、まったく同じクラス側／アクション側の非対称を
+    /// <b>3 度</b>踏んでいる。書き写すと「片方の枝だけを戻す」変異が書けてしまい、
+    /// そのたびに対の検査を足すことになる（§6 DRY）。</para>
+    /// </remarks>
+    /// <param name="seenHere">いま見ている観測場所で既に見たキー。</param>
+    /// <param name="seen">走査全体で既に返したキー。</param>
+    /// <param name="key">この宣言のキー。</param>
+    /// <param name="attribute">この宣言の属性（門番に渡す）。</param>
+    /// <returns>宣言として返してよいなら <c>true</c>。</returns>
+    private static bool IsNewDeclaration(
+        HashSet<string> seenHere,
+        HashSet<string> seen,
+        string key,
+        object attribute)
+    {
+        // 同じ観測場所で 2 度目なら、畳むと 2 個目が違反の一覧へ到達しない
+        if (!seenHere.Add(key))
+        {
+            // 失って良い重複かどうかを門番に判断させる(複数付けられる属性なら落ちる)
+            EnsureNothingWasLost(attribute);
+
+            // 複数付けられない属性なら畳んでよい重複なので、返さない
+            return false;
+        }
+
+        // 走査全体でまだ返していなければ返してよい(既に返していれば同じ宣言なので畳む)
+        return seen.Add(key);
+    }
+
+    /// <summary>
+    /// 宣言元の型を、<b>名指しとキーに使う形</b>へそろえる。
+    /// </summary>
+    /// <remarks>
+    /// <b>総称型は開いた定義へ戻す（レビュー指摘）。</b> 総称の抽象基底に 1 つだけ付けた宣言は、
+    /// <c>ExportBase&lt;Pdf&gt;</c> と <c>ExportBase&lt;Csv&gt;</c> のように<b>閉じた型ごとに
+    /// 別の <c>FullName</c></b> を持つため、そのままキーに使うと走査全体の記録で畳まれず
+    /// <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しは
+    /// <c>ExportBase`1[[…, Version=1.0.0.0, …]]</c> のようなアセンブリ修飾名になり、
+    /// <b>開けるファイルを指さない</b> ——この関数と走査全体の記録が防ぐために存在する形そのもの。
+    /// 開いた定義へ戻せば、宣言が 1 つであることも、直すべき 1 か所も正しく出る。
+    /// </remarks>
+    /// <param name="declaringType">属性を宣言している型。</param>
+    /// <returns>名指しとキーに使う型。</returns>
+    private static Type DeclarationSite(Type declaringType) =>
+        // 閉じた総称型なら開いた定義へ、それ以外はそのまま
+        declaringType.IsGenericType ? declaringType.GetGenericTypeDefinition() : declaringType;
 
     /// <summary>
     /// 「宣言元 × 属性の種類」という、重複除去のキーを作る。
