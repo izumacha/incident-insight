@@ -288,9 +288,22 @@ public class SecurityHeadersMiddlewareTests
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
 
+    // 付けてはいけない指示の綴り。
+    // <b>2 つの走査が同じ綴りを見ていることを、構造で保証するために定数にしてある</b> ——
+    // 囲みのある名乗り（指示ごとの完全一致）と、囲みの無い地の文（カンマ隣接）で
+    // 見る形が違うので、綴りを書き写すと片方だけを直した変更が素通りの窓口になる（§6 DRY）
+    private const string ForbiddenDirective = "immutable";
+
     // キャッシュ期間の上限（1 日）。版付きでない lib/ の更新が利用者へ届くまでの最長時間。
     // <b>定数にしてあるのは、見る対象が 2 つあるから</b>（定数側の検査と、文書の走査）
     private const long MaxCacheLifetimeSeconds = 24 * 60 * 60;
+
+    // 囲みの無い地の文から期間の指示を拾う綴り。
+    // <b>名前は MaxAgeFamilyPrefixes から導く</b>（末尾の "=" を外して並べる）——
+    // 書き下すと、定数へ指示を足したときにこちらだけが古くなる
+    private static readonly string LifetimeDirectivePattern =
+        $"(?<name>{string.Join('|', MaxAgeFamilyPrefixes.Select(p => Regex.Escape(p.TrimEnd('='))))})"
+        + @"\s*=\s*(?<seconds>\d+)";
 
     [Fact]
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
@@ -354,9 +367,12 @@ public class SecurityHeadersMiddlewareTests
         //
         // そこで<b>禁じている綴りそのもの</b>を、囲みの有無を問わず走査する。
         // 期間の値は、囲まれていてもいなくても同じ形で現れる
-        foreach (Match lifetime in Regex.Matches(
-            securityDoc, @"(?<name>max-age|s-maxage|stale-while-revalidate|stale-if-error)\s*=\s*(?<seconds>\d+)",
-            RegexOptions.IgnoreCase))
+        // <b>指示の名前は MaxAgeFamilyPrefixes から導く（レビュー指摘）。</b> ここへ
+        // 書き下すと、定数へ 5 つ目を足した人が<b>囲みのある名乗りでは拾えるのに
+        // 囲みの無い地の文では拾えない</b>状態を作る（実測で、"surrogate-control=" を
+        // 足して囲みなしで名乗らせると 10 件すべて緑のまま通った）——
+        // 「規則を 2 度書くと片方が素通りの窓口になる」形そのもの
+        foreach (Match lifetime in Regex.Matches(securityDoc, LifetimeDirectivePattern, RegexOptions.IgnoreCase))
         {
             // 秒数として読み取る。<b>int ではなく long で受ける（レビュー指摘）。</b>
             // 走査が当たるのは数字だけだが、桁数までは保証していないので
@@ -391,7 +407,11 @@ public class SecurityHeadersMiddlewareTests
         // 修飾するものなので、害のある名乗りには必ず max-age 系が伴う）ため、
         // その場合は上の期間の走査が囲みの有無を問わず拾う。
         Assert.False(
-            Regex.IsMatch(securityDoc, @"[A-Za-z0-9-],immutable|immutable,[A-Za-z0-9-]", RegexOptions.IgnoreCase),
+            Regex.IsMatch(
+                securityDoc,
+                // 綴りは定数から組み立てる（上の完全一致の検査と同じものを見る）
+                $"[A-Za-z0-9-],{Regex.Escape(ForbiddenDirective)}|{Regex.Escape(ForbiddenDirective)},[A-Za-z0-9-]",
+                RegexOptions.IgnoreCase),
             "docs/security.md が immutable を含むキャッシュ指示を載せています。"
                 + "版付きでない wwwroot/lib 配下を参照しているため、immutable を名乗ると"
                 + "脆弱性修正後も古いファイルを消す手段が無くなります。");
@@ -426,7 +446,7 @@ public class SecurityHeadersMiddlewareTests
         // immutable を付けていないこと(付けると再取得の手段が無くなる)
         Assert.DoesNotContain(
             directives,
-            d => d.Equals("immutable", StringComparison.OrdinalIgnoreCase));
+            d => d.Equals(ForbiddenDirective, StringComparison.OrdinalIgnoreCase));
 
         // 保存できる時間を表す指示を<b>すべて</b>取り出す。
         // <b>max-age だけを見てはいけない</b>: s-maxage は共有キャッシュに対して max-age を
@@ -467,7 +487,10 @@ public class SecurityHeadersMiddlewareTests
     /// <returns>文書全体。</returns>
     private static string ReadSecurityDoc() =>
         // リポジトリ直下からの相対位置で読む
-        File.ReadAllText(Path.Combine(RepositoryPaths.Root, SecurityDocRelativePath[0], SecurityDocRelativePath[1]));
+        // 何段の相対パスでもそのまま読めるよう、要素を展開して組み立てる ——
+        // 位置で取り出すと、段数が増えたときに<b>定数だけが直って読み手が取り残される</b>
+        // （この関数の存在理由そのものと矛盾する）
+        File.ReadAllText(Path.Combine([RepositoryPaths.Root, .. SecurityDocRelativePath]));
 
     /// <summary>セキュリティ文書のリポジトリ内での位置。</summary>
     private static readonly string[] SecurityDocRelativePath = ["docs", "security.md"];
