@@ -316,11 +316,16 @@ public static class AllowedHostsPolicy
     /// <b>そのまま誤った安心</b>になる —— これは <c>"*;incident.example.test"</c> を
     /// 取りこぼしていた頃とまったく同じ形の穴で、向きだけが逆。</para>
     ///
-    /// <para><b>判定は「トリムすると変わるか」だけ。</b> リクエストの <c>Host</c> ヘッダーは
-    /// 解析された時点で前後に空白を持たないので、前後に空白のある項目は
-    /// <b>綴りに関係なく</b>一致しえない（<c>" * "</c> のようにワイルドカードのつもりの綴りも
-    /// ここに落ちる）。内側の空白（<c>"a b.test"</c>）は別の話なので見ない ——
-    /// そもそもホスト名として不正で、ここで扱うと「何を保証しているか」がぼやける。</para>
+    /// <para><b>判定は 2 つ。</b> (1) 正規化後の綴りが、突き合わせに使われるホスト部と
+    /// 食い違うこと（前後の空白・ポートがこれ）。(2) <c>Host</c> ヘッダーが運べない文字を
+    /// 含むこと（空白・<c>%</c>）。リクエストの <c>Host</c> ヘッダーは解析された時点で
+    /// 前後に空白を持たないので、前後に空白のある項目は<b>綴りに関係なく</b>一致しえない
+    /// （<c>" * "</c> のようにワイルドカードのつもりの綴りもここに落ちる）。
+    /// <b>内側の空白（<c>"a b.test"</c> ・ <c>"0.0.0 .0"</c>）も (2) で拾う（issue #269）</b> ——
+    /// 以前は「別の話」として見ていなかったが、そのせいで <c>"0.0.0 .0"</c> が無警告のまま残り、
+    /// 運用者がその空白を外すと <c>0.0.0.0</c> ＝全許可になる経路が開いていた。
+    /// どこまで拾うかの線引きは
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本。</para>
     ///
     ///
     /// <para><b>起動時のチェックはここを直接は呼ばない</b>（<see cref="InspectNeverMatchingEntries"/>
@@ -580,17 +585,7 @@ public static class AllowedHostsPolicy
         // 0.0.0.0 ＝全許可（issue #64）になり、後者は前後の空白の警告に従って直した先が
         // <b>無警告のまま 400</b>（＝警告が自分で自分を黙らせる形）だった。
         // 実測でも本物の Kestrel は Host: 0 .0.0.0 を 400 で弾く
-        normalized.Any(char.IsWhiteSpace)
-        // <b>スコープの区切りは角括弧の中だけ。</b> reg-name（普通のホスト名）では
-        // "%" は percent-encoding として合法なので、一律に弾くと誤検知の側へ倒れる
-        || (IsBracketed(normalized) && normalized[1..^1].Contains(ScopeSeparator));
-
-    /// <summary>その綴りが角括弧で囲まれているかを見る。</summary>
-    /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns>開きと閉じの両方があるなら <c>true</c>。</returns>
-    private static bool IsBracketed(string normalized) =>
-        // 開きと閉じの両方がある長さで、実際にその 2 文字で挟まれていること
-        normalized.Length >= 2 && normalized[0] == '[' && normalized[^1] == ']';
+        ContainsSpellingAHostHeaderCannotCarry(normalized);
 
     /// <summary>
     /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
@@ -615,12 +610,16 @@ public static class AllowedHostsPolicy
     /// <c>[::1%25eth0]</c>）。どちらも Host ヘッダーの構文として運べないので
     /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。</para>
     ///
-    /// <para><b>ただし 2 つは適用範囲が違う（レビュー指摘）。</b> 空白は
-    /// <b>角括弧の有無を問わず</b>運べない（<c>0.0.0 .0</c> のような途中の空白も同じ）。
-    /// 一方 <c>%</c> は普通のホスト名では percent-encoding として合法なので、
-    /// <b>角括弧の中にあるときだけ</b>見る ——一律に弾くと誤検知の側へ倒れる。
-    /// 振り分けは <see cref="CannotBeCarriedByAHostHeader"/> が持ち、
-    /// ここは「その 1 つでも含むか」だけを答える（IPv6 リテラルの判定が使う）。</para>
+    /// <para><b>どちらも角括弧の有無を問わない（レビュー指摘）。</b> 空白が
+    /// <c>0.0.0 .0</c> のような途中の形でも運べないのは分かりやすいが、
+    /// <c>%</c> も同じだった —— 一時は「普通のホスト名では percent-encoding として
+    /// 合法だから角括弧の中だけ」としていたが、<b>実測はその逆</b>で、
+    /// <c>a%2Db.test</c> ・ <c>www.example%2Ecom</c> ・ <c>a%b.test</c> ・ <c>a%25b.test</c> は
+    /// <b>どれも 400</b>（比較のため: <c>a_b.test</c> ・ <c>a~b.test</c> ・
+    /// <c>xn--bcher-kva.test</c> は 200）。角括弧の中だけを見ていた版では
+    /// <c>AllowedHosts=…;www.example%2Ecom</c> が<b>警告 2 本とも出ないまま 400</b> になっていた
+    /// （issue #256 と同じ形の見逃し）。<b>推測ではなく実測で決めること</b>
+    /// ——この 1 行は「合法そうだから」という理屈だけで穴になっていた。</para>
     ///
     /// <para><b>残っている境界（意図した見逃し）:</b> <c>[foo]</c> や
     /// <c>[www.example.com:8080:]</c> は Kestrel が 400 で弾くのに、ここでは拾えない
@@ -633,10 +632,16 @@ public static class AllowedHostsPolicy
     /// <returns>運べない文字を含むなら <c>true</c>。</returns>
     private static bool ContainsSpellingAHostHeaderCannotCarry(string spelling) =>
         // 空白（ヘッダー値の解析で切れる）か、スコープの区切り（実測で 400）を含むか
-        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == ScopeSeparator);
+        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == PercentSign);
 
-    /// <summary>IPv6 のスコープを書くときの区切り（<c>fe80::1%eth0</c> の <c>%</c>）。</summary>
-    private const char ScopeSeparator = '%';
+    /// <summary>
+    /// パーセント記号（IPv6 のスコープ区切り <c>fe80::1%eth0</c> と percent-encoding の両方）。
+    /// </summary>
+    /// <remarks>
+    /// <b>どちらの用途でも <c>Host</c> ヘッダーには載らない</b>（実測は
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本）。
+    /// </remarks>
+    private const char PercentSign = '%';
 
     /// <summary>
     /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。

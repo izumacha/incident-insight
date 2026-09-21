@@ -167,10 +167,10 @@ public class AllowedHostsPolicyTests
     [InlineData("incident.example.test;[fe80::1]:8080 ", "[fe80::1]:8080 ")]
     // <b>かつての「残っている境界」が閉じた（issue #269）。</b> 素の IPv6 を書くと
     // HostString が括弧を補うので、実測では "::1 " → "[::1 ]" となり空白が<b>内側</b>へ入る。
-    // 正規化後の前後には空白が無いので<b>空白としては</b>拾えないままだが、
-    // 「角括弧の中身に空白か % があれば死んでいる」を足したことで名指しできるようになった
-    // ——Host ヘッダーは解析の時点で空白を持てないので、実際に一致しない項目である
-    // （実測でも本物の Kestrel は Host: [::1 ] を 400 で弾く）
+    // 正規化後の前後には空白が無いので「前後の空白」としては拾えないが、
+    // 「Host ヘッダーが運べない文字（空白・%）を含む項目は死んでいる」を足したことで
+    // 名指しできるようになった（理由は WhitespaceInsideEntry。下の Theory が固定する）
+    // ——実測でも本物の Kestrel は Host: [::1 ] を 400 で弾く
     [InlineData("incident.example.test;::1 ", "::1 ")]
     // <b>区切りだけの値は載らない。</b> 空の項目は分割時に落ちるので「死んだ項目」ではなく、
     // 既定の ["*"] へ落ちる別の問題(そちらは IsPermissive が拾う)
@@ -928,6 +928,11 @@ public class AllowedHostsPolicyTests
     // 警告が 1 本も出ない（実測値は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
     [InlineData("a.example.test;[fe80::1%eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     [InlineData("a.example.test;[::1%25eth0]", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // <b>% は角括弧の外でも運べない（レビュー指摘）。</b> 「普通のホスト名では
+    // percent-encoding として合法だから」と角括弧の中だけを見ていた頃は、この形が
+    // 警告 2 本とも出ないまま 400 になっていた（実測で Kestrel は Host: www.example%2Ecom を
+    // 400 で弾く。比較のため a_b.test ・ a~b.test ・ xn--bcher-kva.test は 200）
+    [InlineData("a.example.test;www.example%2Ecom", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>直すとワイルドカードになる形</b>。空白でもポートでも、まずこちらを名乗る
     [InlineData("a.example.test; 0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0:8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
