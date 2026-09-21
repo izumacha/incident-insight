@@ -741,6 +741,19 @@ public static class AllowedHostsPolicy
                 // URL として貼られた形は、ホスト名だけを取り出した形も候補にする
                 yield return ComparableSpelling(withoutPercent);
                 yield return ComparableSpelling(HostnameInsideUrlLikeSpelling(withoutPercent));
+
+                // <b>コロンから後ろを落とした形も候補にする（レビュー指摘）。</b>
+                // ホスト部の切り出しはコロンが 2 つ以上ある値を<b>丸ごと角括弧で包む</b>ので、
+                // "0.0.0.0:8080:" ・ "0.0.0.0::" では ComparableSpelling がポートを落とせない
+                // ——「ポートも余分なコロンも書くな」という案内どおりに直すと 0.0.0.0 ＝
+                // 全ホスト許可（issue #64）になるのに、注意を持たない文面が付いていた
+                yield return ComparableSpelling(TruncateAtFirstColon(withoutPercent));
+
+                // <b>コロンの手前を落とした形も候補にする（レビュー指摘）。</b>
+                // "http:0.0.0.0"（"//" を打ち損ねた URL）はホスト部が "http" になるため
+                // 上の URL 用の直し方では届かない。案内どおり「ホスト名だけを書く」と
+                // 0.0.0.0 になるので、ここでも注意を出せるようにする
+                yield return ComparableSpelling(AfterBareScheme(withoutPercent));
             }
         }
     }
@@ -756,6 +769,75 @@ public static class AllowedHostsPolicy
     private static string StripSurroundingBrackets(string value) =>
         // 開きと閉じの両方で挟まれているときだけ、中身を返す
         value.Length >= 2 && value[0] == '[' && value[^1] == ']' ? value[1..^1] : value;
+
+    /// <summary>最初のコロンより後ろを落とす（「ポートも余分なコロンも書くな」のモデル）。</summary>
+    /// <remarks>
+    /// <para><b><see cref="ComparableSpelling"/> だけでは届かない直し方がある（レビュー指摘）。</b>
+    /// ホスト部の切り出しは <c>]</c> を含まず<b>コロンが 2 つ以上</b>ある値を、中身を問わず
+    /// <b>丸ごと</b>角括弧で包む。つまり <c>"0.0.0.0:8080:"</c> ・ <c>"0.0.0.0::"</c> ・
+    /// <c>"0.0.0.0:8080:9090"</c>（末尾コロンのタイプミス、<c>host:port:path</c> の写し）では
+    /// ポートが 1 つも落ちないため、これらは
+    /// <see cref="DeadEntryReason.WildcardOnceRepaired"/> に当たらず
+    /// <see cref="DeadEntryReason.NotABareHostname"/> になっていた。
+    /// その文面は「素のホスト名を 1 つ、ポートも余分なコロンも書くな」と案内するので、
+    /// 従うと <c>0.0.0.0</c> ＝<b>ホスト名の絞り込みが丸ごと無効</b>（issue #64）。
+    /// コロンが 1 つの <c>"0.0.0.0:8080"</c> は正しく警告されていたので、<b>非対称</b>でもあった。</para>
+    ///
+    /// <para><b>誤検知の側へは倒れない。</b> 影響を受けるのは「最初のコロンの手前が
+    /// ちょうどワイルドカードの綴り」の項目だけで、その項目に「そのまま直すな」と言うのは
+    /// 正しい。<c>"0.0.0.0.example.test:8080:"</c> のような実ホスト名は
+    /// 落とした結果がワイルドカードにならないので、これまでどおりの理由で名乗る。</para>
+    /// </remarks>
+    /// <param name="value">空白・パーセント記号を処理した後の綴り。</param>
+    /// <returns>最初の <c>:</c> より前の部分（<c>:</c> が無ければ元の綴り）。</returns>
+    private static string TruncateAtFirstColon(string value)
+    {
+        // 最初のコロンの位置を探す
+        var at = value.IndexOf(PortSeparator, StringComparison.Ordinal);
+
+        // 見つからなければそのまま、見つかればその手前までを返す
+        return at < 0 ? value : value[..at];
+    }
+
+    /// <summary><c>"//" の無いスキーム</c>（<c>"http:0.0.0.0"</c>）を外す。</summary>
+    /// <remarks>
+    /// <para><b><c>"//"</c> を打ち損ねた URL には URL 用の直し方が届かない（レビュー指摘）。</b>
+    /// <c>"http:0.0.0.0"</c> はホスト部が <c>"http"</c> になるため
+    /// <see cref="HostnameInsideUrlLikeSpelling"/>（<c>"://"</c> と <c>"/"</c> を見る）では
+    /// 何も取り出せず、案内どおり「ホスト名だけを書く」と <c>0.0.0.0</c> ＝全ホスト許可
+    /// （issue #64）になるのに、注意を持たない文面が付いていた。</para>
+    ///
+    /// <para><b>スキームと見なすのは「コロンの手前が ASCII の英字だけ」のときに限る。</b>
+    /// ここを広げると <c>"a.test:8080"</c> ・ <c>"192.168.0.1:80"</c> のような
+    /// <b>ごく普通の host:port</b> まで頭を落とすことになる（ドット・数字・ハイフンを
+    /// 含む綴りは除かれるので、そうならない）。<c>"localhost:0.0.0.0"</c> のように
+    /// 英字だけの単一ラベルは残るが、そこで出るのは
+    /// <see cref="DeadEntryReason.WildcardOnceRepaired"/> ＝「そのまま直すな」という
+    /// <b>多く報告する側</b>の注意なので、害は無い。</para>
+    /// </remarks>
+    /// <param name="value">空白・パーセント記号を処理した後の綴り。</param>
+    /// <returns>スキームを外した後ろ側（スキームに見えなければ元の綴り）。</returns>
+    private static string AfterBareScheme(string value)
+    {
+        // 正規化が補った角括弧を外してから見る（コロンが 2 つ以上あると包まれるため）
+        var bare = StripSurroundingBrackets(value);
+
+        // 最初のコロンの位置を探す
+        var at = bare.IndexOf(PortSeparator, StringComparison.Ordinal);
+
+        // コロンが無い、または手前が空なら、スキームの形ではない
+        if (at <= 0) return value;
+
+        // 手前が ASCII の英字だけでなければ、ごく普通の host:port なので触らない
+        for (var i = 0; i < at; i++)
+        {
+            // 英字以外が 1 文字でもあれば、スキームとは見なさない
+            if (!char.IsAsciiLetter(bare[i])) return value;
+        }
+
+        // コロンの後ろ（スキームを外した本体）を返す。先頭の "/" は URL 用の直し方が落とす
+        return bare[(at + PortSeparator.Length)..];
+    }
 
     /// <summary>最初のパーセント記号より後ろを落とす。</summary>
     /// <remarks>
@@ -773,8 +855,10 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>誤検知の側へは倒れない。</b> 影響を受けるのは「<c>%</c> の手前が
     /// ちょうどワイルドカードの綴り」の項目だけで、その項目に
-    /// 「そのまま直すな」と言うのは正しい。<c>"a.test%20"</c> ・ <c>"%0.0.0.0"</c> は
-    /// 落とした結果がワイルドカードではないので、これまでどおりの理由で名乗る。</para>
+    /// 「そのまま直すな」と言うのは正しい。<c>"a.test%20"</c> は落とした結果が
+    /// ワイルドカードではないので、これまでどおりの理由で名乗る
+    /// （<c>"%0.0.0.0"</c> のほうは、<see cref="RepairedSpellings"/> が別に持っている
+    /// 「<c>%</c> だけを抜く」候補で拾われる）。</para>
     /// </remarks>
     /// <param name="value">空白を落とした後の綴り。</param>
     /// <returns>最初の <c>%</c> より前の部分（<c>%</c> が無ければ元の綴り）。</returns>
@@ -847,7 +931,23 @@ public static class AllowedHostsPolicy
         /// <summary>正規化後も前後に空白が残っている（項目はトリムされない）。</summary>
         SurroundingWhitespace,
 
-        /// <summary>ポートを含んでいる（<c>Host</c> 側はポートを落としてから比べられる）。</summary>
+        /// <summary>
+        /// ホスト部の直後にコロンがあり、そこから先の綴りが残っている
+        /// （<c>Host</c> 側はポートを落としてから比べられる）。
+        /// </summary>
+        /// <remarks>
+        /// <b>「ポートを含む」と断定しない（レビュー指摘）。</b> この分岐には
+        /// <c>"a.test:8080"</c> だけでなく <c>"https:b.example.test"</c>（<c>"//"</c> を
+        /// 打ち損ねた URL）や <c>"a.test:abc"</c> も入る。どれがポートでどれがスキームかを
+        /// 綴りから当てようとすると、<c>"localhost:8080"</c>（英字だけの単一ラベル＋実ポート）を
+        /// 「URL だ」と名指しすることになり、issue #256 が名指しした<b>事実と違う理由</b>を
+        /// 向きを変えて作り直すだけになる。そこで<b>分類は 1 つのまま</b>にし、文面のほうを
+        /// 機構（「コロンから先が残っているので一致しえない」）と<b>両方の読み方の例</b>で
+        /// 書いて、運用者が自分の項目に当てはめられるようにしている。
+        /// なお「直すとワイルドカードになる」綴り（<c>"http:0.0.0.0"</c> ・
+        /// <c>"0.0.0.0:8080"</c>）は、手前の
+        /// <see cref="WildcardOnceRepaired"/> が先に名乗る。
+        /// </remarks>
         PortSuffix,
 
         /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
@@ -1364,10 +1464,17 @@ public static class AllowedHostsPolicy
                 "host filtering does not trim entries, so the surrounding whitespace is part of "
                 + "the entry and no Host header can ever equal it",
 
-            // Host ヘッダー側はポートを落としてから比べられるので、ポート付きは一致しえない
+            // Host ヘッダー側はポートを落としてから比べられるので、コロンから先がある項目は
+            // 一致しえない。<b>「ポートを含む」と断定しない（レビュー指摘）</b> ——
+            // "https:b.example.test" のように、コロンの手前がスキームの綴りも同じ分岐に入る
             DeadEntryReason.PortSuffix =>
-                "host filtering strips the port from the Host header before comparing, so an "
-                + "entry that carries a port can never be equal — list the hostname on its own",
+                "host filtering removes the port from the Host header before comparing, but it "
+                + "compares the entry exactly as written, and this entry has more text after a "
+                + "':' — so the two can never be equal. Write one hostname and nothing else: "
+                + "for 'a.test:8080' that is 'a.test'; for 'https:b.example.test' (a scheme, "
+                + "not a port) it is 'b.example.test'. Take care not to end up with a wildcard: "
+                + "'0.0.0.0:8080' becomes '0.0.0.0', which disables host filtering entirely "
+                + "(issue #64)",
 
             // Host ヘッダーの IPv6 リテラルは必ず角括弧付きで届くので、括弧なしは一致しえない
             DeadEntryReason.UnbracketedIpv6Literal =>
