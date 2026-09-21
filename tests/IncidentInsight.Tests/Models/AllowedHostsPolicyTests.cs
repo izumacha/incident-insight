@@ -910,24 +910,44 @@ public class AllowedHostsPolicyTests
     // 見つからなかった扱いにすると、上限に届くような綴りだけが<b>ワイルドカードの注意を
     // 持たない文面</b>になり、運用者が案内どおり直すと全ホスト許可（issue #64）——
     // <b>上限そのものが fail-open の口</b>になる。
+    // <b>数え上げ側と判定側の「配線」も固定する（レビュー指摘）。</b>
+    // 上の Theory が見ているのは判定そのものだけで、<b>数え上げ側が打ち切りをどう伝えるか</b>は
+    // 通らない ——本番の上限（4096）は実在しうる綴りでは届かないので、旗を立てるのを
+    // やめる変異が全件緑のまま通った（実測）。上限を引数で下げて、その配線を実際に走らせる。
+    // 以前はこの配線が「返ってきた候補の件数が上限に達していたら打ち切り」という
+    // <b>推測</b>で、1 回の取り出しで最大 9 件が内部の集合へ積まれる一方 候補は 1 件しか
+    // 増えないため、<b>条件は一度も成り立たなかった</b>（＝上限が fail-open の口だった）。
+    [Fact]
+    public void RepairsToWildcard_ReportsUndecided_WhenTheSearchItselfWasTruncated()
+    {
+        // ワイルドカードにはならない、ごく普通のホスト名（正規化してもこの綴りのまま）
+        const string normalized = "b.example.test";
+
+        // 上限を十分に取れば「ワイルドカードにはならない」と正しく答える
+        Assert.False(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 4096));
+
+        // 上限を下げて打ち切らせると、<b>同じ綴り</b>でも「判断できない＝警告する」側へ倒れる
+        Assert.True(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 1));
+    }
+
     [Theory]
     // ワイルドカードに当たれば、打ち切りかどうかに関係なく true
-    [InlineData(new[] { "a.example.test", "0.0.0.0" }, 8, true)]
-    [InlineData(new[] { "a.example.test", "[::]" }, 2, true)]
-    [InlineData(new[] { "*" }, 1, true)]
-    // 当たらず、上限にも届かずに数え終わったなら false（＝ふつうの「死んだ項目」）
-    [InlineData(new[] { "a.example.test", "b.example.test" }, 8, false)]
-    [InlineData(new string[0], 8, false)]
-    // 当たらないまま上限に達したなら、判断できないので true（警告する側へ倒す）
-    [InlineData(new[] { "a.example.test", "b.example.test" }, 2, true)]
-    [InlineData(new[] { "a.example.test" }, 1, true)]
+    [InlineData(new[] { "a.example.test", "0.0.0.0" }, false, true)]
+    [InlineData(new[] { "a.example.test", "[::]" }, true, true)]
+    [InlineData(new[] { "*" }, false, true)]
+    // 当たらず、打ち切ってもいないなら false（＝ふつうの「死んだ項目」）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, false, false)]
+    [InlineData(new string[0], false, false)]
+    // 当たらないまま打ち切ったなら、判断できないので true（警告する側へ倒す）
+    [InlineData(new[] { "a.example.test", "b.example.test" }, true, true)]
+    [InlineData(new string[0], true, true)]
     public void RepairsToWildcard_TreatsATruncatedSearchAsUndecided(
         string[] repairedSpellings,
-        int limit,
+        bool truncated,
         bool expected)
     {
-        // 合成した候補の並びと上限で、判定そのものを呼ぶ
-        var actual = AllowedHostsPolicy.RepairsToWildcard(repairedSpellings, limit);
+        // 合成した候補の並びと打ち切りの旗で、判定そのものを呼ぶ
+        var actual = AllowedHostsPolicy.RepairsToWildcard(repairedSpellings, truncated);
 
         // 期待どおりに倒れているか（打ち切りは「見つからなかった」ではない）
         Assert.Equal(expected, actual);
@@ -948,8 +968,26 @@ public class AllowedHostsPolicyTests
     // 「角括弧で囲め」と案内される ——従うと警告だけが消えて 400 は残る
     [InlineData("a.example.test;b.example.test:8080:", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>逆側の取り違え。</b> 角括弧を足されない綴りを一律 PortSuffix と名乗ると、
-    // ポートを 1 つも含まない項目に「ポートを外せ」と案内することになる
-    [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
+    // ポートを 1 つも含まない項目に「ポートを外せ」と案内することになる。
+    // この綴りは対になっていない角括弧なので、専用の理由で名乗る（下記）
+    [InlineData("a.example.test;b]c.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    // <b>対になっていない角括弧は、警告 2 本とも黙っていた（レビュー指摘）。</b>
+    // 実測では "[0.0.0.0" ・ "0.0.0.0]" ・ "[*" ・ "*]" ・ "[::" ・ "a[b.test" ・ "[[a]]" は
+    // どれも Kestrel が 400 で弾くのに、どちらの警告にも掛からなかった。しかも運用者が
+    // 余計な括弧を消すと 0.0.0.0 / * / :: ＝全ホスト許可（issue #64）。
+    // 直すとワイルドカードになる綴りは、いちばん危ない形として先に名乗る
+    [InlineData("a.example.test;[0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;0.0.0.0]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;[*", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;*]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // ワイルドカードにならない側も、黙らずに専用の理由で名指しされること
+    [InlineData("a.example.test;[b.example.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    [InlineData("a.example.test;b.example[.test", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    [InlineData("a.example.test;[[b.example.test]]", AllowedHostsPolicy.DeadEntryReason.UnpairedBrackets)]
+    // <b>1 組・先頭・閉じが後の形は拾わない（中身から受け付け方は言い当てられない）。</b>
+    // "[a:b]" は実測で 200 なので、ここを広げると<b>実際には一致する項目</b>を
+    // 「消してよい」と案内する側（見逃しより重い誤り）へ倒れる
+    [InlineData("a.example.test;[b.example.test]x", AllowedHostsPolicy.DeadEntryReason.NotABareHostname)]
     // <b>スコープ付き IPv6 を「角括弧で囲め」と案内しない。</b> 本物の Kestrel は
     // Host: [fe80::1%eth0] を 400 で弾くので、囲んでも一致するようにはならない
     [InlineData("a.example.test;fe80::1%eth0", AllowedHostsPolicy.DeadEntryReason.PercentSignInEntry)]
