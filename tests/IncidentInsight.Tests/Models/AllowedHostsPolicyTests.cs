@@ -1008,7 +1008,6 @@ public class AllowedHostsPolicyTests
     // <b>逆に、ごく普通の host:port をスキームと読み違えないこと。</b>
     // コロンの手前が英字だけのときしかスキームと見なさないので、ドット・数字・ハイフンを
     // 含む綴りは頭を落とされず、これまでどおりポートの理由で名乗る
-    [InlineData("a.example.test;b.example.test:8080", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     [InlineData("a.example.test;192.168.0.1:80", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     [InlineData("a.example.test;https:b.example.test", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     // <b>スキームの判定を広げると、ごく普通のホスト名が「直すとワイルドカードになる」と
@@ -1018,6 +1017,17 @@ public class AllowedHostsPolicyTests
     // 実測でも、条件を外した変異はこの 1 件が無いと全件緑のまま通った）
     [InlineData("a.example.test;b.example.test:0.0.0.0", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
     [InlineData("a.example.test;192.168.0.1:0.0.0.0", AllowedHostsPolicy.DeadEntryReason.PortSuffix)]
+    // <b>直し方は「順番を決め打った組み合わせ」ではなく閉包で当てること（レビュー指摘）。</b>
+    // "http:0.0.0.0:8080:" は「スキームを外す」→「コロンから先を落とす」の<b>順</b>が要る。
+    // 決め打ちの順番で数え上げていた頃はここが NotABareHostname になり、その文面
+    // 「ポートも余分なコロンも書くな」に従うと 0.0.0.0 ＝全ホスト許可（issue #64）だった
+    [InlineData("a.example.test;http:0.0.0.0:8080:", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    [InlineData("a.example.test;http:0.0.0.0::", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // <b>末尾のポートだけを外す直し方も要る（レビュー指摘）。</b> ":::8080" は
+    // netstat が IPv6 の待受を表示する形で、最初のコロンで切る直し方では届かない
+    [InlineData("a.example.test;:::8080", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
+    // 逆に、素の IPv6 リテラル（"::1" ・ "fe80::1"）の末尾をポートと読み違えないことは、
+    // 上の UnbracketedIpv6Literal のケースがそのまま固定している（重複して書かない）
     public void InspectNeverMatchingEntries_NamesWhyEachEntryCannotMatch(
         string allowedHosts, AllowedHostsPolicy.DeadEntryReason expectedReason)
     {

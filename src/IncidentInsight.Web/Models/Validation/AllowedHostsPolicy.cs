@@ -318,7 +318,10 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>判定は 2 つ。</b> (1) 正規化後の綴りが、突き合わせに使われるホスト部と
     /// 食い違うこと（前後の空白・ポートがこれ）。(2) <c>Host</c> ヘッダーが運べない文字を
-    /// 含むこと（空白・<c>%</c>）。リクエストの <c>Host</c> ヘッダーは解析された時点で
+    /// 含むこと（<b>どの文字かはここに書き写さない</b> ——文字を増減したときに
+    /// こちらだけが古くなる。一覧は下記の正本を見ること。実際、<c>/</c> を足したあとも
+    /// ここと <c>CLAUDE.md</c> は「空白・<c>%</c>」のままだった）。
+    /// リクエストの <c>Host</c> ヘッダーは解析された時点で
     /// 前後に空白を持たないので、前後に空白のある項目は<b>綴りに関係なく</b>一致しえない
     /// （<c>" * "</c> のようにワイルドカードのつもりの綴りもここに落ちる）。
     /// <b>内側の空白（<c>"a b.test"</c> ・ <c>"0.0.0 .0"</c>）も (2) で拾う（issue #269）</b> ——
@@ -717,45 +720,129 @@ public static class AllowedHostsPolicy
     /// <returns>案内どおりに直したあとの綴り（直し方が複数あるので複数返る）。</returns>
     private static IEnumerable<string> RepairedSpellings(string normalized)
     {
-        // どの直し方でも共通の一歩（案内が必ず求めるもの）。
-        // 正規化が補った角括弧も外した形を候補に入れる ——外さないと、括弧の内側で
-        // 起きた直し（"[::%20]" → "[::"）が綴りとして壊れ、ワイルドカードに当たらない
-        var bases = new[] { RemoveWhitespace(normalized), StripSurroundingBrackets(RemoveWhitespace(normalized)) };
-
-        // <b>直し方は組み合わせて当てる（レビュー指摘）。</b> 1 つずつ別々に当てていた頃は、
-        // 2 つ以上が要る綴り（"http://0.0.0.0%20"・"%0.0.0.0/0"・" ::%20"）が
-        // WildcardOnceRepaired から外れ、<b>ワイルドカードの注意を持たない文面</b>が付いていた
-        // ——運用者が案内どおり直すと全ホスト許可（issue #64）。
-        // 候補はたかだか十数通りなので、数え上げても代償が無い。
-        // 多く報告する側（「そのまま直すな」）へ倒れるので、誤検知の害も無い
-        foreach (var start in bases)
+        // 直し方の「1 手」。どれも綴りを<b>伸ばさない</b>ので、繰り返しても必ず止まる
+        var steps = new Func<string, string>[]
         {
-            // パーセント記号の扱い: そのまま / 以降を削る / 記号だけ抜く
-            foreach (var withoutPercent in new[]
-                     {
-                         start,
-                         TruncateAtPercentSign(start),
-                         start.Replace(PercentSign.ToString(), string.Empty),
-                     })
+            // 空白を 1 つ残らず落とす（正規化が括弧を補うと空白は内側へ移る）
+            RemoveWhitespace,
+            // 正規化が補った角括弧を外す（外さないと括弧の内側の直しが綴りとして壊れる）
+            StripSurroundingBrackets,
+            // 読めない末尾ごと削る（"0.0.0.0%20" → "0.0.0.0"）
+            TruncateAtPercentSign,
+            // パーセント記号だけを抜く（"%0.0.0.0" → "0.0.0.0"）
+            RemoveEveryPercentSign,
+            // URL ごと貼られた形から、ホスト名の部分だけを取り出す
+            HostnameInsideUrlLikeSpelling,
+            // ポートも余分なコロンも書かない（"0.0.0.0:8080:" → "0.0.0.0"）
+            TruncateAtFirstColon,
+            // "//" の無いスキームを外す（"http:0.0.0.0" → "0.0.0.0"）
+            AfterBareScheme,
+            // 末尾の ":ポート番号" だけを外す（":::8080" → "::"）
+            WithoutTrailingPort,
+        };
+
+        // <b>直し方は「組み合わせ」ではなく「閉包」で当てる（レビュー指摘）。</b>
+        // 以前は「空白と括弧」→「% の扱い」→「URL / コロン」という<b>決め打ちの順番</b>で
+        // 数え上げていたため、同じ手を 2 度使う綴りや順番が逆の綴りが漏れていた
+        // （"http:0.0.0.0:8080:" は「スキームを外す」→「コロンから先を落とす」の順が要る）。
+        // 漏れた項目には<b>ワイルドカードの注意を持たない文面</b>が付き、運用者が案内どおり
+        // 直すと全ホスト許可（issue #64）になる。
+        // 1 手ずつ適用して新しい綴りが出なくなるまで広げれば、順番も回数も決め打たずに済む
+        var seen = new HashSet<string>(StringComparer.Ordinal) { normalized };
+
+        // これから 1 手ずつ広げる綴りの待ち行列（最初は正規化済みの項目そのもの）
+        var pending = new Queue<string>(new[] { normalized });
+
+        // 待ち行列が空になる（＝新しい綴りが出なくなる）まで広げる
+        while (pending.Count > 0)
+        {
+            // 次に広げる綴りを 1 つ取り出す
+            var current = pending.Dequeue();
+
+            // 取り出した綴りを、突き合わせに使われる形（ホスト部）にして返す
+            yield return ComparableSpelling(current);
+
+            // どの直し方も 1 手ずつ試し、初めて出た綴りだけを待ち行列へ足す
+            foreach (var step in steps)
             {
-                // URL として貼られた形は、ホスト名だけを取り出した形も候補にする
-                yield return ComparableSpelling(withoutPercent);
-                yield return ComparableSpelling(HostnameInsideUrlLikeSpelling(withoutPercent));
+                // 1 手だけ直した綴り
+                var next = step(current);
 
-                // <b>コロンから後ろを落とした形も候補にする（レビュー指摘）。</b>
-                // ホスト部の切り出しはコロンが 2 つ以上ある値を<b>丸ごと角括弧で包む</b>ので、
-                // "0.0.0.0:8080:" ・ "0.0.0.0::" では ComparableSpelling がポートを落とせない
-                // ——「ポートも余分なコロンも書くな」という案内どおりに直すと 0.0.0.0 ＝
-                // 全ホスト許可（issue #64）になるのに、注意を持たない文面が付いていた
-                yield return ComparableSpelling(TruncateAtFirstColon(withoutPercent));
-
-                // <b>コロンの手前を落とした形も候補にする（レビュー指摘）。</b>
-                // "http:0.0.0.0"（"//" を打ち損ねた URL）はホスト部が "http" になるため
-                // 上の URL 用の直し方では届かない。案内どおり「ホスト名だけを書く」と
-                // 0.0.0.0 になるので、ここでも注意を出せるようにする
-                yield return ComparableSpelling(AfterBareScheme(withoutPercent));
+                // まだ見ていない綴りなら、そこからさらに広げる
+                if (seen.Add(next)) pending.Enqueue(next);
             }
+
+            // <b>数え上げに上限を置く（fail-safe）。</b> どの手も綴りを伸ばさないので
+            // 閉包は必ず有限だが、上限が無いと設定値の綴りしだいで起動が長引きうる。
+            // 実測では実在しうる項目の閉包はどれも 2 桁前半なので、余裕をもって打ち切る
+            if (seen.Count >= MaxRepairedSpellings) yield break;
         }
+    }
+
+    /// <summary>「直したら何になるか」を数え上げる上限。</summary>
+    /// <remarks>
+    /// <see cref="RepairedSpellings"/> の閉包は、どの手も綴りを伸ばさないので必ず有限。
+    /// それでも上限を置くのは、この判定が<b>起動時と設定の再読込で走る</b>ため。
+    /// 実測（9,549 通りの綴り）での最大は 2 桁前半なので、ここは十分に余裕がある。
+    /// </remarks>
+    private const int MaxRepairedSpellings = 256;
+
+    /// <summary>パーセント記号だけを抜く（「'%' を書くな」という案内のモデル）。</summary>
+    /// <remarks>
+    /// <see cref="TruncateAtPercentSign"/>（読めない末尾ごと削る）と<b>両方</b>を持つのは、
+    /// 文面が「<c>'%'</c> を書かずにホスト名を書け」と案内しており、運用者がどちらの
+    /// 直し方もしうるため。<c>"%0.0.0.0"</c> は<b>抜く</b>側でしかワイルドカードに当たらない。
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns><c>%</c> を取り除いた綴り。</returns>
+    private static string RemoveEveryPercentSign(string value) =>
+        // 記号だけを空文字へ置き換える（前後の綴りはそのまま残す）
+        value.Replace(PercentSign.ToString(), string.Empty, StringComparison.Ordinal);
+
+    /// <summary>末尾の <c>":ポート番号"</c> だけを外す。</summary>
+    /// <remarks>
+    /// <para><b>「余分なコロン」の案内で消えるのは、末尾のポートのほうでもある（レビュー指摘）。</b>
+    /// <c>":::8080"</c>（<c>netstat -tln</c> が IPv6 の待受を表示する形）は
+    /// <see cref="DeadEntryReason.NotABareHostname"/> になり、その文面
+    /// 「ポートも余分なコロンも書くな」に従って末尾のポートを外すと <c>::</c> ＝
+    /// 全ホスト許可（issue #64）。<see cref="TruncateAtFirstColon"/> は
+    /// <b>最初の</b>コロンで切るのでこの形には届かない。</para>
+    ///
+    /// <para><b>素の IPv6 リテラルを巻き添えにしない。</b> <c>"::1"</c> の末尾も
+    /// 「コロン＋数字」の形をしているので、一見すると
+    /// <c>"::1"</c> → <c>"::"</c>（全ホスト許可）へ倒れそうに見える。
+    /// そうはならないのは、<b>外すときに最後のコロンごと落とす</b>から ——
+    /// <c>"::1"</c> の最後のコロンは 2 文字目なので、残るのは <c>":"</c> であって
+    /// <c>"::"</c> ではない。<c>"fe80::1"</c> は <c>"fe80:"</c>、
+    /// <c>"0:0:0:0:0:0:0:1"</c> は <c>"0:0:0:0:0:0:0"</c> になる。
+    /// <b>だから <see cref="IsIpv6Literal"/> による門番は置いていない。</b>
+    /// 一度は置いたが、9,549 通りの綴りで<b>1 件も結果が変わらない</b>ことを実測した
+    /// （＝どのテストにも守られない、読み手に守られていると誤解させるだけの行。§6）。
+    /// <b>ここに「末尾だけ」ではなく「最後のコロンより後ろ」を残す直し方を足すときは、
+    /// この理由が崩れるので門番を戻すこと。</b></para>
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>末尾のポートを外した綴り（ポートに見えなければ元の綴り）。</returns>
+    private static string WithoutTrailingPort(string value)
+    {
+        // 最後のコロンの位置を探す
+        var at = value.LastIndexOf(PortSeparator, StringComparison.Ordinal);
+
+        // コロンが無ければポートも無い
+        if (at < 0) return value;
+
+        // コロンの後ろ（ポート部の候補）
+        var tail = value[(at + PortSeparator.Length)..];
+
+        // 数字以外が 1 文字でもあれば、ポートの位置ではないので触らない
+        foreach (var ch in tail)
+        {
+            // 数字でない文字を見つけた時点で、元の綴りをそのまま返す
+            if (!char.IsAsciiDigit(ch)) return value;
+        }
+
+        // コロンの手前だけを返す（空のポート ":" もここで外れる）
+        return value[..at];
     }
 
     /// <summary>正規化が補った角括弧を外す（囲まれていなければそのまま）。</summary>
@@ -1511,13 +1598,16 @@ public static class AllowedHostsPolicy
                 + "exactly as written, so the two can never be equal — write one plain hostname "
                 + "with no port and no stray colons (brackets are only for a plain IPv6 literal "
                 + "such as '[::1]'; wrapping anything else in brackets does not make the "
-                + "hostname you meant to allow reachable)",
+                + "hostname you meant to allow reachable). Check what you are left with: if it "
+                + "is '*', '[::]' or '0.0.0.0', do not write it — that disables host filtering "
+                + "entirely (issue #64); use a real hostname or delete the entry",
 
             // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
             DeadEntryReason.WildcardOnceRepaired =>
                 "this entry does not match as written, and the hostname inside it is a wildcard "
-                + "('*', '[::]' or '0.0.0.0') — do NOT just strip the whitespace or the port, "
-                + "because the repaired entry would disable host filtering entirely (issue #64). "
+                + "('*', '[::]' or '0.0.0.0') — do NOT tidy it up, because whichever way you "
+                + "clean it (dropping whitespace, a port, stray colons, a '%', a scheme or a "
+                + "path) the repaired entry disables host filtering entirely (issue #64). "
                 + "Replace it with a real hostname, or delete it",
 
             // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
