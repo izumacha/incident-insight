@@ -169,7 +169,7 @@ public class SecurityHeadersMiddlewareTests
     public void StaticAssetCacheControl_MatchesTheDocumentedDirective()
     {
         // 運用者向けドキュメントを読む
-        var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+        var securityDoc = ReadSecurityDoc();
 
         // <b>静的アセットを説明している箇条書きだけを切り出してから読む(issue #265)。</b>
         // ドキュメント全体を対象にすると、キャッシュ指示を述べた文が<b>すでに 2 つ</b>ある
@@ -285,12 +285,12 @@ public class SecurityHeadersMiddlewareTests
     // 値そのものの性質を見る(手がかりを変えるのが要点)。
     // 保存できる時間を延ばす向きに効く指示の接頭辞。
     // max-age だけを見ると、共有キャッシュへは s-maxage が優先されるため素通りする
-    // キャッシュ期間の上限（1 日）。版付きでない lib/ の更新が利用者へ届くまでの最長時間。
-    // <b>定数にしてあるのは、見る対象が 2 つあるから</b>（定数側の検査と、文書の走査）
-    private const int MaxCacheLifetimeSeconds = 24 * 60 * 60;
-
     private static readonly string[] MaxAgeFamilyPrefixes =
         ["max-age=", "s-maxage=", "stale-while-revalidate=", "stale-if-error="];
+
+    // キャッシュ期間の上限（1 日）。版付きでない lib/ の更新が利用者へ届くまでの最長時間。
+    // <b>定数にしてあるのは、見る対象が 2 つあるから</b>（定数側の検査と、文書の走査）
+    private const long MaxCacheLifetimeSeconds = 24 * 60 * 60;
 
     [Fact]
     public void StaticAssetCacheControl_StaysShortLivedAndRevalidatable()
@@ -327,7 +327,7 @@ public class SecurityHeadersMiddlewareTests
     public void EveryDocumentedCacheDirective_IsNeverLongLived()
     {
         // 運用者向けドキュメントを読む
-        var securityDoc = File.ReadAllText(Path.Combine(RepositoryPaths.Root, "docs", "security.md"));
+        var securityDoc = ReadSecurityDoc();
 
         // 具体的な値を伴うキャッシュ指示を<b>すべて</b>取り出す。
         // 「を名乗」等の言い回しで絞らない ——絞ると、言い回しを変えた囮が素通りする
@@ -437,9 +437,12 @@ public class SecurityHeadersMiddlewareTests
         {
             // 値の部分(= の後ろ)を取り出す
             var value = directive[(directive.IndexOf('=') + 1)..];
-            // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)
+            // 秒数として読めること(読めない綴りを「上限内」と扱わない ——fail-closed)。
+            // <b>long で受ける（レビュー指摘）。</b> int だと 1 桁多い値で TryParse が
+            // false になり、「長すぎます」ではなく「読み取れません」と案内してしまう ——
+            // 実際には読める値なので、直す人を誤った方向へ送る
             Assert.True(
-                int.TryParse(value, out var seconds),
+                long.TryParse(value, out var seconds),
                 $"キャッシュ期間の値を秒数として読み取れません: {directive}（{source}）");
 
             // 上限は 1 日。版付きでない lib/ の更新が利用者へ届くまでの最長時間がこの値になる。
@@ -453,6 +456,21 @@ public class SecurityHeadersMiddlewareTests
                     + "docs/security.md の記載も同じ変更セットで直してください。");
         }
     }
+
+
+    /// <summary>運用者向けのセキュリティ文書を読む。</summary>
+    /// <remarks>
+    /// <b>読み取りを 1 か所に寄せてある（レビュー指摘）。</b> パスを 2 か所へ書き写すと、
+    /// 文書を改名・分割したときに片方だけが直り、もう片方は見つからないか
+    /// <b>古いファイルを読み続ける</b>（§6「パスは名前付き定数にし単一の参照元に置く」）。
+    /// </remarks>
+    /// <returns>文書全体。</returns>
+    private static string ReadSecurityDoc() =>
+        // リポジトリ直下からの相対位置で読む
+        File.ReadAllText(Path.Combine(RepositoryPaths.Root, SecurityDocRelativePath[0], SecurityDocRelativePath[1]));
+
+    /// <summary>セキュリティ文書のリポジトリ内での位置。</summary>
+    private static readonly string[] SecurityDocRelativePath = ["docs", "security.md"];
 
     /// <summary>
     /// 指定した応答フィーチャーだけを持つ最小構成の <see cref="HttpContext"/> を作る。
