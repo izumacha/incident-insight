@@ -113,14 +113,18 @@ public static partial class ResponseCachePolicy
     /// 渡されたコントローラ型から <c>[ResponseCache]</c> の宣言を集める。
     /// </summary>
     /// <remarks>
-    /// <para><b>アクションの絞り込みを「その型が宣言したメソッドか」で行わない。</b>
+    /// <para><b>抽象基底へ引き上げたアクションを取りこぼさない。</b>
     /// 抽象基底コントローラへアクションを引き上げる形(<c>ReportExportControllerBase</c> に
     /// <c>Export()</c> を置き、具象が継承する)は、URL としては具象コントローラ経由で
-    /// <b>実際に到達できる</b>のに、基底は抽象なので走査対象に入らず、具象の側では
-    /// 宣言元が基底なので弾かれる ——つまり<b>どこからも見えなくなる</b>。
+    /// <b>実際に到達できる</b>のに、基底は抽象なので渡される走査対象には入らない。
     /// 実測でも、この形で <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足すと
-    /// 全件緑のままテスト件数すら変わらずに通った。
-    /// 代わりに<b>宣言元が自分たちのアセンブリか</b>で切る
+    /// 全件緑のままテスト件数すら変わらずに通った時期がある。</para>
+    ///
+    /// <para><b>取りこぼさない仕組みは <see cref="AttributeDeclarationsOn"/> 側の「継承の連なりを
+    /// 1 段ずつ訪ねる」形</b>(issue #275)。基底の段そのものを訪ねるので、各段の読み取りを
+    /// <c>DeclaredOnly</c> に絞っても基底の宣言は落ちない ——<b>この 2 つは対で意味を持つ</b>ので、
+    /// 片方だけを「具象から継承ぶんも読む」形へ戻さないこと。アクション側だけを
+    /// <b>自分たちのアセンブリか</b>で切るのは変わらない
     /// (<c>UnlistedFilterValuePolicyTests.MatchingActionParameters</c> と同じ判断)。</para>
     ///
     /// <para>走査対象を引数で受け取るのは、合成したコントローラに対して<b>走査そのもの</b>を
@@ -129,7 +133,10 @@ public static partial class ResponseCachePolicy
     /// </remarks>
     /// <param name="controllers">走査するコントローラ型。</param>
     /// <param name="ownAssembly">「自分たちが宣言したアクション」と見なすアセンブリ。</param>
-    /// <returns>見つかった宣言の一覧(同じ宣言が複数の具象から見えても 1 件に畳む)。</returns>
+    /// <returns>
+    /// 見つかった宣言の一覧(畳む単位は<b>訪ねた段</b>なので、同じ段を複数の具象からたどっても
+    /// 1 件。逆に、基底と派生がそれぞれ宣言していれば<b>両方とも</b>返る)。
+    /// </returns>
     public static IEnumerable<ResponseCacheDeclaration> DeclarationsOn(
         IEnumerable<Type> controllers,
         Assembly ownAssembly) =>
@@ -147,119 +154,126 @@ public static partial class ResponseCachePolicy
     /// <b>片方だけにこれらの手当てが入っている</b>状態が生まれる ——実際、出力キャッシュの
     /// 検査を別に書いた時点で、基底に付けた属性が派生の数だけ並び、名指しされた
     /// ファイルには属性が無い、という既に直したはずの形が復活していた。</para>
+    ///
+    /// <para><b>継承は「後から打ち消す」のではなく、最初から宣言元を歩く(issue #275)。</b>
+    /// 以前は具象ごとに <c>GetCustomAttributes(inherit: true)</c> で読み(＝<b>継承した 1 つの
+    /// 宣言が派生の数だけ現れる</b>)、宣言元をたどる仕組みでその継承を打ち消し、さらに
+    /// 観測場所ごとの記録と走査全体の記録で重複した観測を打ち消していた。つまり
+    /// 「継承して見えた」という性質を 2 段階で後から取り消しており、重複判定のパッチが
+    /// 3 周目に入ったうえ、<b>2 つの記録へ入れる順序に正しさが依存</b>していた
+    /// (順序への依存は差分では見えにくく、次の人が踏みやすい)。</para>
+    ///
+    /// <para><b>いまは継承の連なりを 1 段ずつたどり、各段を <c>inherit: false</c> で読む。</b>
+    /// こうすると (a) 宣言元は<b>歩いている段そのもの</b>なので後追いが要らず、
+    /// (b) 「同じ宣言を 2 つの派生から見る」形は<b>構造的に起こりえない</b>ので
+    /// 畳むための内容キーも要らず(段を 1 度だけ訪ねるための型の集合で足りる)、
+    /// (c) 同じ場所へ複数付いた宣言は<b>そのまま件数として返る</b> ——
+    /// 以前はここで 2 個目が消えるため fail-closed の門番を置いていたが、
+    /// <b>失われる経路そのものが無くなった</b>ので門番ごと不要になった。</para>
+    ///
+    /// <para><b>報告するのは「ソースに書かれた宣言」すべてで、実行時に効くものだけではない。</b>
+    /// 派生が同じ種類を宣言し直していても、基底の宣言は<b>別の派生からは効く</b>し、
+    /// 将来 <c>override</c> しない派生が足された時点で効き始める。狭めると
+    /// 「いま宣言し直している派生があるという理由で、危険な基底の宣言が報告されない」
+    /// という無言の fail-open になるので、宣言そのものを漏れなく返す側へ倒す。</para>
     /// </remarks>
     /// <param name="controllers">走査するコントローラ型。</param>
     /// <param name="ownAssembly">「自分たちが宣言したアクション」と見なすアセンブリ。</param>
     /// <param name="matches">拾う属性かどうかを判定する条件。</param>
-    /// <returns>見つかった宣言の一覧(同じ宣言が複数の具象から見えても 1 件に畳む)。</returns>
+    /// <returns>見つかった宣言の一覧(同じ段を複数の具象から辿っても 1 度しか読まない)。</returns>
     public static IEnumerable<AttributeDeclaration> AttributeDeclarationsOn(
         IEnumerable<Type> controllers,
         Assembly ownAssembly,
         Func<object, bool> matches)
     {
-        // <b>走査全体</b>で同じ宣言を二重に返さないための記録(基底の 1 つの宣言は派生の数だけ見える)。
-        // 観測場所ごとの記録（seenOnThisType / seenOnThisMethod）と対で使う ——
-        // 2 つ持つ理由は EnsureNothingWasLost の説明が正本
-        var seen = new HashSet<string>(StringComparer.Ordinal);
+        // 既に読み終えた<b>宣言の置き場所</b>(＝継承の連なりの 1 段)を覚えておく集合。
+        // 内容ではなく<b>段そのもの</b>を覚えるのが要点で、基底を共有する連なりを 1 度に畳むためだけに要る
+        // (以前のように「宣言の内容」をキーにすると、同じ内容の別々の宣言まで畳んでしまう)
+        var visitedSites = new HashSet<Type>();
 
         // 渡されたコントローラを 1 つずつ見る
         foreach (var controller in controllers)
         {
-            // <b>この観測場所（この型のクラス側）から見えた分だけ</b>を数える記録。
-            // <b>走査の外へ括り出して使い回さない（レビュー指摘）。</b> 括り出して Clear() で
-            // 使い回すと、観測場所ごとに空であることが<b>スコープではなく手で置いた Clear() の
-            // 位置</b>に依存する ——観測場所を 1 つ足したり途中に early-exit を挟んだりした瞬間に
-            // 前の場所のキーが残り、次の<b>ただ 1 つの宣言</b>が門番に当たって走査ごと落ちる
-            // （しかも失敗文言は当てはまらない直し方を案内する）。
-            // <b>実体は最初に要ったときに作る</b>(レビュー指摘) ——走査はアセンブリ中の
-            // 全コントローラ・全アクションを回るが、キャッシュ指示を宣言しているものはごく一部。
-            // スコープはこのままなので、観測場所ごとに空であることは変わらない
-            HashSet<string>? seenOnThisType = null;
-
-            // クラス全体に付いた属性(付いていれば全アクションに効く)を読む。
-            // inherit: true にするのは、基底コントローラで宣言して派生が継承する形を取りこぼさないため
-            foreach (var attribute in controller.GetCustomAttributes(inherit: true).Where(matches))
+            // その具象から基底へ、継承の連なりを 1 段ずつさかのぼる
+            for (var type = controller; type is not null; type = type.BaseType)
             {
-                // <b>名指しは「継承して見えた型」ではなく「実際に宣言している型」で行う。</b>
-                // 基底に付けた属性は派生の数だけ見えるので、具象の名前で報告すると
-                // (a) 同じ 1 つの宣言が複数件に見え、(b) 名指しされたファイルを開いても
-                // 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-                // たどる条件はこの属性の型まで絞る(理由は SameKindAs の説明が正本)
-                var declaringType = DeclarationSite(DeclaringTypeOf(controller, SameKindAs(attribute, matches)));
-                // どこに付いていたかが分かる表示名を作る
-                // <b>名指しは TypeDisplayName を通す（レビュー指摘）。</b> 素の FullName だと
-                // 総称型が `GenericProbeBase`1` という<b>メタデータの綴り</b>のまま出て、
-                // 引数側（同じ 1 行の中）がソースの綴りなのと食い違う
-                var declaredOn = TypeDisplayName(declaringType);
-                // キーの作り方と、そこに何を含めない選択をしたかは DeclarationKey の説明が正本。
-                // <b>表示名から作らない</b>のはアクション側と同じ理由 ——名指しの綴りを変えても
-                // 同一性の意味が動かないよう、キーはメタデータの綴りだけで決める
-                var key = DeclarationKey(
-                    $"type:{declaringType.FullName ?? declaringType.Name}", attribute);
+                // 閉じた総称型は開いた定義へそろえてから読む。そろえないと
+                // ExportBase&lt;Pdf&gt; と ExportBase&lt;Csv&gt; が別の段として 2 度読まれ、
+                // <b>1 つの宣言が閉じ方の数だけ並ぶ</b>(理由の正本は DeclarationSite の説明)
+                var site = DeclarationSite(type);
 
-                // この観測場所の記録を、最初に要ったここで作る
-                seenOnThisType ??= new HashSet<string>(StringComparer.Ordinal);
+                // この段を既に読んでいれば、<b>その基底もすべて読み終えている</b>ので連なりごと打ち切る。
+                // 開いた定義の基底の連なりは閉じ方によらず同じなので、閉じ方が違っても取りこぼさない
+                if (!visitedSites.Add(site)) break;
 
-                // まだ返していない宣言なら返す(判定はクラス側・アクション側で共通)
-                if (IsNewDeclaration(seenOnThisType, seen, key, attribute))
+                // 名指しに使う綴りは<b>返す分が出てから</b>、その段で 1 度だけ組み立てる(レビュー指摘)。
+                // 「表示名は返す分だけ組み立てる」はアクション側が元から持っていた判断で、
+                // 段の名前だけ先に作ると片方だけその判断から外れる。
+                // <b>実測(アプリ全体、ホスト 695 型): 718 段・うち総称 55 段。</b>
+                // <b>省ける量は述語で変わるので、条件を書かずに数字だけ置かない（レビュー指摘）。</b>
+                // 実在の [ResponseCache] を探す述語ではクラス側の宣言が 0 件なので、省けるのは
+                // 総称 55 段の再帰と正規表現だけ(残る 663 段はキャッシュ済みの FullName を読むだけ)
+                // ——<b>効果は小さい</b>。一方、空振り検出が渡す `_ => true` ではクラス側だけで
+                // 667 件の宣言が返るので、そちらでは遅延の有無がそのまま効く。
+                // どちらにせよ段ごとに 1 度で済ませる性質は変えない。
+                // 段ごとに 1 度で済ませる性質は変えない
+                // (素の FullName を使わない理由は TypeDisplayName の説明が正本)
+                string? siteName = null;
+
+                // クラス全体に付いた属性(付いていれば全アクションに効く)を、<b>その段自身の宣言だけ</b>読む。
+                // inherit: false にできるのは、継承した分は基底の段を訪ねたときに読むため
+                foreach (var attribute in site.GetCustomAttributes(inherit: false).Where(matches))
                 {
-                    // クラス側の宣言として返す
-                    yield return new AttributeDeclaration(declaredOn, attribute);
-                }
-            }
-
-            // 各アクション(公開されたインスタンスメソッド)に付いた属性を読む
-            foreach (var method in controller.GetMethods(BindingFlags.Public | BindingFlags.Instance))
-            {
-                // フレームワークの基底(ControllerBase 等)が持つメソッドは自分たちの宣言ではないので飛ばす。
-                // 「この型が宣言したか」で切らないのは、基底へ引き上げたアクションを取りこぼさないため
-                if (method.DeclaringType?.Assembly != ownAssembly)
-                {
-                    // 次のメソッドへ
-                    continue;
+                    // クラス側の宣言として、宣言している型の名前で返す(名前はここで初めて組み立てる)
+                    yield return new AttributeDeclaration(siteName ??= TypeDisplayName(site), attribute);
                 }
 
-                // クラス側と同じ理由で、このアクションの観測場所ぶんを持つ(実体は最初に要ったとき)
-                HashSet<string>? seenOnThisMethod = null;
+                // フレームワークの基底(ControllerBase 等)が宣言したアクションは自分たちの宣言ではないので、
+                // アクション側の走査だけ飛ばして基底へ進む。
+                //
+                // <b>この 1 行は、置く位置と飛ばし方の両方が効いている（レビュー指摘・実測）。</b>
+                //   - クラス側の読み取りより<b>前</b>へ持ち上げてはいけない。持ち上げると
+                //     <b>外の段のクラス属性を 1 つも読まなくなる</b> ——基底コントローラを共有
+                //     プロジェクトへ切り出すと、その基底は「外」なので
+                //     [ResponseCache(Duration = 300, Location = Any)] を黙って落とす。
+                //   - <c>continue</c> を <c>break</c> にしてはいけない。こちらが落とすのは
+                //     <b>2 つ目以降の外の段</b>のクラス属性だけで(この行はクラス側の読み取りの
+                //     <b>後ろ</b>にあるので、最初の外の段は読み終えている)、現在の依存の向きでは
+                //     そこに自分たちの宣言は現れない ——つまり<b>今のところ実害は無い</b>。
+                //     それでも避けるのは、クラス側を絞らないという判断を得るものなしに
+                //     狭めるため。<b>ここは「実害がある」と書かない</b>（成り立たない理由を
+                //     根拠にすると、確かめた人に「簡略化してよい」と読まれる）。
+                // どちらも「同じ条件をまとめただけ」に見える整理なので、
+                // AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly が
+                // <b>ownAssembly 側に別のアセンブリを渡す</b>という手がかりで両方を固定する
+                // (実際に別アセンブリの基底を用意できないため、外か内かの向きを入れ替えて作る)。
+                //
+                // <b>残っている境界(issue #275 以前から同じ)。</b> この 1 行を<b>外す</b>変異には
+                // 検出網が無い ——外すとフレームワーク側のメソッドまで読むが、そこに拾う属性が
+                // 1 つも無いので違反は 1 件も増えず、全件緑のまま通る(実測。旧実装でも同じだった)。
+                // 倒れる向きが「過剰に報告する」側なので許容している。
+                // <b>呼び出し側が渡す ownAssembly を取り違える変異は、この走査からは見えない</b>
+                // ——引数なので合成入力のテストは自前の値を渡しており、アプリ全体を見る側の
+                // 呼び出しだけを差し替えても届かない。あちらは呼び出しごとの空振り検出
+                // (AssertTheAppWideScanReachedTheKnownDeclaration) が受け持つ。
+                if (site.Assembly != ownAssembly) continue;
 
-                // そのメソッドに付いた属性を読む
-                foreach (var attribute in method.GetCustomAttributes(inherit: true).Where(matches))
+                // その段が<b>自分で宣言している</b>アクション(公開されたインスタンスメソッド)を読む。
+                // DeclaredOnly にできるのは、基底の分は基底の段を訪ねたときに読むため
+                foreach (var method in site.GetMethods(
+                    BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly))
                 {
-                    // 宣言元の型で名指しする(基底へ引き上げた場合に「どこを直すか」が分かる)。
-                    // override の場合は method.DeclaringType が派生になるので、
-                    // 属性を実際に宣言しているメソッドまでさかのぼる
-                    // クラス側と同じく、たどる条件をこの属性の型まで絞る
-                    var declaringMethod = DeclaringMethodOf(method, SameKindAs(attribute, matches));
-                    // その宣言が置かれている型を、名指しに使う形へそろえる
-                    var declaringType = DeclarationSite(declaringMethod.DeclaringType!);
-                    // <b>キーは表示名から作らない（レビュー指摘・実測）。</b> 表示名には
-                    // 引数の型が載るが、その綴りは「宣言の置き場所を引き直せたか」に左右される
-                    // ——引き直せない綴りでは閉じ方ごとの姿(Int32 / String)になるので、
-                    // 表示名をキーに含めると<b>1 つの宣言が閉じ方の数だけ違反として並ぶ</b>
-                    // （`DeclarationSite` を足して閉じたはずの形が、表示名を通って戻る）。
-                    // 同一性は<b>メタデータ行</b>だけで決める（同じ行なら同じ 1 つの宣言、
-                    // 別のオーバーロードなら必ず別の行）
-                    var key = DeclarationKey(
-                        $"method:{declaringType.FullName ?? declaringType.Name}"
-                            + $".{declaringMethod.Name}(#{declaringMethod.MetadataToken})",
-                        attribute);
-
-                    // この観測場所の記録を、最初に要ったここで作る
-                    seenOnThisMethod ??= new HashSet<string>(StringComparer.Ordinal);
-
-                    // クラス側とまったく同じ判定を通す(書き写すと片方だけ戻す変異が書ける)
-                    if (IsNewDeclaration(seenOnThisMethod, seen, key, attribute))
+                    // そのメソッド自身に付いた属性だけを読む(override の連なりをさかのぼる必要が無い)
+                    foreach (var attribute in method.GetCustomAttributes(inherit: false).Where(matches))
                     {
-                        // 表示名は<b>返す分だけ</b>組み立てる（レビュー指摘）。畳まれて捨てられる分まで
-                        // 先に作ると、総称の基底へ 1 つ付けた宣言を N 個の具象から観測するたびに
-                        // 宣言の置き場所を探すリフレクション走査が N 回走る（返るのは 1 件なのに）。
-                        // キーが表示名を読まなくなったので、ここまで遅らせられる。
+                        // 表示名は<b>返す分だけ</b>組み立てる。
                         // <b>引数の型まで載せる</b>のは、載せないと同じ名前のオーバーロードが
                         // 2 つとも違反したとき<b>まったく同じ行が 2 本</b>並び、片方だけが違反なら
-                        // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため
+                        // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため。
+                        // 引数の綴りが閉じ方で揺れないのは、段そのものを開いた定義へそろえてあるため
+                        // (以前は観測した閉じた総称のメソッドから宣言を引き直していた)
                         var declaredOn =
-                            $"{TypeDisplayName(declaringType)}.{declaringMethod.Name}"
-                                + $"({ParameterTypeList(DeclarationSiteMethod(declaringMethod))})";
+                            $"{siteName ??= TypeDisplayName(site)}.{method.Name}({ParameterTypeList(method)})";
 
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
@@ -270,245 +284,23 @@ public static partial class ResponseCachePolicy
     }
 
     /// <summary>
-    /// その宣言を<b>まだ返していない</b>かを判定し、返してよければ <c>true</c> を返す。
-    /// </summary>
-    /// <remarks>
-    /// <para>判定は 2 段。<b>同じ観測場所で</b>キーが重なったら、それは本当に 2 つの宣言なので
-    /// <see cref="EnsureNothingWasLost"/> に判断させる（1 つの型・1 つのアクションから見える属性は、
-    /// 継承して見えたものも含めて 1 度ずつしか現れない）。重ならなければ、あとは
-    /// <b>別の派生型から同じ 1 つの宣言を見ている</b>だけかどうかで、既に返していれば黙って畳む
-    /// （issue #255 / #269）。</para>
-    ///
-    /// <para><b>クラス側とアクション側で書き写さない（レビュー指摘）。</b> この走査は
-    /// <c>SameKindAs</c>・門番・重複判定と、まったく同じクラス側／アクション側の非対称を
-    /// <b>繰り返し</b>踏んでいる。書き写すと「片方の枝だけを戻す」変異が書けてしまい、
-    /// そのたびに対の検査を足すことになる（§6 DRY）。
-    /// <b>踏んだ数を書かない</b> ——対の検査を足すたびに数字だけが古くなる（CLAUDE.md §3）。</para>
-    /// </remarks>
-    /// <param name="seenHere">いま見ている観測場所で既に見たキー。</param>
-    /// <param name="seen">走査全体で既に返したキー。</param>
-    /// <param name="key">この宣言のキー。</param>
-    /// <param name="attribute">この宣言の属性（門番に渡す）。</param>
-    /// <returns>宣言として返してよいなら <c>true</c>。</returns>
-    private static bool IsNewDeclaration(
-        HashSet<string> seenHere,
-        HashSet<string> seen,
-        string key,
-        object attribute)
-    {
-        // 同じ観測場所で 2 度目なら、畳むと 2 個目が違反の一覧へ到達しない
-        if (!seenHere.Add(key))
-        {
-            // 失って良い重複かどうかを門番に判断させる(複数付けられる属性なら落ちる)
-            EnsureNothingWasLost(attribute);
-
-            // 複数付けられない属性なら畳んでよい重複なので、返さない
-            return false;
-        }
-
-        // 走査全体でまだ返していなければ返してよい(既に返していれば同じ宣言なので畳む)
-        return seen.Add(key);
-    }
-
-    /// <summary>
-    /// 宣言元の型を、<b>名指しとキーに使う形</b>へそろえる。
+    /// 宣言の置き場所(継承の連なりの 1 段)を、<b>名指しと同一性の判定に使う形</b>へそろえる。
     /// </summary>
     /// <remarks>
     /// <b>総称型は開いた定義へ戻す（レビュー指摘）。</b> 総称の抽象基底に 1 つだけ付けた宣言は、
     /// <c>ExportBase&lt;Pdf&gt;</c> と <c>ExportBase&lt;Csv&gt;</c> のように<b>閉じた型ごとに
-    /// 別の <c>FullName</c></b> を持つため、そのままキーに使うと走査全体の記録で畳まれず
-    /// <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しは
+    /// 別の <c>Type</c></b> になるため、そろえずに訪ねると<b>同じ段を閉じ方の数だけ読み</b>、
+    /// 1 つの宣言が具象の数だけ違反として並ぶ。しかも名指しは
     /// <c>ExportBase`1[[…, Version=1.0.0.0, …]]</c> のようなアセンブリ修飾名になり、
-    /// <b>開けるファイルを指さない</b> ——この関数と走査全体の記録が防ぐために存在する形そのもの。
-    /// 開いた定義へ戻せば、宣言が 1 つであることも、直すべき 1 か所も正しく出る。
+    /// <b>開けるファイルを指さない</b> ——この関数と「訪ねた段の記録」が防ぐために存在する形そのもの。
+    /// 開いた定義へ戻せば、宣言が 1 つであることも、直すべき 1 か所も正しく出る
+    /// (アクションの引数の綴りが閉じ方で揺れないのも、段をここでそろえているため)。
     /// </remarks>
     /// <param name="declaringType">属性を宣言している型。</param>
-    /// <returns>名指しとキーに使う型。</returns>
+    /// <returns>名指しと同一性の判定に使う型。</returns>
     private static Type DeclarationSite(Type declaringType) =>
         // 閉じた総称型なら開いた定義へ、それ以外はそのまま
         declaringType.IsGenericType ? declaringType.GetGenericTypeDefinition() : declaringType;
-
-    /// <summary>
-    /// 「宣言元 × 属性の種類」という、重複除去のキーを作る。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>種類まで含める理由。</b> 宣言元だけをキーにすると、2 種類以上に一致する述語
-    /// （3 つ目のキャッシュ指示 <c>[OutputCache]</c> を見るようになるときの最も自然な足し方）
-    /// を渡した瞬間に、同じ型へ両方が付いていても先に返った 1 件しか <c>yield</c> されず、
-    /// もう 1 件は違反の一覧へ到達しない ——<b>検査は緑のまま、PHI を含みうる応答に
-    /// 共有キャッシュ可能な指示が残る</b>。</para>
-    ///
-    /// <para><b>「同じ宣言元に同じ種類が何個目か」は含めない。</b> それが要るのは
-    /// <c>AttributeUsage(AllowMultiple = true)</c> の属性を同じ宣言元へ 2 つ付けたときだが、
-    /// <b>実在のキャッシュ指示属性はすべて <c>AllowMultiple = false</c></b> なので、
-    /// この形は今のところ作れない。通し番号を先回りで入れると
-    /// <list type="bullet">
-    ///   <item><c>GetCustomAttributes</c> の<b>規定されていない並び順</b>に答えが依存する、</item>
-    ///   <item>基底の宣言が派生の名前でも報告されて<b>1 つの宣言が 2 件に見える</b>境界を新たに作る、</item>
-    /// </list>
-    /// という代償を、実在しない事情のために払うことになる
-    /// （CLAUDE.md §6「将来を見越した過度な抽象化を避ける」。この repo は空の除外表が
-    /// 「登録するだけで黙らせられる口」になった実例を記録している）。</para>
-    ///
-    /// <para><b>代わりに fail-closed にしてある。</b> 黙って落とすと静かな fail-open になるので、
-    /// <see cref="EnsureNothingWasLost"/> が<b>実際に畳んで 1 件失った時点で落とす</b>。実際にそういう属性を足す人は、そこで必ず一度手を止めることになる
-    /// （§9 fail-closed: 不明なら拒否）。</para>
-    /// </remarks>
-    /// <param name="site">宣言元を表すキーの前半（クラス側 / アクション側で綴りが違う）。</param>
-    /// <param name="attribute">キーを作りたい属性。</param>
-    /// <returns>重複除去に使うキー。</returns>
-    private static string DeclarationKey(string site, object attribute)
-    {
-        // 宣言元と属性の種類でキーを作る
-        return $"{site}:{attribute.GetType().FullName}";
-    }
-
-    /// <summary>
-    /// 畳んだ 1 件が「失って良い重複」だったことを確かめ、そうでなければ<b>落とす</b>。
-    /// </summary>
-    /// <remarks>
-    /// <b>黙って畳まないための門番。</b> <see cref="DeclarationKey"/> は (宣言元, 種類) で
-    /// 畳むので、<c>AllowMultiple = true</c> の属性が同じ宣言元に 2 つ付いていると
-    /// 2 個目以降が消える。許す側の宣言がたまたま 2 個目だと<b>検査は緑のまま出荷される</b>ので、
-    /// 消す代わりにここで止める。
-    ///
-    /// <para><b>「その属性を見かけたら」ではなく「実際に畳んだら」で鳴らす。</b>
-    /// 前者だと、複数付けられる属性が<b>1 つしか付いていなくても</b>走査全体が落ち、
-    /// アセンブリ中の本物の違反が 1 件も報告されなくなる（しかも失敗文言は違反ではなく
-    /// キーの話をする）。畳んだ瞬間＝実際に 1 件失った瞬間に鳴らせば、
-    /// fail-closed のまま「正しくできる仕事」を止めずに済む。</para>
-    ///
-    /// <para><b>だから呼び出し側は「観測場所ごと」の記録で判断する（issue #255 / #269）。</b>
-    /// 走査全体の記録だけでキーの重なりを見ると、<b>同じ 1 つの宣言を 2 つの派生型から
-    /// 見ただけ</b>でも重なる ——<c>AllowMultiple = true</c> かつ継承される指示属性を
-    /// 抽象基底へ<b>1 回だけ</b>付けて 2 つ派生させると、2 つ目の派生を見た時点でここが投げ、
-    /// キャッシュ関連の検出網が<b>まとめて例外で止まる</b>。しかも失敗文言は
-    /// 「キーへ位置を含めろ」と案内するが、<b>宣言は 1 つしか無い</b>のでその助言は当てはまらない
-    /// （正しいコードで赤くなる検出網は、いずれ検査ごと緩められる）。
-    /// 1 つの型・1 つのアクションから見える属性は、継承して見えたものも含めて
-    /// <b>1 度ずつしか現れない</b>ので、同じ観測場所で 2 度重なったときだけが本当の損失になる。</para>
-    ///
-    /// <para><b>直し方は「キーを位置まで含む形にする」だが、
-    /// それだけでは足りない</b> ——宣言元をたどる
-    /// <see cref="DeclaringTypeOf"/>（クラス側）と
-    /// <see cref="DeclaringMethodOf(MethodInfo, Func{object, bool})"/>（アクション側）も
-    /// 「その種類を宣言している最初の段」で止まるので、同じ種類が複数あると名指しが 1 つに寄る。
-    /// <b>キーと、鳴った経路のたどり方をセットで見直すこと。</b></para>
-    ///
-    /// <para><b>ここで経路を決め打たない（レビュー指摘）。</b> 門番はクラス側・アクション側の
-    /// どちらからも鳴るので、片方のたどり方だけを名指しすると、もう片方から鳴らされた読み手が
-    /// <b>関係の無いほうを読んで</b>本当に見直すべきたどり方を素通りする ——投げる文言から
-    /// 同じ決め打ちを外したのと同じ理由で、この説明（この repo が正本として扱う側）にも残さない。</para>
-    /// </remarks>
-    /// <param name="attribute">確かめる属性。</param>
-    /// <exception cref="NotSupportedException">複数付けられる属性だった場合。</exception>
-    private static void EnsureNothingWasLost(object attribute)
-    {
-        // その属性の型が「同じ対象へ複数付けてよい」と名乗っているかを読む
-        var allowsMultiple = attribute
-            .GetType()
-            .GetCustomAttribute<AttributeUsageAttribute>(inherit: true)?
-            .AllowMultiple ?? false;
-
-        // 複数付けられない属性が同じキーで重なるのは、基底の 1 つの宣言を
-        // 派生の数だけ見ているだけ ——畳むのが正しいので、何も失われていない
-        if (!allowsMultiple) return;
-
-        // 複数付けられる属性が畳まれた＝2 個目以降が違反の一覧へ到達しないので落とす(§9 fail-closed)
-        throw new NotSupportedException(
-            $"{attribute.GetType().FullName} は AllowMultiple = true です。"
-                + "この走査は (宣言元, 属性の種類) で重複を畳むため、同じキーへ 2 つ落ちると "
-                + "2 個目以降が違反の一覧へ到達しません(許す側が 2 個目だと検査は緑のまま出荷されます)。"
-                // <b>どちらの経路から来たかを決め打たない（レビュー指摘）。</b>
-                // 門番はクラス側とアクション側の両方から呼ばれるので、片方の仕組み
-                // （DeclaringTypeOf）を名指しすると、もう片方から来たときに
-                // <b>関わっていない仕組み</b>を説明することになる。
-                // 2 つが別の段にある形も同じで、宣言元をたどる仕組みは
-                // 「その種類を宣言している最初の段」で止まるため同じキーへ落ちる
-                + "2 つが同じ場所にあるとは限りません(基底と派生に 1 つずつでも、"
-                + "宣言元をたどる仕組みが「その種類を宣言している最初の段」で止まるため "
-                + "同じキーになります)。"
-                + "キーへ位置を含める形へ変え、あわせて宣言元をたどる "
-                + $"{nameof(DeclaringTypeOf)} / {nameof(DeclaringMethodOf)} "
-                + "の名指し(最初の段で止めてよいか)と、"
-                // <b>ここも同じ変更セットで見直す（レビュー指摘）。</b> キーへ位置を入れると、
-                // 走査全体の畳み込みは「同じ宣言がどの派生から見ても同じ位置に現れる」ことに
-                // 依存する ——GetCustomAttributes の並び順は規定されていないので、
-                // 派生ごとに順が違えば 1 つの宣言が具象の数だけ並ぶ形が戻る
-                + $"{nameof(IsNewDeclaration)} の走査全体の畳み込み"
-                + "(位置を入れると、派生ごとに並び順が違ったときに同じ宣言が複数件に見えます)"
-                + "も見直してください。");
-    }
-
-    /// <summary>
-    /// 「拾う条件を満たし、かつ<b>この属性と同じ型</b>」という条件を作る。
-    /// </summary>
-    /// <remarks>
-    /// <b>宣言元をたどるときは、種類まで絞らないと別の属性で止まる。</b>
-    /// <c>matches</c> が 2 種類以上に一致する述語（3 つ目のキャッシュ指示を見るように
-    /// なるときの自然な形）だと、基底が A・派生が B を宣言している場合に
-    /// 宣言元をたどる側（クラス側は <c>DeclaringTypeOf</c>、アクション側は
-    /// <c>DeclaringMethodOf</c>）は A についても「派生が宣言している」と答える ——
-    /// 名指しされたファイルを開いても A が無く、直すべき 1 か所が出てこない。
-    /// これは基底へ引き上げた宣言で一度直した形そのものなので、同じ轍を踏まない。
-    /// </remarks>
-    /// <param name="attribute">宣言元をたどりたい属性。</param>
-    /// <param name="matches">呼び出し側が渡した、拾う属性かどうかの条件。</param>
-    /// <returns>同じ型の属性だけを通す条件。</returns>
-    private static Func<object, bool> SameKindAs(object attribute, Func<object, bool> matches) =>
-        // 元の条件を満たし、かつ型が同じものだけを「同じ宣言」と見なす
-        candidate => matches(candidate) && candidate.GetType() == attribute.GetType();
-
-    /// <summary>
-    /// 表示名に載せる<b>宣言の置き場所そのもの</b>のメソッドを返す。
-    /// </summary>
-    /// <remarks>
-    /// <para>閉じた総称型（<c>G&lt;int&gt;</c> / <c>G&lt;string&gt;</c>）から見たメソッドは、
-    /// 引数の型も閉じ方ごとに違う姿（<c>Int32</c> / <c>String</c>）で見える。そのまま表示名に
-    /// 載せると、<b>1 つの宣言</b>が閉じ方によって別の名前で報告され、どの閉じ方を先に観測したかで
-    /// 文言が変わる ——名指しは開いた総称定義へそろえてあるのに、引数だけが具象のままになる。</para>
-    ///
-    /// <para>メタデータ行は閉じ方によらず同じなので、開いた総称定義の側で同じ行のメソッドを
-    /// 探せば宣言そのもの（<c>Export(TModel)</c>）に戻せる。見つからない場合は
-    /// 受け取ったメソッドをそのまま使う（表示名が具象寄りになるだけ）。</para>
-    ///
-    /// <para><b>ここは表示名だけに効く（レビュー指摘）。</b> 重複除去のキーは
-    /// メタデータ行だけで決めており、この関数の結果を読まない ——引き直せなかったときに
-    /// <b>1 つの宣言が閉じ方の数だけ並ぶ</b>のを防ぐため。だからこの関数が落ちる先は
-    /// 「名前が具象寄りになる」ことだけで、報告の同一性は動かない。</para>
-    ///
-    /// <para><b>例外で分岐しない。</b> モジュールから行を引き直す形は、引けない綴りで
-    /// 例外を投げるため <c>catch</c> が要り、その <c>catch</c> は §6 が禁じている
-    /// 「黙って捨てる」形になる（記録先を持たないヘルパーなので、文脈を足して再送出すると
-    /// 表示名を作れないというだけで走査全体が止まる）。開いた定義を<b>探す</b>形にすれば
-    /// 例外の経路そのものが無くなる。</para>
-    /// </remarks>
-    /// <param name="declaringMethod">属性を実際に宣言しているメソッド。</param>
-    /// <returns>宣言が置かれている場所のメソッド。</returns>
-    private static MethodBase DeclarationSiteMethod(MethodInfo declaringMethod)
-    {
-        // 属性を宣言しているメソッドが載っている型を取り出す
-        var declaringType = declaringMethod.DeclaringType;
-
-        // 閉じた総称型の上のメソッドでなければ、引き直す必要が無い
-        if (declaringType?.IsGenericType != true) return declaringMethod;
-
-        // 開いた総称定義が<b>自分で宣言した</b>メソッドの中から、同じメタデータ行のものを探す。
-        // <b>DeclaredOnly を外さない（レビュー指摘・実測）。</b> 外すと候補に基底
-        // (Mvc.Core / CoreLib)のメソッドが 180 件あまり混ざり、<b>メタデータ行はモジュール内でしか
-        // 一意でない</b>ので、数値が偶然一致する別モジュールのメソッドを拾いうる
-        // ——表示名に無関係な署名が載り、名指しされたファイルにその綴りが存在しない形になる。
-        // いま当たらないのは GetMethods の返す順がたまたまそうだからで、順は規定されていない
-        // (このリポジトリは宣言順に依存して一度事故を起こしている)
-        return DeclarationSite(declaringType)
-            .GetMethods(
-                BindingFlags.Public | BindingFlags.NonPublic
-                    | BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly)
-            // 同じ行なら、閉じ方によらず同じ 1 つの宣言
-            .FirstOrDefault(candidate => candidate.MetadataToken == declaringMethod.MetadataToken)
-            // 見つからなければ、受け取ったメソッドをそのまま表示名に使う
-            ?? declaringMethod;
-    }
 
     /// <summary>メソッドの引数の型を、表示名へ載せる 1 語にする。</summary>
     /// <remarks>
@@ -519,10 +311,18 @@ public static partial class ResponseCachePolicy
     /// <b>どちらが衝突するかは兄弟のオーバーロードを見ないと決められない</b>ので、
     /// 条件で出し分けず一律に完全修飾名で並べる（宣言元の型も完全修飾名で名乗っており、そろう）。
     /// 型引数（<c>TModel</c>）は完全修飾名を持たないので、そのときだけ単純名になる。
+    ///
+    /// <para><b>受け口は <c>MethodInfo</c> に絞る（レビュー指摘）。</b> 以前 <c>MethodBase</c>
+    /// だったのは削除済みの <c>DeclarationSiteMethod</c> のためで、いまの唯一の呼び出し側は
+    /// アクションの <c>MethodInfo</c> を渡す。広いままだとコンストラクタ等も受け取れてしまい、
+    /// <b>アクションでないものをアクションとして名指しする</b>形（このファイルが繰り返し直してきた
+    /// 「名指しされたファイルを開いてもその綴りが無い」欠陥）を将来書けてしまう。
+    /// <b>&lt;remarks&gt; を 2 つに分けない</b> ——XML doc は 1 メンバに 1 つしか認めず、
+    /// 2 つ目は IntelliSense や生成ドキュメントから黙って捨てられる（読み手に届かない）。</para>
     /// </remarks>
     /// <param name="method">引数を並べるメソッド。</param>
     /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
-    private static string ParameterTypeList(MethodBase method) =>
+    private static string ParameterTypeList(MethodInfo method) =>
         // 型ごとの綴りは TypeDisplayName が決める(素の FullName を使わない理由はそちらの説明が正本)
         string.Join(
             ", ",
@@ -602,91 +402,4 @@ public static partial class ResponseCachePolicy
     /// <returns>個数の印に一致する正規表現。</returns>
     [GeneratedRegex("`[0-9]+")]
     private static partial Regex ArityTicks();
-
-    /// <summary>
-    /// アクション側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>メソッドをたどる。
-    /// </summary>
-    /// <remarks>
-    /// <c>override</c> したメソッドでは <c>GetCustomAttributes(inherit: true)</c> が基底の属性を
-    /// 見つける一方、<c>DeclaringType</c> は<b>派生</b>を指す。そのまま名指しすると、
-    /// 1 つの宣言が派生の数だけ違反として並び、しかも名指しされたファイルを開いても
-    /// 属性が無く、直すべき 1 か所(基底)がどこにも出てこない
-    /// (クラス側の同名のオーバーロードも、同じ理由から同じ手当てをしている)。
-    ///
-    /// <para><b>さかのぼり方は「根へ跳ぶ」ではなく「1 段ずつ」。</b>
-    /// <c>GetBaseDefinition()</c> が返すのは<b>最初に virtual として宣言された定義</b>なので、
-    /// 属性が<b>途中の型</b>の <c>override</c> に付いている場合は根にも自分自身にも無く、
-    /// どちらの検査も外れて具象が名指しされる。連なりを 1 段ずつ見れば、
-    /// 途中の宣言も「自分自身が宣言しているか」で正しく捕まる。</para>
-    ///
-    /// <para><b>型ではなくメソッドを返す（レビュー指摘）。</b> 重複除去のキーには
-    /// オーバーロードを分けるための署名が要るが、そこへ<b>観測した</b>メソッドを使うと、
-    /// 総称の基底が <c>Export(TModel model)</c> のように型引数を受けている場合に
-    /// <c>Export(Int32)</c> と <c>Export(String)</c> で<b>キーが割れ</b>、
-    /// 1 つの宣言が閉じ方の数だけ違反として並ぶ（宣言元の型だけをそろえても閉じない）。
-    /// 宣言しているメソッドを返せば、その <c>MetadataToken</c>（同じメタデータ行なら同じ 1 つの宣言）
-    /// を署名の代わりに使えて、閉じた総称でも <c>override</c> でも同じ 1 件に畳める。</para>
-    /// </remarks>
-    /// <param name="method">属性が見えているアクションメソッド。</param>
-    /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
-    /// <returns>属性を宣言しているメソッド。</returns>
-    private static MethodInfo DeclaringMethodOf(MethodInfo method, Func<object, bool> matches)
-    {
-        // そのメソッド自身が宣言しているなら、そこが直すべき場所
-        if (method.GetCustomAttributes(inherit: false).Any(matches))
-        {
-            // 宣言しているメソッドそのものを返す
-            return method;
-        }
-
-        // override の連なりを識別するための目印(同じ仮想メソッドはどこから見ても同じ根を持つ)
-        var rootDefinition = method.GetBaseDefinition();
-
-        // <b>根へ一足飛びに跳ばず、override の連なりを 1 段ずつさかのぼる。</b>
-        // 跳ぶと、途中の型が宣言した属性を素通りして具象を名指しすることになる ——
-        // Root(virtual) → Mid([ResponseCache] override) → Leaf1 / Leaf2(素の override)で、
-        // Leaf の inherit: false は空・根は Root.Export なので<b>どちらの検査も外れ</b>、
-        // 1 つの宣言が Leaf の数だけ違反として並び、しかも名指しされたファイルを開いても
-        // 属性が無い ——この関数が防ぐために存在する形そのものになる(実測で 2 件並んだ)
-        for (var type = method.DeclaringType?.BaseType; type is not null; type = type.BaseType)
-        {
-            // その型<b>自身が宣言している</b>メソッドの中から、同じ仮想メソッドの定義を探す
-            var declared = type
-                .GetMethods(BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)
-                .FirstOrDefault(candidate => candidate.GetBaseDefinition().Equals(rootDefinition));
-
-            // その段が同じメソッドを宣言していなければ、さらに基底へ
-            if (declared is null) continue;
-
-            // その定義が属性を宣言しているなら、そこが直すべき場所
-            if (declared.GetCustomAttributes(inherit: false).Any(matches)) return declared;
-        }
-
-        // どこにも見つからなければ、少なくとも見えているメソッドを名指しする(黙って情報を失わない)
-        return method;
-    }
-
-    /// <summary>
-    /// クラス側の <c>[ResponseCache]</c> を<b>実際に宣言している</b>型をたどる。
-    /// </summary>
-    /// <remarks>
-    /// 継承した属性は派生型からも見えるので、<c>inherit: false</c> で「自分自身が
-    /// 宣言しているか」を確かめながら基底へさかのぼる。どこにも見つからない場合
-    /// (継承の形が想定と違う場合)は、渡された型をそのまま返して名指しを失わせない。
-    /// </remarks>
-    /// <param name="controller">属性が見えているコントローラ型。</param>
-    /// <param name="matches">宣言としてたどる対象かどうかを判定する条件。</param>
-    /// <returns>属性を宣言している型。</returns>
-    private static Type DeclaringTypeOf(Type controller, Func<object, bool> matches)
-    {
-        // 自分自身から基底へ順にたどる
-        for (var type = controller; type is not null; type = type.BaseType)
-        {
-            // その型自身が宣言しているなら、そこが直すべき場所
-            if (type.GetCustomAttributes(inherit: false).Any(matches)) return type;
-        }
-
-        // 見つからなければ、少なくとも見えている型を名指しする(黙って情報を失わない)
-        return controller;
-    }
 }

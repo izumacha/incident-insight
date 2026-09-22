@@ -84,6 +84,172 @@ namespace IncidentInsight.Tests.Middleware;
 /// </remarks>
 public class ResponseCacheAttributePolicyTests
 {
+    /// <summary>
+    /// アプリ全体を走査するときの<b>引数一式</b>を、2 つの guard を通したうえで返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>2 か所目で共通化する（CLAUDE.md §6）。</b> 以前は「取り出して確かめる」数行を
+    /// 呼び出し側へ写していたが、3 つ目のアプリ全体の走査を足した人が guard を呼び忘れても
+    /// <b>何も報告されない</b>（guard の射程が「写すのを覚えていた人」だけになる）。</para>
+    ///
+    /// <para><b>ホスト集合とアセンブリを<u>まとめて</u>返す（レビュー指摘）。</b>
+    /// 片方だけを返す形にすると、もう一方（<c>ownAssembly</c>）を呼び出し側が自分で書くことになり、
+    /// <b>guard に渡した値と走査へ渡す値が食い違う</b>変異が書ける。1 つの組として返せば、
+    /// 確かめた引数がそのまま走査へ渡る。</para>
+    ///
+    /// <para><b>ここで導出し直すのは差し支えない</b> ——狭める／取り違える変異はこの中で起き、
+    /// 直後の 2 つの確認が捕まえる（呼び出し側が<b>このヘルパーを使わずに</b>自分で組み立てる形だけが
+    /// 残る境界で、それは以前から同じ）。</para>
+    /// </remarks>
+    /// <returns>走査へ渡すホスト集合と、「自分たちのアセンブリ」として渡す値。</returns>
+    private static (List<Type> Hosts, Assembly OwnAssembly) AppWideScanInputs()
+    {
+        // 走査へ渡すホスト集合を組み立てる
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // 「自分たちのアセンブリ」として渡す値も、ここで 1 度だけ決める
+        var ownAssembly = AppControllerScan.WebAssembly;
+
+        // コントローラだけへ狭められていないこと(Razor Pages 等の宣言先が視界に入る)
+        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+
+        // 走査がアプリへ届いていること(届いていなければ「違反 0 件」は無意味)
+        AssertTheAppWideScanIsLive(hosts, ownAssembly);
+
+        // 確かめた引数一式を返す(呼び出し側はこれをそのまま走査へ渡す)
+        return (hosts, ownAssembly);
+    }
+
+    /// <summary>
+    /// アプリ全体の走査が<b>実際にアプリへ届いている</b>ことを、その呼び出しの引数で確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（実測）。</b> アプリ全体を見る検査はどちらも「違反が 0 件」しか
+    /// 見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。実測でも、呼び出し側が渡す
+    /// <c>ownAssembly</c> を別のアセンブリへ差し替えると全件緑のまま通り、そのうえで PHI の
+    /// ダッシュボードへ <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足しても緑だった。</para>
+    ///
+    /// <para><b>目印に「実在する宣言」を選ばない（レビュー指摘）。</b> 以前はこのアプリで唯一の
+    /// <c>[ResponseCache]</c> である <c>HomeController.Error()</c> を目印にしていたが、
+    /// <c>SecurityHeadersMiddleware</c> が既定で <c>no-store</c> を書くようになった以上あの宣言は
+    /// <b>冗長</b>で、消すのは自然な整理になる（他にそれを固定している検査も無い ——実測）。
+    /// 消した瞬間に無関係に見えるセキュリティ検査が 2 つ落ち、緑へ戻す道が
+    /// 「冗長な属性を production へ戻す」か「この検査を消す」しか無くなる。</para>
+    ///
+    /// <para><b>だから目印を「属性の種類に依存しないもの」にする。</b> 見るのは 2 点:
+    /// (a) 走査へ渡す <c>ownAssembly</c> が、<b>ホスト集合が実際に属するアセンブリ</b>であること、
+    /// (b) 同じ <c>(ホスト集合, ownAssembly)</c> へ<b>すべての属性に一致する述語</b>を通すと
+    /// <b>アクション側の宣言</b>が返ること。コントローラのアクションには <c>[HttpPost]</c> /
+    /// <c>[Authorize]</c> 等が必ず付いているので、この目印はキャッシュ指示を 1 件残らず消しても
+    /// <b>蒸発しない</b>。</para>
+    ///
+    /// <para><b>(b) だけでは <c>ownAssembly</c> の取り違えを拾えない（実測）。</b>
+    /// 継承の連なりは必ず <c>object</c> まで届くので、<c>typeof(string).Assembly</c> を渡すと
+    /// <b>その段でアクション側の走査が走り</b>、<c>object</c> 自身のメソッドに付いた属性が返る
+    /// ——「アクション側の宣言がある」は満たされてしまい、全件緑のまま通った。
+    /// 取り違えを直接見る (a) が要る。</para>
+    ///
+    /// <para><b>ホスト集合の絞りすぎはここでは拾えない</b>（狭めてもコントローラは残り、
+    /// アクション側の宣言も返るため）。そちらは
+    /// <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が受け持つ。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    /// <param name="ownAssembly">走査へ実際に渡すアセンブリ。</param>
+    private static void AssertTheAppWideScanIsLive(IReadOnlyCollection<Type> hosts, Assembly ownAssembly)
+    {
+        // (a) 渡したアセンブリが、ホスト集合の出どころと同じであること。
+        // ここがずれるとアクション側の走査が自分たちの段で 1 つも走らない
+        Assert.True(
+            hosts.Count > 0 && hosts.All(type => type.Assembly == ownAssembly),
+            $"走査へ渡した ownAssembly({ownAssembly.GetName().Name}) が、"
+                + $"ホスト集合({hosts.Count} 件)の出どころと一致していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——ずれるとアクション側の宣言が"
+                + "1 つも拾われなくなり、「違反 0 件」の検査が無条件で緑になります。"
+                + Environment.NewLine
+                + $"{nameof(AppControllerScan.WebAssembly)} を渡しているか確かめてください。");
+
+        // (b) 属性の種類を問わない走査を、本番の検査とまったく同じ引数で通す。
+        // <b>Any で打ち切る（レビュー指摘）。</b> ToList にすると、判定に要らない表示名
+        // (総称の再帰と正規表現を含む)を 695 型ぶん組み立ててから 1 件の有無を見ることになる
+        var hasActionDeclaration = ResponseCachePolicy
+            .AttributeDeclarationsOn(hosts, ownAssembly, _ => true)
+            .Any(d => d.DeclaredOn.Contains('(', StringComparison.Ordinal));
+
+        // アクション側の宣言(名指しに引数の括弧が付く)が返っていること
+        Assert.True(
+            hasActionDeclaration,
+            "アプリ全体の走査が、アクションに付いた属性を 1 件も返していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——走査が何も返さなくなると"
+                + "「違反 0 件」の検査は無条件で緑になるので、届いていること自体をここで確かめています。"
+                + Environment.NewLine
+                + "アプリのアクションには [HttpPost] / [Authorize] 等が必ず付いているので、"
+                + "ここが 0 件になるのは走査そのものの退行です。"
+                + Environment.NewLine
+                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。");
+    }
+
+    /// <summary>
+    /// <b>本物の</b>出力キャッシュ属性を付けた、述語の生存確認用コントローラ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>型名を合成せず、実型を参照する（レビュー指摘・実測）。</b> この検査の docstring は
+    /// 長らく「型を直接参照すると出力キャッシュのパッケージを自分で引き込む」としていたが、
+    /// <c>Microsoft.AspNetCore.OutputCaching</c> は共有フレームワーク
+    /// (<c>Microsoft.AspNetCore.App</c>) の一部で、<c>Microsoft.AspNetCore.Mvc.Testing</c> 経由で
+    /// <b>既に参照できている</b> ——パッケージの追加は 1 つも要らない（実測で確認）。</para>
+    ///
+    /// <para><b>実型を使うと綴りが framework に固定される。</b> 型名を合成すると、
+    /// 綴りの写しが（合成した型と <c>IsOutputCacheAttribute_MatchesOnlyOutputCaching</c> の
+    /// <c>[InlineData]</c> に）2 つでき、framework が改名・移動したときに
+    /// <b>どちらも緑のまま</b> <c>IsOutputCacheAttributeTypeName</c> だけが本物と一致しなくなる。
+    /// 実型を参照しておけば、その改名は<b>コンパイルエラー</b>として現れる。</para>
+    ///
+    /// <para><b>述語そのものは型名で照合したままにする</b>（名前空間を問わず
+    /// <c>OutputCacheAttribute</c> を拾う）。実型に縛ると、別の名前空間の同名の属性を
+    /// 取りこぼす。ここで固定したいのは「述語が<b>本物にも</b>当たること」。</para>
+    /// </remarks>
+    private sealed class OutputCacheProbeController : ControllerBase
+    {
+        /// <summary>本物の出力キャッシュ属性を持つ、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [Microsoft.AspNetCore.OutputCaching.OutputCache]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>
+    /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
+    /// 確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> ホスト集合を
+    /// <c>AppControllerScan.CacheDirectiveHosts()</c> から <c>AppControllerScan.Controllers()</c> へ
+    /// 差し替えると、この guard が無ければ全件緑のまま通る ——空振り検出
+    /// (<see cref="AssertTheAppWideScanIsLive"/>) が見るのは「アクション側の宣言が返ること」で、
+    /// <b>狭めた集合にもコントローラは残る</b>のでその条件は満たされてしまうため。狭めたあとは
+    /// <c>Pages/Export.cshtml.cs</c> に付けた <c>[ResponseCache(Duration = 300, Location = Any)]</c> が
+    /// <b>どの検査からも見えなくなる</b> ——<c>CacheDirectiveHosts</c> がまさに塞ぐために
+    /// 導入された穴が戻る。</para>
+    ///
+    /// <para><b>導出側の検査では代わりにならない。</b>
+    /// <c>CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly</c> が見るのは<b>導出関数</b>で、
+    /// 呼び出し側がどちらを呼んでいるかは見ない。だからこの検査は
+    /// <b>渡された値そのもの</b>を受け取り、呼び出し側に紐づける
+    /// （共有ヘルパーの中で自分で導出し直すと、呼び出し側の差し替えに届かない）。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    private static void AssertTheHostSetIsNotNarrowedToControllers(IReadOnlyCollection<Type> hosts) =>
+        // コントローラでない具象型が 1 つでも含まれていること(Razor Pages 等の宣言先が視界に入る証拠)。
+        // 空振り検出と同じ理由で失敗文言を自分で書く(Assert.Contains の述語版にも文言を渡せない)
+        Assert.True(
+            hosts.Any(type => !typeof(ControllerBase).IsAssignableFrom(type)),
+            $"走査へ渡したホスト集合({hosts.Count} 件)が、{nameof(ControllerBase)} 派生だけになっています。"
+                + $"{nameof(AppControllerScan.CacheDirectiveHosts)} ではなく "
+                + $"{nameof(AppControllerScan.Controllers)} を渡していないか確かめてください。"
+                + Environment.NewLine
+                + "[ResponseCache] は PageModel(Razor Pages)にも同じように効くため、コントローラだけへ"
+                + "狭めると Pages/ に付けた宣言がどの検査からも見えなくなります"
+                + "（属性名にはヘッダー名の綴りが無いので、ソースを見る走査でも拾えません）。");
+
     // アプリ全体のアクションが名乗る [ResponseCache] は、すべてキャッシュ保存を禁じていること。
     //
     // これが落ちたときの直し方は 2 つだけ: (a) その属性へ NoStore = true を付ける、
@@ -93,9 +259,12 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
+        var (hosts, ownAssembly) = AppWideScanInputs();
+
         // アプリ全体の宣言を集める
         var declarations = ResponseCachePolicy
-            .DeclarationsOn(AppControllerScan.CacheDirectiveHosts(), AppControllerScan.WebAssembly)
+            .DeclarationsOn(hosts, ownAssembly)
             .ToList();
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
@@ -481,22 +650,44 @@ public class ResponseCacheAttributePolicyTests
     // ヘッダーしか見ないので、クッキー認証のこのアプリでは「認証済みだから除外」も効かない。
     // 結果として職員 A の PHI 集計が職員 B へそのまま返る。
     //
-    // <b>属性は型名で照合する</b>(型を直接参照しない)。参照すると、この検査を通すために
-    // テストプロジェクトが出力キャッシュのパッケージへ依存することになり、
-    // 「禁じたい機能を自分で引き込む」形になる。
+    // <b>属性は型名で照合する</b>。理由は<b>依存ではない</b>（レビュー指摘・実測で訂正）——
+    // 長らく「型を直接参照するとテストプロジェクトが出力キャッシュのパッケージへ依存する」と
+    // 書いていたが、Microsoft.AspNetCore.OutputCaching は共有フレームワークの一部で、
+    // Microsoft.AspNetCore.Mvc.Testing 経由で<b>既に参照できている</b>（パッケージの追加は
+    // 1 つも要らない）。本当の理由は<b>名前空間を問わず拾いたい</b>ことで、実型に縛ると
+    // 別の名前空間の同名の属性を取りこぼす。
+    // 一方で<b>述語が本物に当たること</b>は実型で確かめる（下のプローブが実型を使う）。
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
-        // 共有の走査へ「出力キャッシュの属性であること」を渡して宣言を集める
+        // <b>述語は 1 つのローカルへ出す。</b> 下のプローブが<b>同じ述語</b>を読むことで、
+        // 「述語が本物の [OutputCache] に当たる」ことを固定できる ——別々に書くと、
+        // 本番側の述語だけを壊す変異が通る
+        Func<object, bool> matches = IsOutputCacheAttribute;
+
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
         // (クラス側とアクション側の両方を読む・宣言元で名指しする・派生の数だけ並べない、
         //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
+        var (hosts, ownAssembly) = AppWideScanInputs();
+
+        // 確かめた引数一式で、アプリ全体から出力キャッシュの宣言を集める
         var violations = ResponseCachePolicy
-            .AttributeDeclarationsOn(
-                AppControllerScan.CacheDirectiveHosts(),
-                AppControllerScan.WebAssembly,
-                IsOutputCacheAttribute)
+            .AttributeDeclarationsOn(hosts, ownAssembly, matches)
             .Select(d => d.DeclaredOn)
             .ToList();
+
+        // 述語が<b>本物の</b> [OutputCache] に当たること。アプリに [OutputCache] は
+        // 1 件も無いのが正しいので、違反 0 件だけでは「述語が壊れている」と区別が付かない
+        // ——プローブへ当てないと確かめようがない(「走査が届いているか」は上の guard が別に見る)
+        var probed = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OutputCacheProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                matches)
+            .ToList();
+
+        // プローブの [OutputCache] がちょうど 1 件拾えること
+        Assert.Single(probed);
 
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
@@ -4121,9 +4312,11 @@ public class ResponseCacheAttributePolicyTests
     // (DeclarationScan_ReportsAnInheritedActionOnlyOnce)があるが、クラス側には無かった。
     //
     // <b>この検査は一度「走査の作り直し」で巻き添えに消えた。</b> 消えている間、
-    // ResponseCachePolicy.DeclaringTypeOf(Type) の本体を `return controller;` に潰しても
-    // 898 件すべて緑のまま通った(実測)——クラス側の宣言を持つ合成コントローラが
-    // 自分で宣言している 1 つだけになり、基底をたどる経路が一度も実行されないため。
+    // 宣言元をたどる仕組み(当時の DeclaringTypeOf。issue #275 で「継承の連なりを 1 段ずつ
+    // 訪ねる」形へ置き換えた)を潰しても 898 件すべて緑のまま通った(実測)——クラス側の宣言を
+    // 持つ合成コントローラが自分で宣言している 1 つだけになり、基底をたどる経路が
+    // 一度も実行されないため。<b>いまも同じ性質を守っている</b>: この検査が無いと、
+    // 基底の段を訪ねる枝を落としても合成入力が一度もその枝を通らない。
     [Fact]
     public void DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase()
     {
@@ -4156,8 +4349,8 @@ public class ResponseCacheAttributePolicyTests
     // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
     // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
     //
-    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす
-    // （実測: キーから属性の型を落とすと、クラス側・アクション側の Assert.Single が落ちる）。
+    // <b>この検査が固定する範囲。</b> 「1 つの宣言元につき 1 件しか返さない」形を落とす
+    // （かつてキーから属性の型を落とすと起きた形で、いまは同じ段の宣言を種類で畳むと再現する）。
     // <b>覆うのは「同じ宣言元に 2 種類」の形だけ</b>で、宣言元が具象と基底に分かれる形は
     // AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne が見る。
     [Fact]
@@ -4226,21 +4419,21 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
-    // 重複除去のキーの<b>属性の型</b>の部分が効いていること。
+    // 同じ段に 2 種類あるとき、<b>種類ごとに別の宣言として</b>返ること。
     //
     // <b>なぜ上の検査と別に要るのか。</b> AttributeScan_ReturnsEveryMatchedKind は
     // 2 種類が<b>同じ宣言元</b>に付いた形しか見ない。こちらは<b>宣言元が具象と基底に
     // 分かれる</b>形 ——具象が 2 種類目を宣言し直すと、その具象からは基底の 2 種類目が
     // 見えなくなり、走査ごとに「その宣言元で見える同じ種類の数」が変わる。
-    // 宣言元をたどる側（SameKindAs）とキーの側が噛み合っていないと、ここで崩れる:
+    // 走査が「1 段ずつ読む単位」と「名指しの単位」が噛み合っていないと、ここで崩れる:
     //
     //   Base   : [SecondKindProbe] [ResponseCache(12)]
     //   LeafA  : [SecondKindProbe]（自分で宣言し直す。AllowMultiple = false なので基底の分は見えない）
     //   LeafB  : 素の継承
     //
     // 正しい実装では 3 件（LeafA の 2 種類目 / Base の 1 種類目 / Base の 2 種類目）。
-    // キーから型を落とすと Base の宣言元で 2 種類が同じキーになり、<b>2 件に減る</b>
-    // （実測: 落ちるのは下の Assert.Equal(3, …)）。内訳の Assert.Single は
+    // 同じ段の宣言を「属性の種類を問わず 1 件」へ畳む形へ戻すと Base が 1 件に減って
+    // <b>2 件になる</b>（落ちるのは下の Assert.Equal(3, …)）。内訳の Assert.Single は
     // 「どちらが消えたか」まで押さえるために置いてあるので、件数だけに削らないこと。
     [Fact]
     public void AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne()
@@ -4289,50 +4482,58 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>基底の 2 種類をそのまま継承する具象。</summary>
     private sealed class SharedSiteProbeLeafB : SharedSiteProbeBase;
 
-    // 同じ宣言元へ<b>複数付けられる種類</b>の属性に出会ったら、黙って畳まずに落ちること。
+    // 同じ宣言元へ<b>複数付けられる種類</b>の属性が 2 つあっても、両方とも返ること（クラス側）。
     //
-    // <b>なぜ畳まずに落とすのか。</b> この走査は (宣言元, 属性の種類) で重複を畳むので、
-    // AllowMultiple = true の属性が同じ宣言元に 2 つ付いていると 2 個目以降が消える。
-    // <b>許す側の宣言がたまたま 2 個目だと、検査は緑のまま PHI を含みうる応答に
-    // 共有キャッシュ可能な指示が残る</b>。
+    // <b>以前はここで走査ごと落としていた（issue #275 で構造を入れ替えた）。</b>
+    // 旧実装は具象ごとに inherit: true で読み、(宣言元, 属性の種類) をキーに重複を畳んでいたので、
+    // AllowMultiple = true の属性が同じ宣言元に 2 つあると<b>2 個目が違反の一覧へ到達しなかった</b>
+    // ——<b>許す側の宣言がたまたま 2 個目だと、検査は緑のまま PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る</b>。そこで「畳んで失ったら落ちる」門番を置いていた。
     //
-    // <b>なぜキーへ位置を入れて「直して」おかないのか。</b> 実在のキャッシュ指示属性は
-    // すべて AllowMultiple = false なので、この形は今のところ作れない。先回りで入れると
-    // GetCustomAttributes の規定されていない並び順に答えが依存し、基底の宣言が派生の名前でも
-    // 報告される境界を新たに作る ——実在しない事情のために払う代償としては大きい
-    // （CLAUDE.md §6）。代わりに門番を置いて、<b>実際に足す人が必ず一度手を止める</b>ようにした。
+    // <b>いまは失う経路そのものが無い。</b> 走査は継承の連なりを 1 段ずつ訪ね、各段を
+    // inherit: false で読むので、同じ段に付いた宣言は<b>件数としてそのまま</b>返る。
+    // 門番が守っていた性質（2 個目が消えない）を、<b>実際に 2 件返ること</b>で直接固定する
+    // ——門番は「失ったこと」に気付く仕掛けでしかなく、失わせない保証ではなかった。
+    //
+    // 実在のキャッシュ指示属性はいずれも AllowMultiple = false なので、この形は合成入力でしか
+    // 通せない。<b>だから合成する</b> ——実在の属性だけを渡している限り、ここを畳む形へ
+    // 戻しても全件緑のまま通る。
     [Fact]
-    public void AttributeScan_RefusesToScan_WhenTheAttributeCanBeAppliedMoreThanOnce()
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheAttributeIsAppliedMoreThanOnce()
     {
-        // 複数付けられる属性を拾う述語で走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindProbeController)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // 同じクラスへ 2 つ宣言した属性を拾う述語で走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること（黙って畳まれたのと区別が付くように）
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること（1 件に畳まれたら、消えた側の指示が検査から外れる）
+        Assert.Equal(2, declarations.Count);
 
-        // 直し方まで案内していること（キーだけ直して宣言元のたどり方を放置させない）
-        Assert.Contains("DeclaringTypeOf", error.Message, StringComparison.Ordinal);
+        // 1 つ目が、宣言しているクラスの名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindProbeController), StringComparison.Ordinal));
 
-        // <b>アクション側のたどり方も名指ししていること（レビュー指摘）。</b> クラス側だけを
-        // 固定していると、この半分を文言から消しても全件緑のまま通り、アクション側で
-        // 門番に当たった人は<b>クラス側だけ</b>見直すよう案内される(直しが半分で終わる)
-        Assert.Contains("DeclaringMethodOf", error.Message, StringComparison.Ordinal);
+        // 2 つ目も同じく（どちらが消えたかまで押さえるので、件数だけに削らないこと）
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindProbeController), StringComparison.Ordinal));
     }
 
-    // 複数付けられる属性が<b>1 つしか付いていない</b>ときは、走査を止めないこと。
+    // 複数付けられる属性が<b>1 つしか付いていない</b>ときは、そのまま 1 件返ること。
     //
-    // <b>門番は「その属性を見かけたら」ではなく「実際に畳んだら」鳴らす。</b>
-    // 前者だと、複数付けられる指示を 1 つ足しただけでアセンブリ全体の走査が落ち、
-    // <b>本物の違反が 1 件も報告されなくなる</b>（しかも失敗文言は違反ではなくキーの話をする）。
-    // fail-closed は保ったまま、正しくできる仕事は止めない。
+    // <b>「複数付けられる種類を見かけたら止める」形にしない。</b> そうすると、複数付けられる
+    // 指示を 1 つ足しただけでアセンブリ全体の走査が落ち、<b>本物の違反が 1 件も報告されなくなる</b>
+    // （しかも失敗文言は違反ではなく走査の都合の話をする）。走査は属性の種類ではなく
+    // <b>実際に書かれた宣言の数</b>だけを見る ——上の 2 件返る検査と対で、
+    // 「1 つなら 1 件・2 つなら 2 件」が両方向とも固定される。
     [Fact]
-    public void AttributeScan_StillWorks_WhenARepeatableAttributeAppearsOnlyOnce()
+    public void AttributeScan_ReturnsTheDeclaration_WhenARepeatableAttributeAppearsOnlyOnce()
     {
         // 複数付けられる属性が 1 つだけ付いた合成コントローラを走査する
         var declarations = ResponseCachePolicy
@@ -4349,63 +4550,83 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal("only", ((RepeatableProbeAttribute)declared.Attribute).Policy);
     }
 
-    // 「基底が 2 つ宣言」の形が、<b>アクション側でも</b>落ちること。
+    // 「基底のアクションが 2 つ宣言」の形でも、両方とも返ること（アクション側・基底）。
     //
-    // <b>なぜ別に要るのか（レビュー指摘）。</b> 既存のアクション側の門番テストは、
-    // 具象が<b>自分のアクションに</b>2 つ宣言する形しか通していない。observation site を
-    // 分けた（seenHere）のは「基底の 1 つの宣言を派生から見ただけ」を許すためなので、
-    // <b>基底のアクションが 2 つ宣言していて派生の素の override から見る</b>形こそが
-    // その判断の境目 ——クラス側は
-    // AttributeScan_StillRefusesToScan_WhenTheBaseCarriesTwoRepeatableDeclarations が覆っている。
-    // この走査はクラス側／アクション側の非対称を 3 度踏んでいるので、対で置く。
+    // <b>なぜ別に要るのか。</b> 走査はクラス側とアクション側で別々の枝を持つので、
+    // 片方だけを畳む形へ戻す変異が書ける。しかも<b>基底のアクションが 2 つ宣言していて
+    // 派生の素の override から見る</b>形は、旧実装で「観測場所ごとの記録」を分けた
+    // 判断の境目そのものだった ——具象が自分のアクションに 2 つ宣言する形
+    // （すぐ下の検査）だけでは、その境目を通らない。
     [Fact]
-    public void AttributeScan_StillRefusesToScan_WhenTheBaseActionCarriesTwoRepeatableDeclarations()
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheBaseActionCarriesTwoRepeatableOnes()
     {
-        // 基底のアクションが 2 つ宣言した属性を、素の override を持つ派生から走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindOnBaseActionProbeLeaf)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // 基底のアクションが 2 つ宣言した属性を、素の override を持つ派生から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnBaseActionProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、実際に宣言している<b>基底のアクション</b>の名前で 1 件
+        // （名指しが素の override を持つ派生に寄ると、開いたファイルに属性が無い形へ戻る）
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnBaseActionProbeBase), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnBaseActionProbeBase), StringComparison.Ordinal));
     }
 
-    // 門番が<b>アクション側でも</b>効いていること。
+    // 具象が<b>自分のアクションへ</b>2 つ宣言した形でも、両方とも返ること（アクション側）。
     //
-    // <b>なぜ別に要るのか（実測）。</b> 門番はキーを作る DeclarationKey の中にあるので、
-    // アクション側がキーを自前で組み立てる形に戻ると素通りする ——値が同じなので
-    // 全件緑のまま通った。この PR は SameKindAs でまったく同じクラス側／アクション側の
-    // 非対称を踏んでいるので、門番にも同じ対の検査を置く。
+    // <b>なぜ上の検査と対で置くのか。</b> この走査はクラス側／アクション側の非対称を
+    // 繰り返し踏んでおり、アクション側だけを畳む形へ戻す変異が実際に書ける。
+    // 旧実装でも「クラス側だけを固定していると、アクション側を緩める変異が全件緑のまま
+    // 通った」という実測が残っている。
     [Fact]
-    public void AttributeScan_RefusesToScan_WhenAnActionCarriesTheAttributeMoreThanOnce()
+    public void AttributeScan_ReturnsBothDeclarations_WhenAnActionCarriesTheAttributeMoreThanOnce()
     {
-        // アクション側に複数付けた合成コントローラを走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindOnActionProbeController)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // アクション側へ 2 つ宣言した合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnActionProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、そのアクションの名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnActionProbeController), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnActionProbeController), StringComparison.Ordinal));
     }
 
-    // 複数付けられる属性を<b>基底へ 1 回だけ</b>付けて 2 つ派生させたとき、門番が鳴らないこと。
+    // 複数付けられる属性を<b>基底へ 1 回だけ</b>付けて 2 つ派生させたとき、1 件だけ返ること。
     //
-    // <b>なぜ要るのか（issue #269 / #255）。</b> 重複の判定を走査全体の記録だけで行うと、
-    // 「同じ 1 つの宣言を 2 つの派生型から見た」だけでキーが重なり、門番が投げる ——
-    // アセンブリの走査そのものが止まり、キャッシュ関連の検査が<b>本物の違反 0 件ではなく
-    // 例外で</b>落ちる。しかも失敗文言は「キーへ位置を含めろ」と案内するのに、
-    // 宣言は 1 つしか無いのでその助言は当てはまらない。
-    // <b>正しいコードで赤くなる検出網は、いずれ検査ごと緩められる。</b>
+    // <b>なぜ要るのか（issue #269 / #255 / #275）。</b> 「同じ 1 つの宣言を 2 つの派生型から見た」
+    // だけで 2 件に見える形は、この走査が繰り返し踏んできた誤りで、直し方を誤ると逆方向
+    // ——正しいコードで走査そのものが止まる——へも倒れた。いまは畳む単位が<b>訪ねた段</b>
+    // なので、基底の段を 1 度しか読まないことで構造的に 1 件になる。
+    // <b>訪ねた段の記録を外すと、ここが派生の数だけ並んで落ちる</b>（実測）。
     [Fact]
-    public void AttributeScan_DoesNotFail_WhenOneRepeatableDeclarationIsSeenThroughTwoDerivedTypes()
+    public void AttributeScan_ReturnsOneDeclaration_WhenOneRepeatableOneIsSeenThroughTwoDerivedTypes()
     {
         // 基底が 1 つだけ宣言した属性を、2 つの派生型から走査する
         var declarations = ResponseCachePolicy
@@ -4428,13 +4649,13 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal("shared", ((RepeatableProbeAttribute)declared.Attribute).Policy);
     }
 
-    // アクション側でも、基底の 1 つの宣言を 2 つの派生から見ただけでは鳴らないこと。
+    // アクション側でも、基底の 1 つの宣言を 2 つの派生から見たときに 1 件だけ返ること。
     //
-    // <b>なぜ別に要るのか。</b> 観測場所ごとの記録はクラス側とアクション側で別々に持つので、
-    // 片方だけを走査全体の記録へ戻す変異がありうる（この走査は SameKindAs と門番で、
-    // まったく同じクラス側／アクション側の非対称を実際に 2 度踏んでいる）。
+    // <b>なぜ別に要るのか。</b> 走査はクラス側とアクション側で別々の枝を持つので、
+    // <b>片方だけ</b>を「派生から見えた分もそのまま返す」形へ戻す変異が書ける
+    // （この走査はクラス側／アクション側の非対称を繰り返し踏んでいるので、対で置く）。
     [Fact]
-    public void AttributeScan_DoesNotFail_WhenOneRepeatableActionDeclarationIsSeenThroughTwoDerivedTypes()
+    public void AttributeScan_ReturnsOneDeclaration_WhenOneRepeatableActionOneIsSeenThroughTwoDerivedTypes()
     {
         // 基底のアクションが 1 つだけ宣言した属性を、2 つの派生型から走査する
         var declarations = ResponseCachePolicy
@@ -4462,7 +4683,7 @@ public class ResponseCacheAttributePolicyTests
     // <b>なぜ要るのか（レビュー指摘）。</b> 宣言元を閉じた総称型のまま扱うと、
     // `ExportBase<Pdf>` と `ExportBase<Csv>` は別の FullName を持つので走査全体の記録で畳まれず、
     // <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しはアセンブリ修飾名になり
-    // <b>開けるファイルを指さない</b> ——重複除去と DeclaringTypeOf が防ぐために
+    // <b>開けるファイルを指さない</b> ——重複除去と宣言元の名指しが防ぐために
     // 存在する形そのものが、総称型を通して戻っていた。
     [Fact]
     public void AttributeScan_FoldsOneDeclarationOnAGenericBase_AcrossItsClosedForms()
@@ -4828,35 +5049,49 @@ public class ResponseCacheAttributePolicyTests
         public IActionResult Take(ref DateTime? from, int[,] values) => NoContent();
     }
 
-    // 門番を「観測場所ごと」へ絞っても、<b>本物の損失</b>では引き続き落ちること。
+    // 基底が<b>クラス側へ</b>2 つ宣言した形を、派生から見ても両方とも返ること。
     //
-    // <b>なぜ要るのか。</b> issue #269 の直し方は誤検知を消す方向なので、行きすぎると
-    // 「畳んで 1 件失っても黙る」fail-open へ倒れる ——許す側の宣言が 2 個目だと
-    // <b>検査は緑のまま PHI を含みうる応答に共有キャッシュ可能な指示が残る</b>。
-    // 基底が 2 つ宣言していれば、派生 1 つから見ただけでも同じ観測場所で重なるので落ちる。
+    // <b>なぜ上の 3 つと別に要るのか。</b> 「同じ 1 つの宣言を 2 つの派生から見る」形
+    // （issue #255 / #269）を畳む仕掛けは、行きすぎると「本当に 2 つある宣言」まで
+    // 1 件へ畳む fail-open に倒れる ——許す側が 2 個目だと<b>検査は緑のまま PHI を含みうる
+    // 応答に共有キャッシュ可能な指示が残る</b>。いまの走査が畳む単位は
+    // <b>宣言の内容ではなく「継承の連なりの段」</b>なので、同じ段に 2 つあれば 2 件返る。
+    // その境目をここで固定する。
     [Fact]
-    public void AttributeScan_StillRefusesToScan_WhenTheBaseCarriesTwoRepeatableDeclarations()
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheBaseCarriesTwoRepeatableOnes()
     {
-        // 基底が 2 つ宣言した属性を、派生型から走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindOnBaseProbeLeaf)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // 基底が 2 つ宣言した属性を、素の派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnBaseProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、実際に宣言している基底の名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindOnBaseProbeBase), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindOnBaseProbeBase), StringComparison.Ordinal));
     }
 
-    // アクション側でも、宣言元をたどる条件が<b>その属性の型</b>まで絞られていること。
+    // アクション側でも、名指しが<b>その属性を実際に宣言している段</b>であること。
     //
     // <b>なぜクラス側の検査では足りないのか（実測）。</b> 種類が階層で分かれる形の合成は
-    // クラス側にしか無く、アクション側の SameKindAs を外しても 1080 件すべて緑のまま通った。
+    // 一時期クラス側にしか無く、アクション側だけを緩める変異が 1080 件すべて緑のまま通った。
     // 壊れ方はクラス側と同じで、基底の Export が [ResponseCache]・中間型の override が
     // 2 種類目を宣言していると、[ResponseCache] の宣言が<b>中間型の名前で報告される</b> ——
     // 名指しされたファイルを開いてもその属性は無い。
+    // いまこれを起こす変異はアクション側を inherit: true で読む形で、実測でも落ちる。
     [Fact]
     public void AttributeScan_NamesTheDeclaringTypePerKind_ForActionsToo()
     {
@@ -4909,11 +5144,13 @@ public class ResponseCacheAttributePolicyTests
 
     // 階層の<b>途中</b>の override に付いた属性が、その型の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ要るのか。</b> GetBaseDefinition() が返すのは「最初に virtual として宣言された
-    // 定義」なので、属性が階層の途中の override に付いていると根にも自分自身にも無い。
-    // 根へ一足飛びに跳ぶ実装では<b>どちらの検査も外れて具象が名指しされ</b>、
-    // 1 つの宣言が具象の数だけ違反として並び、しかも名指しされたファイルを開いても
-    // 属性が無い ——DeclaringTypeOf が防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // <b>なぜ要るのか。</b> 属性が階層の<b>途中</b>の override に付いている形は、根にも具象にも
+    // 属性が無い。走査が段ごとに inherit: false で読まないと、この宣言が<b>具象の名前で
+    // 派生の数だけ</b>並び、しかも名指しされたファイルを開いても属性が無い
+    // ——宣言元の名指しが防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // いまこれを起こす変異はアクション側を inherit: true で読む形と、訪ねた段の記録を外す形。
+    // <b>旧実装の GetBaseDefinition() によるさかのぼりを前提にした説明は、その機構ごと
+    // 削除されたので書き直してある</b>（issue #275）。
     [Fact]
     public void DeclarationScan_NamesTheMidHierarchyOverrideThatActuallyDeclaresTheAttribute()
     {
@@ -4952,10 +5189,11 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>属性を付けずに override だけする具象。</summary>
     /// <remarks>
-    /// <b>ここで override させるのが要点。</b> 素の継承にすると、走査が見つける
-    /// <c>MethodInfo</c> の <c>DeclaringType</c> は中間型のままなので
-    /// 「自分自身が宣言しているか」の検査で当たってしまい、<b>さかのぼる経路を一度も通らない</b>
-    /// （実測: 素の継承にした版では、根へ一足飛びに跳ぶ実装へ戻しても全件緑のまま通った）。
+    /// <b>override させているのは旧実装の名残（issue #275）。</b> かつては走査が具象から
+    /// 宣言元をさかのぼる形だったため、素の継承にすると<b>さかのぼる経路を一度も通らず</b>
+    /// 検出網が死んだ（実測）。いまは段ごとに <c>DeclaredOnly</c> ＋ <c>inherit: false</c> で読むので、
+    /// 素の継承でも同じ経路を通る ——<b>この override は形を残してあるだけで、区別は生まない</b>。
+    /// 消してもこの検査の意味は変わらないので、次に触る人は残す理由を作り直すか消してよい。
     /// </remarks>
     private sealed class MidOverrideProbeLeaf : MidOverrideProbeControllerMid
     {
@@ -4974,11 +5212,11 @@ public class ResponseCacheAttributePolicyTests
 
     // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
-    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
-    // 一度も通らない</b>。実測で、その continue を break に変えても全件緑のまま通り、
-    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
-    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
+    // <b>なぜ上の検査では足りないのか。</b> あちらは属性が中間型にあるので、
+    // <b>根まで歩かなくても</b>見つかる。こちらは Root → Mid(宣言し直さない) → Leaf ×2 で、
+    // 連なりを最後まで歩いてはじめて根の宣言に届く ——歩くのをやめる変異
+    // (訪ねた段の記録を外す・連なりを打ち切る)は、こちらでだけ
+    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になる（実測）。
     [Fact]
     public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
     {
@@ -5007,7 +5245,7 @@ public class ResponseCacheAttributePolicyTests
         public virtual IActionResult Export() => NoContent();
     }
 
-    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
+    /// <summary>アクションを宣言し直さない中間型（走査が宣言を 1 件も見つけない段）。</summary>
     private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
 
     /// <summary>属性を付けずに override だけする具象。</summary>
@@ -5026,12 +5264,20 @@ public class ResponseCacheAttributePolicyTests
         public override IActionResult Export() => NoContent();
     }
 
-    // さかのぼりが「同じアクションを宣言しているが属性は持たない段」を<b>通り抜ける</b>こと。
+    // 「同じアクションを宣言しているが属性は持たない段」をまたいでも、根の宣言に届くこと。
     //
-    // <b>なぜ既存の 2 つでは足りないのか（実測）。</b> MidOverrideProbe は 1 段目で属性に当たり、
-    // SkippedMidProbe は中間型がそのアクションを宣言していないので読み飛ばす。どちらも
-    // 「宣言はしているが属性が無いので次の段へ進む」経路を通らず、その行を
-    // 「当たらなければ具象を名指しして打ち切る」へ変えても 1080 件すべて緑のまま通った。
+    // <b>いまは上の SkippedMidProbe と同じ枝しか通らない（レビュー指摘・実測）。</b>
+    // 旧実装にはさかのぼりの中に「当たらなかった段を読み飛ばす」分岐があり、
+    // 「宣言し直していない段」と「宣言し直しているが属性が無い段」はそこで別々の経路だった
+    // （前者を読み飛ばす continue を break へ変えると、この形でだけ落ちた）。新実装は各段で
+    // <c>DeclaredOnly</c> ＋ <c>inherit: false</c> を読むだけなので、宣言が 0 件の段と
+    // 宣言はあるが属性が 0 件の段は<b>同じ枝</b>を通る ——区別を生む変異はいま書けない。
+    //
+    // <b>それでも残す理由。</b> 2 つは<b>ソース上の形</b>としては別物で、どちらも自然に書かれる。
+    // 「その段がアクションを宣言しているか」を条件に足す変更（連なりの歩き方を最適化しようとすると
+    // 出てくる自然な形）は、こちらでだけ壊れる。<b>逆に言えば、そういう変更を想定しないなら
+    // この検査は上と統合してよい</b> ——根拠が薄いことを隠さずに書いておくので、
+    // 次に触る人が判断すること（この repo が「守られていない門番を残さない」としているのと同じ理由）。
     [Fact]
     public void DeclarationScan_KeepsWalking_PastALevelThatRedeclaresTheActionWithoutTheAttribute()
     {
@@ -5089,8 +5335,10 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <remarks>
     /// 実在のキャッシュ指示属性はいずれも <c>AllowMultiple = false</c> なので、
-    /// 門番（<c>EnsureNothingWasLost</c>）が働く経路は合成入力でしか通せない。
-    /// <b>だから合成する</b> ——実在の属性だけを渡している限り、門番を消しても全件緑のまま通る。
+    /// 「同じ段へ 2 つ以上の宣言が付く」経路は合成入力でしか通せない。
+    /// <b>だから合成する</b> ——実在の属性だけを渡している限り、その 2 つを 1 件へ畳む形へ
+    /// 戻しても全件緑のまま通る（issue #275 以前は、畳んで失ったことに気付くための門番が
+    /// ここに居た。いまは畳まずに 2 件返すので、門番ではなく<b>件数</b>で固定している）。
     /// </remarks>
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
     private sealed class RepeatableProbeAttribute(string policy) : Attribute
@@ -5341,6 +5589,61 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>同じ基底を継承する 2 つ目の具象コントローラ(畳み方の検証に使う)。</summary>
     private sealed class SecondInheritedActionProbeController : InheritedActionProbeControllerBase;
 
+    // クラス側の読み取りは<b>自分たちのアセンブリの外の段でも止めない</b>こと。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 走査はアクション側だけを
+    // 「自分たちのアセンブリか」で切り、クラス側は連なりのどの段でも読む。ところがその広さには
+    // 検出網が無く、絞り込みを<b>クラス側の読み取りより前へ持ち上げる</b>形も、
+    // <c>continue</c> を <c>break</c> へ変える形も、どちらも 1295 件すべて緑のまま通った。
+    // どちらも「同じ条件をまとめただけ」に見える自然な整理で、差分からは狭まったと読み取れない。
+    //
+    // <b>壊れ方。</b> いまアプリの外にあるのはフレームワークの型だけなので違いが出ないが、
+    // 基底コントローラを共有プロジェクトへ切り出した瞬間に別れる ——
+    // <c>IncidentInsight.Shared.ExportControllerBase : Controller</c> が
+    // <c>[ResponseCache(Duration = 300, Location = Any)]</c> を持っていると、
+    // 正しい実装は報告して赤くなるのに、狭めた実装は<b>黙って落とす</b>。
+    // PHI を含みうる応答が共有キャッシュ可能なまま、検査は緑で出荷される。
+    //
+    // <b>手がかりの作り方。</b> 実際に別アセンブリの基底を用意することはできないので、
+    // <c>ownAssembly</c> のほうに<b>自分たちではないアセンブリ</b>を渡して、合成コントローラの
+    // 段を「外」に見せる。正しい実装ならクラス側の宣言は返り、アクション側だけが飛ばされる
+    // ——上の 2 つの変異はどちらもここで 0 件になる。
+    //
+    // <b>渡すアセンブリは、連なりのどの段にも現れないものを選ぶ（レビュー指摘）。</b>
+    // 連なりは テストアセンブリ → テストアセンブリ → Mvc.Core → CoreLib なので、
+    // <c>typeof(string).Assembly</c>(= CoreLib) を渡すと<b>最後の段だけは「内」</b>になり、
+    // 「すべての段が外」という前提が成り立たない ——後からこの検査を「アクション側が
+    // 一度も走らないこと」まで見る形へ強めた人が、前提と違う結果を踏む。
+    // xUnit のアセンブリはこの連なりに現れないので、前提を文字どおり満たす。
+    [Fact]
+    public void AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly()
+    {
+        // ownAssembly に、連なりのどの段にも現れないアセンブリを渡して段を「外」に見せる
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(ClassLevelInheritedProbeController)],
+                typeof(FactAttribute).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 基底のクラス属性は、段が「外」でも読まれること(アクション側の絞り込みを
+        // クラス側まで効かせる変異、および連なりを打ち切る変異は、ここで 0 件になる)。
+        // <b>件数ではなく目印(77)で絞る（レビュー指摘）。</b> この基底は
+        // DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase と共有しており、
+        // 「同じ段へ複数付いた宣言はそのまま件数として返る」経路を試すために宣言を 1 つ足されると、
+        // Assert.Single は<b>件数の話をする失敗文言</b>で落ちる ——この検査が守っている不変条件
+        // (外の段でもクラス属性を読む)とは関係の無い理由で赤くなり、直し方も読み取れない
+        var declared = Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 77 });
+
+        // 名指しは、実際に宣言している基底であること
+        Assert.Contains(
+            nameof(ClassLevelInheritedProbeControllerBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
     /// <summary>クラス側に属性を持つ抽象基底(派生の数だけ見えてしまう形)。</summary>
     [ResponseCache(Duration = 77)]
     private abstract class ClassLevelInheritedProbeControllerBase : ControllerBase;
@@ -5434,3 +5737,4 @@ public class ResponseCacheAttributePolicyTests
                 + string.Join(Environment.NewLine, missing));
     }
 }
+
