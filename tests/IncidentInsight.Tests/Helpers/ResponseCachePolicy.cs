@@ -311,7 +311,14 @@ public static partial class ResponseCachePolicy
     /// </remarks>
     /// <param name="method">引数を並べるメソッド。</param>
     /// <returns>引数の型名をカンマで区切った 1 語（引数が無ければ空文字）。</returns>
-    private static string ParameterTypeList(MethodBase method) =>
+    /// <remarks>
+    /// <b>受け口は <c>MethodInfo</c> に絞る（レビュー指摘）。</b> 以前 <c>MethodBase</c> だったのは
+    /// 削除済みの <c>DeclarationSiteMethod</c> のためで、いまの唯一の呼び出し側はアクションの
+    /// <c>MethodInfo</c> を渡す。広いままだとコンストラクタ等も受け取れてしまい、
+    /// <b>アクションでないものをアクションとして名指しする</b>形（このファイルが繰り返し直してきた
+    /// 「名指しされたファイルを開いてもその綴りが無い」欠陥）を将来書けてしまう。
+    /// </remarks>
+    private static string ParameterTypeList(MethodInfo method) =>
         // 型ごとの綴りは TypeDisplayName が決める(素の FullName を使わない理由はそちらの説明が正本)
         string.Join(
             ", ",

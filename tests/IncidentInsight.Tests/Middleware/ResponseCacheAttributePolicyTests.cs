@@ -85,49 +85,127 @@ namespace IncidentInsight.Tests.Middleware;
 public class ResponseCacheAttributePolicyTests
 {
     /// <summary>
-    /// アプリ全体を走査した結果に、<b>実在が分かっている宣言</b>が含まれていることを確かめる。
+    /// アプリ全体を走査するときのホスト集合を、<b>広さを確かめてから</b>返す。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> アプリ全体を見る検査はどちらも
-    /// 「違反が 0 件」しか見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。
-    /// そのうえで PHI のアクションへ <c>[ResponseCache(Duration = 300, Location = Any)]</c> を
-    /// 足しても全件緑のまま出荷される。</para>
-    ///
-    /// <para><b>この検査が拾うのは「走査が空になる」形だけ</b>（レビュー指摘）。
-    /// 実測で拾えるのは <c>ownAssembly</c> の取り違えで、
-    /// <b>ホスト集合を狭める形は拾えない</b> ——目印の <c>HomeController.Error()</c> は
-    /// <c>ControllerBase</c> 派生なので、<c>Controllers()</c> へ狭めても残る。
-    /// そちらは <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が受け持つので、
-    /// <b>ここに「絞りすぎも拾う」と書かない</b> ——書くと、読んだ人が向こうの検査や
-    /// <c>CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly</c> を「重複だ」として
-    /// 消しうる（成り立たない根拠が簡略化を促す形）。</para>
-    ///
-    /// <para><b>目印に選ぶ宣言。</b> <c>HomeController.Error()</c> はこのアプリで唯一の実在する
-    /// キャッシュ指示で、<c>NoStore = true</c> なので規則にも準拠している(つまり違反の一覧には
-    /// 出ないが、走査には必ず現れる)。名指しの綴りまで突き合わせるのは、宣言元の名指しが
-    /// 壊れたときにもここで気付くため。</para>
+    /// <b>2 か所目で共通化する（レビュー指摘・CLAUDE.md §6）。</b> 以前は「取り出して確かめる」
+    /// 2 行を呼び出し側へ写していたが、3 つ目のアプリ全体の走査を足した人が
+    /// <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> を呼び忘れても<b>何も報告されない</b>
+    /// （guard の射程が「写すのを覚えていた人」だけになる）。値を返す形にすれば、
+    /// 確かめた集合をそのまま走査へ渡すことになり、呼び忘れが起こらない。
+    /// <b>ここで導出し直すのは差し支えない</b> ——狭める変異はこの中で起き、直後の確認が捕まえる
+    /// （呼び出し側が<b>このヘルパーを使わずに</b>別の集合を渡す形だけが残る境界で、
+    /// それは以前から同じ）。
     /// </remarks>
-    /// <param name="declaredOn">走査が返した名指しの一覧。</param>
-    private static void AssertTheAppWideScanReachedTheKnownDeclaration(IEnumerable<string> declaredOn) =>
-        // 目印の宣言がちょうど 1 件あること(0 件なら走査が届いていない)。
-        // <b>失敗文言を自分で書く（レビュー指摘）。</b> Assert.Single の述語版には文言を渡せず、
-        // 既定の「The collection contained 0 matching items」だけでは<b>これが空振り検出だと分からない</b>
-        // ——目印の宣言を消すリファクタ(このミドルウェアが既定で no-store を書くので
-        // HomeController.Error() の [ResponseCache] は冗長になった)をすると、無関係に見える
-        // セキュリティ検査が 2 つ同時に、直し方の分からない文言で落ちる。
-        // そのとき削られるのは<b>この空振り検出のほう</b>で、塞いだ fail-open が戻る
+    /// <returns>走査へ渡すホスト集合。</returns>
+    private static List<Type> AppWideCacheDirectiveHosts()
+    {
+        // 走査へ渡すホスト集合を組み立てる
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // コントローラだけへ狭められていないこと(Razor Pages 等の宣言先が視界に入る)
+        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+
+        // 確かめた集合をそのまま返す(呼び出し側はこれを走査へ渡す)
+        return hosts;
+    }
+
+    /// <summary>
+    /// アプリ全体の走査が<b>実際にアプリへ届いている</b>ことを、その呼び出しの引数で確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（実測）。</b> アプリ全体を見る検査はどちらも「違反が 0 件」しか
+    /// 見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。実測でも、呼び出し側が渡す
+    /// <c>ownAssembly</c> を別のアセンブリへ差し替えると全件緑のまま通り、そのうえで PHI の
+    /// ダッシュボードへ <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足しても緑だった。</para>
+    ///
+    /// <para><b>目印に「実在する宣言」を選ばない（レビュー指摘）。</b> 以前はこのアプリで唯一の
+    /// <c>[ResponseCache]</c> である <c>HomeController.Error()</c> を目印にしていたが、
+    /// <c>SecurityHeadersMiddleware</c> が既定で <c>no-store</c> を書くようになった以上あの宣言は
+    /// <b>冗長</b>で、消すのは自然な整理になる（他にそれを固定している検査も無い ——実測）。
+    /// 消した瞬間に無関係に見えるセキュリティ検査が 2 つ落ち、緑へ戻す道が
+    /// 「冗長な属性を production へ戻す」か「この検査を消す」しか無くなる。</para>
+    ///
+    /// <para><b>だから目印を「属性の種類に依存しないもの」にする。</b> 見るのは 2 点:
+    /// (a) 走査へ渡す <c>ownAssembly</c> が、<b>ホスト集合が実際に属するアセンブリ</b>であること、
+    /// (b) 同じ <c>(ホスト集合, ownAssembly)</c> へ<b>すべての属性に一致する述語</b>を通すと
+    /// <b>アクション側の宣言</b>が返ること。コントローラのアクションには <c>[HttpPost]</c> /
+    /// <c>[Authorize]</c> 等が必ず付いているので、この目印はキャッシュ指示を 1 件残らず消しても
+    /// <b>蒸発しない</b>。</para>
+    ///
+    /// <para><b>(b) だけでは <c>ownAssembly</c> の取り違えを拾えない（実測）。</b>
+    /// 継承の連なりは必ず <c>object</c> まで届くので、<c>typeof(string).Assembly</c> を渡すと
+    /// <b>その段でアクション側の走査が走り</b>、<c>object</c> 自身のメソッドに付いた属性が返る
+    /// ——「アクション側の宣言がある」は満たされてしまい、全件緑のまま通った。
+    /// 取り違えを直接見る (a) が要る。</para>
+    ///
+    /// <para><b>ホスト集合の絞りすぎはここでは拾えない</b>（狭めてもコントローラは残り、
+    /// アクション側の宣言も返るため）。そちらは
+    /// <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が受け持つ。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    /// <param name="ownAssembly">走査へ実際に渡すアセンブリ。</param>
+    private static void AssertTheAppWideScanIsLive(IReadOnlyCollection<Type> hosts, Assembly ownAssembly)
+    {
+        // (a) 渡したアセンブリが、ホスト集合の出どころと同じであること。
+        // ここがずれるとアクション側の走査が自分たちの段で 1 つも走らない
         Assert.True(
-            declaredOn.Count(name => string.Equals(name, KnownAppWideDeclaration, StringComparison.Ordinal)) == 1,
-            $"アプリ全体の走査が、実在するはずの宣言 {KnownAppWideDeclaration} を返していません。"
+            hosts.Count > 0 && hosts.All(type => type.Assembly == ownAssembly),
+            $"走査へ渡した ownAssembly({ownAssembly.GetName().Name}) が、"
+                + $"ホスト集合({hosts.Count} 件)の出どころと一致していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——ずれるとアクション側の宣言が"
+                + "1 つも拾われなくなり、「違反 0 件」の検査が無条件で緑になります。"
+                + Environment.NewLine
+                + $"{nameof(AppControllerScan.WebAssembly)} を渡しているか確かめてください。");
+
+        // (b) 属性の種類を問わない走査を、本番の検査とまったく同じ引数で通す
+        var anyAttribute = ResponseCachePolicy
+            .AttributeDeclarationsOn(hosts, ownAssembly, _ => true)
+            .Select(d => d.DeclaredOn)
+            .ToList();
+
+        // アクション側の宣言(名指しに引数の括弧が付く)が返っていること
+        Assert.True(
+            anyAttribute.Any(name => name.Contains('(', StringComparison.Ordinal)),
+            "アプリ全体の走査が、アクションに付いた属性を 1 件も返していません。"
                 + "これは違反の検査ではなく「空振り検出」です ——走査が何も返さなくなると"
                 + "「違反 0 件」の検査は無条件で緑になるので、届いていること自体をここで確かめています。"
                 + Environment.NewLine
-                + $"直し方は 2 つ: (a) 走査の引数(ホスト集合・{nameof(AppControllerScan.WebAssembly)}・述語)を"
-                + "取り違えていないか確かめる。(b) 目印の宣言を意図して消した／動かしたなら、"
-                + $"{nameof(KnownAppWideDeclaration)} を「実在する別の宣言」へ更新する"
-                + "（存在しない綴りにすると、この空振り検出そのものが常に落ちる検査になります）。"
+                + "アプリのアクションには [HttpPost] / [Authorize] 等が必ず付いているので、"
+                + "ここが 0 件になるのは走査そのものの退行です。"
                 + Environment.NewLine
-                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。");
+                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。"
+                + Environment.NewLine
+                + $"(返った宣言は {anyAttribute.Count} 件)");
+    }
+
+    /// <summary>
+    /// <b>本物の</b>出力キャッシュ属性を付けた、述語の生存確認用コントローラ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>型名を合成せず、実型を参照する（レビュー指摘・実測）。</b> この検査の docstring は
+    /// 長らく「型を直接参照すると出力キャッシュのパッケージを自分で引き込む」としていたが、
+    /// <c>Microsoft.AspNetCore.OutputCaching</c> は共有フレームワーク
+    /// (<c>Microsoft.AspNetCore.App</c>) の一部で、<c>Microsoft.AspNetCore.Mvc.Testing</c> 経由で
+    /// <b>既に参照できている</b> ——パッケージの追加は 1 つも要らない（実測で確認）。</para>
+    ///
+    /// <para><b>実型を使うと綴りが framework に固定される。</b> 型名を合成すると、
+    /// 綴りの写しが（合成した型と <c>IsOutputCacheAttribute_MatchesOnlyOutputCaching</c> の
+    /// <c>[InlineData]</c> に）2 つでき、framework が改名・移動したときに
+    /// <b>どちらも緑のまま</b> <c>IsOutputCacheAttributeTypeName</c> だけが本物と一致しなくなる。
+    /// 実型を参照しておけば、その改名は<b>コンパイルエラー</b>として現れる。</para>
+    ///
+    /// <para><b>述語そのものは型名で照合したままにする</b>（名前空間を問わず
+    /// <c>OutputCacheAttribute</c> を拾う）。実型に縛ると、別の名前空間の同名の属性を
+    /// 取りこぼす。ここで固定したいのは「述語が<b>本物にも</b>当たること」。</para>
+    /// </remarks>
+    private sealed class OutputCacheProbeController : ControllerBase
+    {
+        /// <summary>本物の出力キャッシュ属性を持つ、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [Microsoft.AspNetCore.OutputCaching.OutputCache]
+        public IActionResult Probe() => NoContent();
+    }
 
     /// <summary>
     /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
@@ -162,17 +240,6 @@ public class ResponseCacheAttributePolicyTests
                 + "狭めると Pages/ に付けた宣言がどの検査からも見えなくなります"
                 + "（属性名にはヘッダー名の綴りが無いので、ソースを見る走査でも拾えません）。");
 
-    /// <summary>
-    /// 空振り検出の目印に使う、実在が分かっている宣言の名指し。
-    /// </summary>
-    /// <remarks>
-    /// このアプリで唯一の <c>[ResponseCache]</c>。ここを動かすときは、動かした先が
-    /// <b>本当に実在する</b>ことを確かめること(存在しない綴りにすると、空振り検出そのものが
-    /// 常に落ちる検査になり、いずれ外される)。
-    /// </remarks>
-    private const string KnownAppWideDeclaration =
-        "IncidentInsight.Web.Controllers.HomeController.Error()";
-
     // アプリ全体のアクションが名乗る [ResponseCache] は、すべてキャッシュ保存を禁じていること。
     //
     // これが落ちたときの直し方は 2 つだけ: (a) その属性へ NoStore = true を付ける、
@@ -182,11 +249,8 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
-        // 走査へ渡すホスト集合を、いったんローカルへ取り出す(下の 2 つの検査が同じ値を読む)
-        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
-
-        // ホスト集合がコントローラだけへ狭められていないこと(Razor Pages の宣言先が視界に入る)
-        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+        // 走査へ渡すホスト集合を、広さを確かめたうえで受け取る
+        var hosts = AppWideCacheDirectiveHosts();
 
         // アプリ全体の宣言を集める
         var declarations = ResponseCachePolicy
@@ -201,7 +265,7 @@ public class ResponseCacheAttributePolicyTests
         // 空振り検出も同じ呼び出しの結果から採る</b>（別の呼び出しへ出すと、こちらの引数だけを
         // 差し替える変異を捕まえられない）。CLAUDE.md が「拾えたかどうかにも空振り検出を置く」
         // と書いているのと同じ形
-        AssertTheAppWideScanReachedTheKnownDeclaration(declarations.Select(d => d.DeclaredOn));
+        AssertTheAppWideScanIsLive(hosts, AppControllerScan.WebAssembly);
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
@@ -586,9 +650,13 @@ public class ResponseCacheAttributePolicyTests
     // ヘッダーしか見ないので、クッキー認証のこのアプリでは「認証済みだから除外」も効かない。
     // 結果として職員 A の PHI 集計が職員 B へそのまま返る。
     //
-    // <b>属性は型名で照合する</b>(型を直接参照しない)。参照すると、この検査を通すために
-    // テストプロジェクトが出力キャッシュのパッケージへ依存することになり、
-    // 「禁じたい機能を自分で引き込む」形になる。
+    // <b>属性は型名で照合する</b>。理由は<b>依存ではない</b>（レビュー指摘・実測で訂正）——
+    // 長らく「型を直接参照するとテストプロジェクトが出力キャッシュのパッケージへ依存する」と
+    // 書いていたが、Microsoft.AspNetCore.OutputCaching は共有フレームワークの一部で、
+    // Microsoft.AspNetCore.Mvc.Testing 経由で<b>既に参照できている</b>（パッケージの追加は
+    // 1 つも要らない）。本当の理由は<b>名前空間を問わず拾いたい</b>ことで、実型に縛ると
+    // 別の名前空間の同名の属性を取りこぼす。
+    // 一方で<b>述語が本物に当たること</b>は実型で確かめる（下の合成プローブが実型を使う）。
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
@@ -609,18 +677,15 @@ public class ResponseCacheAttributePolicyTests
         // 出力キャッシュ側が生きていることを別に確かめる
         var matches = (object a) => IsOutputCacheAttribute(a) || a is ResponseCacheAttribute;
 
-        // 走査へ渡すホスト集合を、いったんローカルへ取り出す
-        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
-
-        // ホスト集合がコントローラだけへ狭められていないこと
-        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+        // 走査へ渡すホスト集合を、広さを確かめたうえで受け取る
+        var hosts = AppWideCacheDirectiveHosts();
 
         var declarations = ResponseCachePolicy
             .AttributeDeclarationsOn(hosts, AppControllerScan.WebAssembly, matches)
             .ToList();
 
         // 走査がアプリへ届いていること(届いていなければ下の「0 件」は無意味)
-        AssertTheAppWideScanReachedTheKnownDeclaration(declarations.Select(d => d.DeclaredOn));
+        AssertTheAppWideScanIsLive(hosts, AppControllerScan.WebAssembly);
 
         // 述語の<b>出力キャッシュ側</b>が生きていること。アプリに [OutputCache] は 1 件も無いので、
         // ここだけは合成プローブへ当てないと確かめようがない(型は直接参照せず、型名で照合する
@@ -5679,27 +5744,3 @@ public class ResponseCacheAttributePolicyTests
     }
 }
 
-/// <summary>
-/// 出力キャッシュの属性を<b>型名だけ合わせて合成した</b>検証用の属性。
-/// </summary>
-/// <remarks>
-/// <para><b>なぜ合成するのか。</b> 本物の <c>[OutputCache]</c> を参照すると、禁じたい機能の
-/// パッケージをテストプロジェクトが自分で引き込むことになる
-/// （<c>NoActionEnablesServerSideOutputCaching</c> の docstring がその理由を持つ）。
-/// 判定は型名で行うので、名前さえ合っていれば述語が生きているかを確かめられる。</para>
-///
-/// <para><b>入れ子にしない。</b> 入れ子の型の <c>FullName</c> は
-/// <c>…+OutputCacheAttribute</c> になり、<c>'.'</c> で切って最後を取る照合に当たらない
-/// （名前空間を分けた最上位の型にすれば当たる）。</para>
-/// </remarks>
-[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
-internal sealed class OutputCacheAttribute : Attribute;
-
-/// <summary>合成した出力キャッシュ属性をアクションへ付けた、検証用のコントローラ。</summary>
-internal sealed class OutputCacheProbeController : ControllerBase
-{
-    /// <summary>合成した出力キャッシュ属性を持つ、何もしないアクション。</summary>
-    /// <returns>内容を持たない結果。</returns>
-    [OutputCache]
-    public IActionResult Probe() => NoContent();
-}
