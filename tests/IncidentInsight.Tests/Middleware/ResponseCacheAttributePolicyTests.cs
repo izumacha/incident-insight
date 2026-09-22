@@ -5144,11 +5144,13 @@ public class ResponseCacheAttributePolicyTests
 
     // 階層の<b>途中</b>の override に付いた属性が、その型の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ要るのか。</b> GetBaseDefinition() が返すのは「最初に virtual として宣言された
-    // 定義」なので、属性が階層の途中の override に付いていると根にも自分自身にも無い。
-    // 根へ一足飛びに跳ぶ実装では<b>どちらの検査も外れて具象が名指しされ</b>、
-    // 1 つの宣言が具象の数だけ違反として並び、しかも名指しされたファイルを開いても
-    // 属性が無い ——宣言元の名指しが防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // <b>なぜ要るのか。</b> 属性が階層の<b>途中</b>の override に付いている形は、根にも具象にも
+    // 属性が無い。走査が段ごとに inherit: false で読まないと、この宣言が<b>具象の名前で
+    // 派生の数だけ</b>並び、しかも名指しされたファイルを開いても属性が無い
+    // ——宣言元の名指しが防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // いまこれを起こす変異はアクション側を inherit: true で読む形と、訪ねた段の記録を外す形。
+    // <b>旧実装の GetBaseDefinition() によるさかのぼりを前提にした説明は、その機構ごと
+    // 削除されたので書き直してある</b>（issue #275）。
     [Fact]
     public void DeclarationScan_NamesTheMidHierarchyOverrideThatActuallyDeclaresTheAttribute()
     {
@@ -5187,10 +5189,11 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>属性を付けずに override だけする具象。</summary>
     /// <remarks>
-    /// <b>ここで override させるのが要点。</b> 素の継承にすると、走査が見つける
-    /// <c>MethodInfo</c> の <c>DeclaringType</c> は中間型のままなので
-    /// 「自分自身が宣言しているか」の検査で当たってしまい、<b>さかのぼる経路を一度も通らない</b>
-    /// （実測: 素の継承にした版では、根へ一足飛びに跳ぶ実装へ戻しても全件緑のまま通った）。
+    /// <b>override させているのは旧実装の名残（issue #275）。</b> かつては走査が具象から
+    /// 宣言元をさかのぼる形だったため、素の継承にすると<b>さかのぼる経路を一度も通らず</b>
+    /// 検出網が死んだ（実測）。いまは段ごとに <c>DeclaredOnly</c> ＋ <c>inherit: false</c> で読むので、
+    /// 素の継承でも同じ経路を通る ——<b>この override は形を残してあるだけで、区別は生まない</b>。
+    /// 消してもこの検査の意味は変わらないので、次に触る人は残す理由を作り直すか消してよい。
     /// </remarks>
     private sealed class MidOverrideProbeLeaf : MidOverrideProbeControllerMid
     {
@@ -5209,11 +5212,11 @@ public class ResponseCacheAttributePolicyTests
 
     // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
-    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
-    // 一度も通らない</b>。実測で、その continue を break に変えても全件緑のまま通り、
-    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
-    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
+    // <b>なぜ上の検査では足りないのか。</b> あちらは属性が中間型にあるので、
+    // <b>根まで歩かなくても</b>見つかる。こちらは Root → Mid(宣言し直さない) → Leaf ×2 で、
+    // 連なりを最後まで歩いてはじめて根の宣言に届く ——歩くのをやめる変異
+    // (訪ねた段の記録を外す・連なりを打ち切る)は、こちらでだけ
+    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になる（実測）。
     [Fact]
     public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
     {
@@ -5242,7 +5245,7 @@ public class ResponseCacheAttributePolicyTests
         public virtual IActionResult Export() => NoContent();
     }
 
-    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
+    /// <summary>アクションを宣言し直さない中間型（走査が宣言を 1 件も見つけない段）。</summary>
     private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
 
     /// <summary>属性を付けずに override だけする具象。</summary>
@@ -5261,12 +5264,20 @@ public class ResponseCacheAttributePolicyTests
         public override IActionResult Export() => NoContent();
     }
 
-    // さかのぼりが「同じアクションを宣言しているが属性は持たない段」を<b>通り抜ける</b>こと。
+    // 「同じアクションを宣言しているが属性は持たない段」をまたいでも、根の宣言に届くこと。
     //
-    // <b>なぜ既存の 2 つでは足りないのか（実測）。</b> MidOverrideProbe は 1 段目で属性に当たり、
-    // SkippedMidProbe は中間型がそのアクションを宣言していないので読み飛ばす。どちらも
-    // 「宣言はしているが属性が無いので次の段へ進む」経路を通らず、その行を
-    // 「当たらなければ具象を名指しして打ち切る」へ変えても 1080 件すべて緑のまま通った。
+    // <b>いまは上の SkippedMidProbe と同じ枝しか通らない（レビュー指摘・実測）。</b>
+    // 旧実装にはさかのぼりの中に「当たらなかった段を読み飛ばす」分岐があり、
+    // 「宣言し直していない段」と「宣言し直しているが属性が無い段」はそこで別々の経路だった
+    // （前者を読み飛ばす continue を break へ変えると、この形でだけ落ちた）。新実装は各段で
+    // <c>DeclaredOnly</c> ＋ <c>inherit: false</c> を読むだけなので、宣言が 0 件の段と
+    // 宣言はあるが属性が 0 件の段は<b>同じ枝</b>を通る ——区別を生む変異はいま書けない。
+    //
+    // <b>それでも残す理由。</b> 2 つは<b>ソース上の形</b>としては別物で、どちらも自然に書かれる。
+    // 「その段がアクションを宣言しているか」を条件に足す変更（連なりの歩き方を最適化しようとすると
+    // 出てくる自然な形）は、こちらでだけ壊れる。<b>逆に言えば、そういう変更を想定しないなら
+    // この検査は上と統合してよい</b> ——根拠が薄いことを隠さずに書いておくので、
+    // 次に触る人が判断すること（この repo が「守られていない門番を残さない」としているのと同じ理由）。
     [Fact]
     public void DeclarationScan_KeepsWalking_PastALevelThatRedeclaresTheActionWithoutTheAttribute()
     {
