@@ -1,5 +1,7 @@
 // 走査と判定の共通処理を使う
 using IncidentInsight.Tests.Helpers;
+// 静的アセット用のキャッシュ指示の値の正本(定数)を読むために使う
+using IncidentInsight.Web.Middleware;
 // 綴りの表を名前ではなく宣言から導くために反射を使う
 using System.Reflection;
 // ResponseCacheAttribute / ResponseCacheLocation / ControllerBase を使う
@@ -457,8 +459,13 @@ public class ResponseCacheAttributePolicyTests
                     // 既定値そのものの定数
                     ["public const string NoStoreCacheControl = \"no-store\";"] =
                         new IntendedWrite(1, "キャッシュ抑止の既定値そのもの。"),
-                    // 静的アセット用の指示の定数(値の正本)
-                    ["public const string StaticAssetCacheControl = \"public,max-age=3600\";"] =
+                    // 静的アセット用の指示の定数(値の正本)。
+                    // <b>値を書き写さず本体の定数から組み立てる(レビュー指摘)。</b> ここへ
+                    // "public,max-age=3600" と直書きすると、定数と docs/security.md に続く
+                    // <b>3 つ目の写し</b>になる。定数を動かしたとき、この表だけが取り残されて
+                    // 「表に無い行」「回数 0 回」「許可表の行が実在しない」が同時に出る ——
+                    // 隣のコメントが「原因が読み取れなくなる」として避けている形そのもの
+                    [$"public const string StaticAssetCacheControl = \"{SecurityHeadersMiddleware.StaticAssetCacheControl}\";"] =
                         new IntendedWrite(1, "静的アセット用の指示の値の正本。docs/security.md と突き合わせている。"),
                     // 既定値を入れるコールバック
                     ["private static readonly Func<object, Task> ApplyDefaultCacheControl = state =>"] =

@@ -997,7 +997,11 @@ public class AllowedHostsPolicyTests
     // <b>対になっていない角括弧は、警告 2 本とも黙っていた（レビュー指摘）。</b>
     // 実測では "[0.0.0.0" ・ "0.0.0.0]" ・ "[*" ・ "*]" ・ "[::" ・ "a[b.test" ・ "[[a]]" は
     // どれも Kestrel が 400 で弾くのに、どちらの警告にも掛からなかった。しかも運用者が
-    // 余計な括弧を消すと 0.0.0.0 / * / :: ＝全ホスト許可（issue #64）。
+    // 余計な括弧を消すと 0.0.0.0 / * ＝全ホスト許可（issue #64）。
+    // <b>ここに ":: " を数えない（レビュー指摘）。</b> 素の "::" はワイルドカードの 3 綴り
+    // （"*" / "[::]" / "0.0.0.0"）に含まれず、実測でもどの Host も 400 になる
+    // （AllowedHostsPolicy の docstring が正本）。だから "[::" は下の UnpairedBrackets 側に
+    // 並んでおり、この行で全許可に数えると<b>すぐ下の期待値と食い違う</b>。
     // 直すとワイルドカードになる綴りは、いちばん危ない形として先に名乗る
     [InlineData("a.example.test;[0.0.0.0", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]
     [InlineData("a.example.test;0.0.0.0]", AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired)]

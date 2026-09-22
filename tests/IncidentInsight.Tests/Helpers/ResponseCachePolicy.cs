@@ -215,8 +215,7 @@ public static partial class ResponseCachePolicy
                 // 総称 55 段の再帰と正規表現だけ(残る 663 段はキャッシュ済みの FullName を読むだけ)
                 // ——<b>効果は小さい</b>。一方、空振り検出が渡す `_ => true` ではクラス側だけで
                 // 667 件の宣言が返るので、そちらでは遅延の有無がそのまま効く。
-                // どちらにせよ段ごとに 1 度で済ませる性質は変えない。
-                // 段ごとに 1 度で済ませる性質は変えない
+                // どちらにせよ段ごとに 1 度で済ませる性質は変えない
                 // (素の FullName を使わない理由は TypeDisplayName の説明が正本)
                 string? siteName = null;
 
@@ -255,7 +254,7 @@ public static partial class ResponseCachePolicy
                 // <b>呼び出し側が渡す ownAssembly を取り違える変異は、この走査からは見えない</b>
                 // ——引数なので合成入力のテストは自前の値を渡しており、アプリ全体を見る側の
                 // 呼び出しだけを差し替えても届かない。あちらは呼び出しごとの空振り検出
-                // (AssertTheAppWideScanReachedTheKnownDeclaration) が受け持つ。
+                // (AssertTheAppWideScanIsLive) が受け持つ。
                 if (site.Assembly != ownAssembly) continue;
 
                 // その段が<b>自分で宣言している</b>アクション(公開されたインスタンスメソッド)を読む。

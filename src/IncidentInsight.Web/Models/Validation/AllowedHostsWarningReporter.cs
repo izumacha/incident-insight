@@ -27,6 +27,12 @@ namespace IncidentInsight.Web.Models.Validation;
 /// 件数ではなく有無を見るので、埋もれること自体は誤った安心にはならないが、
 /// 「いつ緩んだか」を追えなくする。</para>
 /// </remarks>
+/// <param name="logger">警告の出力先。</param>
+/// <param name="environmentName">
+/// 起動している環境の名前。
+/// <b>"in Production" と決め打たない</b> ——この警告は <c>!IsDevelopment()</c> で出るので
+/// <c>Staging</c> でも鳴り、決め打つと Staging の設定ミスを本番の話と取り違える。
+/// </param>
 /// <param name="readCurrentValue">
 /// <c>AllowedHosts</c> の現在値を読む関数（未設定なら <c>null</c> を返す）。
 ///
@@ -38,12 +44,6 @@ namespace IncidentInsight.Web.Models.Validation;
 /// ずれると、<b>次に本当に緩めたときに重複抑止へ当たって 1 本も出ない</b> ——
 /// issue #264 がまさに塞いだ fail-open が、競合の形で戻ってくる。
 /// 読み取りごと錠の中へ入れれば「読んで・比べて・出して・覚える」が不可分になる。
-/// </param>
-/// <param name="logger">警告の出力先。</param>
-/// <param name="environmentName">
-/// 起動している環境の名前。
-/// <b>"in Production" と決め打たない</b> ——この警告は <c>!IsDevelopment()</c> で出るので
-/// <c>Staging</c> でも鳴り、決め打つと Staging の設定ミスを本番の話と取り違える。
 /// </param>
 public sealed class AllowedHostsWarningReporter(
     ILogger logger, string environmentName, Func<string?> readCurrentValue)
@@ -63,6 +63,43 @@ public sealed class AllowedHostsWarningReporter(
     /// <remarks>役割は <see cref="CheckFailedMessagePrefix"/> と同じ。</remarks>
     public const string SubscribeFailedMessagePrefix =
         "Failed to subscribe to configuration reloads for AllowedHosts";
+
+    /// <summary>1 本目（全許可）の警告を見分ける目印。</summary>
+    /// <remarks>
+    /// <b><c>docs/security.md</c> が運用者へ「配備後にこのログが出ていないことを
+    /// 確認してください」と案内している綴りなので、定数にして文書と突き合わせる。</b>
+    /// 役割は <see cref="CheckFailedMessagePrefix"/> とまったく同じで、
+    /// literal のままだと言い回しを変えた瞬間に<b>手順の grep が永久に空振りし</b>、
+    /// 全許可のまま動いている配備が「きれい」と読める ——この警告が防ごうとしている
+    /// <b>誤った安心</b>そのものになる。
+    ///
+    /// <para><b>全文ではなく「書き出し」を定数にするのはなぜか。</b> 文面には
+    /// <c>{Environment}</c> のような差し込みが入るが、文書側はそこを <c>…</c> や
+    /// <c>N</c> と書いて読み手に説明する。全文を突き合わせると<b>文書が読みやすく
+    /// 書いてあるというだけで赤くなる</b>ので、差し込みを含まない部分だけを見る。
+    /// この目印は<b>出力される文面を実際に組み立てている</b>（下の
+    /// <c>LogWarning</c> がこの定数を連結している）ので、写しではない。</para>
+    ///
+    /// <para><b>残っている境界。</b> 目印より後ろ（<c>in the {Environment} environment
+    /// (current value: …)</c> の部分）を書き換えても、この突き合わせは落ちない。
+    /// 文書はそこまで引用しているので、<b>その範囲の drift は規約とレビューで守る</b> ——
+    /// 差し込みをまたぐ照合は上の理由で書けない。</para>
+    /// </remarks>
+    public const string PermissiveWarningMarker = "AllowedHosts is permissive";
+
+    /// <summary>2 本目（一致しえない項目）の警告を見分ける目印。</summary>
+    /// <remarks>
+    /// 役割と「書き出しだけを見る」理由は <see cref="PermissiveWarningMarker"/> と同じ。
+    ///
+    /// <para><b>こちらは書き出しではなく途中の綴りを採る。</b> 文面は
+    /// <c>AllowedHosts contains {Count} entry/entries …</c> で始まり、
+    /// 先頭の <c>AllowedHosts contains</c> までしか採らないと<b>差し込みの手前で切れて
+    /// 短すぎ</b>、この警告を特徴づけている「一致しえない」という言い回しが
+    /// 1 文字も見られない。文書が引用しているのもそちらなので、
+    /// 差し込みの<b>後ろ</b>にある連続した綴りを目印にする。</para>
+    /// </remarks>
+    public const string NeverMatchingEntriesWarningMarker =
+        "entry/entries that can never match any Host header";
 
     /// <summary>検査そのものに失敗したときに残す記録の全文。</summary>
     /// <remarks>
@@ -250,7 +287,7 @@ public sealed class AllowedHostsWarningReporter(
 
         // 運用者が気づけるよう Warning レベルで通知する
         logger.LogWarning(
-            "AllowedHosts is permissive in the {Environment} environment " +
+            PermissiveWarningMarker + " in the {Environment} environment " +
             "(current value: {AllowedHosts}). {Cause} " +
             "Set it to the real hostname(s) via the AllowedHosts setting or environment " +
             "variable (semicolon-separated) to prevent Host-header spoofing, especially " +
@@ -308,7 +345,7 @@ public sealed class AllowedHostsWarningReporter(
         // 事実と違うこと</b>を言い出す（実際この行は「これらの項目は前後に空白が残っている」と
         // 断定していた。issue #256）
         logger.LogWarning(
-            "AllowedHosts contains {Count} entry/entries that can never match any Host header " +
+            "AllowedHosts contains {Count} " + NeverMatchingEntriesWarningMarker + " " +
             "in the {Environment} environment: {NeverMatchingEntries}. {HowToFix} (issue #64).",
             // 何件あるかを先に出す ——値が長いときでも件数だけは読める
             neverMatching.Count,
