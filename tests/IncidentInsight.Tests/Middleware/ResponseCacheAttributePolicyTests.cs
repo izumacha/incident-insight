@@ -5387,6 +5387,50 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>同じ基底を継承する 2 つ目の具象コントローラ(畳み方の検証に使う)。</summary>
     private sealed class SecondInheritedActionProbeController : InheritedActionProbeControllerBase;
 
+    // クラス側の読み取りは<b>自分たちのアセンブリの外の段でも止めない</b>こと。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 走査はアクション側だけを
+    // 「自分たちのアセンブリか」で切り、クラス側は連なりのどの段でも読む。ところがその広さには
+    // 検出網が無く、絞り込みを<b>クラス側の読み取りより前へ持ち上げる</b>形も、
+    // <c>continue</c> を <c>break</c> へ変える形も、どちらも 1295 件すべて緑のまま通った。
+    // どちらも「同じ条件をまとめただけ」に見える自然な整理で、差分からは狭まったと読み取れない。
+    //
+    // <b>壊れ方。</b> いまアプリの外にあるのはフレームワークの型だけなので違いが出ないが、
+    // 基底コントローラを共有プロジェクトへ切り出した瞬間に別れる ——
+    // <c>IncidentInsight.Shared.ExportControllerBase : Controller</c> が
+    // <c>[ResponseCache(Duration = 300, Location = Any)]</c> を持っていると、
+    // 正しい実装は報告して赤くなるのに、狭めた実装は<b>黙って落とす</b>。
+    // PHI を含みうる応答が共有キャッシュ可能なまま、検査は緑で出荷される。
+    //
+    // <b>手がかりの作り方。</b> 実際に別アセンブリの基底を用意することはできないので、
+    // <c>ownAssembly</c> のほうに<b>自分たちではないアセンブリ</b>を渡して、合成コントローラの
+    // すべての段を「外」に見せる。正しい実装ならクラス側の宣言は返り、アクション側だけが
+    // 飛ばされる ——上の 2 つの変異はどちらもここで 0 件になる。
+    [Fact]
+    public void AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly()
+    {
+        // ownAssembly に別のアセンブリを渡し、合成コントローラの段をすべて「外」に見せる
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(ClassLevelInheritedProbeController)],
+                typeof(string).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 基底のクラス属性は、段が「外」でも読まれること(アクション側の絞り込みを
+        // クラス側まで効かせる変異、および連なりを打ち切る変異は、ここで 0 件になる)
+        var declared = Assert.Single(declarations);
+
+        // 拾ったのがその宣言であること(取り違えた宣言を返していない)
+        Assert.Equal(77, ((ResponseCacheAttribute)declared.Attribute).Duration);
+
+        // 名指しは、実際に宣言している基底であること
+        Assert.Contains(
+            nameof(ClassLevelInheritedProbeControllerBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
     /// <summary>クラス側に属性を持つ抽象基底(派生の数だけ見えてしまう形)。</summary>
     [ResponseCache(Duration = 77)]
     private abstract class ClassLevelInheritedProbeControllerBase : ControllerBase;

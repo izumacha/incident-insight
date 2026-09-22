@@ -113,14 +113,18 @@ public static partial class ResponseCachePolicy
     /// 渡されたコントローラ型から <c>[ResponseCache]</c> の宣言を集める。
     /// </summary>
     /// <remarks>
-    /// <para><b>アクションの絞り込みを「その型が宣言したメソッドか」で行わない。</b>
+    /// <para><b>抽象基底へ引き上げたアクションを取りこぼさない。</b>
     /// 抽象基底コントローラへアクションを引き上げる形(<c>ReportExportControllerBase</c> に
     /// <c>Export()</c> を置き、具象が継承する)は、URL としては具象コントローラ経由で
-    /// <b>実際に到達できる</b>のに、基底は抽象なので走査対象に入らず、具象の側では
-    /// 宣言元が基底なので弾かれる ——つまり<b>どこからも見えなくなる</b>。
+    /// <b>実際に到達できる</b>のに、基底は抽象なので渡される走査対象には入らない。
     /// 実測でも、この形で <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足すと
-    /// 全件緑のままテスト件数すら変わらずに通った。
-    /// 代わりに<b>宣言元が自分たちのアセンブリか</b>で切る
+    /// 全件緑のままテスト件数すら変わらずに通った時期がある。</para>
+    ///
+    /// <para><b>取りこぼさない仕組みは <see cref="AttributeDeclarationsOn"/> 側の「継承の連なりを
+    /// 1 段ずつ訪ねる」形</b>(issue #275)。基底の段そのものを訪ねるので、各段の読み取りを
+    /// <c>DeclaredOnly</c> に絞っても基底の宣言は落ちない ——<b>この 2 つは対で意味を持つ</b>ので、
+    /// 片方だけを「具象から継承ぶんも読む」形へ戻さないこと。アクション側だけを
+    /// <b>自分たちのアセンブリか</b>で切るのは変わらない
     /// (<c>UnlistedFilterValuePolicyTests.MatchingActionParameters</c> と同じ判断)。</para>
     ///
     /// <para>走査対象を引数で受け取るのは、合成したコントローラに対して<b>走査そのもの</b>を
@@ -129,7 +133,10 @@ public static partial class ResponseCachePolicy
     /// </remarks>
     /// <param name="controllers">走査するコントローラ型。</param>
     /// <param name="ownAssembly">「自分たちが宣言したアクション」と見なすアセンブリ。</param>
-    /// <returns>見つかった宣言の一覧(同じ宣言が複数の具象から見えても 1 件に畳む)。</returns>
+    /// <returns>
+    /// 見つかった宣言の一覧(畳む単位は<b>訪ねた段</b>なので、同じ段を複数の具象からたどっても
+    /// 1 件。逆に、基底と派生がそれぞれ宣言していれば<b>両方とも</b>返る)。
+    /// </returns>
     public static IEnumerable<ResponseCacheDeclaration> DeclarationsOn(
         IEnumerable<Type> controllers,
         Assembly ownAssembly) =>
@@ -199,27 +206,38 @@ public static partial class ResponseCachePolicy
                 // 開いた定義の基底の連なりは閉じ方によらず同じなので、閉じ方が違っても取りこぼさない
                 if (!visitedSites.Add(site)) break;
 
-                // 名指しに使う綴りを 1 度だけ組み立てる(素の FullName を使わない理由は TypeDisplayName が正本)
-                var siteName = TypeDisplayName(site);
+                // 名指しに使う綴りは<b>返す分が出てから</b>、その段で 1 度だけ組み立てる(レビュー指摘)。
+                // 先に組み立てると、宣言を 1 つも持たない段(実測でアプリ全体の 718 段すべて)でも
+                // TypeDisplayName の再帰と正規表現が走る。段ごとに 1 度で済ませる性質は変えない
+                // (素の FullName を使わない理由は TypeDisplayName の説明が正本)
+                string? siteName = null;
 
                 // クラス全体に付いた属性(付いていれば全アクションに効く)を、<b>その段自身の宣言だけ</b>読む。
                 // inherit: false にできるのは、継承した分は基底の段を訪ねたときに読むため
                 foreach (var attribute in site.GetCustomAttributes(inherit: false).Where(matches))
                 {
-                    // クラス側の宣言として、宣言している型の名前で返す
-                    yield return new AttributeDeclaration(siteName, attribute);
+                    // クラス側の宣言として、宣言している型の名前で返す(名前はここで初めて組み立てる)
+                    yield return new AttributeDeclaration(siteName ??= TypeDisplayName(site), attribute);
                 }
 
                 // フレームワークの基底(ControllerBase 等)が宣言したアクションは自分たちの宣言ではないので、
                 // アクション側の走査だけ飛ばして基底へ進む。
-                // <b>クラス側は飛ばさない</b> ——以前の inherit: true の読み方でも、フレームワーク側の型が
-                // 宣言したクラス属性は継承されて見えていた(ここで飛ばすと走査範囲が黙って狭まる)。
+                //
+                // <b>この 1 行は、置く位置と飛ばし方の両方が効いている（レビュー指摘・実測）。</b>
+                //   - クラス側の読み取りより<b>前</b>へ持ち上げてはいけない。以前の inherit: true の
+                //     読み方でも、フレームワーク側の型が宣言したクラス属性は継承されて見えていた。
+                //   - <c>continue</c> を <c>break</c> にしてはいけない。連なりの先に自分たちの段が
+                //     戻ってくる形(共有プロジェクトの基底をフレームワークの型が挟む)を落とす。
+                // どちらも「同じ条件をまとめただけ」に見える整理なのに走査範囲が黙って狭まるので、
+                // AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly が
+                // <b>ownAssembly 側に別のアセンブリを渡す</b>という手がかりで固定する
+                // (実際に別アセンブリの基底を用意できないため、外か内かの向きを入れ替えて作る)。
+                //
                 // <b>残っている境界(issue #275 以前から同じ)。</b> この 1 行を<b>外す</b>変異には
                 // 検出網が無い ——外すとフレームワーク側のメソッドまで読むが、そこに拾う属性が
                 // 1 つも無いので違反は 1 件も増えず、全件緑のまま通る(実測。旧実装でも同じだった)。
-                // 倒れる向きが「過剰に報告する」側なので許容している。逆に<b>狭める</b>変異
-                // (自分たちのアセンブリを別のものに取り違える等)は、アクション側の検査が
-                // すべて落ちるので捕まる。
+                // 倒れる向きが「過剰に報告する」側なので許容している。逆に<b>自分たちのアセンブリを
+                // 別のものに取り違える</b>変異は、アクション側の検査がすべて落ちるので捕まる。
                 if (site.Assembly != ownAssembly) continue;
 
                 // その段が<b>自分で宣言している</b>アクション(公開されたインスタンスメソッド)を読む。
@@ -236,7 +254,8 @@ public static partial class ResponseCachePolicy
                         // 名指しされたファイルを開いても<b>どちらを直すのか分からない</b>ため。
                         // 引数の綴りが閉じ方で揺れないのは、段そのものを開いた定義へそろえてあるため
                         // (以前は観測した閉じた総称のメソッドから宣言を引き直していた)
-                        var declaredOn = $"{siteName}.{method.Name}({ParameterTypeList(method)})";
+                        var declaredOn =
+                            $"{siteName ??= TypeDisplayName(site)}.{method.Name}({ParameterTypeList(method)})";
 
                         // アクション側の宣言として返す
                         yield return new AttributeDeclaration(declaredOn, attribute);
