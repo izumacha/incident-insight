@@ -110,6 +110,167 @@ public static partial class ResponseCachePolicy
         });
 
     /// <summary>
+    /// 宣言された属性が<b>フィルタの間接指定</b>なら、その指す型を返す(間接指定でなければ null)。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか(issue #281)。</b> <c>[ResponseCache]</c> は属性として直接書く以外に、
+    /// MVC のフィルタの間接指定でも同じように効く:</para>
+    /// <code>
+    /// sealed class LongCacheAttribute : ResponseCacheAttribute { /* Duration = 300, Location = Any */ }
+    ///
+    /// [TypeFilter(typeof(LongCacheAttribute))]   // ← 実際に効くのはこちら
+    /// public class IncidentsController : Controller { ... }
+    /// </code>
+    /// <para>このとき<b>付いている属性は <c>TypeFilterAttribute</c></b> なので、
+    /// <c>a is ResponseCacheAttribute</c> で照合する述語には一致しない。
+    /// <c>MvcOptions.Filters.Add&lt;T&gt;()</c> も同じで、<c>FilterCollection</c> が格納するのは
+    /// <c>TypeFilterAttribute</c> であって属性そのものではない。
+    /// ソースを見る走査にも引っかからない(属性名に <c>Cache-Control</c> の綴りが 1 つも無い)ので、
+    /// <b>3 つの検査がそろって素通りする</b> ——PHI を返すアクションへ
+    /// <c>public,max-age=300</c> を付けても全件緑のまま通る形だった。</para>
+    ///
+    /// <para><b>見るのは framework が型を公開している 2 つだけ。</b>
+    /// <c>TypeFilterAttribute.ImplementationType</c> と <c>ServiceFilterAttribute.ServiceType</c> は
+    /// 「どの型のフィルタが効くか」を宣言として持っているので、宣言だけから追える。</para>
+    ///
+    /// <para><b>残っている境界。</b> 自前の <c>IFilterFactory</c> が
+    /// <c>CreateInstance</c> の中で <c>ResponseCacheAttribute</c> を組み立てる形は、
+    /// 宣言のどこにも型が現れないので<b>原理的に追えない</b>(実行しないと分からない)。
+    /// 間接指定を<b>入れ子</b>にした形(<c>[TypeFilter(typeof(別の TypeFilterAttribute))]</c>)も
+    /// 1 段しか辿らない ——どちらも実在せず、追うには「効くフィルタを実際に解決する」
+    /// (<c>IFilterProvider</c> を回す)必要があって範囲が段違いに広い。
+    /// <b>ここで止める判断を書き残しておく</b>ので、次に踏んだ人は広げるか、
+    /// 実効フィルタの解決へ移すかを決めること。</para>
+    /// </remarks>
+    /// <param name="attribute">宣言された属性。</param>
+    /// <returns>間接指定が指す型。間接指定でなければ null。</returns>
+    public static Type? IndirectFilterTarget(object attribute) => attribute switch
+    {
+        // [TypeFilter(typeof(X))] は X を直接組み立てて効かせる
+        TypeFilterAttribute typeFilter => typeFilter.ImplementationType,
+        // [ServiceFilter(typeof(X))] は DI から X を取り出して効かせる
+        ServiceFilterAttribute serviceFilter => serviceFilter.ServiceType,
+        // それ以外は間接指定ではない
+        _ => null,
+    };
+
+    /// <summary>
+    /// 宣言された属性から、<b>実際に効くフィルタの型</b>をすべて返す(自分自身＋間接指定の指す先)。
+    /// </summary>
+    /// <remarks>
+    /// <b>述語をこの 1 つの入り口へそろえる理由。</b> 応答キャッシュ側と出力キャッシュ側で
+    /// 「間接指定を辿る」を別々に書くと、<b>片方だけが辿る</b>状態が生まれる
+    /// (この repo が走査を 1 つに寄せているのとまったく同じ理由)。呼び出し側は
+    /// 「この型が探している種類か」だけを書けばよい。
+    /// </remarks>
+    /// <param name="attribute">宣言された属性。</param>
+    /// <returns>属性自身の型と、間接指定が指す型(あれば)。</returns>
+    public static IEnumerable<Type> EffectiveFilterTypes(object attribute)
+    {
+        // 直接書かれた属性そのものの型(いちばん素直な形)
+        yield return attribute.GetType();
+
+        // 間接指定なら、指している型も「実際に効くフィルタ」として数える
+        if (IndirectFilterTarget(attribute) is Type target)
+        {
+            // 間接指定の指す先
+            yield return target;
+        }
+    }
+
+    /// <summary>
+    /// 応答キャッシュの指示として働く宣言かどうかを判定する(直接・間接の両方)。
+    /// </summary>
+    /// <remarks>
+    /// 派生クラス(<c>class LongCacheAttribute : ResponseCacheAttribute</c>)を直接書く形は
+    /// 元から <c>is</c> で拾えていたが、それを<b>間接指定で被せる</b>形が抜けていた。
+    /// 判定を <see cref="EffectiveFilterTypes"/> に通すことで、両方が同じ 1 つの規則になる。
+    /// </remarks>
+    /// <param name="attribute">宣言された属性。</param>
+    /// <returns>応答キャッシュの指示として効くなら true。</returns>
+    public static bool IsResponseCacheDirective(object attribute) =>
+        // 実際に効くフィルタの型のどれかが ResponseCacheAttribute の系統なら、指示として働く
+        EffectiveFilterTypes(attribute).Any(type => typeof(ResponseCacheAttribute).IsAssignableFrom(type));
+
+    /// <summary>
+    /// 宣言 1 件を判定する(直接なら中身を読み、<b>間接指定は読めないので落とす</b>)。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>間接指定を fail-closed にする理由。</b> <c>[TypeFilter(typeof(LongCacheAttribute))]</c>
+    /// が名乗る指示は<b>その型を組み立ててみないと分からない</b>(コンストラクタが DI を要求しうるので、
+    /// 検査の側で安全に組み立てることもできない)。読めないものを「たぶん安全」と扱うと
+    /// 無言の fail-open になるので、不明なら拒否する(§9 fail-closed)。</para>
+    ///
+    /// <para><b>これは <c>CacheProfileName</c> をすでに落としているのと同じ形。</b>
+    /// あちらも「実際の指示が属性の外にあって読めない」ことを理由に落としている
+    /// ——同じ理由の判断を 2 つ違う向きにしない。</para>
+    /// </remarks>
+    /// <param name="attribute">判定する宣言。</param>
+    /// <returns>可否と、落とす場合の理由。</returns>
+    public static CacheDirectiveVerdict JudgeDirective(object attribute)
+    {
+        // 直接書かれた [ResponseCache](派生クラスを含む)は、名乗っている内容をそのまま読める
+        if (attribute is ResponseCacheAttribute declared)
+        {
+            // 既存の判定へ渡す(規則を 2 つ書かない)
+            return Judge(declared);
+        }
+
+        // 間接指定なら、指している型を名指ししたうえで落とす(読めない以上「安全だ」と言えない)
+        if (IndirectFilterTarget(attribute) is Type target)
+        {
+            // 何が効くのかを運用者が追えるよう、指す先の型まで添える
+            return new CacheDirectiveVerdict(
+                false,
+                $"{attribute.GetType().Name} によるフィルタの間接指定で {target.FullName} が効きます。"
+                    + "実際の指示はその型を組み立てないと読めないため、この検査からは中身を確かめられません。"
+                    + "間接指定をやめて [ResponseCache(NoStore = true)] を直接宣言するか、"
+                    + "キャッシュ指示を名乗らず SecurityHeadersMiddleware の既定(no-store)に任せてください。");
+        }
+
+        // ここへ来るのは<b>述語を通さずに渡された宣言</b>だけ(呼び出し側は
+        // IsResponseCacheDirective で絞ってから渡すので、通常は到達しない)。
+        // <b>言い当てられないことを言わない。</b> 「間接指定です」と名乗ると、
+        // 名指しした項目について事実と違うことを言う形になる ——この repo が
+        // AllowedHosts の警告で繰り返し踏んだ誤り(issue #256)と同じなので、
+        // 分からないことは分からないと書いたうえで fail-closed で落とす(§9)
+        return new CacheDirectiveVerdict(
+            false,
+            $"{attribute.GetType().FullName} をキャッシュ指示として判定しようとしましたが、"
+                + "直接書かれた [ResponseCache] でも、型を追えるフィルタの間接指定でもありません。"
+                + "中身を確かめられないものを「安全だ」とは扱えないため落としています。"
+                + $"{nameof(IsResponseCacheDirective)} で絞ってから渡しているか確かめてください。");
+    }
+
+    /// <summary>
+    /// フィルタの一覧(<c>MvcOptions.Filters</c> 相当)から、保存を許している指示を名指しで集める純粋関数。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>純粋関数に出す理由。</b> 本番の検査は<b>起動したアプリ</b>の
+    /// <c>MvcOptions.Filters</c> を読むが、そこに違反は 1 件も無いのが正しい状態なので、
+    /// <b>判定を「常に空」へ潰しても全件緑のまま</b>になる。合成した一覧で判定そのものを固定する
+    /// (この repo が繰り返し置いている「実在の配線が準拠していることと、判定が正しいことは別」)。</para>
+    ///
+    /// <para><b>型で絞り込まない。</b> 以前は <c>Filters.OfType&lt;ResponseCacheAttribute&gt;()</c> と
+    /// 書いていたため、<c>Filters.Add&lt;LongCacheAttribute&gt;()</c>(格納されるのは
+    /// <c>TypeFilterAttribute</c>)が<b>1 件も見られていなかった</b>。一覧を全部見たうえで
+    /// 共有の述語に判定させる。</para>
+    /// </remarks>
+    /// <param name="filters">判定するフィルタの一覧。</param>
+    /// <returns>保存を許している指示の理由(違反が無ければ空)。</returns>
+    public static IReadOnlyList<string> CachingFilterViolations(IEnumerable<object> filters) =>
+        // 一覧を全部見て、応答キャッシュの指示として働くものだけを取り出す
+        filters
+            .Where(IsResponseCacheDirective)
+            // 直接・間接の両方を同じ 1 つの判定へ通す
+            .Select(JudgeDirective)
+            // 保存を禁じていないものだけを残す
+            .Where(verdict => !verdict.IsSuppressing)
+            // 失敗文言に載せる理由を取り出す
+            .Select(verdict => verdict.Reason)
+            .ToList();
+
+    /// <summary>
     /// 渡されたコントローラ型から <c>[ResponseCache]</c> の宣言を集める。
     /// </summary>
     /// <remarks>

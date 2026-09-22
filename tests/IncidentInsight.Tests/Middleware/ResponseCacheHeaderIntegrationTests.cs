@@ -136,16 +136,12 @@ public class ResponseCacheHeaderIntegrationTests
         // 起動済みのアプリから MVC の設定を取り出す
         var options = _factory.Services.GetRequiredService<IOptions<MvcOptions>>().Value;
 
-        // グローバルに登録された [ResponseCache] のうち、保存を許しているものを集める
-        var violations = options.Filters
-            .OfType<ResponseCacheAttribute>()
-            // 属性の走査と同じ基準で判定する(規則を 2 つ書かない)
-            .Select(filter => ResponseCachePolicy.Judge(filter))
-            // 保存を禁じていないものだけを残す
-            .Where(verdict => !verdict.IsSuppressing)
-            // 失敗文言に載せる理由を取り出す
-            .Select(verdict => verdict.Reason)
-            .ToList();
+        // グローバルに登録された指示のうち、保存を許しているものを集める。
+        // <b>型で絞り込まない(issue #281)。</b> 以前は OfType&lt;ResponseCacheAttribute&gt;() で
+        // 引いていたため、Filters.Add&lt;LongCacheAttribute&gt;() が<b>1 件も見られていなかった</b>
+        // ——FilterCollection が格納するのは TypeFilterAttribute であって属性そのものではない。
+        // 判定は属性の走査と同じ共有の純粋関数に任せる(規則を 2 つ書かない)
+        var violations = ResponseCachePolicy.CachingFilterViolations(options.Filters);
 
         // 違反が 1 件も無いことを、理由付きで確認する
         Assert.True(
