@@ -109,10 +109,25 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="declaredOn">走査が返した名指しの一覧。</param>
     private static void AssertTheAppWideScanReachedTheKnownDeclaration(IEnumerable<string> declaredOn) =>
-        // 目印の宣言がちょうど 1 件あること(0 件なら走査が届いていない)
-        Assert.Single(
-            declaredOn,
-            name => string.Equals(name, KnownAppWideDeclaration, StringComparison.Ordinal));
+        // 目印の宣言がちょうど 1 件あること(0 件なら走査が届いていない)。
+        // <b>失敗文言を自分で書く（レビュー指摘）。</b> Assert.Single の述語版には文言を渡せず、
+        // 既定の「The collection contained 0 matching items」だけでは<b>これが空振り検出だと分からない</b>
+        // ——目印の宣言を消すリファクタ(このミドルウェアが既定で no-store を書くので
+        // HomeController.Error() の [ResponseCache] は冗長になった)をすると、無関係に見える
+        // セキュリティ検査が 2 つ同時に、直し方の分からない文言で落ちる。
+        // そのとき削られるのは<b>この空振り検出のほう</b>で、塞いだ fail-open が戻る
+        Assert.True(
+            declaredOn.Count(name => string.Equals(name, KnownAppWideDeclaration, StringComparison.Ordinal)) == 1,
+            $"アプリ全体の走査が、実在するはずの宣言 {KnownAppWideDeclaration} を返していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——走査が何も返さなくなると"
+                + "「違反 0 件」の検査は無条件で緑になるので、届いていること自体をここで確かめています。"
+                + Environment.NewLine
+                + $"直し方は 2 つ: (a) 走査の引数(ホスト集合・{nameof(AppControllerScan.WebAssembly)}・述語)を"
+                + "取り違えていないか確かめる。(b) 目印の宣言を意図して消した／動かしたなら、"
+                + $"{nameof(KnownAppWideDeclaration)} を「実在する別の宣言」へ更新する"
+                + "（存在しない綴りにすると、この空振り検出そのものが常に落ちる検査になります）。"
+                + Environment.NewLine
+                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。");
 
     /// <summary>
     /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
@@ -135,8 +150,17 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
     private static void AssertTheHostSetIsNotNarrowedToControllers(IReadOnlyCollection<Type> hosts) =>
-        // コントローラでない具象型が 1 つでも含まれていること(Razor Pages 等の宣言先が視界に入る証拠)
-        Assert.Contains(hosts, type => !typeof(ControllerBase).IsAssignableFrom(type));
+        // コントローラでない具象型が 1 つでも含まれていること(Razor Pages 等の宣言先が視界に入る証拠)。
+        // 空振り検出と同じ理由で失敗文言を自分で書く(Assert.Contains の述語版にも文言を渡せない)
+        Assert.True(
+            hosts.Any(type => !typeof(ControllerBase).IsAssignableFrom(type)),
+            $"走査へ渡したホスト集合({hosts.Count} 件)が、{nameof(ControllerBase)} 派生だけになっています。"
+                + $"{nameof(AppControllerScan.CacheDirectiveHosts)} ではなく "
+                + $"{nameof(AppControllerScan.Controllers)} を渡していないか確かめてください。"
+                + Environment.NewLine
+                + "[ResponseCache] は PageModel(Razor Pages)にも同じように効くため、コントローラだけへ"
+                + "狭めると Pages/ に付けた宣言がどの検査からも見えなくなります"
+                + "（属性名にはヘッダー名の綴りが無いので、ソースを見る走査でも拾えません）。");
 
     /// <summary>
     /// 空振り検出の目印に使う、実在が分かっている宣言の名指し。
