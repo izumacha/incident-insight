@@ -84,6 +84,39 @@ namespace IncidentInsight.Tests.Middleware;
 /// </remarks>
 public class ResponseCacheAttributePolicyTests
 {
+    /// <summary>
+    /// アプリ全体を走査した結果に、<b>実在が分かっている宣言</b>が含まれていることを確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> アプリ全体を見る検査はどちらも
+    /// 「違反が 0 件」しか見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。
+    /// 引数の取り違え(<c>ownAssembly</c>)・<c>CacheDirectiveHosts()</c> の絞りすぎ・述語の
+    /// 壊れ、のいずれでもそうなり、そのうえで PHI のアクションへ
+    /// <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足しても全件緑のまま出荷される。</para>
+    ///
+    /// <para><b>目印に選ぶ宣言。</b> <c>HomeController.Error()</c> はこのアプリで唯一の実在する
+    /// キャッシュ指示で、<c>NoStore = true</c> なので規則にも準拠している(つまり違反の一覧には
+    /// 出ないが、走査には必ず現れる)。名指しの綴りまで突き合わせるのは、宣言元の名指しが
+    /// 壊れたときにもここで気付くため。</para>
+    /// </remarks>
+    /// <param name="declaredOn">走査が返した名指しの一覧。</param>
+    private static void AssertTheAppWideScanReachedTheKnownDeclaration(IEnumerable<string> declaredOn) =>
+        // 目印の宣言がちょうど 1 件あること(0 件なら走査が届いていない)
+        Assert.Single(
+            declaredOn,
+            name => string.Equals(name, KnownAppWideDeclaration, StringComparison.Ordinal));
+
+    /// <summary>
+    /// 空振り検出の目印に使う、実在が分かっている宣言の名指し。
+    /// </summary>
+    /// <remarks>
+    /// このアプリで唯一の <c>[ResponseCache]</c>。ここを動かすときは、動かした先が
+    /// <b>本当に実在する</b>ことを確かめること(存在しない綴りにすると、空振り検出そのものが
+    /// 常に落ちる検査になり、いずれ外される)。
+    /// </remarks>
+    private const string KnownAppWideDeclaration =
+        "IncidentInsight.Web.Controllers.HomeController.Error()";
+
     // アプリ全体のアクションが名乗る [ResponseCache] は、すべてキャッシュ保存を禁じていること。
     //
     // これが落ちたときの直し方は 2 つだけ: (a) その属性へ NoStore = true を付ける、
@@ -97,6 +130,16 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ResponseCachePolicy
             .DeclarationsOn(AppControllerScan.CacheDirectiveHosts(), AppControllerScan.WebAssembly)
             .ToList();
+
+        // <b>空振り検出（レビュー指摘・実測）。</b> 下の検査は「違反が 0 件」しか見ないので、
+        // 走査が<b>何も返さなくなった</b>瞬間に無条件で緑になる。実測でも、この呼び出しの
+        // ownAssembly を別のアセンブリへ差し替えると全件緑のまま通り、そのうえで PHI の
+        // ダッシュボード(HomeController.Index)へ [ResponseCache(Duration = 300, Location = Any)]
+        // を足しても 1296 件すべて緑だった。<b>引数はこの呼び出し側が持つので、
+        // 空振り検出も同じ呼び出しの結果から採る</b>（別の呼び出しへ出すと、こちらの引数だけを
+        // 差し替える変異を捕まえられない）。CLAUDE.md が「拾えたかどうかにも空振り検出を置く」
+        // と書いているのと同じ形
+        AssertTheAppWideScanReachedTheKnownDeclaration(declarations.Select(d => d.DeclaredOn));
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
@@ -487,14 +530,29 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
-        // 共有の走査へ「出力キャッシュの属性であること」を渡して宣言を集める
+        // 共有の走査へ宣言を集める
         // (クラス側とアクション側の両方を読む・宣言元で名指しする・派生の数だけ並べない、
         //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
-        var violations = ResponseCachePolicy
+        //
+        // <b>述語に [ResponseCache] も混ぜるのは空振り検出のため（レビュー指摘・実測）。</b>
+        // この検査が探している [OutputCache] は<b>1 件も無いのが正しい</b>ので、違反 0 件では
+        // 「走査が届いていない」と区別が付かない ——実測でも、この呼び出しの ownAssembly を
+        // 別のアセンブリへ差し替えると全件緑のまま通った。実在が保証されている
+        // [ResponseCache] を同じ 1 回の走査で一緒に拾えば、<b>同じ引数</b>で届いていることを
+        // 確かめられる（別の呼び出しへ出すと、こちらの引数だけを差し替える変異を捕まえられない）
+        var declarations = ResponseCachePolicy
             .AttributeDeclarationsOn(
                 AppControllerScan.CacheDirectiveHosts(),
                 AppControllerScan.WebAssembly,
-                IsOutputCacheAttribute)
+                a => IsOutputCacheAttribute(a) || a is ResponseCacheAttribute)
+            .ToList();
+
+        // 走査がアプリへ届いていること(届いていなければ下の「0 件」は無意味)
+        AssertTheAppWideScanReachedTheKnownDeclaration(declarations.Select(d => d.DeclaredOn));
+
+        // 本題である出力キャッシュの宣言だけを、失敗文言の形に整えて取り出す
+        var violations = declarations
+            .Where(d => IsOutputCacheAttribute(d.Attribute))
             .Select(d => d.DeclaredOn)
             .ToList();
 
@@ -5404,25 +5462,36 @@ public class ResponseCacheAttributePolicyTests
     //
     // <b>手がかりの作り方。</b> 実際に別アセンブリの基底を用意することはできないので、
     // <c>ownAssembly</c> のほうに<b>自分たちではないアセンブリ</b>を渡して、合成コントローラの
-    // すべての段を「外」に見せる。正しい実装ならクラス側の宣言は返り、アクション側だけが
-    // 飛ばされる ——上の 2 つの変異はどちらもここで 0 件になる。
+    // 段を「外」に見せる。正しい実装ならクラス側の宣言は返り、アクション側だけが飛ばされる
+    // ——上の 2 つの変異はどちらもここで 0 件になる。
+    //
+    // <b>渡すアセンブリは、連なりのどの段にも現れないものを選ぶ（レビュー指摘）。</b>
+    // 連なりは テストアセンブリ → テストアセンブリ → Mvc.Core → CoreLib なので、
+    // <c>typeof(string).Assembly</c>(= CoreLib) を渡すと<b>最後の段だけは「内」</b>になり、
+    // 「すべての段が外」という前提が成り立たない ——後からこの検査を「アクション側が
+    // 一度も走らないこと」まで見る形へ強めた人が、前提と違う結果を踏む。
+    // xUnit のアセンブリはこの連なりに現れないので、前提を文字どおり満たす。
     [Fact]
     public void AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly()
     {
-        // ownAssembly に別のアセンブリを渡し、合成コントローラの段をすべて「外」に見せる
+        // ownAssembly に、連なりのどの段にも現れないアセンブリを渡して段を「外」に見せる
         var declarations = ResponseCachePolicy
             .AttributeDeclarationsOn(
                 [typeof(ClassLevelInheritedProbeController)],
-                typeof(string).Assembly,
+                typeof(FactAttribute).Assembly,
                 a => a is ResponseCacheAttribute)
             .ToList();
 
         // 基底のクラス属性は、段が「外」でも読まれること(アクション側の絞り込みを
-        // クラス側まで効かせる変異、および連なりを打ち切る変異は、ここで 0 件になる)
-        var declared = Assert.Single(declarations);
-
-        // 拾ったのがその宣言であること(取り違えた宣言を返していない)
-        Assert.Equal(77, ((ResponseCacheAttribute)declared.Attribute).Duration);
+        // クラス側まで効かせる変異、および連なりを打ち切る変異は、ここで 0 件になる)。
+        // <b>件数ではなく目印(77)で絞る（レビュー指摘）。</b> この基底は
+        // DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase と共有しており、
+        // 「同じ段へ複数付いた宣言はそのまま件数として返る」経路を試すために宣言を 1 つ足されると、
+        // Assert.Single は<b>件数の話をする失敗文言</b>で落ちる ——この検査が守っている不変条件
+        // (外の段でもクラス属性を読む)とは関係の無い理由で赤くなり、直し方も読み取れない
+        var declared = Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 77 });
 
         // 名指しは、実際に宣言している基底であること
         Assert.Contains(
