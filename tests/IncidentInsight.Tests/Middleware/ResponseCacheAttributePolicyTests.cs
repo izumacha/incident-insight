@@ -90,9 +90,17 @@ public class ResponseCacheAttributePolicyTests
     /// <remarks>
     /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> アプリ全体を見る検査はどちらも
     /// 「違反が 0 件」しか見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。
-    /// 引数の取り違え(<c>ownAssembly</c>)・<c>CacheDirectiveHosts()</c> の絞りすぎ・述語の
-    /// 壊れ、のいずれでもそうなり、そのうえで PHI のアクションへ
-    /// <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足しても全件緑のまま出荷される。</para>
+    /// そのうえで PHI のアクションへ <c>[ResponseCache(Duration = 300, Location = Any)]</c> を
+    /// 足しても全件緑のまま出荷される。</para>
+    ///
+    /// <para><b>この検査が拾うのは「走査が空になる」形だけ</b>（レビュー指摘）。
+    /// 実測で拾えるのは <c>ownAssembly</c> の取り違えで、
+    /// <b>ホスト集合を狭める形は拾えない</b> ——目印の <c>HomeController.Error()</c> は
+    /// <c>ControllerBase</c> 派生なので、<c>Controllers()</c> へ狭めても残る。
+    /// そちらは <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が受け持つので、
+    /// <b>ここに「絞りすぎも拾う」と書かない</b> ——書くと、読んだ人が向こうの検査や
+    /// <c>CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly</c> を「重複だ」として
+    /// 消しうる（成り立たない根拠が簡略化を促す形）。</para>
     ///
     /// <para><b>目印に選ぶ宣言。</b> <c>HomeController.Error()</c> はこのアプリで唯一の実在する
     /// キャッシュ指示で、<c>NoStore = true</c> なので規則にも準拠している(つまり違反の一覧には
@@ -105,6 +113,30 @@ public class ResponseCacheAttributePolicyTests
         Assert.Single(
             declaredOn,
             name => string.Equals(name, KnownAppWideDeclaration, StringComparison.Ordinal));
+
+    /// <summary>
+    /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
+    /// 確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> ホスト集合を
+    /// <c>AppControllerScan.CacheDirectiveHosts()</c> から <c>AppControllerScan.Controllers()</c> へ
+    /// 差し替えると、全件緑のまま通る ——空振り検出は <c>HomeController.Error()</c> を目印にしており、
+    /// あれは <c>ControllerBase</c> 派生なのでどちらの集合にも入るため。狭めたあとは
+    /// <c>Pages/Export.cshtml.cs</c> に付けた <c>[ResponseCache(Duration = 300, Location = Any)]</c> が
+    /// <b>どの検査からも見えなくなる</b> ——<c>CacheDirectiveHosts</c> がまさに塞ぐために
+    /// 導入された穴が戻る。</para>
+    ///
+    /// <para><b>導出側の検査では代わりにならない。</b>
+    /// <c>CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly</c> が見るのは<b>導出関数</b>で、
+    /// 呼び出し側がどちらを呼んでいるかは見ない。だからこの検査は
+    /// <b>渡された値そのもの</b>を受け取り、呼び出し側に紐づける
+    /// （共有ヘルパーの中で自分で導出し直すと、呼び出し側の差し替えに届かない）。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    private static void AssertTheHostSetIsNotNarrowedToControllers(IReadOnlyCollection<Type> hosts) =>
+        // コントローラでない具象型が 1 つでも含まれていること(Razor Pages 等の宣言先が視界に入る証拠)
+        Assert.Contains(hosts, type => !typeof(ControllerBase).IsAssignableFrom(type));
 
     /// <summary>
     /// 空振り検出の目印に使う、実在が分かっている宣言の名指し。
@@ -126,9 +158,15 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
+        // 走査へ渡すホスト集合を、いったんローカルへ取り出す(下の 2 つの検査が同じ値を読む)
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // ホスト集合がコントローラだけへ狭められていないこと(Razor Pages の宣言先が視界に入る)
+        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+
         // アプリ全体の宣言を集める
         var declarations = ResponseCachePolicy
-            .DeclarationsOn(AppControllerScan.CacheDirectiveHosts(), AppControllerScan.WebAssembly)
+            .DeclarationsOn(hosts, AppControllerScan.WebAssembly)
             .ToList();
 
         // <b>空振り検出（レビュー指摘・実測）。</b> 下の検査は「違反が 0 件」しか見ないので、
@@ -540,15 +578,38 @@ public class ResponseCacheAttributePolicyTests
         // 別のアセンブリへ差し替えると全件緑のまま通った。実在が保証されている
         // [ResponseCache] を同じ 1 回の走査で一緒に拾えば、<b>同じ引数</b>で届いていることを
         // 確かめられる（別の呼び出しへ出すと、こちらの引数だけを差し替える変異を捕まえられない）
+        // <b>述語は 1 つのローカルへ出す（レビュー指摘・実測）。</b> 下の空振り検出は
+        // [ResponseCache] 側で満たされてしまうため、<b>この検査が本来探している
+        // 出力キャッシュ側</b>を落としても(＝述語を a is ResponseCacheAttribute だけに
+        // 「簡略化」しても)全件緑のまま通った。同じ述語を合成プローブへも当てて、
+        // 出力キャッシュ側が生きていることを別に確かめる
+        var matches = (object a) => IsOutputCacheAttribute(a) || a is ResponseCacheAttribute;
+
+        // 走査へ渡すホスト集合を、いったんローカルへ取り出す
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // ホスト集合がコントローラだけへ狭められていないこと
+        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+
         var declarations = ResponseCachePolicy
-            .AttributeDeclarationsOn(
-                AppControllerScan.CacheDirectiveHosts(),
-                AppControllerScan.WebAssembly,
-                a => IsOutputCacheAttribute(a) || a is ResponseCacheAttribute)
+            .AttributeDeclarationsOn(hosts, AppControllerScan.WebAssembly, matches)
             .ToList();
 
         // 走査がアプリへ届いていること(届いていなければ下の「0 件」は無意味)
         AssertTheAppWideScanReachedTheKnownDeclaration(declarations.Select(d => d.DeclaredOn));
+
+        // 述語の<b>出力キャッシュ側</b>が生きていること。アプリに [OutputCache] は 1 件も無いので、
+        // ここだけは合成プローブへ当てないと確かめようがない(型は直接参照せず、型名で照合する
+        // というこの検査の方針に合わせて、同じ名前の属性を合成してある)
+        var probed = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OutputCacheProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                matches)
+            .ToList();
+
+        // 合成した [OutputCache] がちょうど 1 件拾えること
+        Assert.Single(probed, d => IsOutputCacheAttribute(d.Attribute));
 
         // 本題である出力キャッシュの宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
@@ -4216,8 +4277,8 @@ public class ResponseCacheAttributePolicyTests
     // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
     // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
     //
-    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす
-    // （実測: キーから属性の型を落とすと、クラス側・アクション側の Assert.Single が落ちる）。
+    // <b>この検査が固定する範囲。</b> 「1 つの宣言元につき 1 件しか返さない」形を落とす
+    // （かつてキーから属性の型を落とすと起きた形で、いまは同じ段の宣言を種類で畳むと再現する）。
     // <b>覆うのは「同じ宣言元に 2 種類」の形だけ</b>で、宣言元が具象と基底に分かれる形は
     // AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne が見る。
     [Fact]
@@ -4286,7 +4347,7 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
-    // 重複除去のキーの<b>属性の型</b>の部分が効いていること。
+    // 同じ段に 2 種類あるとき、<b>種類ごとに別の宣言として</b>返ること。
     //
     // <b>なぜ上の検査と別に要るのか。</b> AttributeScan_ReturnsEveryMatchedKind は
     // 2 種類が<b>同じ宣言元</b>に付いた形しか見ない。こちらは<b>宣言元が具象と基底に
@@ -5592,4 +5653,29 @@ public class ResponseCacheAttributePolicyTests
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, missing));
     }
+}
+
+/// <summary>
+/// 出力キャッシュの属性を<b>型名だけ合わせて合成した</b>検証用の属性。
+/// </summary>
+/// <remarks>
+/// <para><b>なぜ合成するのか。</b> 本物の <c>[OutputCache]</c> を参照すると、禁じたい機能の
+/// パッケージをテストプロジェクトが自分で引き込むことになる
+/// （<c>NoActionEnablesServerSideOutputCaching</c> の docstring がその理由を持つ）。
+/// 判定は型名で行うので、名前さえ合っていれば述語が生きているかを確かめられる。</para>
+///
+/// <para><b>入れ子にしない。</b> 入れ子の型の <c>FullName</c> は
+/// <c>…+OutputCacheAttribute</c> になり、<c>'.'</c> で切って最後を取る照合に当たらない
+/// （名前空間を分けた最上位の型にすれば当たる）。</para>
+/// </remarks>
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+internal sealed class OutputCacheAttribute : Attribute;
+
+/// <summary>合成した出力キャッシュ属性をアクションへ付けた、検証用のコントローラ。</summary>
+internal sealed class OutputCacheProbeController : ControllerBase
+{
+    /// <summary>合成した出力キャッシュ属性を持つ、何もしないアクション。</summary>
+    /// <returns>内容を持たない結果。</returns>
+    [OutputCache]
+    public IActionResult Probe() => NoContent();
 }
