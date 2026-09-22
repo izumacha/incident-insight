@@ -85,29 +85,39 @@ namespace IncidentInsight.Tests.Middleware;
 public class ResponseCacheAttributePolicyTests
 {
     /// <summary>
-    /// アプリ全体を走査するときのホスト集合を、<b>広さを確かめてから</b>返す。
+    /// アプリ全体を走査するときの<b>引数一式</b>を、2 つの guard を通したうえで返す。
     /// </summary>
     /// <remarks>
-    /// <b>2 か所目で共通化する（レビュー指摘・CLAUDE.md §6）。</b> 以前は「取り出して確かめる」
-    /// 2 行を呼び出し側へ写していたが、3 つ目のアプリ全体の走査を足した人が
-    /// <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> を呼び忘れても<b>何も報告されない</b>
-    /// （guard の射程が「写すのを覚えていた人」だけになる）。値を返す形にすれば、
-    /// 確かめた集合をそのまま走査へ渡すことになり、呼び忘れが起こらない。
-    /// <b>ここで導出し直すのは差し支えない</b> ——狭める変異はこの中で起き、直後の確認が捕まえる
-    /// （呼び出し側が<b>このヘルパーを使わずに</b>別の集合を渡す形だけが残る境界で、
-    /// それは以前から同じ）。
+    /// <para><b>2 か所目で共通化する（CLAUDE.md §6）。</b> 以前は「取り出して確かめる」数行を
+    /// 呼び出し側へ写していたが、3 つ目のアプリ全体の走査を足した人が guard を呼び忘れても
+    /// <b>何も報告されない</b>（guard の射程が「写すのを覚えていた人」だけになる）。</para>
+    ///
+    /// <para><b>ホスト集合とアセンブリを<u>まとめて</u>返す（レビュー指摘）。</b>
+    /// 片方だけを返す形にすると、もう一方（<c>ownAssembly</c>）を呼び出し側が自分で書くことになり、
+    /// <b>guard に渡した値と走査へ渡す値が食い違う</b>変異が書ける。1 つの組として返せば、
+    /// 確かめた引数がそのまま走査へ渡る。</para>
+    ///
+    /// <para><b>ここで導出し直すのは差し支えない</b> ——狭める／取り違える変異はこの中で起き、
+    /// 直後の 2 つの確認が捕まえる（呼び出し側が<b>このヘルパーを使わずに</b>自分で組み立てる形だけが
+    /// 残る境界で、それは以前から同じ）。</para>
     /// </remarks>
-    /// <returns>走査へ渡すホスト集合。</returns>
-    private static List<Type> AppWideCacheDirectiveHosts()
+    /// <returns>走査へ渡すホスト集合と、「自分たちのアセンブリ」として渡す値。</returns>
+    private static (List<Type> Hosts, Assembly OwnAssembly) AppWideScanInputs()
     {
         // 走査へ渡すホスト集合を組み立てる
         var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
 
+        // 「自分たちのアセンブリ」として渡す値も、ここで 1 度だけ決める
+        var ownAssembly = AppControllerScan.WebAssembly;
+
         // コントローラだけへ狭められていないこと(Razor Pages 等の宣言先が視界に入る)
         AssertTheHostSetIsNotNarrowedToControllers(hosts);
 
-        // 確かめた集合をそのまま返す(呼び出し側はこれを走査へ渡す)
-        return hosts;
+        // 走査がアプリへ届いていること(届いていなければ「違反 0 件」は無意味)
+        AssertTheAppWideScanIsLive(hosts, ownAssembly);
+
+        // 確かめた引数一式を返す(呼び出し側はこれをそのまま走査へ渡す)
+        return (hosts, ownAssembly);
     }
 
     /// <summary>
@@ -158,15 +168,16 @@ public class ResponseCacheAttributePolicyTests
                 + Environment.NewLine
                 + $"{nameof(AppControllerScan.WebAssembly)} を渡しているか確かめてください。");
 
-        // (b) 属性の種類を問わない走査を、本番の検査とまったく同じ引数で通す
-        var anyAttribute = ResponseCachePolicy
+        // (b) 属性の種類を問わない走査を、本番の検査とまったく同じ引数で通す。
+        // <b>Any で打ち切る（レビュー指摘）。</b> ToList にすると、判定に要らない表示名
+        // (総称の再帰と正規表現を含む)を 695 型ぶん組み立ててから 1 件の有無を見ることになる
+        var hasActionDeclaration = ResponseCachePolicy
             .AttributeDeclarationsOn(hosts, ownAssembly, _ => true)
-            .Select(d => d.DeclaredOn)
-            .ToList();
+            .Any(d => d.DeclaredOn.Contains('(', StringComparison.Ordinal));
 
         // アクション側の宣言(名指しに引数の括弧が付く)が返っていること
         Assert.True(
-            anyAttribute.Any(name => name.Contains('(', StringComparison.Ordinal)),
+            hasActionDeclaration,
             "アプリ全体の走査が、アクションに付いた属性を 1 件も返していません。"
                 + "これは違反の検査ではなく「空振り検出」です ——走査が何も返さなくなると"
                 + "「違反 0 件」の検査は無条件で緑になるので、届いていること自体をここで確かめています。"
@@ -174,9 +185,7 @@ public class ResponseCacheAttributePolicyTests
                 + "アプリのアクションには [HttpPost] / [Authorize] 等が必ず付いているので、"
                 + "ここが 0 件になるのは走査そのものの退行です。"
                 + Environment.NewLine
-                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。"
-                + Environment.NewLine
-                + $"(返った宣言は {anyAttribute.Count} 件)");
+                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。");
     }
 
     /// <summary>
@@ -214,8 +223,9 @@ public class ResponseCacheAttributePolicyTests
     /// <remarks>
     /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> ホスト集合を
     /// <c>AppControllerScan.CacheDirectiveHosts()</c> から <c>AppControllerScan.Controllers()</c> へ
-    /// 差し替えると、全件緑のまま通る ——空振り検出は <c>HomeController.Error()</c> を目印にしており、
-    /// あれは <c>ControllerBase</c> 派生なのでどちらの集合にも入るため。狭めたあとは
+    /// 差し替えると、この guard が無ければ全件緑のまま通る ——空振り検出
+    /// (<see cref="AssertTheAppWideScanIsLive"/>) が見るのは「アクション側の宣言が返ること」で、
+    /// <b>狭めた集合にもコントローラは残る</b>のでその条件は満たされてしまうため。狭めたあとは
     /// <c>Pages/Export.cshtml.cs</c> に付けた <c>[ResponseCache(Duration = 300, Location = Any)]</c> が
     /// <b>どの検査からも見えなくなる</b> ——<c>CacheDirectiveHosts</c> がまさに塞ぐために
     /// 導入された穴が戻る。</para>
@@ -249,23 +259,13 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
-        // 走査へ渡すホスト集合を、広さを確かめたうえで受け取る
-        var hosts = AppWideCacheDirectiveHosts();
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
+        var (hosts, ownAssembly) = AppWideScanInputs();
 
         // アプリ全体の宣言を集める
         var declarations = ResponseCachePolicy
-            .DeclarationsOn(hosts, AppControllerScan.WebAssembly)
+            .DeclarationsOn(hosts, ownAssembly)
             .ToList();
-
-        // <b>空振り検出（レビュー指摘・実測）。</b> 下の検査は「違反が 0 件」しか見ないので、
-        // 走査が<b>何も返さなくなった</b>瞬間に無条件で緑になる。実測でも、この呼び出しの
-        // ownAssembly を別のアセンブリへ差し替えると全件緑のまま通り、そのうえで PHI の
-        // ダッシュボード(HomeController.Index)へ [ResponseCache(Duration = 300, Location = Any)]
-        // を足しても 1296 件すべて緑だった。<b>引数はこの呼び出し側が持つので、
-        // 空振り検出も同じ呼び出しの結果から採る</b>（別の呼び出しへ出すと、こちらの引数だけを
-        // 差し替える変異を捕まえられない）。CLAUDE.md が「拾えたかどうかにも空振り検出を置く」
-        // と書いているのと同じ形
-        AssertTheAppWideScanIsLive(hosts, AppControllerScan.WebAssembly);
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
@@ -656,40 +656,29 @@ public class ResponseCacheAttributePolicyTests
     // Microsoft.AspNetCore.Mvc.Testing 経由で<b>既に参照できている</b>（パッケージの追加は
     // 1 つも要らない）。本当の理由は<b>名前空間を問わず拾いたい</b>ことで、実型に縛ると
     // 別の名前空間の同名の属性を取りこぼす。
-    // 一方で<b>述語が本物に当たること</b>は実型で確かめる（下の合成プローブが実型を使う）。
+    // 一方で<b>述語が本物に当たること</b>は実型で確かめる（下のプローブが実型を使う）。
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
-        // 共有の走査へ宣言を集める
+        // <b>述語は 1 つのローカルへ出す。</b> 下のプローブが<b>同じ述語</b>を読むことで、
+        // 「述語が本物の [OutputCache] に当たる」ことを固定できる ——別々に書くと、
+        // 本番側の述語だけを壊す変異が通る
+        Func<object, bool> matches = IsOutputCacheAttribute;
+
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
         // (クラス側とアクション側の両方を読む・宣言元で名指しする・派生の数だけ並べない、
         //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
-        //
-        // <b>述語に [ResponseCache] も混ぜるのは空振り検出のため（レビュー指摘・実測）。</b>
-        // この検査が探している [OutputCache] は<b>1 件も無いのが正しい</b>ので、違反 0 件では
-        // 「走査が届いていない」と区別が付かない ——実測でも、この呼び出しの ownAssembly を
-        // 別のアセンブリへ差し替えると全件緑のまま通った。実在が保証されている
-        // [ResponseCache] を同じ 1 回の走査で一緒に拾えば、<b>同じ引数</b>で届いていることを
-        // 確かめられる（別の呼び出しへ出すと、こちらの引数だけを差し替える変異を捕まえられない）
-        // <b>述語は 1 つのローカルへ出す（レビュー指摘・実測）。</b> 下の空振り検出は
-        // [ResponseCache] 側で満たされてしまうため、<b>この検査が本来探している
-        // 出力キャッシュ側</b>を落としても(＝述語を a is ResponseCacheAttribute だけに
-        // 「簡略化」しても)全件緑のまま通った。同じ述語を合成プローブへも当てて、
-        // 出力キャッシュ側が生きていることを別に確かめる
-        var matches = (object a) => IsOutputCacheAttribute(a) || a is ResponseCacheAttribute;
+        var (hosts, ownAssembly) = AppWideScanInputs();
 
-        // 走査へ渡すホスト集合を、広さを確かめたうえで受け取る
-        var hosts = AppWideCacheDirectiveHosts();
-
-        var declarations = ResponseCachePolicy
-            .AttributeDeclarationsOn(hosts, AppControllerScan.WebAssembly, matches)
+        // 確かめた引数一式で、アプリ全体から出力キャッシュの宣言を集める
+        var violations = ResponseCachePolicy
+            .AttributeDeclarationsOn(hosts, ownAssembly, matches)
+            .Select(d => d.DeclaredOn)
             .ToList();
 
-        // 走査がアプリへ届いていること(届いていなければ下の「0 件」は無意味)
-        AssertTheAppWideScanIsLive(hosts, AppControllerScan.WebAssembly);
-
-        // 述語の<b>出力キャッシュ側</b>が生きていること。アプリに [OutputCache] は 1 件も無いので、
-        // ここだけは合成プローブへ当てないと確かめようがない(型は直接参照せず、型名で照合する
-        // というこの検査の方針に合わせて、同じ名前の属性を合成してある)
+        // 述語が<b>本物の</b> [OutputCache] に当たること。アプリに [OutputCache] は
+        // 1 件も無いのが正しいので、違反 0 件だけでは「述語が壊れている」と区別が付かない
+        // ——プローブへ当てないと確かめようがない(「走査が届いているか」は上の guard が別に見る)
         var probed = ResponseCachePolicy
             .AttributeDeclarationsOn(
                 [typeof(OutputCacheProbeController)],
@@ -697,14 +686,8 @@ public class ResponseCacheAttributePolicyTests
                 matches)
             .ToList();
 
-        // 合成した [OutputCache] がちょうど 1 件拾えること
-        Assert.Single(probed, d => IsOutputCacheAttribute(d.Attribute));
-
-        // 本題である出力キャッシュの宣言だけを、失敗文言の形に整えて取り出す
-        var violations = declarations
-            .Where(d => IsOutputCacheAttribute(d.Attribute))
-            .Select(d => d.DeclaredOn)
-            .ToList();
+        // プローブの [OutputCache] がちょうど 1 件拾えること
+        Assert.Single(probed);
 
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
