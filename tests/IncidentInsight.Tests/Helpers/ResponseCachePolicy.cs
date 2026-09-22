@@ -28,13 +28,6 @@ public static partial class ResponseCachePolicy
     public readonly record struct CacheDirectiveVerdict(bool IsSuppressing, string Reason);
 
     /// <summary>
-    /// 走査が見つけた 1 件の <c>[ResponseCache]</c> 宣言(どこに付いていたかを含む)。
-    /// </summary>
-    /// <param name="DeclaredOn">属性が付いていた場所の表示名(失敗文言で名指しするために持つ)。</param>
-    /// <param name="Attribute">宣言された属性そのもの。</param>
-    public readonly record struct ResponseCacheDeclaration(string DeclaredOn, ResponseCacheAttribute Attribute);
-
-    /// <summary>
     /// 走査が見つけた 1 件の属性の宣言(属性の種類を問わない形)。
     /// </summary>
     /// <param name="DeclaredOn">属性が付いていた場所の表示名。</param>
@@ -133,11 +126,22 @@ public static partial class ResponseCachePolicy
     /// <c>TypeFilterAttribute.ImplementationType</c> と <c>ServiceFilterAttribute.ServiceType</c> は
     /// 「どの型のフィルタが効くか」を宣言として持っているので、宣言だけから追える。</para>
     ///
+    /// <para><b>総称の綴り(<c>[TypeFilter&lt;T&gt;]</c> / <c>[ServiceFilter&lt;T&gt;]</c>)も同じ枝で辿れる。</b>
+    /// .NET 8 の <c>TypeFilterAttribute&lt;T&gt;</c> / <c>ServiceFilterAttribute&lt;T&gt;</c> は
+    /// 非総称の形を<b>継承</b>しており、<c>ImplementationType</c> / <c>ServiceType</c> も
+    /// 埋まっている(実測)。<b>だからこの <c>switch</c> を「その型ちょうど」へ狭めないこと</b>
+    /// ——狭めると、いま書かれやすい総称の綴りだけが黙って辿られなくなる
+    /// (<c>IndirectFilterTarget_ResolvesOnlyTheTwoFrameworkSpellings</c> が両方の綴りで固定する)。</para>
+    ///
     /// <para><b>残っている境界。</b> 自前の <c>IFilterFactory</c> が
     /// <c>CreateInstance</c> の中で <c>ResponseCacheAttribute</c> を組み立てる形は、
     /// 宣言のどこにも型が現れないので<b>原理的に追えない</b>(実行しないと分からない)。
+    /// <b><c>[ServiceFilter(typeof(IMyCacheFilter))]</c> のようにインターフェイスを指す形</b>も
+    /// 同じで、実行時は DI が解決した実体が効くのに<b>宣言から見えるのはインターフェイスだけ</b>
+    /// ——その型は <c>ResponseCacheAttribute</c> に代入できないので指示として拾えない
+    /// (レビュー指摘。<c>ServiceType</c> が「宣言だけから追える」のは、それが具象の属性型のときに限る)。
     /// 間接指定を<b>入れ子</b>にした形(<c>[TypeFilter(typeof(別の TypeFilterAttribute))]</c>)も
-    /// 1 段しか辿らない ——どちらも実在せず、追うには「効くフィルタを実際に解決する」
+    /// 1 段しか辿らない ——どれも実在せず、追うには「効くフィルタを実際に解決する」
     /// (<c>IFilterProvider</c> を回す)必要があって範囲が段違いに広い。
     /// <b>ここで止める判断を書き残しておく</b>ので、次に踏んだ人は広げるか、
     /// 実効フィルタの解決へ移すかを決めること。</para>
@@ -193,6 +197,18 @@ public static partial class ResponseCachePolicy
         EffectiveFilterTypes(attribute).Any(type => typeof(ResponseCacheAttribute).IsAssignableFrom(type));
 
     /// <summary>
+    /// 間接指定の文面が「この型が効く」と<b>断定している</b>ことを表す綴り。
+    /// </summary>
+    /// <remarks>
+    /// <b>テスト側の目印もこの定数を読む（レビュー指摘）。</b> 到達しないはずの枝が
+    /// 「間接指定です」と名乗り出していないことを見る検査は、この綴りを目印にしている。
+    /// literal を書き写すと、<b>こちらの文面を推敲しただけ</b>でその検査が
+    /// 「含まれていない」を永久に満たし、黙って無力化される
+    /// (CLAUDE.md が運用手順の引用について記録しているのと同じ形)。
+    /// </remarks>
+    public const string IndirectDirectiveClaim = "が効きます。";
+
+    /// <summary>
     /// 宣言 1 件を判定する(直接なら中身を読み、<b>間接指定は読めないので落とす</b>)。
     /// </summary>
     /// <remarks>
@@ -222,7 +238,8 @@ public static partial class ResponseCachePolicy
             // 何が効くのかを運用者が追えるよう、指す先の型まで添える
             return new CacheDirectiveVerdict(
                 false,
-                $"{attribute.GetType().Name} によるフィルタの間接指定で {target.FullName} が効きます。"
+                $"{attribute.GetType().Name} によるフィルタの間接指定で "
+                    + $"{TypeDisplayName(target)} {IndirectDirectiveClaim}"
                     + "実際の指示はその型を組み立てないと読めないため、この検査からは中身を確かめられません。"
                     + "間接指定をやめて [ResponseCache(NoStore = true)] を直接宣言するか、"
                     + "キャッシュ指示を名乗らず SecurityHeadersMiddleware の既定(no-store)に任せてください。");
@@ -271,41 +288,6 @@ public static partial class ResponseCachePolicy
             .ToList();
 
     /// <summary>
-    /// 渡されたコントローラ型から <c>[ResponseCache]</c> の宣言を集める。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>抽象基底へ引き上げたアクションを取りこぼさない。</b>
-    /// 抽象基底コントローラへアクションを引き上げる形(<c>ReportExportControllerBase</c> に
-    /// <c>Export()</c> を置き、具象が継承する)は、URL としては具象コントローラ経由で
-    /// <b>実際に到達できる</b>のに、基底は抽象なので渡される走査対象には入らない。
-    /// 実測でも、この形で <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足すと
-    /// 全件緑のままテスト件数すら変わらずに通った時期がある。</para>
-    ///
-    /// <para><b>取りこぼさない仕組みは <see cref="AttributeDeclarationsOn"/> 側の「継承の連なりを
-    /// 1 段ずつ訪ねる」形</b>(issue #275)。基底の段そのものを訪ねるので、各段の読み取りを
-    /// <c>DeclaredOnly</c> に絞っても基底の宣言は落ちない ——<b>この 2 つは対で意味を持つ</b>ので、
-    /// 片方だけを「具象から継承ぶんも読む」形へ戻さないこと。アクション側だけを
-    /// <b>自分たちのアセンブリか</b>で切るのは変わらない
-    /// (<c>UnlistedFilterValuePolicyTests.MatchingActionParameters</c> と同じ判断)。</para>
-    ///
-    /// <para>走査対象を引数で受け取るのは、合成したコントローラに対して<b>走査そのもの</b>を
-    /// 検証できるようにするため(アプリの実際の宣言が少ないあいだは、拾う経路を 1 つ消しても
-    /// 本番の検査は緑のまま通るため)。</para>
-    /// </remarks>
-    /// <param name="controllers">走査するコントローラ型。</param>
-    /// <param name="ownAssembly">「自分たちが宣言したアクション」と見なすアセンブリ。</param>
-    /// <returns>
-    /// 見つかった宣言の一覧(畳む単位は<b>訪ねた段</b>なので、同じ段を複数の具象からたどっても
-    /// 1 件。逆に、基底と派生がそれぞれ宣言していれば<b>両方とも</b>返る)。
-    /// </returns>
-    public static IEnumerable<ResponseCacheDeclaration> DeclarationsOn(
-        IEnumerable<Type> controllers,
-        Assembly ownAssembly) =>
-        // 種類を問わない走査へ「ResponseCacheAttribute であること」を渡し、結果を型付きにする
-        AttributeDeclarationsOn(controllers, ownAssembly, a => a is ResponseCacheAttribute)
-            .Select(d => new ResponseCacheDeclaration(d.DeclaredOn, (ResponseCacheAttribute)d.Attribute));
-
-    /// <summary>
     /// 渡されたコントローラから、条件に合う属性の宣言を集める(属性の種類を問わない走査)。
     /// </summary>
     /// <remarks>
@@ -331,6 +313,14 @@ public static partial class ResponseCachePolicy
     /// (c) 同じ場所へ複数付いた宣言は<b>そのまま件数として返る</b> ——
     /// 以前はここで 2 個目が消えるため fail-closed の門番を置いていたが、
     /// <b>失われる経路そのものが無くなった</b>ので門番ごと不要になった。</para>
+    ///
+    /// <para><b>入り口はこの 1 つだけにする（レビュー指摘・実測）。</b> 以前は
+    /// <c>[ResponseCache]</c> 専用の型付きの入り口(<c>DeclarationsOn</c>)を別に持っており、
+    /// そちらは <c>a is ResponseCacheAttribute</c> という<b>狭い述語</b>を内側に抱えていた。
+    /// アプリ全体の検査を<b>そちらへ向け直すだけ</b>で issue #281 の手当てがまるごと外れ、
+    /// しかも全件緑のまま通る ——「より型が付いていて docstring も手厚いほう」へ寄せるのは
+    /// DRY の整理として自然に見えるので、差分からも読み取れない。走査を 1 つに寄せたのと
+    /// 同じ理由で<b>述語も呼び出し側が渡す形に統一</b>し、狭い写しを 1 つも残さない。</para>
     ///
     /// <para><b>報告するのは「ソースに書かれた宣言」すべてで、実行時に効くものだけではない。</b>
     /// 派生が同じ種類を宣言し直していても、基底の宣言は<b>別の派生からは効く</b>し、

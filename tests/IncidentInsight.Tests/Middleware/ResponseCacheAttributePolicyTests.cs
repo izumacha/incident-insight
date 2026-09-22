@@ -219,6 +219,36 @@ public class ResponseCacheAttributePolicyTests
     }
 
     /// <summary>
+    /// アプリ全体の走査へ<b>実際に渡した述語</b>が、フィルタの間接指定まで見ていることを確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> 述語そのものの挙動は
+    /// <see cref="AttributeScan_FindsAResponseCacheFilterAppliedIndirectly"/> が固定しているが、
+    /// あちらは<b>述語を直接呼ぶ</b>ので、本番の呼び出しが別の述語へ差し替わっても気付かない。
+    /// 実測でも、アプリ全体の検査が渡す述語を <c>a =&gt; a is ResponseCacheAttribute</c> へ戻すと
+    /// <b>全件緑のまま通り</b>、そのうえで PHI を返すアクションへ
+    /// <c>[TypeFilter(typeof(LongCacheAttribute))]</c> を付けても緑だった
+    /// ——issue #281 の手当てがまるごと外れる。</para>
+    ///
+    /// <para><b>だから guard は「渡した値そのもの」を受け取る。</b> 中で述語を導出し直すと、
+    /// 呼び出し側の差し替えに届かない(<see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が
+    /// ホスト集合について同じ形を取っているのと同じ理由)。</para>
+    /// </remarks>
+    /// <param name="matches">アプリ全体の走査へ実際に渡す述語。</param>
+    private static void AssertThePredicateFollowsFilterIndirection(Func<object, bool> matches) =>
+        // 間接指定で被せた指示を、その述語が「指示だ」と認めること
+        Assert.True(
+            matches(new TypeFilterAttribute(typeof(IndirectLongCacheAttribute))),
+            "アプリ全体の走査へ渡した述語が、フィルタの間接指定を指示として拾っていません。"
+                + "これは違反の検査ではなく「空振り検出」です ——[TypeFilter(typeof(...))] / "
+                + "[ServiceFilter(typeof(...))] で被せた [ResponseCache] は付いている属性が "
+                + "TypeFilterAttribute なので、型で照合する述語には一致せず、"
+                + "PHI を返すアクションが public,max-age=300 を名乗っても違反 0 件のまま緑になります。"
+                + Environment.NewLine
+                + $"{nameof(ResponseCachePolicy)}.{nameof(ResponseCachePolicy.IsResponseCacheDirective)} を"
+                + "渡しているか確かめてください(issue #281)。");
+
+    /// <summary>
     /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
     /// 確かめる。
     /// </summary>
@@ -261,16 +291,24 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
+        // <b>述語は 1 つのローカルへ出す。</b> 下の guard が<b>同じ述語</b>を読むことで、
+        // 「この呼び出しが間接指定まで見ている」ことを固定できる ——別々に書くと、
+        // 呼び出し側だけを狭い述語(a is ResponseCacheAttribute)へ差し替える変異が通る
+        Func<object, bool> matches = ResponseCachePolicy.IsResponseCacheDirective;
+
         // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
         var (hosts, ownAssembly) = AppWideScanInputs();
 
+        // この呼び出しが渡す述語が、フィルタの間接指定まで見ていること
+        AssertThePredicateFollowsFilterIndirection(matches);
+
         // アプリ全体の宣言を集める。
         // <b>述語は「応答キャッシュの指示として働くか」で引く(issue #281)。</b>
-        // 型で照合する DeclarationsOn だと、[TypeFilter(typeof(LongCacheAttribute))] のような
-        // <b>フィルタの間接指定</b>が付いている属性は TypeFilterAttribute なので一致せず、
+        // 型で照合する述語(a is ResponseCacheAttribute)だと、[TypeFilter(typeof(LongCacheAttribute))]
+        // のような<b>フィルタの間接指定</b>が付いている属性は TypeFilterAttribute なので一致せず、
         // PHI を返すアクションへ public,max-age=300 を付けても全件緑のまま通っていた
         var declarations = ResponseCachePolicy
-            .AttributeDeclarationsOn(hosts, ownAssembly, ResponseCachePolicy.IsResponseCacheDirective)
+            .AttributeDeclarationsOn(hosts, ownAssembly, matches)
             .ToList();
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
@@ -359,9 +397,9 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(BothLevelsProbeController));
 
         // クラス側の宣言(Duration = 11)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 11);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 11 });
         // アクション側の宣言(Duration = 22)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 22);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 22 });
         // どこに付いていたかが失敗文言のために保持されていること
         Assert.All(declarations, d => Assert.False(string.IsNullOrWhiteSpace(d.DeclaredOn)));
     }
@@ -382,7 +420,7 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(InheritedActionProbeController));
 
         // 基底に宣言されたアクションの属性(Duration = 33)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 33);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 33 });
         // 「どこを直せばよいか」が分かるよう、宣言元の基底の名前で名指しされていること
         Assert.Contains(
             declarations,
@@ -402,7 +440,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondInheritedActionProbeController));
 
         // 基底のアクションに由来する宣言が 1 件だけであること
-        Assert.Single(declarations, d => d.Attribute.Duration == 33);
+        Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 33 });
     }
 
     /// <summary>
@@ -691,15 +729,17 @@ public class ResponseCacheAttributePolicyTests
         // 述語が<b>本物の</b> [OutputCache] に当たること。アプリに [OutputCache] は
         // 1 件も無いのが正しいので、違反 0 件だけでは「述語が壊れている」と区別が付かない
         // ——プローブへ当てないと確かめようがない(「走査が届いているか」は上の guard が別に見る)
+        // <b>プローブには間接指定も含める（レビュー指摘）。</b> 本物の [OutputCache] だけだと、
+        // この呼び出しの述語を「間接指定を辿らない」形へ差し替えても通ってしまう
         var probed = ResponseCachePolicy
             .AttributeDeclarationsOn(
-                [typeof(OutputCacheProbeController)],
+                [typeof(OutputCacheProbeController), typeof(IndirectOutputCacheProbeController)],
                 typeof(ResponseCacheAttributePolicyTests).Assembly,
                 matches)
             .ToList();
 
-        // プローブの [OutputCache] がちょうど 1 件拾えること
-        Assert.Single(probed);
+        // 直接の [OutputCache] と間接指定の両方が拾えること
+        Assert.Equal(2, probed.Count);
 
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
@@ -1018,7 +1058,7 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("Microsoft.AspNetCore.Authorization.AuthorizeAttribute", false)]
     public void IsOutputCacheAttribute_MatchesOnlyOutputCaching(string typeFullName, bool expected)
     {
-        // 型名の末尾だけで判定していることを、合成した名前で確かめる
+        // 名前空間・入れ子・総称の個数を落とした<b>単純名</b>で判定していることを、合成した名前で確かめる
         Assert.Equal(expected, IsOutputCacheAttributeTypeName(typeFullName));
     }
 
@@ -4384,7 +4424,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondClassLevelInheritedProbeController));
 
         // 基底のクラス属性(Duration = 77)に由来する宣言が 1 件だけであること
-        var inherited = Assert.Single(declarations, d => d.Attribute.Duration == 77);
+        var inherited = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 77 });
         // 名指しが、属性を実際に宣言している基底であること(派生の名前ではない)
         Assert.Contains(
             nameof(ClassLevelInheritedProbeControllerBase),
@@ -5218,7 +5258,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondMidOverrideProbeLeaf));
 
         // 中間型の宣言(Duration = 55)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 55);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 55 });
 
         // 名指しが、属性を実際に宣言している中間型であること（具象でも根でもない）
         Assert.Contains(
@@ -5284,7 +5324,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondSkippedMidProbeLeaf));
 
         // 根の宣言(Duration = 66)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 66);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 66 });
 
         // 名指しが、属性を実際に宣言している根であること（具象でも中間型でもない）
         Assert.Contains(
@@ -5345,7 +5385,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondBareOverrideProbeLeaf));
 
         // 根の宣言(Duration = 34)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 34);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 34 });
 
         // 名指しが、属性を実際に宣言している根であること
         Assert.Contains(
@@ -5612,9 +5652,17 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="probes">走査する合成コントローラ。</param>
     /// <returns>見つかった宣言の一覧。</returns>
-    private static List<ResponseCachePolicy.ResponseCacheDeclaration> ScanProbes(params Type[] probes) =>
-        // 宣言元の判定にはこのテストアセンブリを使う
-        ResponseCachePolicy.DeclarationsOn(probes, typeof(ResponseCacheAttributePolicyTests).Assembly).ToList();
+    private static List<ResponseCachePolicy.AttributeDeclaration> ScanProbes(params Type[] probes) =>
+        // 宣言元の判定にはこのテストアセンブリを使い、<b>述語は本番の検査と同じもの</b>を渡す。
+        // 専用の型付きの入り口を別に持たないのは、そちらが狭い述語を抱え込み、
+        // 本番の検査を「より型が付いているほう」へ向け直すだけで issue #281 の手当てが
+        // まるごと外れてしまうため(理由の正本は AttributeDeclarationsOn の説明)
+        ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                probes,
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                ResponseCachePolicy.IsResponseCacheDirective)
+            .ToList();
 
     /// <summary>
     /// 走査がクラス側とアクション側の両方を読むことを確かめるための、合成コントローラ。
@@ -5748,7 +5796,7 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(NonControllerEndpointProbe));
 
         // クラス側の宣言(Duration = 44)が拾えていること
-        var found = Assert.Single(declarations, d => d.Attribute.Duration == 44);
+        var found = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 44 });
         // 名指しが、属性を実際に宣言している型であること
         Assert.Contains(nameof(NonControllerEndpointProbe), found.DeclaredOn, StringComparison.Ordinal);
     }
@@ -5945,8 +5993,13 @@ public class ResponseCacheAttributePolicyTests
         /// <summary>
         /// <b>入れ子かつ総称</b>の出力キャッシュ相当の属性(<c>FullName</c> に <c>`1</c> が付く)。
         /// </summary>
+        /// <remarks>
+        /// 単純名は非総称のものと<b>同じ</b>でなければならない ——述語は単純名で照合するので、
+        /// 別の名前(<c>GenericOutputCacheAttribute</c> など)にすると、走査へ通しても
+        /// そもそも一致しない「使えないプローブ」になる（レビュー指摘）。
+        /// </remarks>
         /// <typeparam name="T">使わない型引数(綴りを総称にするためだけに持つ)。</typeparam>
-        internal sealed class GenericOutputCacheAttribute<T> : Attribute;
+        internal sealed class OutputCacheAttribute<T> : Attribute;
     }
 
     /// <summary>入れ子の綴りの出力キャッシュ属性を付けたプローブ。</summary>
@@ -5955,6 +6008,15 @@ public class ResponseCacheAttributePolicyTests
         /// <summary>入れ子の綴りの属性を持つアクション。</summary>
         /// <returns>内容を持たない結果。</returns>
         [NestedOutputCacheProbes.OutputCache]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>総称の綴りの出力キャッシュ属性を付けたプローブ。</summary>
+    private sealed class GenericOutputCacheProbeController : ControllerBase
+    {
+        /// <summary>総称の綴りの属性を持つアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [NestedOutputCacheProbes.OutputCache<int>]
         public IActionResult Probe() => NoContent();
     }
 
@@ -5967,7 +6029,7 @@ public class ResponseCacheAttributePolicyTests
         public IActionResult Probe() => NoContent();
     }
 
-    // 出力キャッシュの述語が、<b>入れ子の綴り</b>と<b>間接指定</b>のどちらでも当たること。
+    // 出力キャッシュの述語が、<b>入れ子・総称の綴り</b>と<b>間接指定</b>のいずれでも当たること。
     //
     // <b>なぜ要るのか(issue #281)。</b> 述語は型名で照合するが、FullName の綴りは形で変わる
     // (入れ子は `Ns.Outer+Name`、総称は "Name`1")。最後のドット区切りを採っていたころは
@@ -5975,9 +6037,11 @@ public class ResponseCacheAttributePolicyTests
     [Theory]
     // 入れ子の綴りで直接書いた形
     [InlineData(typeof(NestedOutputCacheProbeController))]
+    // 総称の綴りで直接書いた形(FullName に `1 が付く)
+    [InlineData(typeof(GenericOutputCacheProbeController))]
     // 間接指定で被せた形(応答キャッシュ側と同じ入り口を通ることの確認も兼ねる)
     [InlineData(typeof(IndirectOutputCacheProbeController))]
-    public void OutputCachePredicate_FindsNestedAndIndirectSpellings(Type probe)
+    public void OutputCachePredicate_FindsNestedGenericAndIndirectSpellings(Type probe)
     {
         // 本番の検査と同じ述語で、プローブの宣言を集める
         var declarations = ResponseCachePolicy
@@ -6030,8 +6094,11 @@ public class ResponseCacheAttributePolicyTests
         // 中身を確かめられない以上、落ちる側であること(§9 fail-closed)
         Assert.False(verdict.IsSuppressing);
 
-        // 何であるかを断定していないこと(「間接指定です」と名乗らない)
-        Assert.DoesNotContain("が効きます", verdict.Reason, StringComparison.Ordinal);
+        // 何であるかを断定していないこと(「間接指定です」と名乗らない)。
+        // <b>目印は本体の定数を読む（レビュー指摘）</b> ——literal を書き写すと、
+        // 本体の文面を推敲しただけでこの検査が永久に満たされ、黙って無力化される
+        Assert.DoesNotContain(
+            ResponseCachePolicy.IndirectDirectiveClaim, verdict.Reason, StringComparison.Ordinal);
 
         // どの宣言の話かは分かるよう、型そのものは名指ししていること
         Assert.Contains(nameof(UnrelatedProbeFilterAttribute), verdict.Reason, StringComparison.Ordinal);
@@ -6052,6 +6119,19 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(
             typeof(IndirectLongCacheAttribute),
             ResponseCachePolicy.IndirectFilterTarget(new ServiceFilterAttribute(typeof(IndirectLongCacheAttribute))));
+
+        // <b>総称の綴りも同じ枝で辿れること（レビュー指摘・実測）。</b>
+        // .NET 8 の TypeFilterAttribute<T> / ServiceFilterAttribute<T> は非総称の形を継承しており、
+        // いまの switch は<b>継承のおかげで偶然</b>当たっている。「その型ちょうど」へ狭める整理は
+        // もっともらしく見えるのに、いちばん書かれやすい綴りだけが黙って辿られなくなる
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new TypeFilterAttribute<IndirectLongCacheAttribute>()));
+
+        // DI 経由の総称の綴りも同じ
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new ServiceFilterAttribute<IndirectLongCacheAttribute>()));
 
         // 直接書かれた属性は間接指定ではない(辿る先が無い)
         Assert.Null(ResponseCachePolicy.IndirectFilterTarget(new ResponseCacheAttribute { NoStore = true }));
