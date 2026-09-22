@@ -45,21 +45,6 @@ internal static class MarkdownSource
         // 囲みの数え上げや箇条書きの遡りが黙って別の行を見る
         index <= 0 ? 0 : doc.LastIndexOf('\n', index - 1) + 1;
 
-    /// <summary>その位置を含む 1 行を切り出す。</summary>
-    /// <param name="doc">文書全体。</param>
-    /// <param name="index">含めたい位置。</param>
-    /// <returns>その行。</returns>
-    internal static string LineAt(string doc, int index)
-    {
-        // 行の先頭
-        var start = LineStart(doc, index);
-        // 行の終わり
-        var end = doc.IndexOf('\n', index);
-
-        // 改行が見つからなければ文書の末尾まで
-        return doc[start..(end < 0 ? doc.Length : end)];
-    }
-
     /// <summary>その位置がコードの囲み（バッククォート）の中かを見る。</summary>
     /// <remarks>
     /// 囲みは 1 行の中で閉じるので、<b>行頭からその位置までのバッククォートの個数が
