@@ -47,11 +47,22 @@ public sealed class AllowedHostsStartupWarningCollection;
 public class AllowedHostsStartupWarningTests
 {
     // 1 本目（全許可）の警告を見分ける目印。文面そのものではなく、
-    // 一意に決まる書き出しだけを見る（文言の推敲で赤くしないため）
-    private const string PermissiveWarningMarker = "AllowedHosts is permissive";
+    // 一意に決まる綴りだけを見る（文言の推敲で赤くしないため）。
+    //
+    // <b>綴りを書き写さず本体の定数を読む（レビュー指摘）。</b> 下の
+    // CheckFailureMarker が既にそうしているのに、この 2 本だけが写しを持っていた。
+    // 写しのままだと、文面を推敲したとき<b>本体ではなくテストを名指す失敗</b>が
+    // 十数箇所で同時に出る。目印の literal を書き換えれば緑に戻るので、
+    // <b>docs/security.md が引用している綴りだけが黙って古くなる</b> ——
+    // 運用者が手順どおり grep しても空振りし、全許可のまま動いている配備が
+    // 「きれい」と読める。定数を読めば、文面を変える差分は必ず
+    // AllowedHostsWarningReporterTests（文書との突き合わせ）で落ちる
+    private const string PermissiveWarningMarker =
+        AllowedHostsWarningReporter.PermissiveWarningMarker;
 
     // 2 本目（一致しえない項目）の警告を見分ける目印（同上）
-    private const string DeadEntryWarningMarker = "AllowedHosts contains";
+    private const string DeadEntryWarningMarker =
+        AllowedHostsWarningReporter.NeverMatchingEntriesWarningMarker;
 
     // 検査そのものが失敗したときに残る記録の全文（起動時・再読み込みで共通）。
     // <b>綴りを書き写さず本体の定数を読む（レビュー指摘）。</b> 写しを持つと、
@@ -132,8 +143,13 @@ public class AllowedHostsStartupWarningTests
         // 2 本目が出ること
         var warning = Assert.Single(fixture.Warnings, w => w.Contains(DeadEntryWarningMarker));
 
-        // 件数が載ること（値が長いときでも件数だけは読める、という意図を固定する）
-        Assert.Contains("1 entry/entries", warning);
+        // 件数が載ること（値が長いときでも件数だけは読める、という意図を固定する）。
+        // <b>綴りの写しを持たない（レビュー指摘）。</b> "1 entry/entries" と直書きすると
+        // 目印を定数へ寄せた意味が半分消える ——文面を推敲したときに<b>本体ではなく
+        // ここを名指す失敗</b>が出て、直し方が「この行の literal も直す」になり、
+        // docs/security.md との突き合わせへ話が向かわない。
+        // 目印を連結すれば「件数が目印の直前に載る」という意図もそのまま固定できる
+        Assert.Contains($"1 {DeadEntryWarningMarker}", warning);
 
         // <b>死んでいる項目が "[ ]" で囲まれて名指しされること。</b>
         // 空白は目で見えないので、囲まないと「なぜ一致しないのか」が伝わらない

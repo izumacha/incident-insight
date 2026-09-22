@@ -28,6 +28,15 @@ public class AllowedHostsWarningReporterTests
     // `const` を `static readonly` へ直すだけで GetRawConstantValue が投げ、
     // <b>drift ではなくリフレクションの失敗</b>として赤くなる
     [Theory]
+    // 1 本目（全許可）の警告。
+    // <b>運用手順の主役はこの 2 本（レビュー指摘）。</b> docs/security.md が
+    // 「配備後にこのログが出ていないことを確認してください」と案内しているのは
+    // 全許可と一致しえない項目の警告で、以前はその 2 本だけが突き合わせの外にいた ——
+    // 診断の失敗（下の 2 本）より先に空振りしてはいけない綴りなのに、
+    // <b>文面を推敲すると手順の grep だけが黙って永久に外れる</b>状態だった
+    [InlineData(AllowedHostsWarningReporter.PermissiveWarningMarker)]
+    // 2 本目（一致しえない項目）の警告
+    [InlineData(AllowedHostsWarningReporter.NeverMatchingEntriesWarningMarker)]
     // 検査そのものが失敗したときの記録
     [InlineData(AllowedHostsWarningReporter.CheckFailedMessagePrefix)]
     // 再読み込みの購読を張れなかったときの記録
