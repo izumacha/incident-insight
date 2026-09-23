@@ -167,6 +167,13 @@ public class EfCorePackageAlignmentTests
     // ロックファイルで、ターゲットフレームワークごとの解決結果をまとめている JSON キー
     private const string DependenciesKey = ProjectLockFile.DependenciesKey;
 
+    // ロックファイルで、1 つのパッケージが「自分が宣言している依存」を並べている JSON キー。
+    // 【なぜ上の定数を使い回さないか】綴りは今のところ同じだが、指しているものは別
+    // (上は「ターゲットフレームワークごとの解決結果」、こちらは「パッケージ内の依存一覧」)。
+    // 共有すると、片方だけが改名されたときに一緒に動いてしまい、こちらの走査が
+    // 何も見つけられなくなって「パッケージ名が変わった」という誤った原因を名指しする
+    private const string PackageDependenciesKey = "dependencies";
+
     // ロックファイルの type が「csproj に直接書かれた参照」を表すときの値
     // (推移依存なら "Transitive"、ProjectReference なら "Project" になる)
     private const string DirectPackageKind = ProjectLockFile.DirectKind;
@@ -975,7 +982,7 @@ public class EfCorePackageAlignmentTests
                 // 対象パッケージの項目が無ければ、このフレームワークには宣言が無い
                 if (!framework.Value.TryGetProperty(dependentId, out var dependent)) continue;
                 // その項目が持つ依存の一覧を引く(依存を持たないパッケージもある)
-                if (!dependent.TryGetProperty(DependenciesKey, out var declared)) continue;
+                if (!dependent.TryGetProperty(PackageDependenciesKey, out var declared)) continue;
                 // 探している依存の版が書かれていれば控える
                 if (declared.TryGetProperty(dependencyId, out var version))
                     declarations.Add(version.GetString() ?? "");

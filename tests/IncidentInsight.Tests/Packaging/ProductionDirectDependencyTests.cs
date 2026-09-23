@@ -57,6 +57,24 @@ public class ProductionDirectDependencyTests
     // この宣言を持つプロジェクトは本番出力に含まれないため、この不変条件の対象外になる
     private const string IsTestProjectProperty = "IsTestProject";
 
+    // C# のプロジェクトファイルの拡張子。
+    // 【なぜ定数にするか】この綴りは「走査で何を見つけるか」と「表のキーをどう組み立てるか」の
+    // 2 か所で逆方向に効いている。別々に書くと片方を変えた瞬間にキーが一致しなくなり、
+    // 「表に無いプロジェクト」という実際の原因とは違う失敗文言になる
+    private const string ProjectFileExtension = ".csproj";
+
+    // 走査でプロジェクトファイルを探すときのパターン(拡張子から組み立てて綴りを分けない)
+    private const string ProjectFileSearchPattern = "*" + ProjectFileExtension;
+
+    // MSBuild でプロパティをまとめる要素名
+    private const string PropertyGroupElement = "PropertyGroup";
+
+    // MSBuild で評価条件を指定する属性名
+    private const string ConditionAttribute = "Condition";
+
+    // MSBuild の真を表す値(比較は大文字小文字を区別しない)
+    private const string MsBuildTrue = "true";
+
     // 本番プロジェクトが直接参照してよいパッケージと、その理由。
     // 外側のキーは csproj のリポジトリルートからの相対パス(区切りは '/' に正規化する)。
     //
@@ -113,7 +131,7 @@ public class ProductionDirectDependencyTests
 
     // Web プロジェクトの csproj を指す表のキー。リポジトリ構成の目印は共有ヘルパーから読む
     private static string WebProjectKey =>
-        KeyOf(Path.Combine(RepositoryPaths.WebProject, RepositoryPaths.WebProjectDirectoryName + ".csproj"));
+        KeyOf(Path.Combine(RepositoryPaths.WebProject, RepositoryPaths.WebProjectDirectoryName + ProjectFileExtension));
 
     [Fact]
     public void EveryProductionProject_IsListedInTheTable()
@@ -184,10 +202,15 @@ public class ProductionDirectDependencyTests
             // 対応する csproj を探す(見つからないなら表ごと古くなっている)
             var project = ProductionProjects.Value
                 .FirstOrDefault(path => string.Equals(KeyOf(path), projectKey, StringComparison.OrdinalIgnoreCase));
-            // プロジェクトそのものが無ければ、その行すべてを古い行として報告する
+            // プロジェクトそのものが無ければ、その行すべてを古い行として報告する。
+            // 【行が 0 件でも 1 件報告する】`intended.Keys` が空だと AddRange は何も足さず、
+            // 「実在しないプロジェクトへの空の承認」が黙って通る。それを残すと、後でその名前の
+            // プロジェクトが PackageReference ゼロで作られたときに「登録済み」として扱われ、
+            // 誰も承認の理由を書いていないまま表を通過する(この表を置いた意味が消える)
             if (project is null)
             {
-                stale.AddRange(intended.Keys.Select(id => $"{projectKey}: {id} (プロジェクトが見つかりません)"));
+                stale.Add($"{projectKey} (プロジェクトが見つかりません)");
+                stale.AddRange(intended.Keys.Select(id => $"{projectKey}: {id}"));
                 continue;
             }
 
@@ -208,6 +231,32 @@ public class ProductionDirectDependencyTests
             + "「今は存在しないパッケージへの事前承認」になり、後で同じ ID が直接参照へ昇格しても"
             + "この検査は何も言いません(fail-open)。");
     }
+
+    [Theory]
+    // 無条件の宣言は拾う(実在する tests プロジェクトがこの形)
+    [InlineData("<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>", true)]
+    // MSBuild の真偽値は大文字小文字を区別しないので綴りの揺れも拾う
+    [InlineData("<Project><PropertyGroup><IsTestProject> TRUE </IsTestProject></PropertyGroup></Project>", true)]
+    // 条件付きの PropertyGroup は「評価されうる」だけなので根拠にしない
+    // (Release では一度も評価されない宣言で本番プロジェクトが検査対象から外れるのを防ぐ)
+    [InlineData("<Project><PropertyGroup Condition=\"'$(Configuration)'=='Test'\">"
+        + "<IsTestProject>true</IsTestProject></PropertyGroup></Project>", false)]
+    // 要素そのものに条件が付いている形も同じ
+    [InlineData("<Project><PropertyGroup>"
+        + "<IsTestProject Condition=\"'$(X)'=='1'\">true</IsTestProject></PropertyGroup></Project>", false)]
+    // Choose / When の中はルート直下ではないので見ない(条件付きと同じ扱い)
+    [InlineData("<Project><Choose><When Condition=\"true\"><PropertyGroup>"
+        + "<IsTestProject>true</IsTestProject></PropertyGroup></When></Choose></Project>", false)]
+    // Target の中の宣言はビルド中にしか効かないので見ない
+    [InlineData("<Project><Target Name=\"X\"><PropertyGroup>"
+        + "<IsTestProject>true</IsTestProject></PropertyGroup></Target></Project>", false)]
+    // false と書いてあれば本番プロジェクト
+    [InlineData("<Project><PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup></Project>", false)]
+    // 宣言が無ければ本番プロジェクト(既定)
+    [InlineData("<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>", false)]
+    public void DeclaresIsTestProject_OnlyAcceptsUnconditionalDeclarations(string projectXml, bool expected) =>
+        // 合成した csproj を読ませ、両方向の判定を固定する
+        Assert.Equal(expected, DeclaresIsTestProject(XDocument.Parse(projectXml)));
 
     [Fact]
     public void EveryIntendedDependency_HasAReason()
@@ -275,7 +324,7 @@ public class ProductionDirectDependencyTests
     private static IReadOnlyList<string> FindProductionProjects()
     {
         // リポジトリ配下の csproj をすべて集め、ビルド生成物配下は除く
-        var projects = Directory.EnumerateFiles(RepositoryPaths.Root, "*.csproj", SearchOption.AllDirectories)
+        var projects = Directory.EnumerateFiles(RepositoryPaths.Root, ProjectFileSearchPattern, SearchOption.AllDirectories)
             .Where(path => !RepositoryPaths.IsBuildArtifact(path))
             // テストプロジェクトは本番出力に入らないので対象外
             .Where(path => !IsTestProject(path))
@@ -301,19 +350,28 @@ public class ProductionDirectDependencyTests
     // 条件を評価する気はないので、条件が付いていたら「宣言していない」側へ倒す。
     // 倒す向きの代償は「条件付きで宣言した本物のテストプロジェクトが本番として現れる」ことだが、
     // それは EveryProductionProject_IsListedInTheTable が両方の直し方を案内して止まる側の外れ方
-    private static bool IsTestProject(string projectPath) =>
+    private static bool IsTestProject(string projectPath) => DeclaresIsTestProject(LoadProject(projectPath));
+
+    /// <summary>
+    /// 読み込んだ csproj が <c>IsTestProject</c> を「無条件に」true と宣言しているかを返す。
+    /// <para><b>internal なのは、この判定を合成入力で固定するため。</b> 実在する 2 つの csproj は
+    /// どちらもルート直下・条件なしで宣言しているので、条件を見る部分を落としても実データでは
+    /// 結果が変わらず全件緑になる（この repo が別の判定について繰り返し記録している形）。
+    /// 挙動は <see cref="DeclaresIsTestProject_OnlyAcceptsUnconditionalDeclarations"/> が固定する。</para>
+    /// </summary>
+    internal static bool DeclaresIsTestProject(XDocument project) =>
         // ルート直下の PropertyGroup のうち、条件が付いていないものだけを見る
-        LoadProject(projectPath).Root?.Elements()
-            .Where(group => group.Name.LocalName == "PropertyGroup" && !HasCondition(group))
+        project.Root?.Elements()
+            .Where(group => group.Name.LocalName == PropertyGroupElement && !HasCondition(group))
             // その中の IsTestProject 要素(こちらにも条件が付いていないもの)を取り出す
             .SelectMany(group => group.Elements()
                 .Where(e => e.Name.LocalName == IsTestProjectProperty && !HasCondition(e)))
             // MSBuild の真偽値は大文字小文字を区別しない
-            .Any(e => string.Equals(e.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase)) ?? false;
+            .Any(e => string.Equals(e.Value.Trim(), MsBuildTrue, StringComparison.OrdinalIgnoreCase)) ?? false;
 
     // その要素に Condition 属性が付いているかを返す(名前空間が付いていても局所名で見れば外れない)
     private static bool HasCondition(XElement element) =>
-        element.Attributes().Any(a => a.Name.LocalName == "Condition");
+        element.Attributes().Any(a => a.Name.LocalName == ConditionAttribute);
 
     // csproj を XML として読む。読めないときは、どのファイルかを名指しして落とす。
     // 素の XmlException は行と位置しか持たずファイル名を含まないため、そのまま投げると
