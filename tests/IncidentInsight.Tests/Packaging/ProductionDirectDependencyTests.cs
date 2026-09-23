@@ -59,22 +59,7 @@ public class ProductionDirectDependencyTests
 
     // 走査でプロジェクトファイルを探すときのパターン。
     // 拡張子の綴りは RepositoryPaths が正本で、そこから組み立てて綴りを分けない
-    // (「走査で何を見つけるか」と「表のキーの組み立て」で別々に書くと、片方を変えた瞬間に
-    //  キーが一致しなくなり、「表に無いプロジェクト」という実際の原因とは違う失敗文言になる)
-    private const string ProjectFileSearchPattern = "*" + RepositoryPaths.ProjectFileExtension;
-
-    // 走査で降りないディレクトリ（理由付き）。
-    // 【なぜ要るか】ここはリポジトリ全体を再帰で歩く唯一の走査なので、自分たちが書いていない
-    // csproj を拾いうる。拾うと「本番プロジェクトとして表へ登録するか、自分の持ち物でない
-    // ファイルへ IsTestProject を書くか」という直しようの無い要求になる
-    // (この repo が繰り返し避けている形)。wwwroot/lib を「中を見ない」と登録しているのと同じ扱い
-    private static readonly IReadOnlyDictionary<string, string> DirectoriesNotScanned =
-        new Dictionary<string, string>(StringComparer.Ordinal)
-        {
-            ["node_modules"] = "npm の取得物。CompileTypeScript が npm ci で作るので存在しうるが、"
-                + "中の csproj は自分たちの持ち物ではない。",
-            [".git"] = "Git のメタデータ。作業ツリーのファイルではない。",
-        };
+    private static readonly string ProjectFileSearchPattern = "*" + RepositoryPaths.ProjectFileExtension;
 
     // MSBuild でプロパティをまとめる要素名
     private const string PropertyGroupElement = "PropertyGroup";
@@ -115,7 +100,7 @@ public class ProductionDirectDependencyTests
     // 「型の初期化子が例外をスローしました」しか出ない(RepositoryPaths 自身が同じ理由で Lazy にしている)
     private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>>
         IntendedProductionDependencies = new(() =>
-            // パスの綴りも NuGet の ID も、引き方は大文字小文字を区別しない
+            // 外側のキーはパスなので大文字小文字を区別する(内側のパッケージ ID は区別しない)
             new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
             {
                 [WebProjectKey] =
@@ -141,7 +126,8 @@ public class ProductionDirectDependencyTests
                     },
             });
 
-    // 本番プロジェクト(テストプロジェクトでないもの)の csproj。走査は 1 回で済むので結果を保持する
+    // 本番プロジェクト(ソリューションに登録されていて、テストプロジェクトでないもの)の csproj。
+    // 走査は 1 回で済むので結果を保持する
     private static readonly Lazy<IReadOnlyList<string>> ProductionProjects = new(FindProductionProjects);
 
     // Web プロジェクトの csproj を指す表のキー。csproj のパスは共有ヘルパーが持つ
@@ -247,36 +233,73 @@ public class ProductionDirectDependencyTests
     }
 
     [Fact]
-    public void ProductionProjects_CoverEveryNonTestProjectInTheSolution()
+    public void EveryProjectUnderSourceRoots_IsRegisteredInTheSolution()
     {
-        // 照合の手がかりは「ソリューションに登録されたプロジェクト」= CI が restore する範囲そのもの。
-        // 【なぜ導出と手がかりを分けるか】同じ手がかりで導出とガードを作ると、導出が狭まったときに
-        // ガードも一緒に狭まって「取りこぼしゼロ＝緑」で無力化される(CLAUDE.md が
-        // FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet について記録しているのと同じ理由)。
-        // 導出はファイルシステム、こちらはソリューションを読む
-        var listedInSolution = SolutionLayout.ProjectFiles
-            .Where(path => !IsTestProject(path))
-            .Select(KeyOf)
-            .OrderBy(key => key, StringComparer.Ordinal)
+        // 導出はソリューションを正本にしているので、照合はファイルシステムという別の手がかりで行う。
+        // 【なぜ登録漏れを問題にするか】ソリューションに無いプロジェクトは CI が restore / build / test
+        // しないが、Web プロジェクトから ProjectReference すれば publish には入る。つまり
+        // 「出荷されるのにこの guard の視界に無い」状態が作れてしまう
+        var registered = SolutionLayout.ProjectFiles.ToHashSet(StringComparer.Ordinal);
+        // src / tests の配下に実在する csproj を集める
+        var onDisk = ProjectFilesUnderSourceRoots()
+            .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
 
-        // 手がかりが 1 件も取れない状態では照合が空振りするので落とす(fail-closed)
-        Assert.True(listedInSolution.Count > 0,
-            $"{SolutionLayout.FileName} からテストプロジェクトでないプロジェクトを 1 つも読み取れませんでした。"
-            + "この状態では走査の網羅を照合できません。");
+        // 1 つも見つからないのは走査の起点がずれた状態で、照合が空振りする(fail-closed)
+        Assert.True(onDisk.Count > 0,
+            $"{RepositoryPaths.SrcRoot} と {RepositoryPaths.TestsRoot} の配下に csproj が"
+            + "1 つも見つかりませんでした。この状態ではソリューションへの登録漏れを照合できません。");
 
-        // 走査で見つけた本番プロジェクト(導出側)
-        var discovered = ProductionProjects.Value.Select(KeyOf).ToHashSet(StringComparer.Ordinal);
-        // ソリューションにあるのに走査で見つかっていないものを集める
-        var missed = listedInSolution.Where(key => !discovered.Contains(key)).ToList();
+        // 実在するのにソリューションへ登録されていないものを集める
+        var unregistered = onDisk.Where(path => !registered.Contains(path)).Select(KeyOf).ToList();
 
-        // 走査の起点や除外が狭まると、そのプロジェクトだけが黙って全検査から外れる
-        Assert.True(missed.Count == 0,
-            $"{SolutionLayout.FileName} に登録されている本番プロジェクトが、走査で見つかっていません:\n"
-            + string.Join("\n", missed.Select(key => $"  {key}"))
-            + $"\n\n{nameof(FindProductionProjects)} の走査の起点・除外("
-            + $"{nameof(DirectoriesNotScanned)})が狭まると、そのプロジェクトは"
-            + "この guard のすべての検査から黙って外れます(違反ゼロ＝緑になります)。");
+        // 登録漏れは「CI が触らないのに出荷されうる」状態なので落とす
+        Assert.True(unregistered.Count == 0,
+            $"{SolutionLayout.FileName} に登録されていない csproj があります:\n"
+            + string.Join("\n", unregistered.Select(key => $"  {key}"))
+            + $"\n\nこの guard は {SolutionLayout.FileName} を正本に本番プロジェクトを導出するので、"
+            + "登録されていないプロジェクトは直接参照の顔ぶれが誰にも照合されません"
+            + "(CI の restore / build / test もそのプロジェクトを触りません)。"
+            + "ソリューションへ登録してください。");
+    }
+
+    [Fact]
+    public void ProjectClassification_AgreesWithTheDirectoryLayout()
+    {
+        // 分類（IsTestProject）を置き場所の慣習と突き合わせる。
+        // 【なぜこれが要るか】導出も照合も IsTestProject を手がかりにすると、分類を取り違えた
+        // プロジェクト（テストプロジェクトの csproj をテンプレートにして src へ置き、旗を消し忘れる形）は
+        // 両方から同時に外れ、直接参照が 1 つも照合されないまま全件緑になる。
+        // 置き場所は分類とは独立な手がかりなので、取り違えをここで落とせる。
+        // 慣習を変えたときは黙って外れるのではなくこの検査が落ちる（安全な向き）
+        var mismatches = new List<string>();
+        // src / tests の配下の csproj を 1 つずつ見る
+        foreach (var project in ProjectFilesUnderSourceRoots())
+        {
+            // その csproj がテストプロジェクトを名乗っているか
+            var classifiedAsTest = IsTestProject(project);
+            // tests 配下に置かれているか
+            var underTests = project.StartsWith(RepositoryPaths.TestsRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+            // src 配下に置かれているか
+            var underSrc = project.StartsWith(RepositoryPaths.SrcRoot + Path.DirectorySeparatorChar, StringComparison.Ordinal);
+
+            // src 配下なのにテストプロジェクトを名乗っている（この guard から静かに外れる向き）
+            if (underSrc && classifiedAsTest)
+                mismatches.Add($"{KeyOf(project)} — src 配下なのに {IsTestProjectProperty} を true と"
+                    + "宣言しています。本番プロジェクトならこの宣言を外してください"
+                    + "(宣言が残っていると直接参照の顔ぶれが照合されません)。");
+            // tests 配下なのに本番プロジェクトとして扱われる（本番の表への登録を要求される向き）
+            if (underTests && !classifiedAsTest)
+                mismatches.Add($"{KeyOf(project)} — tests 配下なのに {IsTestProjectProperty} を"
+                    + "無条件に true と宣言していません。テストプロジェクトなら宣言してください"
+                    + "(宣言が無いと本番プロジェクトとして扱われ、テスト専用の依存を本番の表へ"
+                    + "登録するよう促されます)。");
+        }
+
+        // 分類と置き場所の食い違いは、どちらの向きでも guard の意味を壊す
+        Assert.True(mismatches.Count == 0,
+            "プロジェクトの分類が置き場所の慣習と食い違っています:\n"
+            + string.Join("\n", mismatches.OrderBy(line => line, StringComparer.Ordinal).Select(line => $"  {line}")));
     }
 
     [Theory]
@@ -356,52 +379,52 @@ public class ProductionDirectDependencyTests
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
 
-    // リポジトリ配下の csproj のうち、テストプロジェクトでないもの(= 本番プロジェクト)を探す。
+    // 本番プロジェクト(ソリューションに登録されていて、テストプロジェクトでないもの)を求める。
     //
-    // 【なぜソリューションではなくファイルシステムから導くか】EfCorePackageAlignmentTests は
-    // IncidentInsight.sln を手がかりにしている。同じ手がかりでこちらも導くと、ソリューションの
-    // 読み取りが狭まったときに両方の検査が同時に狭まる。手がかりを変えておけば、
-    // ソリューションへの登録漏れ(CI が restore しない本番プロジェクト)もここで現れる。
+    // 【なぜソリューションを正本にするか】CI が restore / build / test する範囲そのもので、
+    // 検査対象と「実際に出荷されうる範囲」が原理的に一致する。以前はリポジトリ全体を
+    // 再帰で走査していたが、それは EfCorePackageAlignmentTests.EveryProject_HasCommittedLockFile が
+    // 「node_modules やベンダーディレクトリに紛れ込んだ第三者の csproj まで対象になり、
+    // 開発者が直しようのないファイルを指して CI が赤くなる」と理由まで書いて避けている形だった
+    // (除外表で塞ぐと、今度は「登録するだけで黙らせられる口」になる)。
     //
     // 【なぜ「テストプロジェクトでない」で切るか】本番出力に入らないのはテストプロジェクトだけで、
-    // その宣言は csproj の IsTestProject として構造に現れる。ディレクトリ名や命名規則で切ると、
-    // 置き場所を変えた瞬間に対象から静かに外れる(この repo が繰り返し避けている形)。
+    // その宣言は csproj の IsTestProject として構造に現れる。
     //
-    // 【残っている境界】見えるのは csproj に無条件で書かれた IsTestProject だけで、
-    // Directory.Build.props へ括り出した宣言や SDK が暗黙に設定する分は見えない
-    // (どう切っているかと、なぜその向きへ倒すかは IsTestProject の説明が正本)。
-    // 見えない場合そのプロジェクトは本番として現れるので、
-    // EveryProductionProject_IsListedInTheTable の失敗文言が「表へ登録する」と
-    // 「csproj に IsTestProject を宣言する」の両方を案内する(誤って本番の表へ登録すると、
-    // まさにこの検査が防ぎたいテスト専用の依存を承認してしまうため)
+    // 【この導出が狭まっていないかは 2 つの検査が別の手がかりで照合する】
+    //   - ソリューションへの登録漏れ … EveryProjectUnderSourceRoots_IsRegisteredInTheSolution
+    //     (ファイルシステムを手がかりにする。登録されていないプロジェクトは CI が触らないが、
+    //      Web から ProjectReference すれば出荷はされるので、黙って視界の外に置けない)
+    //   - 分類の取り違え … ProjectClassification_AgreesWithTheDirectoryLayout
+    //     (置き場所の慣習を手がかりにする。IsTestProject を手がかりにすると、導出と照合が
+    //      同じ判定になり「取りこぼしゼロ＝緑」で無力化される)
     private static IReadOnlyList<string> FindProductionProjects()
     {
-        // リポジトリ配下の csproj をすべて集め、ビルド生成物配下は除く
-        var projects = Directory.EnumerateFiles(RepositoryPaths.Root, ProjectFileSearchPattern, SearchOption.AllDirectories)
-            .Where(path => !RepositoryPaths.IsBuildArtifact(path))
-            // 自分たちの持ち物でない木(取得物・VCS のメタデータ)は見ない
-            .Where(path => !IsInsideUnscannedDirectory(path))
-            // テストプロジェクトは本番出力に入らないので対象外
+        // ソリューションに登録されたプロジェクトから、テストプロジェクトを除く
+        var projects = SolutionLayout.ProjectFiles
             .Where(path => !IsTestProject(path))
             // 失敗メッセージの再現性のため並びを固定する
             .OrderBy(path => path, StringComparer.Ordinal)
             .ToList();
 
-        // 本番プロジェクトが 1 つも見つからないのは異常で、放置すると全検査が空振りする(fail-closed)
+        // 本番プロジェクトが 1 つも無いのは異常で、放置すると全検査が空振りする(fail-closed)
         Assert.True(projects.Count > 0,
-            "本番プロジェクト(テストプロジェクトでない csproj)がリポジトリ配下に 1 つも"
-            + "見つかりませんでした。走査の起点か csproj の置き場所がずれている可能性があります"
-            + $"(この状態では、この検査はすべて空振りします)。探した場所: {RepositoryPaths.Root}");
+            $"{SolutionLayout.FileName} に、テストプロジェクトでないプロジェクトが 1 つもありません。"
+            + "この状態では、この検査はすべて空振りします。");
         // 見つかった一覧を返す
         return projects;
     }
 
-    // そのパスが「走査で降りない」と決めたディレクトリの中にあるかを返す
-    private static bool IsInsideUnscannedDirectory(string path) =>
-        // リポジトリルートからの相対パスを区切りで分解し、除外対象の名前が含まれるかを見る
-        Path.GetRelativePath(RepositoryPaths.Root, path)
-            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .Any(DirectoriesNotScanned.ContainsKey);
+    // 自分たちが書いたプロジェクトを置く 2 つの階層(src / tests)を列挙する
+    private static IEnumerable<string> ProjectFilesUnderSourceRoots() =>
+        new[] { RepositoryPaths.SrcRoot, RepositoryPaths.TestsRoot }
+            // 階層が無い構成も考えられるので、実在するものだけを歩く
+            .Where(Directory.Exists)
+            // 各階層の配下から csproj を集める
+            .SelectMany(rootDirectory =>
+                Directory.EnumerateFiles(rootDirectory, ProjectFileSearchPattern, SearchOption.AllDirectories))
+            // ビルド生成物配下は対象外
+            .Where(path => !RepositoryPaths.IsBuildArtifact(path));
 
     // その csproj が IsTestProject を「無条件に」true として宣言しているかを返す。
     //

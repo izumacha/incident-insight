@@ -69,6 +69,15 @@ internal static class RepositoryPaths
     /// <summary>テストプロジェクトを収める階層(tests)の絶対パス。</summary>
     public static string TestsRoot => Path.Combine(Root, TestsDirectoryName);
 
+    /// <summary>
+    /// 本番のソースを収める階層（<c>src</c>）の絶対パス。
+    /// <para>自分たちが書いたプロジェクトはこの 2 つの階層（<c>src</c> / <c>tests</c>）の下にしか無い。
+    /// リポジトリ全体を走査すると <c>node_modules</c> やベンダーディレクトリの第三者の csproj まで
+    /// 拾ってしまうため（<c>EfCorePackageAlignmentTests.EveryProject_HasCommittedLockFile</c> が
+    /// 同じ理由を記録している）、走査はこの階層を起点にする。</para>
+    /// </summary>
+    public static string SrcRoot => Path.Combine(Root, SrcDirectoryName);
+
     /// <summary>運用者向けのセキュリティ文書（<c>docs/security.md</c>）。</summary>
     /// <remarks>
     /// <b>2 つのテストが読むのでここに置く（レビュー指摘）。</b> 文書は実装との

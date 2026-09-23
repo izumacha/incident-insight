@@ -184,9 +184,6 @@ public class EfCorePackageAlignmentTests
     // 「何が書いてあるか」だけでなく「他に何も書かれていないこと」まで固定する
     private static readonly string[] AllowedEfCoreGroupKeys = { AppliesToKey, PatternsKey };
 
-    // ソリューションに登録されたプロジェクトの絶対パス一覧(複数のテストで共有する)
-    private static readonly Lazy<IReadOnlyList<string>> SolutionProjects = new(ReadSolutionProjects);
-
     // 解決済みパッケージの一覧。ロックファイルの読み取りを複数のテストで共有する(§8)
     private static readonly Lazy<IReadOnlyList<ResolvedPackage>> ResolvedPackages = new(ReadAllResolvedPackages);
 
@@ -261,7 +258,7 @@ public class EfCorePackageAlignmentTests
         // 配列の掃除漏れが素通りする。かといって素の失敗文では、実際の原因が
         // ロックファイルの未コミットなのに「配列を直せ」と誤って案内してしまう。
         // 検査は必ず行い、案内する原因の方を状況で切り替える
-        var projectsWithoutLockFile = SolutionProjects.Value
+        var projectsWithoutLockFile = SolutionLayout.ProjectFiles
             .Where(project => !File.Exists(ProjectLockFile.PathFor(project)))
             .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
             .ToList();
@@ -503,7 +500,7 @@ public class EfCorePackageAlignmentTests
         // ベンダーディレクトリに紛れ込んだ第三者の csproj まで対象になり、開発者が直しようのない
         // ファイルを指して CI が赤くなる。CI が restore / build / test する範囲＝ソリューションを
         // 正本にすれば、検査対象と「ロックが強制される範囲」が原理的に一致する
-        var projects = SolutionProjects.Value;
+        var projects = SolutionLayout.ProjectFiles;
 
         // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
         var missing = projects
@@ -945,14 +942,16 @@ public class EfCorePackageAlignmentTests
         // 見つかった宣言を溜める入れ物(プロジェクトごとに別々に書かれうるので集めて突き合わせる)
         var declarations = new List<string>();
         // 各プロジェクトの隣にあるロックファイルを 1 つずつ読む
-        foreach (var projectFile in SolutionProjects.Value)
+        foreach (var projectFile in SolutionLayout.ProjectFiles)
         {
             // プロジェクトと同じディレクトリのロックファイルを指す
             var lockFile = ProjectLockFile.PathFor(projectFile);
             // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するので飛ばす
             if (!File.Exists(lockFile)) continue;
-            // ロックファイルを JSON として解析する
-            using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
+            // ロックファイルを JSON として解析する。
+            // 共有の入口を通すのは、壊れたロックファイルでファイル名の無い素の JsonException が
+            // 飛ぶのを避けるため(2 つあるロックファイルのどちらが壊れたのか分からなくなる)
+            using var document = ProjectLockFile.ReadDocument(lockFile);
             // 解決結果が無い書式変更は ReadAllResolvedPackages が報告するのでここでは飛ばす
             if (!document.RootElement.TryGetProperty(ProjectLockFile.DependenciesKey, out var frameworks)) continue;
             // ターゲットフレームワークごとに解決結果を見る
@@ -1148,8 +1147,10 @@ public class EfCorePackageAlignmentTests
 
     // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
     // 【なぜ共通化するか】「絶対パスを組み立てる → 存在を確かめる → 読む」の 3 行が
-    // ソリューション・dependabot.yml・散文の 3 箇所に現れ、失敗メッセージの言い回しだけが
-    // 少しずつ違っていた。ファイルが無いときの報告を 1 箇所に揃える(§6)
+    // 複数の読み手に現れ、失敗メッセージの言い回しだけが少しずつ違っていた。
+    // ファイルが無いときの報告を 1 箇所に揃える(§6)。
+    // 現在の呼び出し元は dependabot.yml と散文(CLAUDE.md)の 2 つ。
+    // ソリューションの読み取りは Helpers/SolutionLayout.cs へ移した(そちらが自分で報告する)
     private static string ReadRepositoryFile(string relativePath)
     {
         // リポジトリルートからの絶対パスを組み立てる
@@ -1205,7 +1206,7 @@ public class EfCorePackageAlignmentTests
         // 見つかったパッケージを溜める入れ物
         var packages = new List<ResolvedPackage>();
         // 各プロジェクトの隣にあるロックファイルを 1 つずつ読む
-        foreach (var projectFile in SolutionProjects.Value)
+        foreach (var projectFile in SolutionLayout.ProjectFiles)
         {
             // プロジェクトと同じディレクトリのロックファイルを指す
             var lockFile = ProjectLockFile.PathFor(projectFile);
@@ -1233,11 +1234,6 @@ public class EfCorePackageAlignmentTests
         // 集めた一覧を返す
         return packages;
     }
-
-    // ソリューションに登録されたプロジェクトの絶対パスを返す。
-    // 行の書式の解釈は共有ヘルパーが持つ(読み手ごとに書き写すと、書式の解釈がずれたときに
-    // 片方だけが取りこぼす)
-    private static IReadOnlyList<string> ReadSolutionProjects() => SolutionLayout.ProjectFiles;
 
     // dependabot.yml の nuget エコシステムに定義されたグループ(名前 → 設定)。
     //

@@ -85,7 +85,15 @@ internal static class ProjectLockFile
             + $"外れた可能性があります)。探した場所: {lockFilePath}");
 
         // ロックファイルを JSON として解析する(壊れていればファイル名を添えて落ちる)
-        using var document = Parse(lockFilePath, relativePath);
+        using var document = ReadDocument(lockFilePath);
+
+        // ルートがオブジェクトでないと下の TryGetProperty が素の InvalidOperationException を投げる
+        // (ファイル名を含まないので、2 つあるロックファイルのどちらが壊れているのか分からない)。
+        // 正当な形かどうかをここで見て、名指しして落とす(fail-closed)
+        Assert.True(document.RootElement.ValueKind == JsonValueKind.Object,
+            $"{relativePath} のルートが JSON オブジェクトではありません"
+            + $"(実際は {document.RootElement.ValueKind})。{FileName} の書式が変わったか、"
+            + "取り込みで壊れた可能性があります。");
 
         // 解決結果はターゲットフレームワークごとに入れ子になっている。
         // 書式が変わって読めないときは、素の例外ではなくどのファイルが読めなかったかを示して落とす
@@ -145,9 +153,17 @@ internal static class ProjectLockFile
         return entries;
     }
 
-    // ロックファイルを JSON として読む。読めないときは、どのファイルかを名指しして落とす
-    private static JsonDocument Parse(string lockFilePath, string relativePath)
+    /// <summary>
+    /// ロックファイルを <see cref="JsonDocument"/> として読む。読めないときは、どのファイルかを
+    /// 名指しして落とす（<c>JsonException</c> は行と位置しか持たずファイル名を含まないため）。
+    /// <para><b>internal なのは、入れ子を自分で降りる別の走査も同じ診断を使えるようにするため。</b>
+    /// 同じロックファイルの破損が、読み手によってはファイル名の無い素の例外になる状態を避ける。</para>
+    /// </summary>
+    /// <param name="lockFilePath">読むロックファイルの絶対パス。</param>
+    internal static JsonDocument ReadDocument(string lockFilePath)
     {
+        // 失敗メッセージ用に、リポジトリルートからの相対パスにしておく
+        var relativePath = Path.GetRelativePath(RepositoryPaths.Root, lockFilePath);
         try
         {
             // 通常はここで読み終わる

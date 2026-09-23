@@ -23,9 +23,11 @@ internal static class SolutionLayout
     internal const string FileName = "IncidentInsight.sln";
 
     // ソリューション行から csproj の相対パスを抜き出す正規表現。
-    // ソリューションフォルダ(仮想フォルダ)の行は .csproj を含まないため自然に除外される
-    private static readonly Regex ProjectLineRegex =
-        new(@"""(?<path>[^""]+\.csproj)""", RegexOptions.Compiled);
+    // ソリューションフォルダ(仮想フォルダ)の行は csproj を含まないため自然に除外される。
+    // 拡張子の綴りは RepositoryPaths が正本なので、ここでも書き写さずそこから組み立てる
+    private static readonly Regex ProjectLineRegex = new(
+        "\"(?<path>[^\"]+" + Regex.Escape(RepositoryPaths.ProjectFileExtension) + ")\"",
+        RegexOptions.Compiled);
 
     // 読み取りは 1 回で済むので結果を保持する(§8)。失敗時のメッセージをそのまま届けたいので Lazy
     private static readonly Lazy<IReadOnlyList<string>> Projects = new(ReadProjects);
