@@ -1,9 +1,12 @@
 // 走査と判定の共通処理を使う
 using IncidentInsight.Tests.Helpers;
+// 静的アセット用のキャッシュ指示の値の正本(定数)を読むために使う
+using IncidentInsight.Web.Middleware;
 // 綴りの表を名前ではなく宣言から導くために反射を使う
 using System.Reflection;
 // ResponseCacheAttribute / ResponseCacheLocation / ControllerBase を使う
 using Microsoft.AspNetCore.Mvc;
+using Xunit.Sdk;
 
 // 既存の Middleware 配下テストと同じ名前空間に置く
 namespace IncidentInsight.Tests.Middleware;
@@ -83,6 +86,202 @@ namespace IncidentInsight.Tests.Middleware;
 /// </remarks>
 public class ResponseCacheAttributePolicyTests
 {
+    /// <summary>
+    /// アプリ全体を走査するときの<b>引数一式</b>を、2 つの guard を通したうえで返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>2 か所目で共通化する（CLAUDE.md §6）。</b> 以前は「取り出して確かめる」数行を
+    /// 呼び出し側へ写していたが、3 つ目のアプリ全体の走査を足した人が guard を呼び忘れても
+    /// <b>何も報告されない</b>（guard の射程が「写すのを覚えていた人」だけになる）。</para>
+    ///
+    /// <para><b>ホスト集合とアセンブリを<u>まとめて</u>返す（レビュー指摘）。</b>
+    /// 片方だけを返す形にすると、もう一方（<c>ownAssembly</c>）を呼び出し側が自分で書くことになり、
+    /// <b>guard に渡した値と走査へ渡す値が食い違う</b>変異が書ける。1 つの組として返せば、
+    /// 確かめた引数がそのまま走査へ渡る。</para>
+    ///
+    /// <para><b>ここで導出し直すのは差し支えない</b> ——狭める／取り違える変異はこの中で起き、
+    /// 直後の 2 つの確認が捕まえる（呼び出し側が<b>このヘルパーを使わずに</b>自分で組み立てる形だけが
+    /// 残る境界で、それは以前から同じ）。</para>
+    /// </remarks>
+    /// <returns>走査へ渡すホスト集合と、「自分たちのアセンブリ」として渡す値。</returns>
+    private static (List<Type> Hosts, Assembly OwnAssembly) AppWideScanInputs()
+    {
+        // 走査へ渡すホスト集合を組み立てる
+        var hosts = AppControllerScan.CacheDirectiveHosts().ToList();
+
+        // 「自分たちのアセンブリ」として渡す値も、ここで 1 度だけ決める
+        var ownAssembly = AppControllerScan.WebAssembly;
+
+        // コントローラだけへ狭められていないこと(Razor Pages 等の宣言先が視界に入る)
+        AssertTheHostSetIsNotNarrowedToControllers(hosts);
+
+        // 走査がアプリへ届いていること(届いていなければ「違反 0 件」は無意味)
+        AssertTheAppWideScanIsLive(hosts, ownAssembly);
+
+        // 確かめた引数一式を返す(呼び出し側はこれをそのまま走査へ渡す)
+        return (hosts, ownAssembly);
+    }
+
+    /// <summary>
+    /// アプリ全体の走査が<b>実際にアプリへ届いている</b>ことを、その呼び出しの引数で確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（実測）。</b> アプリ全体を見る検査はどちらも「違反が 0 件」しか
+    /// 見ないので、走査が何も返さなくなると<b>無条件で緑</b>になる。実測でも、呼び出し側が渡す
+    /// <c>ownAssembly</c> を別のアセンブリへ差し替えると全件緑のまま通り、そのうえで PHI の
+    /// ダッシュボードへ <c>[ResponseCache(Duration = 300, Location = Any)]</c> を足しても緑だった。</para>
+    ///
+    /// <para><b>目印に「実在する宣言」を選ばない（レビュー指摘）。</b> 以前はこのアプリで唯一の
+    /// <c>[ResponseCache]</c> である <c>HomeController.Error()</c> を目印にしていたが、
+    /// <c>SecurityHeadersMiddleware</c> が既定で <c>no-store</c> を書くようになった以上あの宣言は
+    /// <b>冗長</b>で、消すのは自然な整理になる（他にそれを固定している検査も無い ——実測）。
+    /// 消した瞬間に無関係に見えるセキュリティ検査が 2 つ落ち、緑へ戻す道が
+    /// 「冗長な属性を production へ戻す」か「この検査を消す」しか無くなる。</para>
+    ///
+    /// <para><b>だから目印を「属性の種類に依存しないもの」にする。</b> 見るのは 2 点:
+    /// (a) 走査へ渡す <c>ownAssembly</c> が、<b>ホスト集合が実際に属するアセンブリ</b>であること、
+    /// (b) 同じ <c>(ホスト集合, ownAssembly)</c> へ<b>すべての属性に一致する述語</b>を通すと
+    /// <b>アクション側の宣言</b>が返ること。コントローラのアクションには <c>[HttpPost]</c> /
+    /// <c>[Authorize]</c> 等が必ず付いているので、この目印はキャッシュ指示を 1 件残らず消しても
+    /// <b>蒸発しない</b>。</para>
+    ///
+    /// <para><b>(b) だけでは <c>ownAssembly</c> の取り違えを拾えない（実測）。</b>
+    /// 継承の連なりは必ず <c>object</c> まで届くので、<c>typeof(string).Assembly</c> を渡すと
+    /// <b>その段でアクション側の走査が走り</b>、<c>object</c> 自身のメソッドに付いた属性が返る
+    /// ——「アクション側の宣言がある」は満たされてしまい、全件緑のまま通った。
+    /// 取り違えを直接見る (a) が要る。</para>
+    ///
+    /// <para><b>ホスト集合の絞りすぎはここでは拾えない</b>（狭めてもコントローラは残り、
+    /// アクション側の宣言も返るため）。そちらは
+    /// <see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が受け持つ。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    /// <param name="ownAssembly">走査へ実際に渡すアセンブリ。</param>
+    private static void AssertTheAppWideScanIsLive(IReadOnlyCollection<Type> hosts, Assembly ownAssembly)
+    {
+        // (a) 渡したアセンブリが、ホスト集合の出どころと同じであること。
+        // ここがずれるとアクション側の走査が自分たちの段で 1 つも走らない
+        Assert.True(
+            hosts.Count > 0 && hosts.All(type => type.Assembly == ownAssembly),
+            $"走査へ渡した ownAssembly({ownAssembly.GetName().Name}) が、"
+                + $"ホスト集合({hosts.Count} 件)の出どころと一致していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——ずれるとアクション側の宣言が"
+                + "1 つも拾われなくなり、「違反 0 件」の検査が無条件で緑になります。"
+                + Environment.NewLine
+                + $"{nameof(AppControllerScan.WebAssembly)} を渡しているか確かめてください。");
+
+        // (b) 属性の種類を問わない走査を、本番の検査とまったく同じ引数で通す。
+        // <b>Any で打ち切る（レビュー指摘）。</b> ToList にすると、判定に要らない表示名
+        // (総称の再帰と正規表現を含む)を 695 型ぶん組み立ててから 1 件の有無を見ることになる
+        var hasActionDeclaration = ResponseCachePolicy
+            .AttributeDeclarationsOn(hosts, ownAssembly, _ => true)
+            .Any(d => d.DeclaredOn.Contains('(', StringComparison.Ordinal));
+
+        // アクション側の宣言(名指しに引数の括弧が付く)が返っていること
+        Assert.True(
+            hasActionDeclaration,
+            "アプリ全体の走査が、アクションに付いた属性を 1 件も返していません。"
+                + "これは違反の検査ではなく「空振り検出」です ——走査が何も返さなくなると"
+                + "「違反 0 件」の検査は無条件で緑になるので、届いていること自体をここで確かめています。"
+                + Environment.NewLine
+                + "アプリのアクションには [HttpPost] / [Authorize] 等が必ず付いているので、"
+                + "ここが 0 件になるのは走査そのものの退行です。"
+                + Environment.NewLine
+                + "この検査を消して緑にしないこと ——消すと「走査が空でも緑」へ戻ります。");
+    }
+
+    /// <summary>
+    /// <b>本物の</b>出力キャッシュ属性を付けた、述語の生存確認用コントローラ。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>型名を合成せず、実型を参照する（レビュー指摘・実測）。</b> この検査の docstring は
+    /// 長らく「型を直接参照すると出力キャッシュのパッケージを自分で引き込む」としていたが、
+    /// <c>Microsoft.AspNetCore.OutputCaching</c> は共有フレームワーク
+    /// (<c>Microsoft.AspNetCore.App</c>) の一部で、<c>Microsoft.AspNetCore.Mvc.Testing</c> 経由で
+    /// <b>既に参照できている</b> ——パッケージの追加は 1 つも要らない（実測で確認）。</para>
+    ///
+    /// <para><b>実型を使うと綴りが framework に固定される。</b> 型名を合成すると、
+    /// 綴りの写しが（合成した型と <c>IsOutputCacheAttribute_MatchesOnlyOutputCaching</c> の
+    /// <c>[InlineData]</c> に）2 つでき、framework が改名・移動したときに
+    /// <b>どちらも緑のまま</b> <c>IsOutputCacheAttributeTypeName</c> だけが本物と一致しなくなる。
+    /// 実型を参照しておけば、その改名は<b>コンパイルエラー</b>として現れる。</para>
+    ///
+    /// <para><b>述語そのものは型名で照合したままにする</b>（名前空間を問わず
+    /// <c>OutputCacheAttribute</c> を拾う）。実型に縛ると、別の名前空間の同名の属性を
+    /// 取りこぼす。ここで固定したいのは「述語が<b>本物にも</b>当たること」。</para>
+    /// </remarks>
+    private sealed class OutputCacheProbeController : ControllerBase
+    {
+        /// <summary>本物の出力キャッシュ属性を持つ、何もしないアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [Microsoft.AspNetCore.OutputCaching.OutputCache]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>
+    /// アプリ全体の走査へ<b>実際に渡した述語</b>が、フィルタの間接指定まで見ていることを確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> 述語そのものの挙動は
+    /// <see cref="AttributeScan_FindsAResponseCacheFilterAppliedIndirectly"/> が固定しているが、
+    /// あちらは<b>述語を直接呼ぶ</b>ので、本番の呼び出しが別の述語へ差し替わっても気付かない。
+    /// 実測でも、アプリ全体の検査が渡す述語を <c>a =&gt; a is ResponseCacheAttribute</c> へ戻すと
+    /// <b>全件緑のまま通り</b>、そのうえで PHI を返すアクションへ
+    /// <c>[TypeFilter(typeof(LongCacheAttribute))]</c> を付けても緑だった
+    /// ——issue #281 の手当てがまるごと外れる。</para>
+    ///
+    /// <para><b>だから guard は「渡した値そのもの」を受け取る。</b> 中で述語を導出し直すと、
+    /// 呼び出し側の差し替えに届かない(<see cref="AssertTheHostSetIsNotNarrowedToControllers"/> が
+    /// ホスト集合について同じ形を取っているのと同じ理由)。</para>
+    /// </remarks>
+    /// <param name="matches">アプリ全体の走査へ実際に渡す述語。</param>
+    private static void AssertThePredicateFollowsFilterIndirection(Func<object, bool> matches) =>
+        // 間接指定で被せた指示を、その述語が「指示だ」と認めること
+        Assert.True(
+            matches(new TypeFilterAttribute(typeof(IndirectLongCacheAttribute))),
+            "アプリ全体の走査へ渡した述語が、フィルタの間接指定を指示として拾っていません。"
+                + "これは違反の検査ではなく「空振り検出」です ——[TypeFilter(typeof(...))] / "
+                + "[ServiceFilter(typeof(...))] で被せた [ResponseCache] は付いている属性が "
+                + "TypeFilterAttribute なので、型で照合する述語には一致せず、"
+                + "PHI を返すアクションが public,max-age=300 を名乗っても違反 0 件のまま緑になります。"
+                + Environment.NewLine
+                + $"{nameof(ResponseCachePolicy)}.{nameof(ResponseCachePolicy.IsResponseCacheDirective)} を"
+                + "渡しているか確かめてください(issue #281)。");
+
+    /// <summary>
+    /// アプリ全体を走査するときに渡すホスト集合が、<b>コントローラだけへ狭められていない</b>ことを
+    /// 確かめる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか（レビュー指摘・実測）。</b> ホスト集合を
+    /// <c>AppControllerScan.CacheDirectiveHosts()</c> から <c>AppControllerScan.Controllers()</c> へ
+    /// 差し替えると、この guard が無ければ全件緑のまま通る ——空振り検出
+    /// (<see cref="AssertTheAppWideScanIsLive"/>) が見るのは「アクション側の宣言が返ること」で、
+    /// <b>狭めた集合にもコントローラは残る</b>のでその条件は満たされてしまうため。狭めたあとは
+    /// <c>Pages/Export.cshtml.cs</c> に付けた <c>[ResponseCache(Duration = 300, Location = Any)]</c> が
+    /// <b>どの検査からも見えなくなる</b> ——<c>CacheDirectiveHosts</c> がまさに塞ぐために
+    /// 導入された穴が戻る。</para>
+    ///
+    /// <para><b>導出側の検査では代わりにならない。</b>
+    /// <c>CacheDirectiveHosts_CoverEveryConcreteTypeInTheAssembly</c> が見るのは<b>導出関数</b>で、
+    /// 呼び出し側がどちらを呼んでいるかは見ない。だからこの検査は
+    /// <b>渡された値そのもの</b>を受け取り、呼び出し側に紐づける
+    /// （共有ヘルパーの中で自分で導出し直すと、呼び出し側の差し替えに届かない）。</para>
+    /// </remarks>
+    /// <param name="hosts">走査へ実際に渡すホスト集合。</param>
+    private static void AssertTheHostSetIsNotNarrowedToControllers(IReadOnlyCollection<Type> hosts) =>
+        // コントローラでない具象型が 1 つでも含まれていること(Razor Pages 等の宣言先が視界に入る証拠)。
+        // 空振り検出と同じ理由で失敗文言を自分で書く(Assert.Contains の述語版にも文言を渡せない)
+        Assert.True(
+            hosts.Any(type => !typeof(ControllerBase).IsAssignableFrom(type)),
+            $"走査へ渡したホスト集合({hosts.Count} 件)が、{nameof(ControllerBase)} 派生だけになっています。"
+                + $"{nameof(AppControllerScan.CacheDirectiveHosts)} ではなく "
+                + $"{nameof(AppControllerScan.Controllers)} を渡していないか確かめてください。"
+                + Environment.NewLine
+                + "[ResponseCache] は PageModel(Razor Pages)にも同じように効くため、コントローラだけへ"
+                + "狭めると Pages/ に付けた宣言がどの検査からも見えなくなります"
+                + "（属性名にはヘッダー名の綴りが無いので、ソースを見る走査でも拾えません）。");
+
     // アプリ全体のアクションが名乗る [ResponseCache] は、すべてキャッシュ保存を禁じていること。
     //
     // これが落ちたときの直し方は 2 つだけ: (a) その属性へ NoStore = true を付ける、
@@ -92,15 +291,31 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void EveryResponseCacheAttributeInTheApp_SuppressesStorage()
     {
-        // アプリ全体の宣言を集める
+        // <b>述語は 1 つのローカルへ出す。</b> 下の guard が<b>同じ述語</b>を読むことで、
+        // 「この呼び出しが間接指定まで見ている」ことを固定できる ——別々に書くと、
+        // 呼び出し側だけを狭い述語(a is ResponseCacheAttribute)へ差し替える変異が通る
+        Func<object, bool> matches = ResponseCachePolicy.IsResponseCacheDirective;
+
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
+        var (hosts, ownAssembly) = AppWideScanInputs();
+
+        // この呼び出しが渡す述語が、フィルタの間接指定まで見ていること
+        AssertThePredicateFollowsFilterIndirection(matches);
+
+        // アプリ全体の宣言を集める。
+        // <b>述語は「応答キャッシュの指示として働くか」で引く(issue #281)。</b>
+        // 型で照合する述語(a is ResponseCacheAttribute)だと、[TypeFilter(typeof(LongCacheAttribute))]
+        // のような<b>フィルタの間接指定</b>が付いている属性は TypeFilterAttribute なので一致せず、
+        // PHI を返すアクションへ public,max-age=300 を付けても全件緑のまま通っていた
         var declarations = ResponseCachePolicy
-            .DeclarationsOn(AppControllerScan.CacheDirectiveHosts(), AppControllerScan.WebAssembly)
+            .AttributeDeclarationsOn(hosts, ownAssembly, matches)
             .ToList();
 
         // 規則に反している宣言だけを、失敗文言の形に整えて取り出す
         var violations = declarations
             // 各宣言について、名乗っている内容が保存を禁じているかを判定する
-            .Select(declaration => (declaration, verdict: ResponseCachePolicy.Judge(declaration.Attribute)))
+            // (間接指定は中身を読めないので fail-closed で落ちる)
+            .Select(declaration => (declaration, verdict: ResponseCachePolicy.JudgeDirective(declaration.Attribute)))
             // 禁じていないものだけを残す
             .Where(pair => !pair.verdict.IsSuppressing)
             // 「どこに付いた、どういう宣言が、なぜ駄目か」を 1 行にまとめる
@@ -182,9 +397,9 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(BothLevelsProbeController));
 
         // クラス側の宣言(Duration = 11)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 11);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 11 });
         // アクション側の宣言(Duration = 22)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 22);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 22 });
         // どこに付いていたかが失敗文言のために保持されていること
         Assert.All(declarations, d => Assert.False(string.IsNullOrWhiteSpace(d.DeclaredOn)));
     }
@@ -205,7 +420,7 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(InheritedActionProbeController));
 
         // 基底に宣言されたアクションの属性(Duration = 33)が拾えていること
-        Assert.Contains(declarations, d => d.Attribute.Duration == 33);
+        Assert.Contains(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 33 });
         // 「どこを直せばよいか」が分かるよう、宣言元の基底の名前で名指しされていること
         Assert.Contains(
             declarations,
@@ -225,7 +440,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondInheritedActionProbeController));
 
         // 基底のアクションに由来する宣言が 1 件だけであること
-        Assert.Single(declarations, d => d.Attribute.Duration == 33);
+        Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 33 });
     }
 
     /// <summary>
@@ -287,8 +502,13 @@ public class ResponseCacheAttributePolicyTests
                     // 既定値そのものの定数
                     ["public const string NoStoreCacheControl = \"no-store\";"] =
                         new IntendedWrite(1, "キャッシュ抑止の既定値そのもの。"),
-                    // 静的アセット用の指示の定数(値の正本)
-                    ["public const string StaticAssetCacheControl = \"public,max-age=3600\";"] =
+                    // 静的アセット用の指示の定数(値の正本)。
+                    // <b>値を書き写さず本体の定数から組み立てる(レビュー指摘)。</b> ここへ
+                    // "public,max-age=3600" と直書きすると、定数と docs/security.md に続く
+                    // <b>3 つ目の写し</b>になる。定数を動かしたとき、この表だけが取り残されて
+                    // 「表に無い行」「回数 0 回」「許可表の行が実在しない」が同時に出る ——
+                    // 隣のコメントが「原因が読み取れなくなる」として避けている形そのもの
+                    [$"public const string StaticAssetCacheControl = \"{SecurityHeadersMiddleware.StaticAssetCacheControl}\";"] =
                         new IntendedWrite(1, "静的アセット用の指示の値の正本。docs/security.md と突き合わせている。"),
                     // 既定値を入れるコールバック
                     ["private static readonly Func<object, Task> ApplyDefaultCacheControl = state =>"] =
@@ -480,22 +700,46 @@ public class ResponseCacheAttributePolicyTests
     // ヘッダーしか見ないので、クッキー認証のこのアプリでは「認証済みだから除外」も効かない。
     // 結果として職員 A の PHI 集計が職員 B へそのまま返る。
     //
-    // <b>属性は型名で照合する</b>(型を直接参照しない)。参照すると、この検査を通すために
-    // テストプロジェクトが出力キャッシュのパッケージへ依存することになり、
-    // 「禁じたい機能を自分で引き込む」形になる。
+    // <b>属性は型名で照合する</b>。理由は<b>依存ではない</b>（レビュー指摘・実測で訂正）——
+    // 長らく「型を直接参照するとテストプロジェクトが出力キャッシュのパッケージへ依存する」と
+    // 書いていたが、Microsoft.AspNetCore.OutputCaching は共有フレームワークの一部で、
+    // Microsoft.AspNetCore.Mvc.Testing 経由で<b>既に参照できている</b>（パッケージの追加は
+    // 1 つも要らない）。本当の理由は<b>名前空間を問わず拾いたい</b>ことで、実型に縛ると
+    // 別の名前空間の同名の属性を取りこぼす。
+    // 一方で<b>述語が本物に当たること</b>は実型で確かめる（下のプローブが実型を使う）。
     [Fact]
     public void NoActionEnablesServerSideOutputCaching()
     {
-        // 共有の走査へ「出力キャッシュの属性であること」を渡して宣言を集める
+        // <b>述語は 1 つのローカルへ出す。</b> 下のプローブが<b>同じ述語</b>を読むことで、
+        // 「述語が本物の [OutputCache] に当たる」ことを固定できる ——別々に書くと、
+        // 本番側の述語だけを壊す変異が通る
+        Func<object, bool> matches = IsOutputCacheAttribute;
+
+        // 走査へ渡す引数一式を、2 つの guard を通したうえで受け取る
         // (クラス側とアクション側の両方を読む・宣言元で名指しする・派生の数だけ並べない、
         //  という手当ては走査側が持っている。ここに書き写すと片方だけ古くなる)
+        var (hosts, ownAssembly) = AppWideScanInputs();
+
+        // 確かめた引数一式で、アプリ全体から出力キャッシュの宣言を集める
         var violations = ResponseCachePolicy
-            .AttributeDeclarationsOn(
-                AppControllerScan.CacheDirectiveHosts(),
-                AppControllerScan.WebAssembly,
-                IsOutputCacheAttribute)
+            .AttributeDeclarationsOn(hosts, ownAssembly, matches)
             .Select(d => d.DeclaredOn)
             .ToList();
+
+        // 述語が<b>本物の</b> [OutputCache] に当たること。アプリに [OutputCache] は
+        // 1 件も無いのが正しいので、違反 0 件だけでは「述語が壊れている」と区別が付かない
+        // ——プローブへ当てないと確かめようがない(「走査が届いているか」は上の guard が別に見る)
+        // <b>プローブには間接指定も含める（レビュー指摘）。</b> 本物の [OutputCache] だけだと、
+        // この呼び出しの述語を「間接指定を辿らない」形へ差し替えても通ってしまう
+        var probed = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OutputCacheProbeController), typeof(IndirectOutputCacheProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                matches)
+            .ToList();
+
+        // 直接の [OutputCache] と間接指定の両方が拾えること
+        Assert.Equal(2, probed.Count);
 
         // 違反が 1 件も無いことを、名指しの一覧付きで確認する
         Assert.True(
@@ -814,7 +1058,7 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("Microsoft.AspNetCore.Authorization.AuthorizeAttribute", false)]
     public void IsOutputCacheAttribute_MatchesOnlyOutputCaching(string typeFullName, bool expected)
     {
-        // 型名の末尾だけで判定していることを、合成した名前で確かめる
+        // 名前空間・入れ子・総称の個数を落とした<b>単純名</b>で判定していることを、合成した名前で確かめる
         Assert.Equal(expected, IsOutputCacheAttributeTypeName(typeFullName));
     }
 
@@ -865,20 +1109,100 @@ public class ResponseCacheAttributePolicyTests
         // 承認済みの表に無いものを集める
         var unapproved = FindUnapprovedStaticAssets(entries);
 
-        // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する
-        Assert.True(
-            unapproved.Count == 0,
-            "wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: "
-                + string.Join(", ", unapproved.Select(item => $"{item.RelativePath}({item.Cause})"))
-                + "。静的ファイル配信は wwwroot 配下のすべてに "
-                + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
-                + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
-                + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
-                + "認可を通すアクションから返してください。"
-                + $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
-                + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
-                + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
-                + "理由を添えて登録します。");
+        // 想定外の入れ物・資産が無いことを、名指しの一覧付きで確認する。
+        // <b>組み立ては落ちるときだけ（レビュー指摘）。</b> Assert.True の引数として渡すと
+        // 緑の走行でも毎回組み立てられ、「確認していないものがあります: 」という
+        // <b>事実と違う文言</b>を作ったうえで捨てる。しかも組み立ては fail-closed に
+        // 例外を投げうるので、成功経路に投げる処理を置くことになる
+        if (unapproved.Count > 0) Assert.Fail(UnapprovedStaticAssetsMessage(unapproved));
+    }
+
+    /// <summary>
+    /// 未承認だったものを名指しし、<b>その原因に合った直し方</b>を案内する文面を組み立てる。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>案内を原因で出し分ける理由。</b> 直し方は原因ごとに正反対になる。
+    /// 「表に無い」なら表へ足すのが正しいが、
+    /// <see cref="UnapprovedCause.MiscasedApprovedAsset"/>（綴りの大小だけが違う）で表へ足すと
+    /// <b>同じ資産を 2 度承認する</b>ことになり、正しくは名前のほうをそろえる。
+    /// 一律に「表へ足せ」と書くと、まさにこの検査が塞いだはずの
+    /// 「失敗文言が誤った直し方を案内する」形が残る（issue #270）。</para>
+    ///
+    /// <para><b>純粋関数にしてある理由。</b> 実在のツリーには違反が 1 件も無いので、
+    /// 呼び出し口からは案内の出し分けが一度も走らない ——
+    /// 出し分けを消しても全件緑のままになるため、合成入力で文面そのものを固定する
+    /// （このファイルが判定を純粋関数へ出しているのと同じ理由）。</para>
+    /// </remarks>
+    /// <param name="unapproved">承認されていなかったものの一覧。</param>
+    /// <returns>失敗文言。</returns>
+    private static string UnapprovedStaticAssetsMessage(
+        IReadOnlyList<UnapprovedStaticAsset> unapproved)
+    {
+        // 名指しの一覧(相対パスと、なぜ落ちたかの理由)。大小違いは承認表側の綴りも添える。
+        // <b>綴りの有無で分岐しない（レビュー指摘）。</b> 大小違いなのに綴りが無い 1 件を作ると、
+        // 案内は「表の綴りと実際の名前のどちらが正しいか確かめろ」と言うのに<b>表の綴りが
+        // どこにも出ない</b> ——従えない案内になる。原因で分岐し、欠けていれば落とす(§9 fail-closed)
+        var named = string.Join(", ", unapproved.Select(NameWithCause));
+
+        // なぜ wwwroot へ置くと危ないのかを、原因によらず共通で伝える
+        var message = $"wwwroot に、キャッシュ可能にしてよいと確認していないものがあります: {named}"
+            + "。静的ファイル配信は wwwroot 配下のすべてに "
+            + "public,max-age=3600 を名乗らせるため、ここへ置いたものは 1 行のコードも"
+            + "書かずにキャッシュ可能になります(共用端末のディスクにログアウト後も残ります)。"
+            + "PHI を含みうるもの(添付・エクスポート)は wwwroot の外に置き、"
+            + "認可を通すアクションから返してください。";
+
+        // 実際に落ちたものが必要とする直し方だけを、重複なく案内へ足す。
+        // <b>個別の if で分岐しない（レビュー指摘）。</b> 分岐を書き並べると、
+        // 新しい直し方を足したときにどの枝にも当たらず、<b>名指しだけされて
+        // 何をすればよいか 1 文字も書かれていない</b>失敗文言になる
+        // <b>並べる順は「先にこれを決めてから」と言う側が先（レビュー指摘・実測）。</b>
+        // 出現順に並べると、列挙の順しだいで「表へ登録します」が先に来て、
+        // その後ろに「先にこの入れ物の扱いを決めてから、残りを確認してください」が付く
+        // ——上から読んだ人は、先に決めろと言われる前に登録を済ませてしまう。
+        // しかも順は<b>ファイルシステムの列挙順</b>で決まるので安定しない
+        foreach (var repair in unapproved
+            .Select(item => RepairFor(item.Cause))
+            .Distinct()
+            .OrderBy(RepairAdviceOrder))
+        {
+            // <b>どの項目に掛かる案内かを先に書く（レビュー指摘）。</b> 1 つの失敗文言に
+            // 複数の案内が並ぶとき(中を見ない入れ物の中身がこぼれ出た場合がそう)、
+            // 一方は「表へ登録します」、もう一方は「登録して黙らせないでください」と
+            // <b>正反対のことを言う</b> ——どちらがどの項目の話かを書かないと、
+            // 上から読んだ人が最初の案内を全項目へ当ててしまう
+            // <b>見出しの並びも列挙順に任せない（レビュー指摘）。</b> 1 つの直し方を
+            // 共有する原因が同時に落ちると(UnapprovedDirectory と UnapprovedRootFile はどちらも
+            // 表への登録)、見出しの並びが `Directory.EnumerateFileSystemEntries` の順で決まり、
+            // CI と手元で失敗文言が変わる ——案内の並びを対応表へ移したのと同じ理由が、
+            // 見出し側にだけ適用されずに残っていた。enum の宣言順で並べて決め切る
+            var governed = unapproved
+                .Where(item => RepairFor(item.Cause) == repair)
+                .Select(item => item.Cause)
+                .Distinct()
+                .OrderBy(cause => cause)
+                .Select(CauseText);
+
+            // 案内の前に、その案内が掛かる理由の名前を並べる
+            message += $"【{string.Join("・", governed)}】について: ";
+
+            // 直し方ごとの案内を、足し忘れれば落ちる対応表から引く
+            message += RepairAdvice(repair);
+        }
+
+        // <b>共有の注意書きは最後に 1 度だけ出す（レビュー指摘）。</b> 綴りをそろえる案内と
+        // 中身を確かめる案内は同時に出うるので、案内ごとに足すと<b>同じ長い 1 文が 2 度</b>並ぶ。
+        // 読みにくいだけでなく、「重複を消す」変更で<b>片方の枝から黙って落ちる</b>
+        // ——このファイルは「一覧が空でも中身が安全とは限らない」を中身を確かめる枝で
+        // いちばん効く注意として書いており、落ちると残る境界をそのまま踏ませる
+        if (unapproved.Any(item => RepairCarriesContentsCaveat(RepairFor(item.Cause))))
+        {
+            // 掛かる案内があるときだけ、最後に 1 度添える
+            message += ContentsNotFullyListedCaveat;
+        }
+
+        // 組み立てた文面を返す
+        return message;
     }
 
     // 走査が「承認済みの入れ物の中へ実際に降りている」ことと、
@@ -963,7 +1287,9 @@ public class ResponseCacheAttributePolicyTests
             entries,
             approvedDirectories,
             approvedRootFiles,
-            approvedExtensions);
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false);
 
         // 落ちるのは 4 件で、入力の順に並ぶこと
         Assert.Equal(
@@ -971,10 +1297,10 @@ public class ResponseCacheAttributePolicyTests
             unapproved.Select(item => item.RelativePath).ToArray());
 
         // 入れ物・種類・直下の名前で理由が分かれていること(失敗文言が直し方を取り違えないため)
-        Assert.Equal(UnapprovedDirectoryCause, unapproved[0].Cause);
-        Assert.Equal(UnapprovedExtensionCause, unapproved[1].Cause);
-        Assert.Equal(UnapprovedExtensionCause, unapproved[2].Cause);
-        Assert.Equal(UnapprovedRootFileCause, unapproved[3].Cause);
+        Assert.Equal(UnapprovedCause.UnapprovedDirectory, unapproved[0].Cause);
+        Assert.Equal(UnapprovedCause.UnapprovedExtension, unapproved[1].Cause);
+        Assert.Equal(UnapprovedCause.UnapprovedExtension, unapproved[2].Cause);
+        Assert.Equal(UnapprovedCause.UnapprovedRootFile, unapproved[3].Cause);
     }
 
     // 承認済みだけの入力では 1 件も落とさないこと(「常に落とす」判定への退行を止める)。
@@ -1018,7 +1344,9 @@ public class ResponseCacheAttributePolicyTests
             entries,
             approvedDirectories,
             approvedRootFiles,
-            approvedExtensions));
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false));
     }
 
     // 「中を見ない入れ物か」の判定が、登録した入れ物だけに当たること。
@@ -1031,10 +1359,471 @@ public class ResponseCacheAttributePolicyTests
     [InlineData("lib/jquery", false)]
     // 綴りが前方一致するだけの別の入れ物(降りる)
     [InlineData("library", false)]
+    // 大小だけが違う綴り(<b>降りる</b>。承認表と違い、ここを大小無視にすると
+    // 大文字小文字を区別するファイルシステムで別の入れ物の中身が 1 件も列挙されず、
+    // 失敗文言が勧める「名前をそろえる」に従うと永久に隠れる。レビュー指摘)
+    [InlineData("LIB", false)]
     public void IsOpaqueStaticDirectory_MatchesOnlyRegisteredContainers(string relativePath, bool expected)
     {
         // 完全一致でのみ「中を見ない」と判断していることを確かめる
         Assert.Equal(expected, IsOpaqueStaticDirectory(relativePath));
+    }
+
+    // 綴りの大小だけが違う資産は、「未承認」ではなく<b>専用の理由</b>で報告されること。
+    //
+    // <b>なぜ要るのか（issue #270）。</b> 承認表を大小を区別して引くと、
+    // macOS / Windows で `favicon.ico` とまったく同じに配信される `FAVICON.ICO` が
+    // 「承認されていない直下のファイル」として報告され、失敗文言は「表へ足せ」と案内する ——
+    // それは<b>同じ資産を 2 度承認させる</b>誤った直し方。
+    // かといって大小を無視して素通しにすると、大文字小文字を<b>区別する</b>
+    // ファイルシステムでは `LIB` が本物の `lib` とは別の入れ物なのに承認を継ぐ。
+    // どちらへも倒れないよう、理由を分けて「名前のほうを直せ」と言えるようにしてある。
+    [Fact]
+    public void FindUnapprovedStaticAssets_SeparatesMiscasedAssetsFromUnapprovedOnes()
+    {
+        // 合成の承認表(綴りは小文字で登録する)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの入れ物
+            ["lib"] = "テスト用の承認済みの入れ物。",
+        };
+
+        // 合成の直下ファイル表
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの直下ファイル
+            ["favicon.ico"] = "テスト用の承認済みの直下ファイル。",
+        };
+
+        // 合成の拡張子表
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの種類
+            [".js"] = "テスト用の承認済みの種類。",
+        };
+
+        // 綴りをそろえたもの・大小だけ違うもの・本当に未承認のものを混ぜる
+        var entries = new[]
+        {
+            // 綴りまで一致する入れ物(通る)
+            new StaticAssetEntry("lib", IsDirectory: true),
+            // 大小だけが違う入れ物(専用の理由で落とす)
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // 綴りまで一致する直下ファイル(通る)
+            new StaticAssetEntry("favicon.ico", IsDirectory: false),
+            // 大小だけが違う直下ファイル(専用の理由で落とす)
+            new StaticAssetEntry("FAVICON.ICO", IsDirectory: false),
+            // 種類は分類なので、大小が違っても通る(site.JS は同じスクリプト)
+            new StaticAssetEntry("lib/site.JS", IsDirectory: false),
+            // 本当に承認されていない入れ物(こちらは「表へ足す」が正しい直し方)
+            new StaticAssetEntry("exports", IsDirectory: true),
+        };
+
+        // 合成の表で判定する
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions,
+            // この合成入力には「中を見ない入れ物」が無いことを明示する
+            _ => false);
+
+        // 落ちるのは 3 件で、入力の順に並ぶこと
+        Assert.Equal(
+            new[] { "LIB", "FAVICON.ICO", "exports" },
+            unapproved.Select(item => item.RelativePath).ToArray());
+
+        // 大小違いの 2 件は、未承認とは別の理由で報告されること(直し方が違うため)
+        Assert.Equal(UnapprovedCause.MiscasedApprovedAsset, unapproved[0].Cause);
+        Assert.Equal(UnapprovedCause.MiscasedApprovedAsset, unapproved[1].Cause);
+
+        // 本当に未承認の 1 件は、これまでどおりの理由であること
+        Assert.Equal(UnapprovedCause.UnapprovedDirectory, unapproved[2].Cause);
+    }
+
+    // そろえる先が「中を見ない入れ物」かどうかで、<b>原因が分かれる</b>こと。
+    //
+    // <b>なぜ要るのか（変異で実測）。</b> 原因を分ける判定を潰しても、合成入力で文面だけを
+    // 見ているテストは通り続けた ——判定が死んだまま、`wwwroot/LIB/patients.csv` を
+    // `lib/` へ移す手順を案内する状態に戻る（検査は緑、ファイルは配られ続ける）。
+    // 実在のツリーには違反が 1 件も無いので、ここも合成入力で判定そのものを固定する。
+    [Fact]
+    public void FindUnapprovedStaticAssets_FlagsAMiscasedOpaqueContainerSeparately()
+    {
+        // 合成の承認表(中を見ない入れ物 1 つと、普通の入れ物 1 つ)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 中を見ない入れ物として下で扱うもの
+            ["lib"] = "テスト用の、中を見ない入れ物。",
+            // 中まで見る普通の入れ物
+            ["css"] = "テスト用の、中まで見る入れ物。",
+        };
+
+        // 合成の直下ファイル表(この検査では使わないので空)
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 合成の拡張子表(この検査では使わないので空)
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 大小だけが違う入れ物を 2 つ(そろえる先が中を見ない側と、そうでない側)
+        var entries = new[]
+        {
+            // そろえる先が「中を見ない入れ物」(危ない直し方になる)
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // そろえる先が中まで見る入れ物(こちらは普通の大小違い)
+            new StaticAssetEntry("CSS", IsDirectory: true),
+        };
+
+        // 「lib だけが中を見ない入れ物」という合成の判定を渡す
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions,
+            name => string.Equals(name, "lib", StringComparison.Ordinal));
+
+        // 2 件とも落ちること
+        Assert.Equal(2, unapproved.Count);
+
+        // そろえる先が中を見ない入れ物のほうは、専用の原因になること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, unapproved[0].Cause);
+
+        // そろえる先が中まで見る入れ物なら、これまでどおりの原因であること
+        Assert.Equal(UnapprovedCause.MiscasedApprovedAsset, unapproved[1].Cause);
+
+        // どちらも承認表側の綴りを添えていること(案内が比べる相手を示せる)
+        Assert.Equal("lib", unapproved[0].ApprovedSpelling);
+
+        // 中まで見る側も同じく綴りを添えていること
+        Assert.Equal("css", unapproved[1].ApprovedSpelling);
+    }
+
+    // 綴り違いの「中を見ない入れ物」から<b>こぼれ出た中身</b>が、
+    // 「表へ登録する」の案内を受けないこと。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> 綴りが違う入れ物は「中を見ない」登録に当たらない
+    // ぶん中まで走査されるので、その中身は `UnapprovedExtension` / `UnapprovedDirectory` として
+    // 並ぶ。ところが失敗文言は原因ごとの見出しで案内を出し分けるので、中身の見出しの下には
+    // <b>「ApprovedStaticFileExtensions へ理由を添えて登録します」</b>が付く
+    // ——同じ文言の別の見出しが「並んだ中身を登録して黙らせないでください」と書いているのに、
+    // である。従うと `.csv` の承認は<b>すべての入れ物に効き</b>、以後
+    // `wwwroot/js/patient-export.csv` が黙って素通りする（`wwwroot/LIB/patients.csv` を
+    // 実際に置いて再現した）。中身の原因を分けて、入れ物と同じ直し方へ寄せる。
+    [Fact]
+    public void FindUnapprovedStaticAssets_DoesNotTellYouToRegisterContentsOfAMiscasedOpaqueContainer()
+    {
+        // 合成の承認表(中を見ない入れ物 1 つ)
+        var approvedDirectories = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 中を見ない入れ物として下で扱うもの
+            ["lib"] = "テスト用の、中を見ない入れ物。",
+        };
+
+        // 合成の直下ファイル表(この検査では使わないので空)
+        var approvedRootFiles = new Dictionary<string, string>(StringComparer.Ordinal);
+
+        // 合成の拡張子表(承認済みの種類が 1 つだけある)
+        var approvedExtensions = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 検査用の承認済みの種類
+            [".js"] = "テスト用の承認済みの種類。",
+        };
+
+        // 綴り違いの入れ物と、その中から出てくるもの・別の入れ物の中のものを混ぜる
+        var entries = new[]
+        {
+            // 綴りだけが違う「中を見ない入れ物」(ここが出所)
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // その中のファイル(そのままだと「種類を表へ登録」と案内されていた)
+            new StaticAssetEntry("LIB/patients.csv", IsDirectory: false),
+            // その中の入れ物(そのままだと「入れ物を表へ登録」と案内されていた)
+            new StaticAssetEntry("LIB/exports", IsDirectory: true),
+            // <b>名前が前方一致するだけの別の入れ物</b>(中身を巻き込まないことを見る)
+            new StaticAssetEntry("LIB2", IsDirectory: true),
+            // その中のファイルは、これまでどおりの原因のままであること
+            new StaticAssetEntry("LIB2/report.csv", IsDirectory: false),
+            // <b>綴りの大小だけが違うもう 1 つの入れ物</b>(出所の取り違えを見る)
+            new StaticAssetEntry("Lib", IsDirectory: true),
+            // その中のファイル(LIB の中身として数えられてはいけない)
+            new StaticAssetEntry("Lib/other.csv", IsDirectory: false),
+        };
+
+        // 「lib だけが中を見ない入れ物」という合成の判定を渡す
+        var unapproved = FindUnapprovedStaticAssets(
+            entries,
+            approvedDirectories,
+            approvedRootFiles,
+            approvedExtensions,
+            name => string.Equals(name, "lib", StringComparison.Ordinal));
+
+        // 入力の順を保ったまま 7 件とも落ちること
+        Assert.Equal(
+            new[]
+            {
+                "LIB", "LIB/patients.csv", "LIB/exports", "LIB2", "LIB2/report.csv",
+                "Lib", "Lib/other.csv",
+            },
+            unapproved.Select(item => item.RelativePath).ToArray());
+
+        // 出所の入れ物は、これまでどおり専用の原因であること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, unapproved[0].Cause);
+
+        // 中のファイルは「種類が未承認」ではなく、中身としての原因になること
+        Assert.Equal(UnapprovedCause.ContentsOfMiscasedOpaqueContainer, unapproved[1].Cause);
+
+        // 中の入れ物も同じ(「入れ物を表へ登録」と案内させない)
+        Assert.Equal(UnapprovedCause.ContentsOfMiscasedOpaqueContainer, unapproved[2].Cause);
+
+        // 名前が前方一致するだけの別の入れ物は、巻き込まれないこと
+        Assert.Equal(UnapprovedCause.UnapprovedDirectory, unapproved[3].Cause);
+
+        // その中身も、これまでどおりの原因のままであること
+        Assert.Equal(UnapprovedCause.UnapprovedExtension, unapproved[4].Cause);
+
+        // <b>綴りの大小だけが違うもう 1 つの入れ物</b>も、それ自身として報告されること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, unapproved[5].Cause);
+
+        // その中身は、自分の入れ物の中身として数えられること
+        Assert.Equal(UnapprovedCause.ContentsOfMiscasedOpaqueContainer, unapproved[6].Cause);
+
+        // <b>出所を取り違えていないこと（レビュー指摘）。</b> 突き合わせを大小無視へ緩めると、
+        // 大文字小文字を区別するファイルシステムで<b>別の入れ物</b>である Lib の中身が
+        // LIB の中身として数えられ、失敗文言が<b>決めるべき入れ物を取り違えて名指しする</b>
+        // ——このファイルが塞ぎ続けている「失敗文言が違うものを名指しする」形。
+        // 名指しの綴りで、どちらの入れ物の中身かが読み取れることを確かめる
+        Assert.StartsWith("Lib/", unapproved[6].RelativePath, StringComparison.Ordinal);
+    }
+
+    // 上の付け替えが<b>失敗文言まで届いている</b>こと（相反する案内が同居しないこと）。
+    //
+    // <b>原因の付け替えだけでは足りない</b> ——見出しと案内の組み立ては別の関数なので、
+    // 原因を分けても案内側の対応表が `RegisterInTable` を指していれば、
+    // 文言は元のまま「登録してください」と言い続ける。実際に運用者が読むのは文言なので、
+    // そちらで確かめる（このファイルが「案内まで届いて初めて効く」と繰り返している形）。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_NeverTellsYouToRegisterSpilledContents()
+    {
+        // 出所の入れ物と、そこからこぼれ出た中身を並べて文言を組み立てる
+        var message = UnapprovedStaticAssetsMessage(
+            [
+                // 綴り違いの「中を見ない入れ物」(承認表側の綴りを添える)
+                new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer, "lib"),
+                // その中から出てきたファイル
+                new UnapprovedStaticAsset(
+                    "LIB/patients.csv",
+                    UnapprovedCause.ContentsOfMiscasedOpaqueContainer),
+            ]);
+
+        // こぼれ出た中身が名指しされること(隠さない)
+        Assert.Contains("LIB/patients.csv", message, StringComparison.Ordinal);
+
+        // 「表へ登録します」の案内が 1 つも混ざらないこと
+        // (種別の登録はすべての入れ物に効くので、混ざると検出網が一斉に広がる)
+        Assert.DoesNotContain("理由を添えて登録します", message, StringComparison.Ordinal);
+
+        // 代わりに、そろえる前に中身を確かめる案内が出ていること
+        Assert.Contains("そろえる前に", message, StringComparison.Ordinal);
+    }
+
+    // 実在の入口が、<b>実在の「中を見ない入れ物」の表</b>を判定へ渡していること。
+    //
+    // <b>何を守っているか。</b> 判定を渡すこと自体はコンパイラが強制する（既定値を持たせて
+    // いない）が、<b>何を渡すか</b>は強制できない ——実在の入口が
+    // `IsOpaqueStaticDirectory` ではなく `_ => false` を渡す差分は、合成入力だけを見る
+    // 上の検査では緑のまま通り、`wwwroot/LIB` は「ただ綴りをそろえてください」という
+    // 危ない案内へ静かに戻る。ここはその 1 点だけを見る。
+    [Fact]
+    public void FindUnapprovedStaticAssets_PassesTheRealOpaqueTableThrough()
+    {
+        // 実在の「中を見ない入れ物」(lib)と大小だけが違う入れ物を 1 つ渡す
+        var unapproved = FindUnapprovedStaticAssets([new StaticAssetEntry("LIB", IsDirectory: true)]);
+
+        // 1 件だけ落ちること
+        var flagged = Assert.Single(unapproved);
+
+        // 実在の表を見ているので、専用の原因になること
+        Assert.Equal(UnapprovedCause.MiscasedOpaqueContainer, flagged.Cause);
+    }
+
+    // 判定が<b>表の比較器に左右されない</b>こと。
+    //
+    // <b>issue #270 の本体はここ。</b> 表ごとに `Ordinal` と `OrdinalIgnoreCase` が
+    // 混在していたため、同じ入力でも表の作り方で答えが変わっていた。
+    // 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>ので、
+    // 引き方そのものを比較器から切り離してある（それをここで固定する）。
+    [Fact]
+    public void FindUnapprovedStaticAssets_GivesTheSameAnswerWhicheverComparerTheTablesUse()
+    {
+        // 同じ中身を、比較器だけ変えて 2 通り作る関数
+        static (Dictionary<string, string> Directories,
+            Dictionary<string, string> RootFiles,
+            Dictionary<string, string> Extensions) Tables(StringComparer comparer) =>
+            (
+                // 承認済みの入れ物を 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { ["lib"] = "テスト用の承認済みの入れ物。" },
+                // 承認済みの直下ファイルを 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { ["favicon.ico"] = "テスト用の直下ファイル。" },
+                // 承認済みの種類を 1 つだけ持つ表
+                new Dictionary<string, string>(comparer) { [".js"] = "テスト用の承認済みの種類。" });
+
+        // 大小がそろったもの・違うもの・未承認のものを混ぜた入力
+        var entries = new[]
+        {
+            // 綴りまで一致する入れ物
+            new StaticAssetEntry("lib", IsDirectory: true),
+            // 大小だけが違う入れ物
+            new StaticAssetEntry("LIB", IsDirectory: true),
+            // 大小だけが違う直下ファイル
+            new StaticAssetEntry("FAVICON.ICO", IsDirectory: false),
+            // 大小だけが違う種類
+            new StaticAssetEntry("lib/site.JS", IsDirectory: false),
+        };
+
+        // 区別する比較器で作った表で判定する
+        var strict = Tables(StringComparer.Ordinal);
+
+        // 無視する比較器で作った表でも判定する
+        var lenient = Tables(StringComparer.OrdinalIgnoreCase);
+
+        // 区別する表での判定結果を取り出す
+        var strictResult = FindUnapprovedStaticAssets(
+            entries, strict.Directories, strict.RootFiles, strict.Extensions, _ => false);
+
+        // 無視する表での判定結果も取り出す
+        var lenientResult = FindUnapprovedStaticAssets(
+            entries, lenient.Directories, lenient.RootFiles, lenient.Extensions, _ => false);
+
+        // <b>空振り検出（レビュー指摘）。</b> 「2 つが等しい」だけを見ると、判定が常に空を
+        // 返すようになっても等しいまま通る ——この入力は必ず違反を生むので、それを確かめる
+        Assert.NotEmpty(strictResult);
+
+        // どちらの表でも、落ちる一覧と理由が一字一句同じであること
+        Assert.Equal(strictResult, lenientResult);
+    }
+
+    // 失敗文言が、<b>その原因に合った直し方</b>だけを案内すること。
+    //
+    // <b>なぜ要るのか（自己レビューで発見）。</b> 理由を分けても、失敗文言が一律に
+    // 「表へ足せ」と書いたままでは、綴りの大小が違うだけの資産について
+    // <b>同じ資産を 2 度承認させる</b>誤った直し方を案内し続ける ——
+    // issue #270 が名指しした defect がそのまま残る。
+    //
+    // <b>かといって「名前を直せ」とも決め打たない（レビュー指摘）。</b> 名前が外部で
+    // 決まっている資産では表のほうを直すのが正しく、決め打つと登録も改名もできない
+    // <b>行き止まり</b>になる。両方の綴りを見せて人に選ばせていることまで固定する。
+    //
+    // 実在のツリーには違反が 1 件も無いので、出し分けは合成入力でしか通らない。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_GivesTheRepairThatMatchesTheCause()
+    {
+        // 綴りの大小だけが違うものだけが落ちた場合の文面
+        var miscasedOnly = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedApprovedAsset, "lib")]);
+
+        // 表へ新しい行を足さないよう案内すること(同じ資産を 2 度承認させないため)
+        Assert.Contains("表へ新しい行を足さず", miscasedOnly, StringComparison.Ordinal);
+
+        // どちらが正しいかは決め打たず、確かめてそろえるよう案内すること
+        Assert.Contains("どちらが正しいかを確かめて", miscasedOnly, StringComparison.Ordinal);
+
+        // 判断できるよう、承認表側の綴りも見せること
+        Assert.Contains("表の綴りは lib", miscasedOnly, StringComparison.Ordinal);
+
+        // 表へ登録する案内は<b>出さない</b>こと
+        Assert.DoesNotContain(nameof(ApprovedStaticDirectories), miscasedOnly, StringComparison.Ordinal);
+
+        // 本当に未承認のものだけが落ちた場合の文面
+        var unapprovedOnly = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory)]);
+
+        // 表へ登録するよう案内すること
+        Assert.Contains(nameof(ApprovedStaticDirectories), unapprovedOnly, StringComparison.Ordinal);
+
+        // 綴りをそろえる案内は出さない(この原因では直し方が違う)
+        Assert.DoesNotContain("どちらが正しいかを確かめて", unapprovedOnly, StringComparison.Ordinal);
+
+        // 両方が混ざった場合は、<b>どちらの案内も</b>出ること
+        var both = UnapprovedStaticAssetsMessage(
+        [
+            // 表に無いもの(表へ足すのが正しい)
+            new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory),
+            // 大小だけが違うもの(どちらかの綴りへそろえるのが正しい)
+            new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedApprovedAsset, "lib"),
+        ]);
+
+        // 表へ登録する案内が出ること
+        Assert.Contains(nameof(ApprovedStaticDirectories), both, StringComparison.Ordinal);
+
+        // 綴りをそろえる案内も出ること
+        Assert.Contains("どちらが正しいかを確かめて", both, StringComparison.Ordinal);
+
+        // 入れ物の中身の扱いを説明しつつ、<b>並ばないものがある</b>ことまで書くこと。
+        // 「中身も並びます」とだけ書くと、並んでいない＝確認済みと読まれ、
+        // 承認済みの拡張子を名乗る PHI(このファイルが「残る境界」として記録している形)を
+        // 見落としたまま綴りをそろえることになる
+        Assert.Contains("承認済みの種類のファイルは並びません", both, StringComparison.Ordinal);
+
+        // <b>どの項目に掛かる案内かが書かれていること。</b> 複数の案内が並ぶとき、
+        // 一方は「表へ登録します」もう一方は「登録して黙らせないでください」と正反対を言う ——
+        // 見出しが無いと、上から読んだ人が最初の案内を全項目へ当ててしまう
+        Assert.Contains($"【{CauseText(UnapprovedCause.UnapprovedDirectory)}】について:", both, StringComparison.Ordinal);
+
+        // 大小違いの側にも、それ用の見出しが付くこと
+        Assert.Contains(
+            $"【{CauseText(UnapprovedCause.MiscasedApprovedAsset)}】について:",
+            both,
+            StringComparison.Ordinal);
+
+        // <b>そろえる先が「中を見ない入れ物」のときは、別の案内が出ること（レビュー指摘・実測）。</b>
+        // 同じ「そろえてください」を出すと、`wwwroot/LIB/patients.csv` を `lib/` へ移す手順を
+        // 教えることになり、検査は緑になるのにそのファイルは配られ続ける
+        // ——失敗文言が PHI を隠す手順を案内する形そのもの
+        var opaqueTarget = UnapprovedStaticAssetsMessage(
+            [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer, "lib")]);
+
+        // そろえる前に中身を確かめるよう案内すること
+        Assert.Contains("そろえる前に", opaqueTarget, StringComparison.Ordinal);
+
+        // 「そろえれば片付く」とは読めないこと(そろえると検査から外れることを明示する)
+        Assert.Contains("検査の対象から外れ", opaqueTarget, StringComparison.Ordinal);
+
+        // こちらでも「表へ登録してください」という案内は出さないこと
+        Assert.DoesNotContain("理由を添えて登録します", opaqueTarget, StringComparison.Ordinal);
+
+        // <b>中身が一覧に全部は並ばない注意が、この枝にも付くこと（レビュー指摘・実測）。</b>
+        // 共有の定数にしたのに、こちらの呼び出しを落としても全件緑で通っていた ——
+        // 案内が「中身を確かめてから」なのに、一覧が空でも安全とは限らないことが
+        // <b>いちばん効く枝</b>で抜け落ちる
+        Assert.Contains("承認済みの種類のファイルは並びません", opaqueTarget, StringComparison.Ordinal);
+
+        // 逆に、こぼれ出た中身を登録して黙らせないよう<b>止める</b>こと。
+        // 止めないと、綴りをそろえる判断をしないまま CDN の取得物の種類が
+        // 種別の表へ入り、その登録は<b>すべての入れ物に効く</b>(検出網が一斉に広がる)
+        Assert.Contains("登録して黙らせないでください", opaqueTarget, StringComparison.Ordinal);
+
+        // どの文面でも、落ちたものが名指しされていること(原因の出し分けで一覧を落とさない)
+        Assert.Contains("LIB", both, StringComparison.Ordinal);
+
+        // <b>大小違いなのに比べる相手が無い 1 件は落とすこと（レビュー指摘）。</b>
+        // 黙って綴り抜きで並べると、案内だけが「どちらが正しいか確かめろ」と言い続け、
+        // 読み手は比べる相手を示されないまま取り残される(従えない案内＝この変更が無くす形)
+        var missingSpelling = Assert.Throws<NotSupportedException>(() =>
+            UnapprovedStaticAssetsMessage(
+                [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedApprovedAsset)]));
+
+        // 何が足りないのかが分かる文言であること
+        Assert.Contains("承認表側の綴り", missingSpelling.Message, StringComparison.Ordinal);
+
+        // <b>そろえる先が中を見ない入れ物の側も同じであること（レビュー指摘・実測）。</b>
+        // 片方しか固定していないと、こちらの原因だけ「綴りは要らない」へ変えても
+        // 全件緑で通り、案内は「中身を確かめてから」と言うのに<b>どの入れ物へそろえるのかが
+        // どこにも出ない</b>状態になる
+        var opaqueMissingSpelling = Assert.Throws<NotSupportedException>(() =>
+            UnapprovedStaticAssetsMessage(
+                [new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer)]));
+
+        // こちらも何が足りないのかが分かる文言であること
+        Assert.Contains("承認表側の綴り", opaqueMissingSpelling.Message, StringComparison.Ordinal);
     }
 
     // 「中を見ない」入れ物は、承認済みの入れ物でもあること。
@@ -1044,9 +1833,14 @@ public class ResponseCacheAttributePolicyTests
     [Fact]
     public void OpaqueStaticDirectories_AreAlsoApproved()
     {
-        // 承認表に載っていない「中を見ない入れ物」を集める
+        // 承認表に載っていない「中を見ない入れ物」を集める。
+        // <b>大小を無視して引かない（レビュー指摘）。</b> IsOpaqueStaticDirectory は完全一致で
+        // 判断するので、2 つの表が `Lib` と `lib` のように食い違っていると、
+        // 「中を見ない」と登録したつもりの入れ物が承認表側では別物として扱われる。
+        // 大小を無視して引くとこの食い違いが素通りし、しかも失敗文言が勧める
+        // 「入れ物の綴りをそろえる」に従うと今度は中へ降りて数百件が並ぶ(実測)
         var missing = OpaqueStaticDirectories.Keys
-            .Where(name => !ApprovedStaticDirectories.ContainsKey(name))
+            .Where(name => !ContainsExactSpelling(ApprovedStaticDirectories, name))
             .ToList();
 
         // 1 つも無いことを、名指しの一覧付きで確認する
@@ -1057,25 +1851,15 @@ public class ResponseCacheAttributePolicyTests
                 + string.Join(", ", missing));
     }
 
-    // 4 つの表のすべてに、空でない理由が書かれていること。
+    // この型が持つ承認表のすべてに、空でない理由が書かれていること。
     //
     // 理由を誰も読まないままにすると、空文字を入れるだけで検査を黙らせられる
     // (LengthGovernanceExclusions_AllHaveAReason と同じ扱い)。
     [Fact]
     public void StaticAssetTables_AllHaveAReason()
     {
-        // 4 つの表を「表の名前 → 中身」の組にして順に見る
-        var tables = new (string Name, IReadOnlyDictionary<string, string> Entries)[]
-        {
-            // 承認済みの入れ物
-            (nameof(ApprovedStaticDirectories), ApprovedStaticDirectories),
-            // 中を見ない入れ物
-            (nameof(OpaqueStaticDirectories), OpaqueStaticDirectories),
-            // 直下に置いてよいファイル
-            (nameof(ApprovedStaticRootFiles), ApprovedStaticRootFiles),
-            // 承認済みのファイル種別
-            (nameof(ApprovedStaticFileExtensions), ApprovedStaticFileExtensions),
-        };
+        // 承認表を「表の名前 → 中身」の組にして順に見る
+        var tables = StaticAssetTables();
 
         // 理由が空・空白のエントリを、表の名前付きで集める
         var blank = tables
@@ -1093,8 +1877,14 @@ public class ResponseCacheAttributePolicyTests
 
     // 承認済みのファイル種別が、拡張子の綴り(先頭が . の小文字)で登録されていること。
     //
-    // "css" や ".CSS" と書いても突き合わせ相手(Path.GetExtension の戻り値)と形が合わず、
-    // <b>その 1 行だけが何にも当たらない</b>まま表に残る(登録したつもりの種別が通らない)。
+    // <b>2 つの理由がある。</b> (a) `"css"` のように先頭の `.` を落とすと、突き合わせ相手
+    // (Path.GetExtension の戻り値)と形が合わず<b>その 1 行だけが何にも当たらない</b>まま
+    // 表に残る(登録したつもりの種別が通らない)。(b) 大小をそろえるのは、引き方が
+    // 大小を無視する以上 `.CSS` と `.css` が<b>同居できてしまう</b>ため ——同居すると
+    // どちらが一致するかが Dictionary の列挙順に依存する。
+    // <b>(b) を「.CSS は何にも当たらない」と書かないこと（レビュー指摘）。</b>
+    // 引き方は ApprovedSpellingFor を通るので `.CSS` でも実際には当たり、
+    // 事実と違う理由を読んだ人はこの検査を緩めてよいと判断してしまう。
     [Fact]
     public void ApprovedStaticFileExtensions_AreSpelledAsExtensions()
     {
@@ -1113,6 +1903,543 @@ public class ResponseCacheAttributePolicyTests
                 + "書いてください: " + string.Join(", ", malformed));
     }
 
+    // 原因を増やしたときに、文言と直し方の<b>足し忘れ・使い回し</b>が落ちること。
+    //
+    // <b>なぜ enum から導くのか（レビュー指摘）。</b> 案内の出し分けを
+    // 「大小違い<b>ではない</b>なら表へ登録」と書くと、将来足した原因が既定の枝へ黙って落ち、
+    // <b>誤った直し方を案内する</b>（issue #270 が名指しした形そのもの）。
+    // 実在の原因を並べた表を基準にすると、載せ忘れた原因はこの検査からも同時に外れるので、
+    // 一覧は enum から導く（この repo が DeadEntryReason で採っている形）。
+    [Fact]
+    public void UnapprovedCauses_AllHaveTheirOwnTextAndRepair()
+    {
+        // アプリが持つ原因をすべて並べる(手書きの表を基準にしない)
+        var causes = Enum.GetValues<UnapprovedCause>();
+
+        // 文言と直し方が引けること(足し忘れは対応表が例外を投げて落ちる)
+        var texts = causes.Select(CauseText).ToList();
+
+        // 直し方も同じく引けること
+        var repairs = causes.Select(RepairFor).ToList();
+
+        // 文言が空でないこと(空文字で検査を黙らせられないようにする)
+        Assert.DoesNotContain(texts, text => string.IsNullOrWhiteSpace(text));
+
+        // 文言が原因ごとに固有であること(使い回すと 2 つの原因が同じ 1 件に見える)
+        Assert.Equal(texts.Count, texts.Distinct(StringComparer.Ordinal).Count());
+
+        // 直し方がどれも実際に使われていること(使われない種類があれば出し分けが死んでいる)
+        Assert.Equal(Enum.GetValues<RepairKind>().Length, repairs.Distinct().Count());
+
+        // すべての直し方に案内があること(足し忘れは対応表が例外を投げて落ちる)
+        var advice = Enum.GetValues<RepairKind>().Select(RepairAdvice).ToList();
+
+        // 案内が空でないこと(空文字で「案内の無い失敗文言」を作れないようにする)
+        Assert.DoesNotContain(advice, text => string.IsNullOrWhiteSpace(text));
+
+        // 案内が直し方ごとに固有であること(使い回すと出し分けの意味が無い)
+        Assert.Equal(advice.Count, advice.Distinct(StringComparer.Ordinal).Count());
+
+        // すべての直し方に並び順があること(足し忘れは対応表が例外を投げて落ちる)
+        var orders = Enum.GetValues<RepairKind>().Select(RepairAdviceOrder).ToList();
+
+        // 並び順が直し方ごとに固有であること(同じ順だと並べ替えが安定せず、
+        // 「先にこの入れ物の扱いを決めてから」が後ろへ回りうる)
+        Assert.Equal(orders.Count, orders.Distinct().Count());
+
+        // 「そろえる前に中身を確かめる」案内が必ず先頭に来ること
+        // (これが後ろだと、上から読んだ人が先に種別の登録を済ませてしまう)
+        Assert.Equal(orders.Min(), RepairAdviceOrder(RepairKind.AuditContentsBeforeAligning));
+
+        // <b>綴りをそろえる案内は、表への登録より前であること（レビュー指摘・実測）。</b>
+        // 入れ替えても全件緑のまま通っていた ——後ろだと、上から読んだ人が
+        // 綴りをそろえれば済む資産について<b>表へ 2 行目を足して 2 度承認する</b>
+        // （issue #270 が名指しした誤った直し方がそのまま戻る）
+        Assert.True(
+            RepairAdviceOrder(RepairKind.AlignSpelling)
+                < RepairAdviceOrder(RepairKind.RegisterInTable),
+            "綴りをそろえる案内は、表への登録の案内より前に出してください"
+                + "(後ろだと、そろえれば済む資産を 2 度承認させます)。");
+
+        // すべての直し方について、注意書きが掛かるかが決まっていること
+        var caveats = Enum.GetValues<RepairKind>().Select(RepairCarriesContentsCaveat).ToList();
+
+        // 掛かる側・掛からない側の<b>両方</b>が実際にあること(片方だけなら決めが死んでいる)
+        Assert.Equal(2, caveats.Distinct().Count());
+
+        // すべての原因について「綴りが要るか」が決まっていること
+        // (足し忘れは対応表が例外を投げて落ちる。決めないと失敗文言の組み立てごと落ちる)
+        var carries = causes.Select(CauseCarriesApprovedSpelling).ToList();
+
+        // 要る側・要らない側の<b>両方</b>が実際にあること(片方だけなら決めが死んでいる)
+        Assert.Equal(2, carries.Distinct().Count());
+    }
+
+    // 失敗文言の中で、案内が<b>読む順に意味のある並び</b>で出ること。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> 以前は出現順に並べていたため、
+    // `wwwroot/exports/a.csv`（種類が未承認）と `wwwroot/LIB/patients.csv`（こぼれ出た中身）が
+    // 同時にあると「ApprovedStaticFileExtensions へ理由を添えて登録します」が先に出て、
+    // その後ろに「先にこの入れ物の扱いを決めてから、残りを確認してください」が付いた
+    // ——上から読んだ人は、先に決めろと言われる前に<b>すべての入れ物に効く</b>種別の登録を
+    // 済ませてしまう。しかも並びはファイルシステムの列挙順しだいで安定しない。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_PutsTheAuditFirst_WhateverOrderTheItemsArrivedIn()
+    {
+        // 「表へ登録」側が先に並んだ一覧を作る(レビューが再現した並び)
+        var message = UnapprovedStaticAssetsMessage(
+            [
+                // 種類が未承認(直し方は「表へ登録」)
+                new UnapprovedStaticAsset("exports/a.csv", UnapprovedCause.UnapprovedExtension),
+                // こぼれ出た中身(直し方は「そろえる前に中身を確かめる」)
+                new UnapprovedStaticAsset(
+                    "LIB/patients.csv",
+                    UnapprovedCause.ContentsOfMiscasedOpaqueContainer),
+            ]);
+
+        // どちらの案内も出ていること(片方が消えていないことを先に確かめる)
+        Assert.Contains("そろえる前に", message, StringComparison.Ordinal);
+
+        // 登録の案内も出ていること(こちらは本当に表へ足すべき項目があるため)
+        Assert.Contains("理由を添えて登録します", message, StringComparison.Ordinal);
+
+        // <b>読む順</b>: 中身を確かめる案内が、登録の案内より前にあること
+        Assert.True(
+            message.IndexOf("そろえる前に", StringComparison.Ordinal)
+                < message.IndexOf("理由を添えて登録します", StringComparison.Ordinal),
+            "「そろえる前に中身を確かめる」案内は、表への登録の案内より前に出してください"
+                + "(後ろだと、上から読んだ人が先に種別の登録を済ませてしまいます)。");
+    }
+
+    // 同じ直し方を共有する原因が並ぶ見出しが、<b>項目の到達順に左右されない</b>こと。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> `UnapprovedDirectory` と `UnapprovedRootFile` は
+    // どちらも「表へ登録する」なので、1 つの見出しに 2 つの理由が並ぶ。その並びを
+    // 到達順のままにすると、`Directory.EnumerateFileSystemEntries` の順しだいで
+    // <b>CI と手元で失敗文言が変わる</b> ——案内の並びを対応表へ移した理由が、
+    // 見出し側にだけ適用されずに残っていた。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_OrdersHeadingsIndependentlyOfArrivalOrder()
+    {
+        // 入れ物が先に届いた場合の文言
+        var directoryFirst = UnapprovedStaticAssetsMessage(
+            [
+                // 承認されていない入れ物
+                new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory),
+                // 承認されていない直下のファイル
+                new UnapprovedStaticAsset("readme.md", UnapprovedCause.UnapprovedRootFile),
+            ]);
+
+        // 直下のファイルが先に届いた場合の文言(同じ 2 件を逆順で渡す)
+        var rootFileFirst = UnapprovedStaticAssetsMessage(
+            [
+                // 承認されていない直下のファイル
+                new UnapprovedStaticAsset("readme.md", UnapprovedCause.UnapprovedRootFile),
+                // 承認されていない入れ物
+                new UnapprovedStaticAsset("exports", UnapprovedCause.UnapprovedDirectory),
+            ]);
+
+        // 見出しの並びを取り出す(名指しの一覧は到達順のままでよいので、見出しだけを見る)
+        var directoryFirstHeading = HeadingOf(directoryFirst);
+
+        // もう一方の見出しも取り出す
+        var rootFileFirstHeading = HeadingOf(rootFileFirst);
+
+        // 到達順が逆でも、見出しは同じ並びであること
+        Assert.Equal(directoryFirstHeading, rootFileFirstHeading);
+
+        // 空振り検出: 見出しが実際に 2 つの理由を並べていること
+        Assert.Contains("・", directoryFirstHeading, StringComparison.Ordinal);
+    }
+
+    /// <summary>失敗文言から、最初の見出し（【…】）だけを取り出す。</summary>
+    /// <param name="message">組み立てた失敗文言。</param>
+    /// <returns>見出しの中身（見つからなければ空文字）。</returns>
+    private static string HeadingOf(string message)
+    {
+        // 見出しの開きを探す
+        var open = message.IndexOf('【', StringComparison.Ordinal);
+
+        // 見出しの閉じを探す
+        var close = message.IndexOf('】', StringComparison.Ordinal);
+
+        // どちらかが無ければ、比べる見出しが無い
+        if (open < 0 || close <= open) return string.Empty;
+
+        // 開きと閉じのあいだを返す
+        return message.Substring(open + 1, close - open - 1);
+    }
+
+    // 共有の注意書きが、掛かる案内が 2 つ同時に出ても<b>1 度だけ</b>出ること。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> 案内ごとに足していたころは、綴りをそろえる案内と
+    // 中身を確かめる案内が同時に出ると<b>同じ長い 1 文が 2 度</b>並んだ。読みにくいだけでなく、
+    // 「重複を消す」変更で<b>片方の枝から黙って落ちる</b> ——このファイルは
+    // 「一覧が空でも中身が安全とは限らない」を中身を確かめる枝でいちばん効く注意としている。
+    [Fact]
+    public void UnapprovedStaticAssetsMessage_EmitsTheSharedCaveatOnlyOnce()
+    {
+        // 注意書きが掛かる案内を 2 つとも出させる(そろえる先が中を見ない入れ物かで分かれる)
+        var message = UnapprovedStaticAssetsMessage(
+            [
+                // そろえる先が中まで見る入れ物(綴りをそろえる案内)
+                new UnapprovedStaticAsset("CSS", UnapprovedCause.MiscasedApprovedAsset, "css"),
+                // そろえる先が中を見ない入れ物(中身を確かめる案内)
+                new UnapprovedStaticAsset("LIB", UnapprovedCause.MiscasedOpaqueContainer, "lib"),
+            ]);
+
+        // 2 つの案内がどちらも出ていること(空振り検出)
+        Assert.Contains("正しいほうへそろえてください", message, StringComparison.Ordinal);
+
+        // もう一方の案内も出ていること
+        Assert.Contains("そろえる前に", message, StringComparison.Ordinal);
+
+        // 共有の注意書きが 1 度だけ出ること
+        Assert.Equal(
+            1,
+            message.Split("承認済みの種類のファイルは並びません").Length - 1);
+    }
+
+    // 「その入れ物の中にあるか」の突き合わせが、<b>綴りの大小を区別する</b>こと。
+    //
+    // <b>なぜ判定を直に見るのか（レビュー指摘・実測）。</b> 一覧の側から確かめても、
+    // 大小を無視へ緩めた変異は<b>原因が同じ</b>（どちらの入れ物の中身でも
+    // `ContentsOfMiscasedOpaqueContainer`）なので落ちない ——取り違えるのは
+    // 「どの入れ物の中身か」という<b>出所</b>で、それは原因の値には現れない。
+    // 大文字小文字を区別するファイルシステムでは `LIB` と `Lib` は別の入れ物なので、
+    // 緩めると失敗文言が<b>決めるべき入れ物を取り違えて名指しする</b>。
+    [Theory]
+    // 綴りまで一致する入れ物の中にあるので、中身として数える
+    [InlineData("LIB/patients.csv", "LIB", true)]
+    // 綴りの大小が違う別の入れ物の中なので、数えない
+    [InlineData("Lib/other.csv", "LIB", false)]
+    // 名前が前方一致するだけの別の入れ物なので、数えない
+    [InlineData("LIB2/report.csv", "LIB", false)]
+    // 入れ物そのものは「中」ではない
+    [InlineData("LIB", "LIB", false)]
+    public void IsInsideAny_MatchesTheContainerSpellingExactly(
+        string relativePath,
+        string container,
+        bool expected)
+    {
+        // 1 つの入れ物だけを渡して判定する
+        var inside = IsInsideAny(relativePath, [container]);
+
+        // 期待どおりに数えられていること
+        Assert.Equal(expected, inside);
+    }
+
+    // 承認表が<b>大小を区別する</b>比較器で作られていること。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 上の「大小だけが違うキーを同時に載せない」
+    // 検査は、表が大小を無視する比較器で作られていると<b>構造的に落ちようがない</b> ——
+    // 初期化子は重複キーを例外ではなく<b>上書き</b>で扱うので、`[".CSS"]` を足すと
+    // `[".css"]` の理由の文が黙って差し替わり、検査からはキーが 1 つにしか見えない。
+    // 比較器は 1 語で戻せてしまうので、戻したときに鳴るものを置く。
+    // 判定は比較器の実装ではなく<b>挙動</b>で見る(どの comparer 実装でも同じ答えになる)。
+    [Fact]
+    public void StaticAssetTables_AreBuiltWithACaseSensitiveComparer()
+    {
+        // 実在の承認表を、判定そのものは下の純粋関数に任せて確かめる
+        AssertTablesAreCaseSensitive(StaticAssetTables());
+    }
+
+    // 上の判定のうち、<b>実在の表では一度も走らない枝</b>を合成入力で固定する。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 実在のキーはすべて英字を含むので、
+    // 「英字を含むキーが無い表」の枝（比較器を直接読む側と、読めなかったときの
+    // fail-closed）は<b>一度も実行されない</b> ——`!Comparer.Equals("a", "A")` を
+    // `true` へ、`unprobed.Add(name)` を `continue` へ潰しても全件緑のまま通った。
+    // 「見るべき対象ゼロ＝緑」を避けるために置いた枝が、それ自体無検査だった。
+    [Fact]
+    public void AssertTablesAreCaseSensitive_AlsoChecksTablesWithoutLetters()
+    {
+        // 英字を含まないキーだけの表(比較器を直接読む枝へ入る)
+        var digitsOnly = new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 大小の無い綴りなので、引いて確かめることができない
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 大小を区別する比較器で作ってあれば通ること
+        AssertTablesAreCaseSensitive([("digits-ordinal", digitsOnly)]);
+
+        // 同じキーを大小無視の比較器で作った表
+        var digitsIgnoreCase = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        {
+            // 引いて確かめられないので、比較器そのものを読む必要がある
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 比較器を読む枝が、大小無視の表を落とすこと
+        var ignored = Assert.Throws<TrueException>(
+            () => AssertTablesAreCaseSensitive([("digits-ignore-case", digitsIgnoreCase)]));
+
+        // 名指しと直し方が文言に出ていること
+        Assert.Contains("digits-ignore-case", ignored.Message, StringComparison.Ordinal);
+
+        // 比較器も読めない形(Dictionary ではない実装)の表
+        var opaque = new SortedDictionary<string, string>(StringComparer.Ordinal)
+        {
+            // 英字を含まないので引けず、実体が Dictionary でないので比較器も読めない
+            ["123"] = "英字を含まないキー。",
+        };
+
+        // 確かめられなかった表は名指しして落ちること(fail-closed)
+        var unprobed = Assert.Throws<TrueException>(
+            () => AssertTablesAreCaseSensitive([("opaque", opaque)]));
+
+        // こちらも名指しが文言に出ていること
+        Assert.Contains("opaque", unprobed.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 渡された表が<b>大小を区別する</b>比較器で作られていることを確かめる（判定の純粋関数）。
+    /// </summary>
+    /// <remarks>
+    /// <b>実在の表を直接見る形にしない（レビュー指摘）。</b> 実在のキーはすべて英字を含むので、
+    /// 「英字を含まないキーだけの表」の枝は一度も走らず、潰しても全件緑のまま通る
+    /// ——このファイルが随所で採っている「実在の入力で走らない判定は合成入力で固定する」形。
+    /// </remarks>
+    /// <param name="tables">確かめる表（表の名前つき）。</param>
+    private static void AssertTablesAreCaseSensitive(
+        IEnumerable<(string Name, IReadOnlyDictionary<string, string> Entries)> tables)
+    {
+        // 英字を含むキーが無く、確かめられなかった表の名前を集める
+        var unprobed = new List<string>();
+
+        // 表ごとに、英字を含むキーを 1 つ選んで大小を変えて引いてみる
+        foreach (var (name, entries) in tables)
+        {
+            // 大文字にすると綴りが変わるキー(＝英字を含むキー)を探す
+            var probe = entries.Keys.FirstOrDefault(key =>
+                !string.Equals(key, key.ToUpperInvariant(), StringComparison.Ordinal));
+
+            // 英字を含むキーが無い表は、引いて確かめられないので比較器そのものを読む。
+            // <b>ここで落とすと行き止まりになる（レビュー指摘）</b> ——「別の方法で固定して
+            // ください」と言われても、このファイルに他の手段は無い。緑にする道は
+            // 「表を導出から外す」か「検査を緩める」しか残らず、どちらもこの検査が
+            // 塞いでいる穴を開け直す
+            if (probe is null)
+            {
+                // 実体が Dictionary なら、どの比較器で作られたかを直接読める
+                if (entries is Dictionary<string, string> concrete)
+                {
+                    // <b>ここも挙動で見る（レビュー指摘）。</b> `Comparer.Equals(StringComparer.Ordinal)`
+                    // は string どうしの比較ではなく<b>参照の一致</b>になるため、
+                    // 既定の比較器（EqualityComparer&lt;string&gt;.Default）で作った
+                    // 大小を区別する表まで赤くする ——直しようの無い要求になる。
+                    // 大小だけが違う 2 つの文字列を「別物」と答えるかで確かめる
+                    Assert.True(
+                        !concrete.Comparer.Equals("a", "A"),
+                        $"{name} は大小を無視する比較器で作られています。"
+                            + "初期化子は重複キーを上書きするため、大小だけが違う行を足すと"
+                            + "既存の行が黙って消えます。StringComparer.Ordinal で作ってください。");
+
+                    // 確かめられたので次の表へ
+                    continue;
+                }
+
+                // 比較器も読めない形なら、確かめられなかった表として記録する
+                unprobed.Add(name);
+
+                // 次の表へ
+                continue;
+            }
+
+            // 大小を変えた綴りでは引けないこと(引けたら大小を無視する比較器)
+            Assert.False(
+                entries.ContainsKey(probe.ToUpperInvariant()),
+                $"{name} は大小を無視する比較器で作られています。"
+                    + "初期化子は重複キーを上書きするため、大小だけが違う行を足すと"
+                    + "既存の行が黙って消えます。StringComparer.Ordinal で作ってください。");
+        }
+
+        // <b>「1 つでも試せた」では足りない（レビュー指摘）。</b> 英字を含まないキーだけの表が
+        // 1 つ現れると、その表は黙って確かめられないまま他の表の結果で緑になる ——
+        // このファイルが随所で避けている「見るべき対象ゼロ＝緑」の形。
+        // 確かめられなかった表は名指しして落とす(fail-closed)
+        Assert.True(
+            unprobed.Count == 0,
+            "英字を含むキーが無く、比較器を確かめられなかった表があります: "
+                + string.Join(", ", unprobed)
+                + "。大小を区別する比較器で作られていることを別の方法で固定してください。");
+    }
+
+    // 導出の絞り込みが、<b>アクセシビリティで表を落とさない</b>こと。
+    //
+    // <b>なぜ合成の型で見るのか（レビュー指摘・実測）。</b> 実在の表はすべて private なので、
+    // 絞り込みを `NonPublic` だけへ狭めても<b>全件緑のまま・テスト件数も不変</b>で通る。
+    // 狭めた状態で 5 つ目の表を public で宣言した人だけが、理由・大小衝突・比較器の
+    // 3 つの検査から黙って外れる ——このファイルが随所で塞いでいる
+    // 「導出が静かに狭まり、ガードも一緒に狭まる」形。
+    [Fact]
+    public void StaticAssetTablesIn_SeesTablesWhateverTheirAccessibility()
+    {
+        // 公開・非公開の表を 1 つずつ持つ合成の型から導出する
+        var derived = StaticAssetTablesIn(typeof(TableAccessibilityProbe))
+            .Select(table => table.Name)
+            .ToList();
+
+        // 非公開の表が見えること
+        Assert.Contains(TableAccessibilityProbe.PrivateProbeTableName, derived, StringComparer.Ordinal);
+
+        // <b>公開された表も見えること</b>(ここが狭まると public の表だけが黙って外れる)
+        Assert.Contains(nameof(TableAccessibilityProbe.PublicProbeTable), derived, StringComparer.Ordinal);
+
+        // 表でないフィールドは拾わないこと(名前 → 説明 の形だけを対象にする)
+        Assert.DoesNotContain(nameof(TableAccessibilityProbe.NotATable), derived, StringComparer.Ordinal);
+    }
+
+    /// <summary>
+    /// 導出のアクセシビリティの絞り込みを確かめるためだけの、合成の型。
+    /// </summary>
+    private static class TableAccessibilityProbe
+    {
+        /// <summary>
+        /// 公開された表（導出から外れてはいけない）。
+        /// </summary>
+        /// <remarks>
+        /// <b>具象型で宣言してある（レビュー指摘）。</b> 両方をインターフェイス型で宣言すると、
+        /// 導出を<b>宣言型の完全一致</b>へ狭めても緑のまま通り、5 つ目の表をいちばん自然な形
+        /// (<c>private static readonly Dictionary&lt;string, string&gt; ...</c>)で足した人だけが
+        /// 3 つの検査から黙って外れる ——実測で全件緑だった。
+        /// </remarks>
+        public static readonly Dictionary<string, string> PublicProbeTable =
+            new(StringComparer.Ordinal) { ["a"] = "理由。" };
+
+        /// <summary>表ではないフィールド（拾ってはいけない）。</summary>
+        public static readonly string NotATable = "表ではない。";
+
+        /// <summary>非公開の表の名前を、テストから名指しするための定数。</summary>
+        public const string PrivateProbeTableName = nameof(privateProbeTable);
+
+        /// <summary>非公開の表（導出から外れてはいけない）。</summary>
+#pragma warning disable IDE1006 // 名前は nameof で参照するため、意図的に小文字で持つ
+        private static readonly IReadOnlyDictionary<string, string> privateProbeTable =
+            new Dictionary<string, string>(StringComparer.Ordinal) { ["b"] = "理由。" };
+#pragma warning restore IDE1006
+    }
+
+    // 導出が、<b>判定が実際に使っている表</b>を 1 つも取りこぼしていないこと。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 導出に掛かっているのは
+    // 「1 つも導けなければ落とす」だけなので、条件を狭めて表を 1 つ落としても
+    // <b>全件緑のまま・テスト件数も不変</b>で通る（実測: 名前の前方一致を足すと
+    // OpaqueStaticDirectories が 3 つの表検査すべてから同時に消えた）。
+    // CLAUDE.md が LengthGovernedTypes_CoverEveryOwnedDbSet で確立した
+    // 「導出が効いているかは<b>導出とは独立な手がかり</b>で照合する」を当てる ——
+    // ここでの独立な手がかりは「判定と走査が実際に読んでいる表」。
+    //
+    // 床(最低限これだけは入っている)としてだけ働くので、表を足す側は
+    // 何もしなくてよい（新しい表は導出が自動で拾う）。
+    [Fact]
+    public void StaticAssetTables_CoverEveryTableTheCheckerActuallyReads()
+    {
+        // 導出が返した表の名前を集める
+        var derived = StaticAssetTables().Select(table => table.Name).ToList();
+
+        // 判定と走査が実際に読んでいる表(コードから名前を取るので、改名にも追随する)
+        var used = new[]
+        {
+            // FindUnapprovedStaticAssets が入れ物の承認に読む
+            nameof(ApprovedStaticDirectories),
+            // IsOpaqueStaticDirectory が中へ降りるかの判断に読む
+            nameof(OpaqueStaticDirectories),
+            // FindUnapprovedStaticAssets が直下のファイルの承認に読む
+            nameof(ApprovedStaticRootFiles),
+            // FindUnapprovedStaticAssets が種類の承認に読む
+            nameof(ApprovedStaticFileExtensions),
+        };
+
+        // 導出から漏れた表を、名指しの一覧付きで集める
+        var missing = used.Where(name => !derived.Contains(name, StringComparer.Ordinal)).ToList();
+
+        // 1 つも無いことを確認する(漏れた表は 3 つの表検査すべてから同時に消える)
+        Assert.True(
+            missing.Count == 0,
+            "判定が読んでいる表が、表そのものの検査の導出から漏れています: "
+                + string.Join(", ", missing)
+                + "。漏れた表は理由・大小衝突・比較器の検査すべてから同時に外れます。");
+    }
+
+    // 大小衝突の検出そのものが、拾う側と見逃さない側の両方で働くこと。
+    //
+    // 実在の表は 1 組も持たないので、上の検査は判定を「常に空を返す」へ潰しても緑のまま
+    // 通る（レビュー指摘）。合成した表で判定そのものを固定する。
+    [Theory]
+    // 大小だけが違う 2 つのキー(拾う)
+    [InlineData(new[] { "lib", "LIB" }, true)]
+    // 綴りまで同じ 1 つだけ(拾わない)
+    [InlineData(new[] { "lib" }, false)]
+    // まったく別のキー同士(拾わない)
+    [InlineData(new[] { "css", "js" }, false)]
+    // 前方一致するだけの別のキー(拾わない)
+    [InlineData(new[] { "lib", "library" }, false)]
+    // 引き方(OrdinalIgnoreCase)では等しいが小文字化では別の組へ落ちる綴り(<b>拾う</b>)。
+    // 小文字化で畳んでいたころは、この組が衝突として報告されなかった(レビューが実測)
+    [InlineData(new[] { "\u00B5icro", "\u03BCicro" }, true)]
+    // 小文字化では同じ組だが引き方では等しくない綴り(<b>拾わない</b>)。
+    // 小文字化で畳んでいたころは、曖昧でないこの表を赤くしていた
+    [InlineData(new[] { "\u212A", "k" }, false)]
+    public void KeysThatDifferOnlyByCase_FindsCollisionsWithoutFalseAlarms(string[] keys, bool expected)
+    {
+        // 与えられたキーから、比較器に依存しない表を組み立てる
+        var table = keys.ToDictionary(key => key, _ => "理由。", StringComparer.Ordinal);
+
+        // 衝突が見つかるかどうかが、期待どおりであること
+        Assert.Equal(expected, KeysThatDifferOnlyByCase(table).Any());
+    }
+
+    // 「綴りまで同じか」の引き方が、拾う側と見逃さない側の両方で働くこと。
+    //
+    // 実在の 2 つの表は同じ綴りで対になっているので、この引き方を大小無視へ戻しても
+    // 実在の表を読む検査は緑のまま通る（レビュー指摘）。合成入力で固定する。
+    [Theory]
+    // 綴りまで同じ(見つかる)
+    [InlineData("lib", true)]
+    // 大小だけが違う(<b>見つからない</b>。ここが分類ではなく同一性を見る側)
+    [InlineData("LIB", false)]
+    // 表に無い(見つからない)
+    [InlineData("vendor", false)]
+    public void ContainsExactSpelling_RequiresTheSameCase(string name, bool expected)
+    {
+        // 小文字のキーを 1 つだけ持つ表を組み立てる
+        var table = new Dictionary<string, string>(StringComparer.Ordinal) { ["lib"] = "理由。" };
+
+        // 大小まで含めて一致するときだけ見つかること
+        Assert.Equal(expected, ContainsExactSpelling(table, name));
+    }
+
+    // 承認表が、<b>大小だけが違う 2 つのキー</b>を同時に持っていないこと。
+    //
+    // <b>なぜ機械で見るのか（レビュー指摘）。</b> ApprovedSpellingFor は大小を無視して
+    // 最初に一致したキーを返すので、`lib` と `LIB` が同居すると<b>どちらが返るかが
+    // Dictionary の規定されていない列挙順に依存する</b>（同じ入れ物が承認済みにも
+    // 大小違いにもなりうる）。<b>初期化子は重複キーを上書きするので例外にはならない</b> ——
+    // 実在の表を OrdinalIgnoreCase で作っていた頃は、`LIB` を足すと `lib` の行が
+    // <b>黙って消えて理由の文だけが差し替わり</b>、この検査からもキーが 1 つにしか見えず
+    // 全件緑のまま通った（レビューで実測）。表を Ordinal で作ることで初めてこの検査が生きる。
+    [Fact]
+    public void StaticAssetTables_HaveNoKeysThatDifferOnlyByCase()
+    {
+        // 承認表を、表の名前とともに順に見る
+        var tables = StaticAssetTables();
+
+        // 小文字にそろえると重なるキーの組を、表の名前付きで集める
+        var ambiguous = tables
+            .SelectMany(table => KeysThatDifferOnlyByCase(table.Entries)
+                .Select(group => $"{table.Name}: {string.Join(" / ", group)}"))
+            .ToList();
+
+        // 1 つも無いことを、名指しの一覧付きで確認する
+        Assert.True(
+            ambiguous.Count == 0,
+            "この型の表に、大小だけが違うキーを同時に載せないでください"
+                + "(どちらが一致するかが Dictionary の列挙順に依存します): "
+                + string.Join(", ", ambiguous));
+    }
+
     /// <summary>
     /// <c>wwwroot</c> 配下で見つけた 1 件（走査の結果を判定へ渡すための入れ物）。
     /// </summary>
@@ -1124,17 +2451,518 @@ public class ResponseCacheAttributePolicyTests
     /// 承認されていない 1 件と、その理由（失敗文言に名指しで出す）。
     /// </summary>
     /// <param name="RelativePath"><c>wwwroot</c> からの相対パス。</param>
-    /// <param name="Cause">入れ物として未承認か、種類として未承認か。</param>
-    private readonly record struct UnapprovedStaticAsset(string RelativePath, string Cause);
+    /// <param name="Cause">なぜ落ちたか。</param>
+    /// <param name="ApprovedSpelling">
+    /// 大小を無視して一致した承認表の綴り（<see cref="UnapprovedCause.MiscasedApprovedAsset"/> のときだけ入る）。
+    /// <b>どちらが正しいかは機械には決められない</b>ので、両方の綴りを見せて人に選ばせるために持つ
+    /// （表側の綴りを正しいと決め打つと、名前が外部で決まっている資産で行き止まりになる）。
+    /// </param>
+    private readonly record struct UnapprovedStaticAsset(
+        string RelativePath,
+        UnapprovedCause Cause,
+        string? ApprovedSpelling = null);
 
-    /// <summary>入れ物そのものが承認されていないときの理由。</summary>
-    private const string UnapprovedDirectoryCause = "承認されていない入れ物";
+    /// <summary>
+    /// 承認されていない 1 件が、<b>なぜ</b>落ちたか。
+    /// </summary>
+    /// <remarks>
+    /// <b>文字列の定数ではなく enum にしてある（レビュー指摘）。</b> 失敗文言は原因ごとに
+    /// <b>正反対の直し方</b>を案内するので、原因を増やしたときに案内の出し分けを決め忘れると、
+    /// 新しい原因が既定の枝（「表へ登録してください」）へ黙って落ちる ——
+    /// issue #270 が名指しした「失敗文言が誤った直し方を案内する」形がそのまま戻る。
+    /// enum にしておけば、<see cref="CauseText"/> と <see cref="RepairFor"/> の
+    /// 足し忘れ・使い回しを <c>UnapprovedCauses_AllHaveTheirOwnTextAndRepair</c> が
+    /// <b>enum から導いて</b>落とす（この repo が <c>DeadEntryReason</c> で採っている形）。
+    /// </remarks>
+    private enum UnapprovedCause
+    {
+        /// <summary>入れ物そのものが承認表に無い。</summary>
+        UnapprovedDirectory,
 
-    /// <summary>ファイルの種類が承認されていないときの理由。</summary>
-    private const string UnapprovedExtensionCause = "承認されていない種類のファイル";
+        /// <summary><c>wwwroot</c> 直下のファイル名が承認表に無い。</summary>
+        UnapprovedRootFile,
 
-    /// <summary><c>wwwroot</c> 直下のファイル名が承認されていないときの理由。</summary>
-    private const string UnapprovedRootFileCause = "承認されていない直下のファイル";
+        /// <summary>入れ物の中のファイルの種類が承認表に無い。</summary>
+        UnapprovedExtension,
+
+        /// <summary>承認済みの資産と綴りの大小だけが違う。</summary>
+        MiscasedApprovedAsset,
+
+        /// <summary>
+        /// 綴りの大小だけが違い、しかもそろえる先が<b>中を見ない入れ物</b>。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="MiscasedApprovedAsset"/> と分けるのは、<b>直し方が危ないから</b>。
+        /// そろえる先が <c>OpaqueStaticDirectories</c> の入れ物だと、綴りをそろえた瞬間に
+        /// 中身は走査の対象から外れる ——<c>wwwroot/LIB/patients.csv</c> を
+        /// <c>lib/</c> へ移すと検査は緑になるのに、そのファイルは
+        /// <c>public,max-age=3600</c> で配られ続ける（レビューが実測）。
+        /// 同じ案内を出すと、<b>失敗文言が PHI を隠す手順を教える</b>ことになる。
+        /// </remarks>
+        MiscasedOpaqueContainer,
+
+        /// <summary>
+        /// <see cref="MiscasedOpaqueContainer"/> の入れ物の<b>中</b>から出てきたもの。
+        /// </summary>
+        /// <remarks>
+        /// <para><b>なぜ専用の理由が要るのか（レビューが実測）。</b> 綴りが違う入れ物は
+        /// 「中を見ない」登録に当たらないぶん<b>中まで走査される</b>ので、その中身は
+        /// <c>UnapprovedExtension</c> / <c>UnapprovedDirectory</c> として並ぶ。ところがそれらの
+        /// 直し方は<b>「表へ登録する」</b>で、失敗文言には原因ごとの見出しが付く以上、
+        /// 中身はその見出しの下で<b>登録を明示的に案内される</b>。従って
+        /// <c>.csv</c> を <c>ApprovedStaticFileExtensions</c> へ足すと、その承認は
+        /// <b>すべての入れ物に効く</b> ——以後 <c>wwwroot/js/patient-export.csv</c> が
+        /// 黙って素通りする。<c>RepairAdvice(AuditContentsBeforeAligning)</c> が
+        /// 「並んだ中身を登録して黙らせないでください」と書いているのに、同じ文言の別の見出しが
+        /// その逆を案内していた（<c>wwwroot/LIB/patients.csv</c> を置いて再現済み）。</para>
+        ///
+        /// <para>入れ物と同じ直し方（そろえる前に中身を確かめる）へ寄せることで、
+        /// 1 つの失敗文言の中で案内が相反しなくなる。理由を分けるのは、
+        /// 見出しが「なぜこれが並んでいるか」を説明する側だから。</para>
+        /// </remarks>
+        ContentsOfMiscasedOpaqueContainer,
+    }
+
+    /// <summary>
+    /// 原因に対して、運用者が取るべき<b>直し方の種類</b>。
+    /// </summary>
+    private enum RepairKind
+    {
+        /// <summary>公開してよい資産なら、承認表へ理由を添えて登録する。</summary>
+        RegisterInTable,
+
+        /// <summary>表の綴りと実際の名前の、正しいほうへそろえる。</summary>
+        AlignSpelling,
+
+        /// <summary>
+        /// そろえる前に、<b>中身が公開してよいものか</b>を 1 件ずつ確かめる。
+        /// </summary>
+        AuditContentsBeforeAligning,
+    }
+
+    /// <summary>その原因が、承認表側の綴りを必ず伴うかを返す。</summary>
+    /// <remarks>
+    /// <b>案内の種類から推し量らない（レビュー指摘）。</b> 「登録してください以外なら綴りが要る」と
+    /// 書くと、綴りを必要としない原因を新しい直し方とともに足した瞬間に、
+    /// <see cref="NameWithCause"/> が<b>失敗文言の組み立てごと落ちる</b> ——
+    /// その走査で見つかった<b>他のすべての違反</b>まで一覧から消える。
+    /// 要否は原因そのものの性質なので、原因ごとに決める。
+    /// </remarks>
+    /// <param name="cause">落ちた原因。</param>
+    /// <returns>承認表側の綴りを伴うなら <c>true</c>。</returns>
+    /// <exception cref="NotSupportedException">対応する決めを足し忘れている場合。</exception>
+    private static bool CauseCarriesApprovedSpelling(UnapprovedCause cause) => cause switch
+    {
+        // 表に無いものは、比べる相手が無い
+        UnapprovedCause.UnapprovedDirectory => false,
+        // 直下のファイルも同じ
+        UnapprovedCause.UnapprovedRootFile => false,
+        // 種類も同じ
+        UnapprovedCause.UnapprovedExtension => false,
+        // 大小違いは、比べる相手(表の綴り)を必ず示す
+        UnapprovedCause.MiscasedApprovedAsset => true,
+        // そろえる先が中を見ない入れ物の場合も同じ
+        UnapprovedCause.MiscasedOpaqueContainer => true,
+        // 中身そのものは表に無いので、比べる相手も無い(入れ物の側が綴りを示す)
+        UnapprovedCause.ContentsOfMiscasedOpaqueContainer => false,
+        // 足し忘れを黙って通さない(§9 fail-closed)
+        _ => throw new NotSupportedException($"{cause} に綴りが要るかどうかの決めがありません。"),
+    };
+
+    /// <summary>未承認の 1 件を、理由つきで名指しする 1 語にする。</summary>
+    /// <remarks>
+    /// <b>大小違いのときは承認表側の綴りを必ず添える。</b> 添えないと、
+    /// <see cref="RepairKind.AlignSpelling"/> の案内（表の綴りと実際の名前のどちらが正しいかを
+    /// 確かめる）が<b>従えない</b>ものになる ——この変更が無くそうとしている
+    /// 「従えない案内」そのもの。欠けているのは組み立て側の誤りなので落とす（§9 fail-closed）。
+    /// </remarks>
+    /// <param name="item">未承認だった 1 件。</param>
+    /// <returns>失敗文言に並べる 1 語。</returns>
+    /// <exception cref="NotSupportedException">大小違いなのに承認表側の綴りが無い場合。</exception>
+    private static string NameWithCause(UnapprovedStaticAsset item)
+    {
+        // 承認表側の綴りが要らない原因は、相対パスと理由だけで十分
+        if (!CauseCarriesApprovedSpelling(item.Cause))
+        {
+            // 相対パスと理由を並べて返す
+            return $"{item.RelativePath}({CauseText(item.Cause)})";
+        }
+
+        // 大小違いなのに比べる相手が無ければ、案内が従えないものになるので落とす
+        if (item.ApprovedSpelling is null)
+        {
+            // 組み立て側の誤りであることが分かる文言で落とす
+            throw new NotSupportedException(
+                $"{item.RelativePath} は{CauseText(item.Cause)}として報告されましたが、"
+                    + "承認表側の綴りが添えられていません(案内が比べる相手を示せません)。");
+        }
+
+        // 相対パス・理由・承認表側の綴りを並べて返す
+        return $"{item.RelativePath}({CauseText(item.Cause)}: 表の綴りは {item.ApprovedSpelling})";
+    }
+
+    /// <summary>
+    /// 入れ物の中身が<b>一覧に全部は並ばない</b>ことの注意（両方の案内が共有する）。
+    /// </summary>
+    /// <remarks>
+    /// <b>枝ごとに書き写さない（レビュー指摘）。</b> 綴りが違う入れ物の中身がどう扱われるかは
+    /// 2 つの案内で同じなのに、別々の言い回しで書いていた ——片方だけを直す変更が通り、
+    /// もう片方が古い約束を言い続ける（§6 DRY。このファイルが <c>StaticAssetTables()</c> を
+    /// 切り出したのと同じ理由）。
+    ///
+    /// <para>「中身も並びます」とだけ書くと、並んでいないことを「確認済み」と読まれ、
+    /// 承認済みの拡張子を名乗る PHI（このファイルが「残る境界」として記録している形）を
+    /// 見落としたまま綴りをそろえることになる。</para>
+    /// </remarks>
+    private const string ContentsNotFullyListedCaveat =
+        // <b>「入れ物の場合」と明示する（レビュー指摘）。</b> この案内は直し方ごとに出るので、
+        // 大小違いが<b>直下のファイル</b>(FAVICON.ICO 等)だけのときにも付く ——
+        // 範囲を書かないと、中身を持たない項目について「その中身は…」と語ることになる
+        "入れ物の場合、その中身のうち一覧に並ぶのは承認されていない種類のファイルとネストした入れ物だけで、"
+            + "承認済みの種類のファイルは並びません"
+            + "(一覧に無いことは中身が公開してよいことを意味しません)。";
+
+    /// <summary>その直し方の案内に、中身の一覧についての注意書きが掛かるかを返す。</summary>
+    /// <remarks>
+    /// 注意書きは<b>入れ物の綴りをそろえる話</b>に掛かるので、表へ登録するだけの案内には要らない。
+    /// 掛かる案内が同時に 2 つ出ても<b>1 度だけ</b>出すために、掛かるかどうかを別に持つ。
+    /// </remarks>
+    /// <param name="repair">調べる直し方の種類。</param>
+    /// <returns>注意書きが掛かるなら <c>true</c>。</returns>
+    /// <exception cref="NotSupportedException">対応する決めを足し忘れている場合。</exception>
+    private static bool RepairCarriesContentsCaveat(RepairKind repair) => repair switch
+    {
+        // 表へ登録するだけの話には、入れ物の中身の一覧は関係しない
+        RepairKind.RegisterInTable => false,
+        // 綴りをそろえる先が入れ物なら、その中身がどう扱われるかが効く
+        RepairKind.AlignSpelling => true,
+        // そろえる前に中身を確かめる案内では、いちばん効く注意
+        RepairKind.AuditContentsBeforeAligning => true,
+        // 足し忘れを黙って通さない(§9 fail-closed)
+        _ => throw new NotSupportedException($"{repair} に注意書きが掛かるかの決めがありません。"),
+    };
+
+    /// <summary>案内を並べる順（小さいほど先に出す）。</summary>
+    /// <remarks>
+    /// <b>「先にこれを決めてから」と言う案内を先頭に置く。</b> それより後ろに置くと、
+    /// その文が指す「先に」が文面の上で成り立たず、上から読んだ人は先に
+    /// <b>種別の表への登録</b>（すべての入れ物に効く＝検出網が一斉に広がる）を済ませてしまう。
+    /// 出現順に任せるとファイルシステムの列挙順しだいで前後するので、ここで決め切る。
+    /// </remarks>
+    /// <param name="repair">並べる直し方の種類。</param>
+    /// <returns>並べ替えに使う順序。</returns>
+    /// <exception cref="NotSupportedException">対応する順序を足し忘れている場合。</exception>
+    private static int RepairAdviceOrder(RepairKind repair) => repair switch
+    {
+        // 「先にこの入れ物の扱いを決めてから」と言う側なので、必ず先頭
+        RepairKind.AuditContentsBeforeAligning => 0,
+        // 綴りをそろえる案内は、表への登録より前に読ませる(登録は最後の手段)
+        RepairKind.AlignSpelling => 1,
+        // 表への登録は、上の 2 つを読んだあとで
+        RepairKind.RegisterInTable => 2,
+        // 足し忘れを黙って通さない(並び順が決まらないまま出さない。§9 fail-closed)
+        _ => throw new NotSupportedException($"{repair} に対応する並び順がありません。"),
+    };
+
+    /// <summary>直し方の種類ごとの、失敗文言へ足す案内。</summary>
+    /// <remarks>
+    /// <b>呼び出し側で <c>if</c> を書き並べない（レビュー指摘）。</b> 分岐を並べると、
+    /// 新しい直し方を足したときにどの枝にも当たらず、<b>名指しだけされて何をすればよいか
+    /// 1 文字も書かれていない</b>失敗文言になる ——「新しい種類が既定の枝へ黙って落ちる」
+    /// という、この変更が閉じようとしている形が 1 段上へ移るだけ。
+    /// </remarks>
+    /// <param name="repair">案内する直し方の種類。</param>
+    /// <returns>失敗文言へ足す案内。</returns>
+    /// <exception cref="NotSupportedException">対応する案内を足し忘れている場合。</exception>
+    private static string RepairAdvice(RepairKind repair) => repair switch
+    {
+        // 公開してよいと確認したうえで、落ちた場所に対応する表へ理由を添えて登録する
+        RepairKind.RegisterInTable =>
+            $"公開して問題ない資産なら、入れ物は {nameof(ApprovedStaticDirectories)} へ、"
+                + $"直下のファイルは {nameof(ApprovedStaticRootFiles)} へ、"
+                + $"入れ物の中のファイルの種類は {nameof(ApprovedStaticFileExtensions)} へ"
+                + "理由を添えて登録します。",
+        // 表へ新しい行を足すと同じ資産が 2 度承認されるので、どちらかの綴りへそろえる。
+        // <b>どちらが正しいかは決め打たない</b>(名前が外部で決まっている資産もある)
+        RepairKind.AlignSpelling =>
+            // <b>特定の原因のラベルを焼き込まない（レビュー指摘）。</b> 同じ直し方を共有する
+            // 原因が 2 つ目になった瞬間、一覧には出ていないラベルを引用する案内になり、
+            // 読み手は「自分の項目には当てはまらない」と読む
+            "綴りの大小だけが違うものは表へ新しい行を足さず"
+                + "(同じ資産を 2 度承認することになります)、表の綴りと実際の名前の"
+                + "どちらが正しいかを確かめて、正しいほうへそろえてください。",
+        // そろえる先が中を見ない入れ物のときは、<b>そろえる前に</b>中身を確かめる。
+        // そろえてしまうと中身は走査の対象から外れ、検査は緑になるのに配信は続く
+        RepairKind.AuditContentsBeforeAligning =>
+            "そろえる先が「中を見ない入れ物」(CDN の取得物など、中身を 1 件ずつ承認していない"
+                + "入れ物)のものがあります。綴りをそろえると、その中身は検査の対象から外れ、"
+                + "検査は緑になるのに public,max-age=3600 で配られ続けます。"
+                + "そろえる前に、中身が公開してよいものかを 1 件ずつ確かめ、"
+                + "PHI を含みうるものは wwwroot の外へ移してください。"
+                // <b>こぼれ出た中身の種類を表へ登録させない（レビュー指摘）。</b> この入れ物は
+                // 綴りが違うぶん中まで走査されるので、CDN の取得物(.map / .woff2 / 拡張子なし)が
+                // 「承認されていない種類」として大量に並ぶ。上の登録の案内をそのまま当てると
+                // それらを種別の表へ足すことになり、その登録は<b>すべての入れ物に効く</b>
+                // ——`wwwroot/js/patient-export.json` が以後ずっと素通りする
+                + "この入れ物は綴りが違うぶん中まで走査されます。"
+                + "並んだ中身を "
+                + $"{nameof(ApprovedStaticFileExtensions)} や "
+                + $"{nameof(ApprovedStaticDirectories)} へ登録して黙らせないでください"
+                + "(とくに種別の登録はすべての入れ物に効くので、検出網が一斉に広がります。"
+                + "入れ物の登録も、綴りをそろえる判断をしないままその入れ物を検査から外します)。"
+                + "先にこの入れ物の扱いを決めてから、残りを確認してください。",
+        // 足し忘れを黙って通さない(案内の無い失敗文言を出さない)
+        _ => throw new NotSupportedException($"{repair} に対応する案内がありません。"),
+    };
+
+    /// <summary>原因を、失敗文言に出す日本語にする。</summary>
+    /// <param name="cause">落ちた原因。</param>
+    /// <returns>失敗文言に出す文字列。</returns>
+    /// <exception cref="NotSupportedException">対応する文字列を足し忘れている場合。</exception>
+    private static string CauseText(UnapprovedCause cause) => cause switch
+    {
+        // 入れ物そのものが表に無い
+        UnapprovedCause.UnapprovedDirectory => "承認されていない入れ物",
+        // 直下のファイル名が表に無い
+        UnapprovedCause.UnapprovedRootFile => "承認されていない直下のファイル",
+        // ファイルの種類が表に無い
+        UnapprovedCause.UnapprovedExtension => "承認されていない種類のファイル",
+        // 承認済みの資産と綴りの大小だけが違う
+        UnapprovedCause.MiscasedApprovedAsset => "承認済みの資産と綴りの大小が違う",
+        // 綴りの大小が違い、そろえる先が中を見ない入れ物
+        UnapprovedCause.MiscasedOpaqueContainer =>
+            "承認済みの資産と綴りの大小が違う(そろえる先は中を見ない入れ物)",
+        // 上の入れ物の中から出てきたもの(表へ登録する話ではない)
+        UnapprovedCause.ContentsOfMiscasedOpaqueContainer =>
+            "綴りの大小が違う「中を見ない入れ物」の中にあるもの",
+        // 足し忘れを黙って通さない(§9 fail-closed)
+        _ => throw new NotSupportedException($"{cause} に対応する文言がありません。"),
+    };
+
+    /// <summary>原因に対して、どの直し方を案内するかを返す。</summary>
+    /// <param name="cause">落ちた原因。</param>
+    /// <returns>案内する直し方の種類。</returns>
+    /// <exception cref="NotSupportedException">対応する直し方を足し忘れている場合。</exception>
+    private static RepairKind RepairFor(UnapprovedCause cause) => cause switch
+    {
+        // 表に無いものは、公開してよいと確認したうえで表へ登録する
+        UnapprovedCause.UnapprovedDirectory => RepairKind.RegisterInTable,
+        // 直下のファイルも同じ
+        UnapprovedCause.UnapprovedRootFile => RepairKind.RegisterInTable,
+        // 種類も同じ
+        UnapprovedCause.UnapprovedExtension => RepairKind.RegisterInTable,
+        // 大小違いは<b>表へ足さない</b> ——同じ資産を 2 度承認することになる
+        UnapprovedCause.MiscasedApprovedAsset => RepairKind.AlignSpelling,
+        // そろえる先が中を見ない入れ物なら、そろえる前に中身を確かめる必要がある
+        UnapprovedCause.MiscasedOpaqueContainer => RepairKind.AuditContentsBeforeAligning,
+        // その中身も同じ直し方へ寄せる ——「表へ登録する」を案内すると、その承認は
+        // すべての入れ物に効いてしまい、同じ失敗文言の中で案内が相反する
+        UnapprovedCause.ContentsOfMiscasedOpaqueContainer => RepairKind.AuditContentsBeforeAligning,
+        // 足し忘れを黙って通さない(既定の枝へ落として誤った案内を出さない)
+        _ => throw new NotSupportedException($"{cause} に対応する直し方がありません。"),
+    };
+
+    /// <summary>
+    /// 静的資産の承認表を、<b>表の名前つきで</b>すべて並べる。
+    /// </summary>
+    /// <remarks>
+    /// <para>表そのものに掛ける検査（理由が書かれているか・大小衝突が無いか・比較器が
+    /// 大小を区別するか）が同じ並びを必要とするので、1 か所から配る。
+    /// 各検査が並びを書き写すと、表を足したときに<b>片方だけが取り残される</b>（§6 DRY）。</para>
+    ///
+    /// <para><b>対象は「この型が持つ 名前 → 説明 の静的な表」すべて（レビュー指摘）。</b>
+    /// 値の形から「承認表かどうか」は見分けられないので、無関係な表をここへ足すと
+    /// 同じ 3 つの要求（理由が空でない・大小衝突が無い・大小を区別する比較器）が掛かる。
+    /// <b>それでよい</b>と決めている ——どれもこの型の表であれば等しく妥当な要求で、
+    /// 掛けたくない表は<b>使う関数の中で宣言すれば</b>（静的フィールドにしなければ）対象から外れる。
+    /// 見分けようとして名前や宣言型で絞ると、次に表を足す人の書き方しだいで黙って外れる。</para>
+    ///
+    /// <para><b>手書きの包含リストにしない（レビュー指摘）。</b> 名前を並べる形にすると、
+    /// 5 つ目の表を足した人が登録を忘れたときに<b>その表だけが黙って照合から外れ</b>、
+    /// 登録済みどうしは一致し続けるので全件緑のまま通る（このファイルは
+    /// <c>ViewModelFlagScreens</c> でまったく同じ形の穴を記録している）。
+    /// この型が持つ「名前 → 理由」の静的な表をリフレクションで導けば、
+    /// 足した表は何もしなくても検査に入る。</para>
+    /// </remarks>
+    /// <returns>表の名前と中身の組（名前順）。</returns>
+    private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
+        StaticAssetTables() => StaticAssetTablesIn(typeof(ResponseCacheAttributePolicyTests));
+
+    /// <summary>
+    /// 渡された型が持つ「名前 → 説明」の静的な表を、名前つきで並べる（導出の本体）。
+    /// </summary>
+    /// <remarks>
+    /// <b>型を引数で受けるのは、絞り込みを合成入力で固定するため（レビュー指摘）。</b>
+    /// 実在の表がすべて private なので、アクセシビリティの絞り込みを
+    /// <c>NonPublic</c> だけへ狭めても<b>全件緑のまま・テスト件数も不変</b>で通っていた
+    /// （5 つ目の表を public で宣言した人だけが黙って検査から外れる）。
+    /// </remarks>
+    /// <param name="owner">表を宣言している型。</param>
+    /// <returns>表の名前と中身の組（名前順）。</returns>
+    private static IReadOnlyList<(string Name, IReadOnlyDictionary<string, string> Entries)>
+        StaticAssetTablesIn(Type owner)
+    {
+        // その型が自分で宣言している静的なフィールドをすべて見る
+        var tables = owner
+            // <b>公開されているフィールドも見る（レビュー指摘）。</b> NonPublic だけに絞ると、
+            // 表を public で宣言した瞬間に 3 つの検査すべてから黙って外れる
+            // ——docstring が書いていない 2 つ目の逃げ道になる(このファイルの姉妹の導出も
+            // まさにこの理由で Public を含めている)
+            .GetFields(
+                BindingFlags.Public | BindingFlags.NonPublic
+                | BindingFlags.Static | BindingFlags.DeclaredOnly)
+            // 読み手に分かる並びにする(宣言順はリフレクションでは保証されない)
+            .OrderBy(field => field.Name, StringComparer.Ordinal)
+            // 「名前 → 理由」の形の表だけを拾う。<b>宣言型ではなく値の型で見る（レビュー指摘）。</b>
+            // 宣言型の完全一致にすると、5 つ目の表をいちばん自然な形
+            // (`private static readonly Dictionary<string, string> ...`)で足した人の表が
+            // 黙って 3 つの検査すべてから外れる ——「手書きの包含リスト」を
+            // 「手書きの宣言型」へ置き換えただけで、登録忘れが素通りする形は残る
+            .Select(field => (field.Name, Entries: field.GetValue(null) as IReadOnlyDictionary<string, string>))
+            // 表でないフィールドは落とす
+            .Where(table => table.Entries is not null)
+            // null でないことが確定したので、そのまま組にする
+            .Select(table => (table.Name, Entries: table.Entries!))
+            .ToList();
+
+        // 1 つも導けないなら走査が壊れている(「見るべき対象ゼロ＝緑」を避ける)
+        Assert.NotEmpty(tables);
+
+        // 導いた組をそのまま返す
+        return tables;
+    }
+
+    /// <summary>
+    /// 承認表の中で、<b>大小だけが違うキーの組</b>を集める（判定の純粋関数）。
+    /// </summary>
+    /// <remarks>
+    /// 実在の表は現時点で 1 組も持たないので、実在の表だけを見る検査は
+    /// <b>判定を「常に空を返す」へ潰しても緑のまま</b>になる（レビュー指摘）。
+    /// このファイルが他の判定でそうしているのと同じく、合成入力で判定そのものを固定するために出す。
+    /// </remarks>
+    /// <param name="table">調べる承認表。</param>
+    /// <returns>大小だけが違うキーの組（無ければ空）。</returns>
+    private static IEnumerable<IReadOnlyList<string>> KeysThatDifferOnlyByCase(
+        IReadOnlyDictionary<string, string> table) =>
+        // <b>引き方と同じ等価関係で</b>畳み、2 つ以上が同じ所へ落ちた組だけを返す。
+        // ToLowerInvariant で畳むと ApprovedSpellingFor(OrdinalIgnoreCase) と食い違い、
+        // 両方向に穴が開く(レビューが BMP 全域で実測): U+00B5 と U+03BC は
+        // OrdinalIgnoreCase では等しいのに小文字化では別の組へ落ちて<b>衝突を見逃し</b>、
+        // U+212A と k は小文字化では同じ組なのに OrdinalIgnoreCase では等しくないので
+        // <b>曖昧でない表を赤くする</b>
+        table.Keys
+            .GroupBy(key => key, StringComparer.OrdinalIgnoreCase)
+            .Where(group => group.Count() > 1)
+            .Select(group => (IReadOnlyList<string>)group.ToList());
+
+    /// <summary>
+    /// <b>名前で承認する</b>資産（入れ物・直下のファイル）を 1 件判定する。
+    /// </summary>
+    /// <remarks>
+    /// <b>入れ物と直下のファイルで書き写さない（レビュー指摘）。</b> 判定は「大小を無視して探す →
+    /// 無ければ未承認 → 見つかったが綴りが違えば大小違い」の 3 段で、違うのは<b>表と未承認の理由</b>だけ。
+    /// 書き写すと、片方だけを直す変更が通ってしまう ——このファイルが
+    /// <c>StaticAssetTables()</c> を切り出したのと同じ理由。
+    /// </remarks>
+    /// <param name="table">名前を承認する表。</param>
+    /// <param name="relativePath">判定する資産の相対パス。</param>
+    /// <param name="missingCause">表に無かったときの理由（入れ物か直下のファイルかで変わる）。</param>
+    /// <param name="alignTargetIsOpaque">
+    /// そろえる先が「中を見ない入れ物」かを返す判定。<b>渡されるのは承認表側の綴り</b>
+    /// （実際に置かれている名前ではない）——そろえた<b>あと</b>にどうなるかを見るため。
+    /// 直下のファイルには中を見ない入れ物が無いので <c>_ =&gt; false</c> を渡す。
+    /// <b>既定値を持たせない</b>: 省略できると、渡し忘れた呼び出しが黙って
+    /// 「ただ綴りをそろえてください」という危ない案内へ戻る（§9 fail-closed）。
+    /// </param>
+    /// <returns>承認されていなければその 1 件、承認されていれば <c>null</c>。</returns>
+    private static UnapprovedStaticAsset? ClassifyByName(
+        IReadOnlyDictionary<string, string> table,
+        string relativePath,
+        UnapprovedCause missingCause,
+        Func<string, bool> alignTargetIsOpaque)
+    {
+        // 綴りの大小を無視して承認済みの行を探す(理由は ApprovedSpellingFor の説明が正本)
+        var approved = ApprovedSpellingFor(table, relativePath);
+
+        // 大小を無視しても見つからなければ、渡された理由で未承認とする
+        if (approved is null) return new UnapprovedStaticAsset(relativePath, missingCause);
+
+        // 綴りまで一致していれば承認済み(報告するものは無い)
+        if (ContainsExactSpelling(table, relativePath)) return null;
+
+        // そろえる先が「中を見ない入れ物」なら、直し方が危ないので別の理由で報告する
+        var cause = alignTargetIsOpaque(approved)
+            ? UnapprovedCause.MiscasedOpaqueContainer
+            : UnapprovedCause.MiscasedApprovedAsset;
+
+        // 見つかったが綴りの大小が違う。承認表側の綴りも添えて、
+        // どちらをそろえるかは読み手に決めてもらう(表の綴りを正しいと決め打たない)
+        return new UnapprovedStaticAsset(relativePath, cause, approved);
+    }
+
+    /// <summary>
+    /// 承認表に、<b>綴りまで同じ</b>キーがあるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// <para><see cref="ApprovedSpellingFor"/> と対で、<b>同一性</b>（分類ではない）を見る側。
+    /// 「中を見ない入れ物」の判定と、2 つの表が同じ綴りで対になっているかの照合が使う。</para>
+    ///
+    /// <para><b>表の比較器に判断させない</b>のは <see cref="ApprovedSpellingFor"/> と同じ理由。
+    /// 同じ 3 語の綴りを各所へ書き写すと、片方だけを大小無視へ戻す変異が書ける（§6 の一元管理。
+    /// レビューで実際に 3 つ目の写しになりかけた）。</para>
+    /// </remarks>
+    /// <param name="table">承認表。</param>
+    /// <param name="name">突き合わせる名前。</param>
+    /// <returns>綴りまで同じキーがあれば <c>true</c>。</returns>
+    private static bool ContainsExactSpelling(IReadOnlyDictionary<string, string> table, string name) =>
+        // 大小まで含めて一致するキーがあるかを見る(表は数件なので走査で足りる)
+        table.Keys.Any(key => string.Equals(key, name, StringComparison.Ordinal));
+
+    /// <summary>
+    /// 承認表から、<b>綴りの大小を無視して</b>一致するキー（承認された綴り）を探す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ大小を無視するのか（issue #270）。</b> macOS / Windows のような
+    /// 大文字小文字を区別しないファイルシステムでは、<c>wwwroot/FAVICON.ICO</c> は
+    /// <c>UseStaticFiles</c> から見て <c>favicon.ico</c> とまったく同じに配信される。
+    /// 区別して引くと、<b>正しく配信されている承認済みの資産が「未承認」として報告され</b>、
+    /// 失敗文言は「表へ足せ」という<b>誤った直し方</b>を案内する ——従うと同じ資産を 2 度承認する。
+    /// <b>直したのは案内であって、赤くなること自体ではない（レビュー指摘）。</b>
+    /// 大小が違う資産は引き続き違反として報告され CI も赤いままで、変わるのは
+    /// 「なぜ落ちたか」と「どう直すか」だけ ——ここを「もう落ちなくなる」と読むと、
+    /// 実際に赤くなったときに検査のほうを疑うことになる。</para>
+    ///
+    /// <para><b>それでも綴りは見る。</b> 大小を無視して素通しにすると、大文字小文字を
+    /// <b>区別する</b>ファイルシステムでは <c>wwwroot/LIB</c> が本物の <c>lib</c> とは
+    /// 別の入れ物なのに承認を継いでしまう。見つかった綴りを呼び出し側が
+    /// <see cref="UnapprovedCause.MiscasedApprovedAsset"/> と突き合わせることで、
+    /// 「赤くならない」でも「誤った直し方を案内する」でもない third option を取る。</para>
+    ///
+    /// <para><b>表の比較器には依存させない。</b> 引き方をここへ寄せることで、
+    /// 表を <c>Ordinal</c> で作るか <c>OrdinalIgnoreCase</c> で作るかに答えが左右されなくなる
+    /// ——issue #270 の本体は「表ごとに比較器が違っていた」ことなので、
+    /// 比較器をそろえるだけでは<b>次に表を足す人が再び取り違えられる</b>（§6 の一元管理）。
+    /// 表は数件なので、素直に走査して構わない。</para>
+    ///
+    /// <para><b>前提: 表は「承認された綴り」を持ち、大小だけが違うキーを同時に持たない。</b>
+    /// 同居すると、どちらが返るかは <c>Dictionary</c> の規定されていない列挙順に依存する
+    /// （同じ入れ物が承認済みにも大小違いにもなりうる）。比較器に依存しない引き方にした以上、
+    /// 表を <c>Ordinal</c> で作り直すことは許される形なので、<b>レビュー任せにせず</b>
+    /// <c>StaticAssetTables_HaveNoKeysThatDifferOnlyByCase</c> が機械的に固定する。</para>
+    ///
+    /// <para><b>表の綴りを「正しい側」と決め打たない。</b> 名前が外部で決まっている資産
+    /// （ベンダーが配る <c>LICENSE.txt</c> など）では表のほうを直すのが正しいので、
+    /// 呼び出し側は承認表の綴りも一緒に報告し、どちらへそろえるかは人が決める
+    /// ——決め打つと、登録も改名もできない<b>行き止まり</b>を作る（レビュー指摘）。</para>
+    /// </remarks>
+    /// <param name="table">承認表（キーが承認された綴り）。</param>
+    /// <param name="name">突き合わせる名前（実際に置かれている綴り）。</param>
+    /// <returns>承認された綴り。大小を無視しても見つからなければ <c>null</c>。</returns>
+    private static string? ApprovedSpellingFor(
+        IReadOnlyDictionary<string, string> table,
+        string name) =>
+        // 大小を無視して一致する最初のキーを返す(表は数件なので走査で足りる)
+        table.Keys.FirstOrDefault(key => string.Equals(key, name, StringComparison.OrdinalIgnoreCase));
 
     /// <summary>
     /// <c>wwwroot</c> 配下に置いてよい（キャッシュ可能で問題ない）入れ物と、その理由。
@@ -1178,7 +3006,7 @@ public class ResponseCacheAttributePolicyTests
     /// その変更と同じ差分でここへ 1 行足す。</para>
     /// </summary>
     private static readonly IReadOnlyDictionary<string, string> ApprovedStaticFileExtensions =
-        new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
+        new Dictionary<string, string>(StringComparer.Ordinal)
         {
             // スタイルシート
             [".css"] = "アプリのスタイルシート。利用者ごとの内容を持たない。",
@@ -1264,8 +3092,15 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="relativePath"><c>wwwroot</c> からの相対パス。</param>
     /// <returns>中を見ない入れ物なら true。</returns>
     private static bool IsOpaqueStaticDirectory(string relativePath) =>
-        // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)
-        OpaqueStaticDirectories.ContainsKey(relativePath);
+        // 完全一致でのみ判断する(前方一致にすると library のような別の入れ物まで巻き込む)。
+        // <b>綴りの大小もここでは無視しない（レビュー指摘）。</b> 承認表の引き方と同じく
+        // 大小を無視すると、大文字小文字を<b>区別する</b>ファイルシステムでは
+        // 別の入れ物である `LIB` の中へ降りなくなり、そこに置かれた PHI が
+        // <b>1 件も列挙されない</b>。しかも失敗文言が勧める「名前をそろえる」に従うと、
+        // その中身は永久に中を見ない `lib` へ吸収され、検査は緑になる
+        // ——覆う範囲を広げる変更が別の軸で範囲を狭めていた形(issue #254 の再来)。
+        // 表の比較器に判断させないのは ApprovedSpellingFor と同じ理由(§6 の一元管理)
+        ContainsExactSpelling(OpaqueStaticDirectories, relativePath);
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（実在の表を使う入口）。
@@ -1279,7 +3114,8 @@ public class ResponseCacheAttributePolicyTests
             entries,
             ApprovedStaticDirectories,
             ApprovedStaticRootFiles,
-            ApprovedStaticFileExtensions);
+            ApprovedStaticFileExtensions,
+            IsOpaqueStaticDirectory);
 
     /// <summary>
     /// 承認されていない入れ物・ファイルを集める（判定の純粋関数）。
@@ -1291,15 +3127,23 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="approvedDirectories">承認済みの入れ物の表。</param>
     /// <param name="approvedRootFiles"><c>wwwroot</c> 直下に置いてよいファイル名の表。</param>
     /// <param name="approvedExtensions">承認済みのファイル種別の表。</param>
+    /// <param name="isOpaqueDirectory">
+    /// その入れ物が「中を見ない入れ物」かを返す判定（<see cref="ClassifyByName"/> へ渡す）。
+    /// </param>
     /// <returns>承認されていないものの一覧（入力の順を保つ）。</returns>
     private static IReadOnlyList<UnapprovedStaticAsset> FindUnapprovedStaticAssets(
         IEnumerable<StaticAssetEntry> entries,
         IReadOnlyDictionary<string, string> approvedDirectories,
         IReadOnlyDictionary<string, string> approvedRootFiles,
-        IReadOnlyDictionary<string, string> approvedExtensions)
+        IReadOnlyDictionary<string, string> approvedExtensions,
+        Func<string, bool> isOpaqueDirectory)
     {
         // 承認されていなかったものを順に積む入れ物
         var unapproved = new List<UnapprovedStaticAsset>();
+
+        // 「綴りの大小だけが違う中を見ない入れ物」として報告した入れ物の相対パス。
+        // その中から出てきたものは、あとでまとめて専用の理由へ付け替える
+        var miscasedOpaqueContainers = new List<string>();
 
         // 見つかったものを 1 件ずつ順に判定する
         foreach (var entry in entries)
@@ -1307,11 +3151,21 @@ public class ResponseCacheAttributePolicyTests
             // 入れ物(ディレクトリ)は、相対パスが承認表にあるかで判断する
             if (entry.IsDirectory)
             {
-                // 表に無ければ「承認されていない入れ物」として記録する
-                if (!approvedDirectories.ContainsKey(entry.RelativePath))
+                // 名前で承認する判定は直下のファイルと同じなので、共通の判定へ通す
+                var verdict = ClassifyByName(
+                    approvedDirectories,
+                    entry.RelativePath,
+                    UnapprovedCause.UnapprovedDirectory,
+                    isOpaqueDirectory);
+
+                // 承認されていなければ、返ってきた 1 件をそのまま積む
+                if (verdict is not null) unapproved.Add(verdict.Value);
+
+                // その入れ物が「綴り違いの中を見ない入れ物」なら、中から出てくるものの出所として控える
+                if (verdict?.Cause == UnapprovedCause.MiscasedOpaqueContainer)
                 {
-                    // 相対パスと理由を添えて積む
-                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedDirectoryCause));
+                    // 相対パスを控えておく(付け替えは全件そろってから行う)
+                    miscasedOpaqueContainers.Add(entry.RelativePath);
                 }
 
                 // 入れ物の判定はここで終わり(拡張子では見ない)
@@ -1322,11 +3176,15 @@ public class ResponseCacheAttributePolicyTests
             if (!entry.RelativePath.Contains('/'))
             {
                 // 直下は名前そのもので 1 件ずつ承認する(理由は表の docstring を参照)
-                if (!approvedRootFiles.ContainsKey(entry.RelativePath))
-                {
-                    // 相対パスと理由を添えて積む
-                    unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedRootFileCause));
-                }
+                // 直下のファイルに「中を見ない入れ物」は無いので、常に false を渡す
+                var verdict = ClassifyByName(
+                    approvedRootFiles,
+                    entry.RelativePath,
+                    UnapprovedCause.UnapprovedRootFile,
+                    _ => false);
+
+                // 承認されていなければ、返ってきた 1 件をそのまま積む
+                if (verdict is not null) unapproved.Add(verdict.Value);
 
                 // 直下のファイルの判定はここで終わり(種類では見ない)
                 continue;
@@ -1335,17 +3193,48 @@ public class ResponseCacheAttributePolicyTests
             // 入れ物の中のファイルは種類(拡張子)で判断する。拡張子が無ければ空文字になり、表にも無い
             var extension = Path.GetExtension(entry.RelativePath);
 
-            // 表に無ければ「承認されていない種類のファイル」として記録する
-            if (!approvedExtensions.ContainsKey(extension))
+            // 種類は<b>同一性ではなく分類</b>なので、大小の一致までは求めない
+            // (site.JS は綴りが違うだけで同じスクリプト。ここで赤くすると正しいファイルが落ちる)
+            if (ApprovedSpellingFor(approvedExtensions, extension) is null)
             {
                 // 相対パスと理由を添えて積む
-                unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedExtensionCause));
+                unapproved.Add(new UnapprovedStaticAsset(entry.RelativePath, UnapprovedCause.UnapprovedExtension));
             }
         }
 
-        // 入力の順を保ったまま返す
-        return unapproved;
+        // 控えた入れ物が 1 つも無ければ、付け替えるものも無い
+        if (miscasedOpaqueContainers.Count == 0) return unapproved;
+
+        // 入力の順を保ったまま、控えた入れ物の中から出てきたものだけ理由を付け替えて返す。
+        // <b>走査の順に頼らない（列挙の実装が変わっても同じ結果になるように）</b>
+        return unapproved
+            .Select(item =>
+                // 中身なら専用の理由へ付け替える(承認表側の綴りは中身には無いので落とす)
+                IsInsideAny(item.RelativePath, miscasedOpaqueContainers)
+                    ? new UnapprovedStaticAsset(
+                        item.RelativePath,
+                        UnapprovedCause.ContentsOfMiscasedOpaqueContainer)
+                    // 中身でなければそのまま
+                    : item)
+            .ToList();
     }
+
+    /// <summary>
+    /// その相対パスが、渡した入れ物のいずれかの<b>中</b>にあるかを返す。
+    /// </summary>
+    /// <remarks>
+    /// 突き合わせは<b>綴りまで一致</b>で行う。比べる相手は承認表の綴りではなく
+    /// <b>実際に列挙された入れ物の相対パス</b>で、中身の相対パスもそこから組み立てられているため、
+    /// 大小を無視すると<b>別の入れ物</b>（大文字小文字を区別するファイルシステムでは
+    /// <c>LIB</c> と <c>lib</c> は別物）の中身まで巻き込む。
+    /// </remarks>
+    /// <param name="relativePath">調べる相対パス。</param>
+    /// <param name="containers">入れ物の相対パスの一覧。</param>
+    /// <returns>いずれかの中にあれば <c>true</c>。</returns>
+    private static bool IsInsideAny(string relativePath, IEnumerable<string> containers) =>
+        // 区切りまで含めて前方一致するかを見る(LIB2 が LIB の中と誤判定されないように)
+        containers.Any(container =>
+            relativePath.StartsWith(container + "/", StringComparison.Ordinal));
 
     /// <summary>
     /// その属性インスタンスが出力キャッシュの属性かを返す。
@@ -1353,8 +3242,12 @@ public class ResponseCacheAttributePolicyTests
     /// <param name="attribute">調べる属性。</param>
     /// <returns>出力キャッシュの属性なら true。</returns>
     private static bool IsOutputCacheAttribute(object attribute) =>
-        // 型の完全修飾名で判定する(型を直接参照しないのは docstring の理由による)
-        IsOutputCacheAttributeTypeName(attribute.GetType().FullName ?? attribute.GetType().Name);
+        // 「実際に効くフィルタの型」をすべて見る ——直接書かれた属性そのものに加えて、
+        // [TypeFilter(typeof(...))] / [ServiceFilter(typeof(...))] が指している型も含む(issue #281)。
+        // 応答キャッシュ側と同じ入り口を通すので、片方だけが間接指定を辿る状態が生まれない
+        ResponseCachePolicy.EffectiveFilterTypes(attribute)
+            // 型の完全修飾名で判定する(型を直接参照しないのは docstring の理由による)
+            .Any(type => IsOutputCacheAttributeTypeName(type.FullName ?? type.Name));
 
     /// <summary>
     /// 型の完全修飾名が出力キャッシュの属性を指すかを返す(判定の純粋関数)。
@@ -1363,7 +3256,49 @@ public class ResponseCacheAttributePolicyTests
     /// <returns>出力キャッシュの属性なら true。</returns>
     private static bool IsOutputCacheAttributeTypeName(string typeFullName) =>
         // 名前空間を問わず、型名が OutputCacheAttribute のものを拾う
-        typeFullName.Split('.').Last().Equals("OutputCacheAttribute", StringComparison.Ordinal);
+        SimpleTypeNameOf(typeFullName).Equals("OutputCacheAttribute", StringComparison.Ordinal);
+
+    /// <summary>
+    /// 型の完全修飾名から<b>単純名</b>(名前空間・外側の型・総称の個数を落とした綴り)を取り出す。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ最後のドット区切りでは足りないのか(issue #281)。</b>
+    /// <c>FullName</c> の綴りは型の形によって変わるので、<c>Split('.').Last()</c> は
+    /// <b>素の型でしか</b>単純名にならない:</para>
+    /// <list type="table">
+    /// <item><description>素の型: <c>Ns.OutputCacheAttribute</c> → <c>OutputCacheAttribute</c> ✅</description></item>
+    /// <item><description>入れ子: <c>Ns.Caching+OutputCacheAttribute</c> → <c>Caching+OutputCacheAttribute</c> ❌</description></item>
+    /// <item><description>総称: <c>Ns.OutputCacheAttribute`1</c> → <c>OutputCacheAttribute`1</c> ❌</description></item>
+    /// </list>
+    /// <para>どちらも<b>見逃す側</b>へ倒れるうえ、実型を使うプローブは素の型なので通る
+    /// ——狭いままでも全件緑になる。docstring が約束している「名前空間を問わず拾う」を
+    /// 実際に成り立たせるため、3 つの綴りを同じ 1 か所で扱う。</para>
+    ///
+    /// <para><b>総称の引数リストを先に落とす。</b> C# 11 以降は属性も総称にできるので、
+    /// 閉じた総称の <c>FullName</c> は <c>Ns.MyAttribute`1[[System.Int32, ...]]</c> の形になる
+    /// ——この括弧の中にも区切り文字が入っているため、先に落とさないと区切りの探索が
+    /// <b>型引数側</b>に当たる。</para>
+    /// </remarks>
+    /// <param name="typeFullName">属性の型の完全修飾名。</param>
+    /// <returns>名前空間・外側の型・総称の個数を落とした単純名。</returns>
+    private static string SimpleTypeNameOf(string typeFullName)
+    {
+        // 閉じた総称の型引数リスト([[...]])を先に落とす(中に区切り文字が入っているため)
+        var withoutTypeArguments = typeFullName.Split('[', 2)[0];
+
+        // 名前空間の区切り(.)と入れ子の区切り(+)のうち、<b>後ろにあるほう</b>から先を取る。
+        // どちらも「外側の入れ物」を表すので、遅いほうの区切りより後ろが単純名になる
+        var nameStart = withoutTypeArguments.LastIndexOfAny(['.', '+']) + 1;
+
+        // 単純名の候補(ここまでで名前空間と外側の型は落ちている)
+        var simpleName = withoutTypeArguments[nameStart..];
+
+        // 総称の個数を表す印(`1)が付いていれば、その手前までが名前
+        var arityMark = simpleName.IndexOf('`', StringComparison.Ordinal);
+
+        // 印が無ければそのまま、あればその手前までを返す
+        return arityMark < 0 ? simpleName : simpleName[..arityMark];
+    }
 
     // 「Cache-Control を名指ししている行か」の判定が、拾う側と見逃さない側の両方で働くこと。
     //
@@ -2475,9 +4410,11 @@ public class ResponseCacheAttributePolicyTests
     // (DeclarationScan_ReportsAnInheritedActionOnlyOnce)があるが、クラス側には無かった。
     //
     // <b>この検査は一度「走査の作り直し」で巻き添えに消えた。</b> 消えている間、
-    // ResponseCachePolicy.DeclaringTypeOf(Type) の本体を `return controller;` に潰しても
-    // 898 件すべて緑のまま通った(実測)——クラス側の宣言を持つ合成コントローラが
-    // 自分で宣言している 1 つだけになり、基底をたどる経路が一度も実行されないため。
+    // 宣言元をたどる仕組み(当時の DeclaringTypeOf。issue #275 で「継承の連なりを 1 段ずつ
+    // 訪ねる」形へ置き換えた)を潰しても 898 件すべて緑のまま通った(実測)——クラス側の宣言を
+    // 持つ合成コントローラが自分で宣言している 1 つだけになり、基底をたどる経路が
+    // 一度も実行されないため。<b>いまも同じ性質を守っている</b>: この検査が無いと、
+    // 基底の段を訪ねる枝を落としても合成入力が一度もその枝を通らない。
     [Fact]
     public void DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase()
     {
@@ -2487,7 +4424,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondClassLevelInheritedProbeController));
 
         // 基底のクラス属性(Duration = 77)に由来する宣言が 1 件だけであること
-        var inherited = Assert.Single(declarations, d => d.Attribute.Duration == 77);
+        var inherited = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 77 });
         // 名指しが、属性を実際に宣言している基底であること(派生の名前ではない)
         Assert.Contains(
             nameof(ClassLevelInheritedProbeControllerBase),
@@ -2510,8 +4447,8 @@ public class ResponseCacheAttributePolicyTests
     // ResponseCacheAttribute だけを渡している限り、キーを直しても本番の挙動は変わらず、
     // 直したこと自体が無検証になる（この repo が Stripe の API 版ガードで学んだ形）。
     //
-    // <b>この検査が固定する範囲。</b> 「宣言元だけをキーにする」版（＝この PR 以前）を落とす
-    // （実測: キーから属性の型を落とすと、クラス側・アクション側の Assert.Single が落ちる）。
+    // <b>この検査が固定する範囲。</b> 「1 つの宣言元につき 1 件しか返さない」形を落とす
+    // （かつてキーから属性の型を落とすと起きた形で、いまは同じ段の宣言を種類で畳むと再現する）。
     // <b>覆うのは「同じ宣言元に 2 種類」の形だけ</b>で、宣言元が具象と基底に分かれる形は
     // AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne が見る。
     [Fact]
@@ -2580,21 +4517,21 @@ public class ResponseCacheAttributePolicyTests
             StringComparison.Ordinal);
     }
 
-    // 重複除去のキーの<b>属性の型</b>の部分が効いていること。
+    // 同じ段に 2 種類あるとき、<b>種類ごとに別の宣言として</b>返ること。
     //
     // <b>なぜ上の検査と別に要るのか。</b> AttributeScan_ReturnsEveryMatchedKind は
     // 2 種類が<b>同じ宣言元</b>に付いた形しか見ない。こちらは<b>宣言元が具象と基底に
     // 分かれる</b>形 ——具象が 2 種類目を宣言し直すと、その具象からは基底の 2 種類目が
     // 見えなくなり、走査ごとに「その宣言元で見える同じ種類の数」が変わる。
-    // 宣言元をたどる側（SameKindAs）とキーの側が噛み合っていないと、ここで崩れる:
+    // 走査が「1 段ずつ読む単位」と「名指しの単位」が噛み合っていないと、ここで崩れる:
     //
     //   Base   : [SecondKindProbe] [ResponseCache(12)]
     //   LeafA  : [SecondKindProbe]（自分で宣言し直す。AllowMultiple = false なので基底の分は見えない）
     //   LeafB  : 素の継承
     //
     // 正しい実装では 3 件（LeafA の 2 種類目 / Base の 1 種類目 / Base の 2 種類目）。
-    // キーから型を落とすと Base の宣言元で 2 種類が同じキーになり、<b>2 件に減る</b>
-    // （実測: 落ちるのは下の Assert.Equal(3, …)）。内訳の Assert.Single は
+    // 同じ段の宣言を「属性の種類を問わず 1 件」へ畳む形へ戻すと Base が 1 件に減って
+    // <b>2 件になる</b>（落ちるのは下の Assert.Equal(3, …)）。内訳の Assert.Single は
     // 「どちらが消えたか」まで押さえるために置いてあるので、件数だけに削らないこと。
     [Fact]
     public void AttributeScan_KeepsEachKindOnItsOwnDeclaringType_WhenAConcreteTypeRedeclaresOne()
@@ -2643,45 +4580,58 @@ public class ResponseCacheAttributePolicyTests
     /// <summary>基底の 2 種類をそのまま継承する具象。</summary>
     private sealed class SharedSiteProbeLeafB : SharedSiteProbeBase;
 
-    // 同じ宣言元へ<b>複数付けられる種類</b>の属性に出会ったら、黙って畳まずに落ちること。
+    // 同じ宣言元へ<b>複数付けられる種類</b>の属性が 2 つあっても、両方とも返ること（クラス側）。
     //
-    // <b>なぜ畳まずに落とすのか。</b> この走査は (宣言元, 属性の種類) で重複を畳むので、
-    // AllowMultiple = true の属性が同じ宣言元に 2 つ付いていると 2 個目以降が消える。
-    // <b>許す側の宣言がたまたま 2 個目だと、検査は緑のまま PHI を含みうる応答に
-    // 共有キャッシュ可能な指示が残る</b>。
+    // <b>以前はここで走査ごと落としていた（issue #275 で構造を入れ替えた）。</b>
+    // 旧実装は具象ごとに inherit: true で読み、(宣言元, 属性の種類) をキーに重複を畳んでいたので、
+    // AllowMultiple = true の属性が同じ宣言元に 2 つあると<b>2 個目が違反の一覧へ到達しなかった</b>
+    // ——<b>許す側の宣言がたまたま 2 個目だと、検査は緑のまま PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る</b>。そこで「畳んで失ったら落ちる」門番を置いていた。
     //
-    // <b>なぜキーへ位置を入れて「直して」おかないのか。</b> 実在のキャッシュ指示属性は
-    // すべて AllowMultiple = false なので、この形は今のところ作れない。先回りで入れると
-    // GetCustomAttributes の規定されていない並び順に答えが依存し、基底の宣言が派生の名前でも
-    // 報告される境界を新たに作る ——実在しない事情のために払う代償としては大きい
-    // （CLAUDE.md §6）。代わりに門番を置いて、<b>実際に足す人が必ず一度手を止める</b>ようにした。
+    // <b>いまは失う経路そのものが無い。</b> 走査は継承の連なりを 1 段ずつ訪ね、各段を
+    // inherit: false で読むので、同じ段に付いた宣言は<b>件数としてそのまま</b>返る。
+    // 門番が守っていた性質（2 個目が消えない）を、<b>実際に 2 件返ること</b>で直接固定する
+    // ——門番は「失ったこと」に気付く仕掛けでしかなく、失わせない保証ではなかった。
+    //
+    // 実在のキャッシュ指示属性はいずれも AllowMultiple = false なので、この形は合成入力でしか
+    // 通せない。<b>だから合成する</b> ——実在の属性だけを渡している限り、ここを畳む形へ
+    // 戻しても全件緑のまま通る。
     [Fact]
-    public void AttributeScan_RefusesToScan_WhenTheAttributeCanBeAppliedMoreThanOnce()
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheAttributeIsAppliedMoreThanOnce()
     {
-        // 複数付けられる属性を拾う述語で走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindProbeController)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // 同じクラスへ 2 つ宣言した属性を拾う述語で走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること（黙って畳まれたのと区別が付くように）
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること（1 件に畳まれたら、消えた側の指示が検査から外れる）
+        Assert.Equal(2, declarations.Count);
 
-        // 直し方まで案内していること（キーだけ直して DeclaringTypeOf を放置させない）
-        Assert.Contains("DeclaringTypeOf", error.Message, StringComparison.Ordinal);
+        // 1 つ目が、宣言しているクラスの名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindProbeController), StringComparison.Ordinal));
+
+        // 2 つ目も同じく（どちらが消えたかまで押さえるので、件数だけに削らないこと）
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindProbeController), StringComparison.Ordinal));
     }
 
-    // 複数付けられる属性が<b>1 つしか付いていない</b>ときは、走査を止めないこと。
+    // 複数付けられる属性が<b>1 つしか付いていない</b>ときは、そのまま 1 件返ること。
     //
-    // <b>門番は「その属性を見かけたら」ではなく「実際に畳んだら」鳴らす。</b>
-    // 前者だと、複数付けられる指示を 1 つ足しただけでアセンブリ全体の走査が落ち、
-    // <b>本物の違反が 1 件も報告されなくなる</b>（しかも失敗文言は違反ではなくキーの話をする）。
-    // fail-closed は保ったまま、正しくできる仕事は止めない。
+    // <b>「複数付けられる種類を見かけたら止める」形にしない。</b> そうすると、複数付けられる
+    // 指示を 1 つ足しただけでアセンブリ全体の走査が落ち、<b>本物の違反が 1 件も報告されなくなる</b>
+    // （しかも失敗文言は違反ではなく走査の都合の話をする）。走査は属性の種類ではなく
+    // <b>実際に書かれた宣言の数</b>だけを見る ——上の 2 件返る検査と対で、
+    // 「1 つなら 1 件・2 つなら 2 件」が両方向とも固定される。
     [Fact]
-    public void AttributeScan_StillWorks_WhenARepeatableAttributeAppearsOnlyOnce()
+    public void AttributeScan_ReturnsTheDeclaration_WhenARepeatableAttributeAppearsOnlyOnce()
     {
         // 複数付けられる属性が 1 つだけ付いた合成コントローラを走査する
         var declarations = ResponseCachePolicy
@@ -2698,35 +4648,548 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal("only", ((RepeatableProbeAttribute)declared.Attribute).Policy);
     }
 
-    // 門番が<b>アクション側でも</b>効いていること。
+    // 「基底のアクションが 2 つ宣言」の形でも、両方とも返ること（アクション側・基底）。
     //
-    // <b>なぜ別に要るのか（実測）。</b> 門番はキーを作る DeclarationKey の中にあるので、
-    // アクション側がキーを自前で組み立てる形に戻ると素通りする ——値が同じなので
-    // 全件緑のまま通った。この PR は SameKindAs でまったく同じクラス側／アクション側の
-    // 非対称を踏んでいるので、門番にも同じ対の検査を置く。
+    // <b>なぜ別に要るのか。</b> 走査はクラス側とアクション側で別々の枝を持つので、
+    // 片方だけを畳む形へ戻す変異が書ける。しかも<b>基底のアクションが 2 つ宣言していて
+    // 派生の素の override から見る</b>形は、旧実装で「観測場所ごとの記録」を分けた
+    // 判断の境目そのものだった ——具象が自分のアクションに 2 つ宣言する形
+    // （すぐ下の検査）だけでは、その境目を通らない。
     [Fact]
-    public void AttributeScan_RefusesToScan_WhenAnActionCarriesTheAttributeMoreThanOnce()
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheBaseActionCarriesTwoRepeatableOnes()
     {
-        // アクション側に複数付けた合成コントローラを走査すると落ちること
-        var error = Assert.Throws<NotSupportedException>(() =>
-            ResponseCachePolicy
-                .AttributeDeclarationsOn(
-                    [typeof(RepeatedKindOnActionProbeController)],
-                    typeof(ResponseCacheAttributePolicyTests).Assembly,
-                    a => a is RepeatableProbeAttribute)
-                .ToList());
+        // 基底のアクションが 2 つ宣言した属性を、素の override を持つ派生から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnBaseActionProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
 
-        // 何が問題かが失敗文言から分かること
-        Assert.Contains(nameof(RepeatableProbeAttribute), error.Message, StringComparison.Ordinal);
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、実際に宣言している<b>基底のアクション</b>の名前で 1 件
+        // （名指しが素の override を持つ派生に寄ると、開いたファイルに属性が無い形へ戻る）
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnBaseActionProbeBase), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnBaseActionProbeBase), StringComparison.Ordinal));
     }
 
-    // アクション側でも、宣言元をたどる条件が<b>その属性の型</b>まで絞られていること。
+    // 具象が<b>自分のアクションへ</b>2 つ宣言した形でも、両方とも返ること（アクション側）。
+    //
+    // <b>なぜ上の検査と対で置くのか。</b> この走査はクラス側／アクション側の非対称を
+    // 繰り返し踏んでおり、アクション側だけを畳む形へ戻す変異が実際に書ける。
+    // 旧実装でも「クラス側だけを固定していると、アクション側を緩める変異が全件緑のまま
+    // 通った」という実測が残っている。
+    [Fact]
+    public void AttributeScan_ReturnsBothDeclarations_WhenAnActionCarriesTheAttributeMoreThanOnce()
+    {
+        // アクション側へ 2 つ宣言した合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnActionProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、そのアクションの名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnActionProbeController), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.Contains(nameof(RepeatedKindOnActionProbeController), StringComparison.Ordinal));
+    }
+
+    // 複数付けられる属性を<b>基底へ 1 回だけ</b>付けて 2 つ派生させたとき、1 件だけ返ること。
+    //
+    // <b>なぜ要るのか（issue #269 / #255 / #275）。</b> 「同じ 1 つの宣言を 2 つの派生型から見た」
+    // だけで 2 件に見える形は、この走査が繰り返し踏んできた誤りで、直し方を誤ると逆方向
+    // ——正しいコードで走査そのものが止まる——へも倒れた。いまは畳む単位が<b>訪ねた段</b>
+    // なので、基底の段を 1 度しか読まないことで構造的に 1 件になる。
+    // <b>訪ねた段の記録を外すと、ここが派生の数だけ並んで落ちる</b>（実測）。
+    [Fact]
+    public void AttributeScan_ReturnsOneDeclaration_WhenOneRepeatableOneIsSeenThroughTwoDerivedTypes()
+    {
+        // 基底が 1 つだけ宣言した属性を、2 つの派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SharedRepeatableProbeLeafA), typeof(SharedRepeatableProbeLeafB)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること(派生の数だけ並べない)
+        var declared = Assert.Single(declarations);
+
+        // 名指しは継承して見えた派生ではなく、実際に宣言している基底であること
+        Assert.Contains(
+            nameof(SharedRepeatableProbeBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+
+        // 中身も読めること(取り違えた宣言を返していない)
+        Assert.Equal("shared", ((RepeatableProbeAttribute)declared.Attribute).Policy);
+    }
+
+    // アクション側でも、基底の 1 つの宣言を 2 つの派生から見たときに 1 件だけ返ること。
+    //
+    // <b>なぜ別に要るのか。</b> 走査はクラス側とアクション側で別々の枝を持つので、
+    // <b>片方だけ</b>を「派生から見えた分もそのまま返す」形へ戻す変異が書ける
+    // （この走査はクラス側／アクション側の非対称を繰り返し踏んでいるので、対で置く）。
+    [Fact]
+    public void AttributeScan_ReturnsOneDeclaration_WhenOneRepeatableActionOneIsSeenThroughTwoDerivedTypes()
+    {
+        // 基底のアクションが 1 つだけ宣言した属性を、2 つの派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(SharedRepeatableActionProbeLeafA), typeof(SharedRepeatableActionProbeLeafB)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しは実際に宣言している基底であること
+        Assert.Contains(
+            nameof(SharedRepeatableActionProbeBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+
+        // 中身も読めること
+        Assert.Equal("shared-action", ((RepeatableProbeAttribute)declared.Attribute).Policy);
+    }
+
+    // <b>総称の</b>抽象基底へ 1 回だけ付けた宣言も、1 件として畳まれること。
+    //
+    // <b>なぜ要るのか（レビュー指摘）。</b> 宣言元を閉じた総称型のまま扱うと、
+    // `ExportBase<Pdf>` と `ExportBase<Csv>` は別の FullName を持つので走査全体の記録で畳まれず、
+    // <b>1 つの宣言が具象の数だけ違反として並ぶ</b>。しかも名指しはアセンブリ修飾名になり
+    // <b>開けるファイルを指さない</b> ——重複除去と宣言元の名指しが防ぐために
+    // 存在する形そのものが、総称型を通して戻っていた。
+    [Fact]
+    public void AttributeScan_FoldsOneDeclarationOnAGenericBase_AcrossItsClosedForms()
+    {
+        // 総称の基底が 1 つだけ宣言した属性を、閉じ方の違う 2 つの具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(GenericProbeLeafPdf), typeof(GenericProbeLeafCsv)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しが<b>開いた定義</b>であること(閉じた型のアセンブリ修飾名ではない)
+        Assert.Contains("GenericProbeBase", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 閉じ方（型引数）が名指しに混ざっていないこと ——混ざると開けるファイルを指さない
+        Assert.DoesNotContain("Version=", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 中身も読めること(取り違えた宣言を返していない)
+        Assert.Equal(41, ((ResponseCacheAttribute)declared.Attribute).Duration);
+    }
+
+    // アクション側でも、総称の基底の 1 つの宣言が畳まれること。
+    //
+    // クラス側と同じ非対称（片方の枝だけ直す）を作らないために対で置く。
+    [Fact]
+    public void AttributeScan_FoldsOneActionDeclarationOnAGenericBase_AcrossItsClosedForms()
+    {
+        // 総称の基底のアクションが 1 つだけ宣言した属性を、2 つの具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(GenericActionProbeLeafPdf), typeof(GenericActionProbeLeafCsv)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しが開いた定義であること
+        Assert.Contains("GenericActionProbeBase", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 中身も読めること
+        Assert.Equal(42, ((ResponseCacheAttribute)declared.Attribute).Duration);
+    }
+
+    // 総称の基底のアクションが<b>型引数を受けている</b>ときも、1 件として畳まれること。
+    //
+    // <b>なぜ引数なしのプローブでは足りないのか（レビュー指摘・実測）。</b> 宣言元の型を
+    // 開いた定義へそろえても、キーの署名部分に<b>観測した</b>メソッドを使っていると
+    // `Export(Int32)` と `Export(String)` で割れ、1 つの宣言が閉じ方の数だけ並ぶ。
+    // 引数なしの `Export()` では署名が変わらないため、この穴は見えないまま緑になっていた。
+    [Fact]
+    public void AttributeScan_FoldsOneGenericActionDeclaration_EvenWhenItsSignatureVariesByClosedForm()
+    {
+        // 型引数を引数に受けるアクションを、閉じ方の違う 2 つの具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(GenericSignatureProbeLeafPdf), typeof(GenericSignatureProbeLeafCsv)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 つしか無いので、返るのも 1 件だけであること
+        var declared = Assert.Single(declarations);
+
+        // 名指しが開いた定義であること
+        Assert.Contains("GenericSignatureProbeBase", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // <b>引数も開いた定義のまま名乗ること（レビュー指摘）。</b> 表示名に引数の型を載せる以上、
+        // 閉じ方から見た姿(Int32 / String)をそのまま載せると<b>1 つの宣言</b>が
+        // 観測した順で別の名前になる ——型名だけをそろえても引数が具象のまま残る
+        Assert.Contains("(TModel)", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 閉じ方の具象がそのまま漏れていないこと(どちらの閉じ方を先に見ても同じ文言になる)
+        Assert.DoesNotContain("Int32", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // <b>宣言元の型もソースの綴りで名乗ること（レビュー指摘）。</b> 素の FullName だと
+        // `GenericSignatureProbeBase`1` というメタデータの綴りのまま出て、引数側
+        // （同じ 1 行の中）がソースの綴りなのと食い違う
+        Assert.DoesNotContain("`1", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 中身も読めること
+        Assert.Equal(43, ((ResponseCacheAttribute)declared.Attribute).Duration);
+    }
+
+    // 同じ型の<b>オーバーロード</b>が、別々の宣言として返ること。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> キーの署名部分（宣言しているメソッドの
+    // `MetadataToken`）を落として `method:{declaredOn}()` にしても<b>全件緑のまま通った</b>。
+    // その状態だと `Export()` と `Export(long id)` の片方しか違反の一覧へ到達せず、
+    // 許す側の宣言がもう片方だと<b>検査は緑のまま PHI を含みうる応答に
+    // 共有キャッシュ可能な指示が残る</b>。キーが署名を分ける性質は、この走査が
+    // 総称型の畳み込みへ移った時点で「full な署名文字列」から乗り換えたものなので、
+    // 乗り換え先でも成り立っていることを固定する。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsOfTheSameActionApart()
+    {
+        // 同じ名前のアクションを 2 つ持ち、それぞれに宣言がある合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OverloadedActionProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること(片方が畳まれて消えていない)
+        Assert.Equal(2, declarations.Count);
+
+        // 引数なしの側の宣言が読めること
+        Assert.Contains(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 51 });
+
+        // 引数ありの側の宣言も読めること
+        Assert.Contains(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 52 });
+
+        // <b>報告の上でも見分けが付くこと（レビュー指摘・実測）。</b> キーが 2 件に分けていても、
+        // 失敗文言に並ぶのは名指しの文字列なので、そこが同じだと
+        // (a) 2 つとも違反したときに<b>まったく同じ行が 2 本</b>並び、
+        // (b) 片方だけが違反なら名指しされたファイルを開いても<b>どちらを直すのか分からない</b>
+        // ——キーだけを分けても、直せる指摘にはならない
+        Assert.Equal(
+            2,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    // <b>名前空間だけが違う同名の型</b>を受けるオーバーロードも、報告の上で見分けが付くこと。
+    //
+    // <b>なぜ別に要るのか（レビューが実測）。</b> 引数の型を<b>単純名</b>で並べていたころは、
+    // `Export(Models.Incident)` と `Export(ViewModels.Incident)` の名指しが
+    // <b>一字一句同じ</b>になり、引数を載せた理由（どちらを直すのか分かるようにする）が
+    // その形でだけ失われていた。上のオーバーロードの検査は `Export()` と `Export(long)` しか
+    // 通さないので、この綴りは拾えない（MVC では同名の型の対は普通に起きる）。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsApart_EvenWhenTheirParameterTypesShareASimpleName()
+    {
+        // 名前空間だけが違う同名の型を受ける 2 つのオーバーロードを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(AmbiguousOverloadProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること
+        Assert.Equal(2, declarations.Count);
+
+        // <b>名指しが 2 通りに分かれること</b>(同じ行が 2 本並ばない)
+        Assert.Equal(
+            2,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+    }
+
+    /// <summary>引数の型名を衝突させるための、1 つ目の入れ子の置き場所。</summary>
+    private static class AmbiguousParameterNsA
+    {
+        /// <summary>2 つ目と単純名が同じ、引数用の型。</summary>
+        internal sealed class Report;
+    }
+
+    /// <summary>引数の型名を衝突させるための、2 つ目の入れ子の置き場所。</summary>
+    private static class AmbiguousParameterNsB
+    {
+        /// <summary>1 つ目と単純名が同じ、引数用の型。</summary>
+        internal sealed class Report;
+    }
+
+    /// <summary>単純名が同じ別々の型を受ける、2 つのオーバーロードを持つ合成コントローラ。</summary>
+    private sealed class AmbiguousOverloadProbeController : ControllerBase
+    {
+        /// <summary>1 つ目の型を受けるアクション。</summary>
+        /// <param name="report">1 つ目の置き場所の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 61, NoStore = true)]
+        public IActionResult Export(AmbiguousParameterNsA.Report report) => NoContent();
+
+        /// <summary>2 つ目の型を受けるアクション。</summary>
+        /// <param name="report">2 つ目の置き場所の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 62, NoStore = true)]
+        public IActionResult Export(AmbiguousParameterNsB.Report report) => NoContent();
+    }
+
+    // 引数の綴りに<b>アセンブリ修飾名</b>が混ざらないこと。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> 構築済みの総称型の `FullName` は
+    // `System.Nullable`1[[System.DateTime, System.Private.CoreLib, Version=8.0.0.0, …]]` の形で、
+    // `DeclarationSite` の説明が「<b>開けるファイルを指さない</b>」として退けた綴りそのもの。
+    // しかも CLAUDE.md は期間・enum の絞り込みを `Nullable<T>` で受けることを求めているので、
+    // <b>いちばん出やすい引数の形</b>で失敗文言が読めなくなる。
+    [Fact]
+    public void AttributeScan_NamesParameterTypesWithoutAssemblyQualifiers()
+    {
+        // Nullable<DateTime> を 2 つ受けるアクションを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(NullableParameterProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 宣言は 1 件
+        var declared = Assert.Single(declarations);
+
+        // アセンブリ修飾名が混ざっていないこと
+        Assert.DoesNotContain("Version=", declared.DeclaredOn, StringComparison.Ordinal);
+
+        // 型引数まで読める形で綴られていること
+        Assert.Contains(
+            "System.Nullable<System.DateTime>",
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
+
+    // <b>開いた総称</b>を受けるオーバーロードも、報告の上で見分けが付くこと。
+    //
+    // <b>なぜ別に要るのか（レビューが実測）。</b> `List<T1>` は開いた総称なので `FullName` を
+    // 持たず、`FullName ?? Name` だと `List`1` だけが残る ——`Export(List<T1>)` と
+    // `Export(List<T2>)` が<b>同じ名前</b>になり、引数を載せた理由がその形でだけ失われる。
+    [Fact]
+    public void AttributeScan_KeepsOverloadsApart_EvenWhenTheirParametersAreOpenGenerics()
+    {
+        // 型引数だけが違う 2 つのオーバーロードを、閉じた具象から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(OpenGenericOverloadProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 2 件とも返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 名指しが 2 通りに分かれること(同じ行が 2 本並ばない)
+        Assert.Equal(
+            2,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+
+        // 型引数まで読める形で綴られていること(T1 / T2 が残る)
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("List<T1>", StringComparison.Ordinal));
+    }
+
+    /// <summary>期間の絞り込みの形（<c>Nullable&lt;T&gt;</c>）を受ける合成コントローラ。</summary>
+    private sealed class NullableParameterProbeController : ControllerBase
+    {
+        /// <summary>期間の絞り込みを 2 つ受けるアクション。</summary>
+        /// <param name="dateFrom">開始日。</param>
+        /// <param name="dateTo">終了日。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 71, NoStore = true)]
+        public IActionResult Index(DateTime? dateFrom, DateTime? dateTo) => NoContent();
+    }
+
+    /// <summary>型引数だけが違うオーバーロードを持つ、総称の基底。</summary>
+    /// <typeparam name="T1">1 つ目の型引数。</typeparam>
+    /// <typeparam name="T2">2 つ目の型引数。</typeparam>
+    private abstract class OpenGenericOverloadProbeBase<T1, T2> : ControllerBase
+    {
+        /// <summary>1 つ目の型引数を要素に取るアクション。</summary>
+        /// <param name="items">1 つ目の型引数の一覧。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 81, NoStore = true)]
+        public IActionResult Export(List<T1> items) => NoContent();
+
+        /// <summary>2 つ目の型引数を要素に取るアクション。</summary>
+        /// <param name="items">2 つ目の型引数の一覧。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 82, NoStore = true)]
+        public IActionResult Export(List<T2> items) => NoContent();
+    }
+
+    /// <summary>上の基底を閉じて継承する具象。</summary>
+    private sealed class OpenGenericOverloadProbeLeaf : OpenGenericOverloadProbeBase<int, string>;
+
+    // 引数の綴りが、<b>入れ子・参照渡し・多次元配列</b>でも 2 つの型を取り違えないこと。
+    //
+    // <b>なぜ要るのか（レビューが実測）。</b> どれも `TypeDisplayName` が素の綴りへ落ちる形で、
+    // (a) 総称型の中に入れ子にした型は `Ns+Outer`1+Inner` なので最初の印で切ると
+    // <b>入れ子の段ごと落ちて</b> Inner と Other が同じ綴りになる、
+    // (b) `ref DateTime?` は総称でも配列でもない扱いになり素の FullName＝
+    // <b>アセンブリ修飾名</b>が出る、(c) `int[,]` は次元を落とすと `int[]` と同じ綴りになる。
+    // いずれも「どちらを直すのか分からない」形。
+    [Fact]
+    public void AttributeScan_NamesParameterTypesDistinctly_ForNestedByRefAndRankedArrays()
+    {
+        // 紛らわしい引数の形を並べた合成コントローラを走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(TrickyParameterProbeController)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 4 件とも返ること
+        Assert.Equal(4, declarations.Count);
+
+        // 名指しが 4 通りに分かれること(取り違えた 2 件が同じ行にならない)
+        Assert.Equal(
+            4,
+            declarations.Select(d => d.DeclaredOn).Distinct(StringComparer.Ordinal).Count());
+
+        // 入れ子の段が残っていること(Outer で切られていない)
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("Inner", StringComparison.Ordinal));
+
+        // 参照渡しでもアセンブリ修飾名が出ないこと
+        Assert.DoesNotContain(
+            declarations,
+            d => d.DeclaredOn.Contains("Version=", StringComparison.Ordinal));
+
+        // 多次元配列が次元まで綴られること
+        Assert.Contains(
+            declarations,
+            d => d.DeclaredOn.Contains("[,]", StringComparison.Ordinal));
+    }
+
+    /// <summary>総称型の中に入れ子の型を 2 つ持つ、引数用の入れ物。</summary>
+    /// <typeparam name="T">使わない型引数（入れ子の段を作るためだけ）。</typeparam>
+    private static class NestingParameterProbe<T>
+    {
+        /// <summary>1 つ目の入れ子の型。</summary>
+        internal sealed class Inner;
+
+        /// <summary>2 つ目の入れ子の型（1 つ目と取り違えてはいけない）。</summary>
+        internal sealed class Other;
+    }
+
+    /// <summary>綴りを取り違えやすい引数の形を並べた合成コントローラ。</summary>
+    private sealed class TrickyParameterProbeController : ControllerBase
+    {
+        /// <summary>入れ子の型（1 つ目）を受けるアクション。</summary>
+        /// <param name="value">1 つ目の入れ子の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 91, NoStore = true)]
+        public IActionResult Take(NestingParameterProbe<int>.Inner value) => NoContent();
+
+        /// <summary>入れ子の型（2 つ目）を受けるアクション。</summary>
+        /// <param name="value">2 つ目の入れ子の型。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 92, NoStore = true)]
+        public IActionResult Take(NestingParameterProbe<int>.Other value) => NoContent();
+
+        /// <summary>1 次元配列を受けるアクション。</summary>
+        /// <param name="values">1 次元の配列。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 93, NoStore = true)]
+        public IActionResult Take(int[] values) => NoContent();
+
+        /// <summary>参照渡しの期間と多次元配列を受けるアクション。</summary>
+        /// <param name="from">参照渡しで受ける開始日。</param>
+        /// <param name="values">2 次元の配列。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 94, NoStore = true)]
+        public IActionResult Take(ref DateTime? from, int[,] values) => NoContent();
+    }
+
+    // 基底が<b>クラス側へ</b>2 つ宣言した形を、派生から見ても両方とも返ること。
+    //
+    // <b>なぜ上の 3 つと別に要るのか。</b> 「同じ 1 つの宣言を 2 つの派生から見る」形
+    // （issue #255 / #269）を畳む仕掛けは、行きすぎると「本当に 2 つある宣言」まで
+    // 1 件へ畳む fail-open に倒れる ——許す側が 2 個目だと<b>検査は緑のまま PHI を含みうる
+    // 応答に共有キャッシュ可能な指示が残る</b>。いまの走査が畳む単位は
+    // <b>宣言の内容ではなく「継承の連なりの段」</b>なので、同じ段に 2 つあれば 2 件返る。
+    // その境目をここで固定する。
+    [Fact]
+    public void AttributeScan_ReturnsBothDeclarations_WhenTheBaseCarriesTwoRepeatableOnes()
+    {
+        // 基底が 2 つ宣言した属性を、素の派生型から走査する
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(RepeatedKindOnBaseProbeLeaf)],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                a => a is RepeatableProbeAttribute)
+            .ToList();
+
+        // 宣言は 2 つなので 2 件返ること
+        Assert.Equal(2, declarations.Count);
+
+        // 1 つ目が、実際に宣言している基底の名前で 1 件
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "a" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindOnBaseProbeBase), StringComparison.Ordinal));
+
+        // 2 つ目も同じく
+        Assert.Single(
+            declarations,
+            d => d.Attribute is RepeatableProbeAttribute { Policy: "b" }
+                && d.DeclaredOn.EndsWith(nameof(RepeatedKindOnBaseProbeBase), StringComparison.Ordinal));
+    }
+
+    // アクション側でも、名指しが<b>その属性を実際に宣言している段</b>であること。
     //
     // <b>なぜクラス側の検査では足りないのか（実測）。</b> 種類が階層で分かれる形の合成は
-    // クラス側にしか無く、アクション側の SameKindAs を外しても 1080 件すべて緑のまま通った。
+    // 一時期クラス側にしか無く、アクション側だけを緩める変異が 1080 件すべて緑のまま通った。
     // 壊れ方はクラス側と同じで、基底の Export が [ResponseCache]・中間型の override が
     // 2 種類目を宣言していると、[ResponseCache] の宣言が<b>中間型の名前で報告される</b> ——
     // 名指しされたファイルを開いてもその属性は無い。
+    // いまこれを起こす変異はアクション側を inherit: true で読む形で、実測でも落ちる。
     [Fact]
     public void AttributeScan_NamesTheDeclaringTypePerKind_ForActionsToo()
     {
@@ -2779,11 +5242,13 @@ public class ResponseCacheAttributePolicyTests
 
     // 階層の<b>途中</b>の override に付いた属性が、その型の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ要るのか。</b> GetBaseDefinition() が返すのは「最初に virtual として宣言された
-    // 定義」なので、属性が階層の途中の override に付いていると根にも自分自身にも無い。
-    // 根へ一足飛びに跳ぶ実装では<b>どちらの検査も外れて具象が名指しされ</b>、
-    // 1 つの宣言が具象の数だけ違反として並び、しかも名指しされたファイルを開いても
-    // 属性が無い ——DeclaringTypeOf が防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // <b>なぜ要るのか。</b> 属性が階層の<b>途中</b>の override に付いている形は、根にも具象にも
+    // 属性が無い。走査が段ごとに inherit: false で読まないと、この宣言が<b>具象の名前で
+    // 派生の数だけ</b>並び、しかも名指しされたファイルを開いても属性が無い
+    // ——宣言元の名指しが防ぐために存在する形そのものが復活する（実測で 2 件並んだ）。
+    // いまこれを起こす変異はアクション側を inherit: true で読む形と、訪ねた段の記録を外す形。
+    // <b>旧実装の GetBaseDefinition() によるさかのぼりを前提にした説明は、その機構ごと
+    // 削除されたので書き直してある</b>（issue #275）。
     [Fact]
     public void DeclarationScan_NamesTheMidHierarchyOverrideThatActuallyDeclaresTheAttribute()
     {
@@ -2793,7 +5258,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondMidOverrideProbeLeaf));
 
         // 中間型の宣言(Duration = 55)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 55);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 55 });
 
         // 名指しが、属性を実際に宣言している中間型であること（具象でも根でもない）
         Assert.Contains(
@@ -2822,10 +5287,11 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>属性を付けずに override だけする具象。</summary>
     /// <remarks>
-    /// <b>ここで override させるのが要点。</b> 素の継承にすると、走査が見つける
-    /// <c>MethodInfo</c> の <c>DeclaringType</c> は中間型のままなので
-    /// 「自分自身が宣言しているか」の検査で当たってしまい、<b>さかのぼる経路を一度も通らない</b>
-    /// （実測: 素の継承にした版では、根へ一足飛びに跳ぶ実装へ戻しても全件緑のまま通った）。
+    /// <b>override させているのは旧実装の名残（issue #275）。</b> かつては走査が具象から
+    /// 宣言元をさかのぼる形だったため、素の継承にすると<b>さかのぼる経路を一度も通らず</b>
+    /// 検出網が死んだ（実測）。いまは段ごとに <c>DeclaredOnly</c> ＋ <c>inherit: false</c> で読むので、
+    /// 素の継承でも同じ経路を通る ——<b>この override は形を残してあるだけで、区別は生まない</b>。
+    /// 消してもこの検査の意味は変わらないので、次に触る人は残す理由を作り直すか消してよい。
     /// </remarks>
     private sealed class MidOverrideProbeLeaf : MidOverrideProbeControllerMid
     {
@@ -2844,11 +5310,11 @@ public class ResponseCacheAttributePolicyTests
 
     // <b>属性を宣言し直さない中間型</b>をまたいでも、根の宣言が根の名前で 1 件だけ報告されること。
     //
-    // <b>なぜ上の検査では足りないのか。</b> あちらは「どの段も override する」形なので、
-    // さかのぼりが 1 段目で必ず当たる ——<b>当たらなかった段を読み飛ばす経路（continue）を
-    // 一度も通らない</b>。実測で、その continue を break に変えても全件緑のまま通り、
-    // しかも Root → Mid(宣言し直さない) → Leaf ×2(属性なしの override)では
-    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になった。
+    // <b>なぜ上の検査では足りないのか。</b> あちらは属性が中間型にあるので、
+    // <b>根まで歩かなくても</b>見つかる。こちらは Root → Mid(宣言し直さない) → Leaf ×2 で、
+    // 連なりを最後まで歩いてはじめて根の宣言に届く ——歩くのをやめる変異
+    // (訪ねた段の記録を外す・連なりを打ち切る)は、こちらでだけ
+    // <b>1 つの宣言が Leaf の数だけ並び、名指しされたファイルに属性が無い</b>状態になる（実測）。
     [Fact]
     public void DeclarationScan_WalksPastIntermediateTypesThatDoNotRedeclareTheAction()
     {
@@ -2858,7 +5324,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondSkippedMidProbeLeaf));
 
         // 根の宣言(Duration = 66)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 66);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 66 });
 
         // 名指しが、属性を実際に宣言している根であること（具象でも中間型でもない）
         Assert.Contains(
@@ -2877,7 +5343,7 @@ public class ResponseCacheAttributePolicyTests
         public virtual IActionResult Export() => NoContent();
     }
 
-    /// <summary>アクションを宣言し直さない中間型（さかのぼりが読み飛ばす段）。</summary>
+    /// <summary>アクションを宣言し直さない中間型（走査が宣言を 1 件も見つけない段）。</summary>
     private abstract class SkippedMidProbeControllerMid : SkippedMidProbeControllerRoot;
 
     /// <summary>属性を付けずに override だけする具象。</summary>
@@ -2896,12 +5362,20 @@ public class ResponseCacheAttributePolicyTests
         public override IActionResult Export() => NoContent();
     }
 
-    // さかのぼりが「同じアクションを宣言しているが属性は持たない段」を<b>通り抜ける</b>こと。
+    // 「同じアクションを宣言しているが属性は持たない段」をまたいでも、根の宣言に届くこと。
     //
-    // <b>なぜ既存の 2 つでは足りないのか（実測）。</b> MidOverrideProbe は 1 段目で属性に当たり、
-    // SkippedMidProbe は中間型がそのアクションを宣言していないので読み飛ばす。どちらも
-    // 「宣言はしているが属性が無いので次の段へ進む」経路を通らず、その行を
-    // 「当たらなければ具象を名指しして打ち切る」へ変えても 1080 件すべて緑のまま通った。
+    // <b>いまは上の SkippedMidProbe と同じ枝しか通らない（レビュー指摘・実測）。</b>
+    // 旧実装にはさかのぼりの中に「当たらなかった段を読み飛ばす」分岐があり、
+    // 「宣言し直していない段」と「宣言し直しているが属性が無い段」はそこで別々の経路だった
+    // （前者を読み飛ばす continue を break へ変えると、この形でだけ落ちた）。新実装は各段で
+    // <c>DeclaredOnly</c> ＋ <c>inherit: false</c> を読むだけなので、宣言が 0 件の段と
+    // 宣言はあるが属性が 0 件の段は<b>同じ枝</b>を通る ——区別を生む変異はいま書けない。
+    //
+    // <b>それでも残す理由。</b> 2 つは<b>ソース上の形</b>としては別物で、どちらも自然に書かれる。
+    // 「その段がアクションを宣言しているか」を条件に足す変更（連なりの歩き方を最適化しようとすると
+    // 出てくる自然な形）は、こちらでだけ壊れる。<b>逆に言えば、そういう変更を想定しないなら
+    // この検査は上と統合してよい</b> ——根拠が薄いことを隠さずに書いておくので、
+    // 次に触る人が判断すること（この repo が「守られていない門番を残さない」としているのと同じ理由）。
     [Fact]
     public void DeclarationScan_KeepsWalking_PastALevelThatRedeclaresTheActionWithoutTheAttribute()
     {
@@ -2911,7 +5385,7 @@ public class ResponseCacheAttributePolicyTests
             typeof(SecondBareOverrideProbeLeaf));
 
         // 根の宣言(Duration = 34)に由来する宣言が 1 件だけであること
-        var declared = Assert.Single(declarations, d => d.Attribute.Duration == 34);
+        var declared = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 34 });
 
         // 名指しが、属性を実際に宣言している根であること
         Assert.Contains(
@@ -2959,8 +5433,10 @@ public class ResponseCacheAttributePolicyTests
     /// </summary>
     /// <remarks>
     /// 実在のキャッシュ指示属性はいずれも <c>AllowMultiple = false</c> なので、
-    /// 門番（<c>EnsureDedupKeyCanSeparate</c>）が働く経路は合成入力でしか通せない。
-    /// <b>だから合成する</b> ——実在の属性だけを渡している限り、門番を消しても全件緑のまま通る。
+    /// 「同じ段へ 2 つ以上の宣言が付く」経路は合成入力でしか通せない。
+    /// <b>だから合成する</b> ——実在の属性だけを渡している限り、その 2 つを 1 件へ畳む形へ
+    /// 戻しても全件緑のまま通る（issue #275 以前は、畳んで失ったことに気付くための門番が
+    /// ここに居た。いまは畳まずに 2 件返すので、門番ではなく<b>件数</b>で固定している）。
     /// </remarks>
     [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true)]
     private sealed class RepeatableProbeAttribute(string policy) : Attribute
@@ -2986,6 +5462,149 @@ public class ResponseCacheAttributePolicyTests
         [RepeatableProbe("a")]
         [RepeatableProbe("b")]
         public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>複数付けられる属性を<b>1 つだけ</b>宣言する抽象基底。</summary>
+    /// <remarks>
+    /// 目印(shared)は、2 つの派生から見ても<b>この 1 つの宣言</b>が返っていることを
+    /// 見分けるために持つ。
+    /// </remarks>
+    [RepeatableProbe("shared")]
+    private abstract class SharedRepeatableProbeBase : ControllerBase;
+
+    /// <summary>基底の 1 つの宣言をそのまま継承する具象（1 つ目）。</summary>
+    private sealed class SharedRepeatableProbeLeafA : SharedRepeatableProbeBase;
+
+    /// <summary>基底の 1 つの宣言をそのまま継承する具象（2 つ目）。</summary>
+    private sealed class SharedRepeatableProbeLeafB : SharedRepeatableProbeBase;
+
+    /// <summary>複数付けられる属性を<b>アクションへ 1 つだけ</b>宣言する抽象基底。</summary>
+    private abstract class SharedRepeatableActionProbeBase : ControllerBase
+    {
+        /// <summary>複数付けられる属性を 1 つだけ持つ、virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [RepeatableProbe("shared-action")]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションを素で override する具象（1 つ目）。</summary>
+    private sealed class SharedRepeatableActionProbeLeafA : SharedRepeatableActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションを素で override する具象（2 つ目）。</summary>
+    private sealed class SharedRepeatableActionProbeLeafB : SharedRepeatableActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>クラスへ 1 つだけ宣言する<b>総称の</b>抽象基底。</summary>
+    /// <typeparam name="T">閉じ方を変えるためだけの型引数。</typeparam>
+    /// <remarks>期間の値(41)は、この経路で拾えたことを見分けるための目印。</remarks>
+    [ResponseCache(Duration = 41, NoStore = true)]
+    private abstract class GenericProbeBase<T> : ControllerBase;
+
+    /// <summary>1 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericProbeLeafPdf : GenericProbeBase<int>;
+
+    /// <summary>2 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericProbeLeafCsv : GenericProbeBase<string>;
+
+    /// <summary>アクションへ 1 つだけ宣言する<b>総称の</b>抽象基底。</summary>
+    /// <typeparam name="T">閉じ方を変えるためだけの型引数。</typeparam>
+    /// <remarks>期間の値(42)は、この経路で拾えたことを見分けるための目印。</remarks>
+    private abstract class GenericActionProbeBase<T> : ControllerBase
+    {
+        /// <summary>属性を 1 つだけ持つ、virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 42, NoStore = true)]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>1 つ目の閉じ方で基底のアクションを素で override する具象。</summary>
+    private sealed class GenericActionProbeLeafPdf : GenericActionProbeBase<int>
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>2 つ目の閉じ方で基底のアクションを素で override する具象。</summary>
+    private sealed class GenericActionProbeLeafCsv : GenericActionProbeBase<string>
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
+    }
+
+    /// <summary>
+    /// <b>型引数を受けるアクション</b>へ 1 つだけ宣言する総称の抽象基底。
+    /// </summary>
+    /// <typeparam name="TModel">アクションの引数に現れる型引数。</typeparam>
+    /// <remarks>
+    /// 引数に型引数が現れると、閉じ方ごとに<b>署名まで変わる</b> ——宣言元の型だけをそろえても
+    /// キーが割れる形を作るために、引数なしのプローブとは別に置く。期間の値(43)は目印。
+    /// </remarks>
+    private abstract class GenericSignatureProbeBase<TModel> : ControllerBase
+    {
+        /// <summary>型引数を受け取る、属性付きのアクション。</summary>
+        /// <param name="model">閉じ方ごとに型が変わる引数。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 43, NoStore = true)]
+        public IActionResult Export(TModel model) => NoContent();
+    }
+
+    /// <summary>1 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericSignatureProbeLeafPdf : GenericSignatureProbeBase<int>;
+
+    /// <summary>2 つ目の閉じ方で基底を継承する具象。</summary>
+    private sealed class GenericSignatureProbeLeafCsv : GenericSignatureProbeBase<string>;
+
+    /// <summary>複数付けられる属性を<b>2 つ</b>宣言する抽象基底。</summary>
+    [RepeatableProbe("a")]
+    [RepeatableProbe("b")]
+    private abstract class RepeatedKindOnBaseProbeBase : ControllerBase;
+
+    /// <summary>基底の 2 つの宣言を継承するだけの具象。</summary>
+    private sealed class RepeatedKindOnBaseProbeLeaf : RepeatedKindOnBaseProbeBase;
+
+    /// <summary>同じ名前のアクションを 2 つ持ち、それぞれが宣言を持つ合成コントローラ。</summary>
+    /// <remarks>期間の値(51 / 52)は、どちらのオーバーロードかを見分けるための目印。</remarks>
+    private sealed class OverloadedActionProbeController : ControllerBase
+    {
+        /// <summary>引数なしのオーバーロード。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 51, NoStore = true)]
+        public IActionResult Export() => NoContent();
+
+        /// <summary>引数ありのオーバーロード。</summary>
+        /// <param name="id">見分けるためだけの引数。</param>
+        /// <returns>内容を持たない結果。</returns>
+        [ResponseCache(Duration = 52, NoStore = true)]
+        public IActionResult Export(long id) => NoContent();
+    }
+
+    /// <summary>複数付けられる属性を<b>アクションへ 2 つ</b>宣言する抽象基底。</summary>
+    private abstract class RepeatedKindOnBaseActionProbeBase : ControllerBase
+    {
+        /// <summary>同じ種類の属性を 2 つ持つ、virtual なアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [RepeatableProbe("a")]
+        [RepeatableProbe("b")]
+        public virtual IActionResult Export() => NoContent();
+    }
+
+    /// <summary>基底のアクションを素で override するだけの具象。</summary>
+    private sealed class RepeatedKindOnBaseActionProbeLeaf : RepeatedKindOnBaseActionProbeBase
+    {
+        /// <summary>属性を持たない override。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        public override IActionResult Export() => NoContent();
     }
 
     /// <summary>
@@ -3033,9 +5652,17 @@ public class ResponseCacheAttributePolicyTests
     /// </remarks>
     /// <param name="probes">走査する合成コントローラ。</param>
     /// <returns>見つかった宣言の一覧。</returns>
-    private static List<ResponseCachePolicy.ResponseCacheDeclaration> ScanProbes(params Type[] probes) =>
-        // 宣言元の判定にはこのテストアセンブリを使う
-        ResponseCachePolicy.DeclarationsOn(probes, typeof(ResponseCacheAttributePolicyTests).Assembly).ToList();
+    private static List<ResponseCachePolicy.AttributeDeclaration> ScanProbes(params Type[] probes) =>
+        // 宣言元の判定にはこのテストアセンブリを使い、<b>述語は本番の検査と同じもの</b>を渡す。
+        // 専用の型付きの入り口を別に持たないのは、そちらが狭い述語を抱え込み、
+        // 本番の検査を「より型が付いているほう」へ向け直すだけで issue #281 の手当てが
+        // まるごと外れてしまうため(理由の正本は AttributeDeclarationsOn の説明)
+        ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                probes,
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                ResponseCachePolicy.IsResponseCacheDirective)
+            .ToList();
 
     /// <summary>
     /// 走査がクラス側とアクション側の両方を読むことを確かめるための、合成コントローラ。
@@ -3067,6 +5694,61 @@ public class ResponseCacheAttributePolicyTests
 
     /// <summary>同じ基底を継承する 2 つ目の具象コントローラ(畳み方の検証に使う)。</summary>
     private sealed class SecondInheritedActionProbeController : InheritedActionProbeControllerBase;
+
+    // クラス側の読み取りは<b>自分たちのアセンブリの外の段でも止めない</b>こと。
+    //
+    // <b>なぜ要るのか（レビュー指摘・実測）。</b> 走査はアクション側だけを
+    // 「自分たちのアセンブリか」で切り、クラス側は連なりのどの段でも読む。ところがその広さには
+    // 検出網が無く、絞り込みを<b>クラス側の読み取りより前へ持ち上げる</b>形も、
+    // <c>continue</c> を <c>break</c> へ変える形も、どちらも 1295 件すべて緑のまま通った。
+    // どちらも「同じ条件をまとめただけ」に見える自然な整理で、差分からは狭まったと読み取れない。
+    //
+    // <b>壊れ方。</b> いまアプリの外にあるのはフレームワークの型だけなので違いが出ないが、
+    // 基底コントローラを共有プロジェクトへ切り出した瞬間に別れる ——
+    // <c>IncidentInsight.Shared.ExportControllerBase : Controller</c> が
+    // <c>[ResponseCache(Duration = 300, Location = Any)]</c> を持っていると、
+    // 正しい実装は報告して赤くなるのに、狭めた実装は<b>黙って落とす</b>。
+    // PHI を含みうる応答が共有キャッシュ可能なまま、検査は緑で出荷される。
+    //
+    // <b>手がかりの作り方。</b> 実際に別アセンブリの基底を用意することはできないので、
+    // <c>ownAssembly</c> のほうに<b>自分たちではないアセンブリ</b>を渡して、合成コントローラの
+    // 段を「外」に見せる。正しい実装ならクラス側の宣言は返り、アクション側だけが飛ばされる
+    // ——上の 2 つの変異はどちらもここで 0 件になる。
+    //
+    // <b>渡すアセンブリは、連なりのどの段にも現れないものを選ぶ（レビュー指摘）。</b>
+    // 連なりは テストアセンブリ → テストアセンブリ → Mvc.Core → CoreLib なので、
+    // <c>typeof(string).Assembly</c>(= CoreLib) を渡すと<b>最後の段だけは「内」</b>になり、
+    // 「すべての段が外」という前提が成り立たない ——後からこの検査を「アクション側が
+    // 一度も走らないこと」まで見る形へ強めた人が、前提と違う結果を踏む。
+    // xUnit のアセンブリはこの連なりに現れないので、前提を文字どおり満たす。
+    [Fact]
+    public void AttributeScan_StillReadsClassAttributes_OnSitesOutsideTheOwnAssembly()
+    {
+        // ownAssembly に、連なりのどの段にも現れないアセンブリを渡して段を「外」に見せる
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [typeof(ClassLevelInheritedProbeController)],
+                typeof(FactAttribute).Assembly,
+                a => a is ResponseCacheAttribute)
+            .ToList();
+
+        // 基底のクラス属性は、段が「外」でも読まれること(アクション側の絞り込みを
+        // クラス側まで効かせる変異、および連なりを打ち切る変異は、ここで 0 件になる)。
+        // <b>件数ではなく目印(77)で絞る（レビュー指摘）。</b> この基底は
+        // DeclarationScan_ReportsAnInheritedClassAttributeOnceAndNamesTheBase と共有しており、
+        // 「同じ段へ複数付いた宣言はそのまま件数として返る」経路を試すために宣言を 1 つ足されると、
+        // Assert.Single は<b>件数の話をする失敗文言</b>で落ちる ——この検査が守っている不変条件
+        // (外の段でもクラス属性を読む)とは関係の無い理由で赤くなり、直し方も読み取れない
+        var declared = Assert.Single(
+            declarations,
+            d => d.Attribute is ResponseCacheAttribute { Duration: 77 });
+
+        // 名指しは、実際に宣言している基底であること
+        Assert.Contains(
+            nameof(ClassLevelInheritedProbeControllerBase),
+            declared.DeclaredOn,
+            StringComparison.Ordinal);
+    }
 
     /// <summary>クラス側に属性を持つ抽象基底(派生の数だけ見えてしまう形)。</summary>
     [ResponseCache(Duration = 77)]
@@ -3114,7 +5796,7 @@ public class ResponseCacheAttributePolicyTests
         var declarations = ScanProbes(typeof(NonControllerEndpointProbe));
 
         // クラス側の宣言(Duration = 44)が拾えていること
-        var found = Assert.Single(declarations, d => d.Attribute.Duration == 44);
+        var found = Assert.Single(declarations, d => d.Attribute is ResponseCacheAttribute { Duration: 44 });
         // 名指しが、属性を実際に宣言している型であること
         Assert.Contains(nameof(NonControllerEndpointProbe), found.DeclaredOn, StringComparison.Ordinal);
     }
@@ -3159,5 +5841,299 @@ public class ResponseCacheAttributePolicyTests
                 + "付けた [ResponseCache] がどの検査からも見えなくなります。"
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, missing));
+    }
+
+    /// <summary>
+    /// <c>ResponseCacheAttribute</c> を派生させた、<b>間接指定で被せるため</b>の保存を許す属性。
+    /// </summary>
+    /// <remarks>
+    /// 直接書く形(<c>[IndirectLongCache]</c>)は元の <c>is</c> でも拾えていた。
+    /// ここで確かめたいのは<b>間接指定で被せた</b>形なので、付け方のほうを変える。
+    /// </remarks>
+    private sealed class IndirectLongCacheAttribute : ResponseCacheAttribute
+    {
+        /// <summary>保存を許す指示(Duration と Location)を名乗る。</summary>
+        public IndirectLongCacheAttribute()
+        {
+            // 5 分間キャッシュしてよい、と名乗る
+            Duration = 300;
+            // 共有キャッシュ(プロキシ)でも保存してよい、と名乗る
+            Location = ResponseCacheLocation.Any;
+        }
+    }
+
+    /// <summary><c>[TypeFilter]</c> でキャッシュ指示を被せたプローブ。</summary>
+    private sealed class TypeFilterCacheProbeController : ControllerBase
+    {
+        /// <summary>間接指定で保存許可が効くアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [TypeFilter(typeof(IndirectLongCacheAttribute))]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary><c>[ServiceFilter]</c> でキャッシュ指示を被せたプローブ。</summary>
+    private sealed class ServiceFilterCacheProbeController : ControllerBase
+    {
+        /// <summary>DI 経由の間接指定で保存許可が効くアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [ServiceFilter(typeof(IndirectLongCacheAttribute))]
+        public IActionResult Probe() => NoContent();
+    }
+
+    // フィルタの間接指定で被せた [ResponseCache] が、宣言の走査で<b>指示として拾われる</b>こと。
+    //
+    // <b>なぜ要るのか(issue #281)。</b> 述語が `a is ResponseCacheAttribute` だったころ、
+    // [TypeFilter(typeof(LongCacheAttribute))] で付いている属性は TypeFilterAttribute なので
+    // 一致せず、3 つの検査がそろって素通りした ——PHI を返すアクションへ
+    // public,max-age=300 を付けても全件緑のまま通る形だった。
+    // 実在のアプリに間接指定は 1 つも無いのが正しいので、合成したプローブで固定する。
+    [Theory]
+    // [TypeFilter(typeof(...))] で被せた形
+    [InlineData(typeof(TypeFilterCacheProbeController))]
+    // [ServiceFilter(typeof(...))] で被せた形(DI から取り出す綴り)
+    [InlineData(typeof(ServiceFilterCacheProbeController))]
+    public void AttributeScan_FindsAResponseCacheFilterAppliedIndirectly(Type probe)
+    {
+        // 本番の検査と同じ述語で、プローブの宣言を集める
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [probe],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                ResponseCachePolicy.IsResponseCacheDirective)
+            .ToList();
+
+        // 間接指定がちょうど 1 件、指示として拾われること
+        var declaration = Assert.Single(declarations);
+
+        // 本番の検査と同じ判定へ通す
+        var verdict = ResponseCachePolicy.JudgeDirective(declaration.Attribute);
+
+        // 中身を読めない以上「安全だ」とは言えないので、落ちる側であること(§9 fail-closed)
+        Assert.False(verdict.IsSuppressing);
+
+        // 何が効くのかを運用者が追えるよう、指している型を名指ししていること
+        Assert.Contains(nameof(IndirectLongCacheAttribute), verdict.Reason, StringComparison.Ordinal);
+    }
+
+    // 間接指定を fail-closed にしても、<b>直接書いた正しい宣言</b>は通り続けること。
+    //
+    // 落とす側だけを固定すると「常に落とす」へ潰しても緑のままになるので、許す側も見る。
+    [Fact]
+    public void JudgeDirective_StillAllowsADirectlyDeclaredNoStore()
+    {
+        // このアプリで唯一正しい書き方(保存を禁じる宣言)を直接渡す
+        var verdict = ResponseCachePolicy.JudgeDirective(new ResponseCacheAttribute { NoStore = true });
+
+        // 直接書かれた宣言は中身を読めるので、そのまま許可されること
+        Assert.True(verdict.IsSuppressing);
+    }
+
+    // グローバルフィルタの判定が、<b>型で登録した</b>指示も見ていること。
+    //
+    // <b>なぜ合成入力で固定するのか(issue #281)。</b> 本番の検査は起動したアプリの
+    // MvcOptions.Filters を読むが、そこに違反は 1 件も無いのが正しい状態なので、
+    // 判定を「常に空」へ潰しても全件緑のまま通る。しかも以前の
+    // Filters.OfType<ResponseCacheAttribute>() は Filters.Add<LongCacheAttribute>() が
+    // 格納する TypeFilterAttribute を<b>1 件も見ていなかった</b>。
+    [Fact]
+    public void CachingFilterViolations_FindsAFilterRegisteredByType()
+    {
+        // <b>本物の FilterCollection へ Add&lt;T&gt;() で登録する（レビュー指摘）。</b>
+        // 手で TypeFilterAttribute を並べると「格納されるのは属性そのものではない」という
+        // <b>この検査の前提そのものを仮定してしまう</b> ——framework が格納の形を変えたときに
+        // 気付けない。Program.cs が書くのと同じ呼び方をさせて、実際の形を確かめる
+        var filters = new Microsoft.AspNetCore.Mvc.Filters.FilterCollection();
+
+        // Program.cs で o.Filters.Add<LongCacheAttribute>() と書いたのと同じ登録
+        filters.Add<IndirectLongCacheAttribute>();
+
+        // 前提の確認: 格納されたのは属性そのものではなく、型を指す間接指定であること
+        Assert.IsType<TypeFilterAttribute>(Assert.Single(filters));
+
+        // 本番の検査と同じ純粋関数へ通す
+        var violations = ResponseCachePolicy.CachingFilterViolations(filters);
+
+        // 違反としてちょうど 1 件拾われ、指している型が名指しされていること
+        Assert.Contains(nameof(IndirectLongCacheAttribute), Assert.Single(violations), StringComparison.Ordinal);
+    }
+
+    // グローバルフィルタの判定が、<b>正しい登録</b>と<b>無関係なフィルタ</b>を落とさないこと。
+    //
+    // 落とす側だけを固定すると「常に違反」へ潰しても気付けないので、通す側も見る。
+    [Fact]
+    public void CachingFilterViolations_IgnoresSuppressingAndUnrelatedFilters()
+    {
+        // 保存を禁じる正しい宣言と、キャッシュとは無関係なフィルタを並べる
+        var filters = new List<object>
+        {
+            // このアプリで唯一正しい書き方
+            new ResponseCacheAttribute { NoStore = true },
+            // キャッシュ指示ではないフィルタ(間接指定の形だが指す先が無関係)
+            new TypeFilterAttribute(typeof(UnrelatedProbeFilterAttribute)),
+        };
+
+        // 本番の検査と同じ純粋関数へ通す
+        var violations = ResponseCachePolicy.CachingFilterViolations(filters);
+
+        // どちらも違反ではないこと
+        Assert.Empty(violations);
+    }
+
+    /// <summary>キャッシュとは無関係な、間接指定の指す先に使うだけの属性。</summary>
+    private sealed class UnrelatedProbeFilterAttribute : Attribute;
+
+    /// <summary>入れ子・総称の綴りを作るためだけの入れ物。</summary>
+    private static class NestedOutputCacheProbes
+    {
+        /// <summary>
+        /// <b>入れ子</b>に置いた出力キャッシュ相当の属性(<c>FullName</c> が <c>+</c> 区切りになる)。
+        /// </summary>
+        internal sealed class OutputCacheAttribute : Attribute;
+
+        /// <summary>
+        /// <b>入れ子かつ総称</b>の出力キャッシュ相当の属性(<c>FullName</c> に <c>`1</c> が付く)。
+        /// </summary>
+        /// <remarks>
+        /// 単純名は非総称のものと<b>同じ</b>でなければならない ——述語は単純名で照合するので、
+        /// 別の名前(<c>GenericOutputCacheAttribute</c> など)にすると、走査へ通しても
+        /// そもそも一致しない「使えないプローブ」になる（レビュー指摘）。
+        /// </remarks>
+        /// <typeparam name="T">使わない型引数(綴りを総称にするためだけに持つ)。</typeparam>
+        internal sealed class OutputCacheAttribute<T> : Attribute;
+    }
+
+    /// <summary>入れ子の綴りの出力キャッシュ属性を付けたプローブ。</summary>
+    private sealed class NestedOutputCacheProbeController : ControllerBase
+    {
+        /// <summary>入れ子の綴りの属性を持つアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [NestedOutputCacheProbes.OutputCache]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary>総称の綴りの出力キャッシュ属性を付けたプローブ。</summary>
+    private sealed class GenericOutputCacheProbeController : ControllerBase
+    {
+        /// <summary>総称の綴りの属性を持つアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [NestedOutputCacheProbes.OutputCache<int>]
+        public IActionResult Probe() => NoContent();
+    }
+
+    /// <summary><c>[TypeFilter]</c> で出力キャッシュ属性を被せたプローブ。</summary>
+    private sealed class IndirectOutputCacheProbeController : ControllerBase
+    {
+        /// <summary>間接指定で出力キャッシュが効くアクション。</summary>
+        /// <returns>内容を持たない結果。</returns>
+        [TypeFilter(typeof(NestedOutputCacheProbes.OutputCacheAttribute))]
+        public IActionResult Probe() => NoContent();
+    }
+
+    // 出力キャッシュの述語が、<b>入れ子・総称の綴り</b>と<b>間接指定</b>のいずれでも当たること。
+    //
+    // <b>なぜ要るのか(issue #281)。</b> 述語は型名で照合するが、FullName の綴りは形で変わる
+    // (入れ子は `Ns.Outer+Name`、総称は "Name`1")。最後のドット区切りを採っていたころは
+    // どちらも一致せず、しかも<b>プローブ側の照合は素の型で通る</b>ので狭いままでも緑になった。
+    [Theory]
+    // 入れ子の綴りで直接書いた形
+    [InlineData(typeof(NestedOutputCacheProbeController))]
+    // 総称の綴りで直接書いた形(FullName に `1 が付く)
+    [InlineData(typeof(GenericOutputCacheProbeController))]
+    // 間接指定で被せた形(応答キャッシュ側と同じ入り口を通ることの確認も兼ねる)
+    [InlineData(typeof(IndirectOutputCacheProbeController))]
+    public void OutputCachePredicate_FindsNestedGenericAndIndirectSpellings(Type probe)
+    {
+        // 本番の検査と同じ述語で、プローブの宣言を集める
+        var declarations = ResponseCachePolicy
+            .AttributeDeclarationsOn(
+                [probe],
+                typeof(ResponseCacheAttributePolicyTests).Assembly,
+                IsOutputCacheAttribute)
+            .ToList();
+
+        // 出力キャッシュの宣言としてちょうど 1 件拾われること
+        Assert.Single(declarations);
+    }
+
+    // 単純名の取り出しが、素の型・入れ子・総称・閉じた総称のすべてで意図どおり働くこと。
+    //
+    // 実型のプローブでは作りにくい綴り(閉じた総称のアセンブリ修飾名)まで覆うため、
+    // 判定そのものを合成した文字列で固定する。
+    [Theory]
+    // 素の型(いちばん素直な綴り)
+    [InlineData("Ns.OutputCacheAttribute", "OutputCacheAttribute")]
+    // 入れ子(外側の型が + で付く)
+    [InlineData("Ns.Caching+OutputCacheAttribute", "OutputCacheAttribute")]
+    // 総称(型引数の個数が ` で付く)
+    [InlineData("Ns.OutputCacheAttribute`1", "OutputCacheAttribute")]
+    // 入れ子かつ総称(両方が同時に付く)
+    [InlineData("Ns.Caching+OutputCacheAttribute`1", "OutputCacheAttribute")]
+    // 外側だけが総称(区切りの後ろを採らないと OutputCacheAttribute にならない)
+    [InlineData("Ns.Caching`1+OutputCacheAttribute", "OutputCacheAttribute")]
+    // 閉じた総称(型引数リストの中にも区切り文字が入る)
+    [InlineData("Ns.OutputCacheAttribute`1[[System.Int32, System.Private.CoreLib]]", "OutputCacheAttribute")]
+    // 名前空間を持たない型(区切りが 1 つも無い綴り)
+    [InlineData("OutputCacheAttribute", "OutputCacheAttribute")]
+    public void SimpleTypeNameOf_DropsNamespaceNestingAndArity(string typeFullName, string expected)
+    {
+        // 綴りの形によらず単純名が取り出せること
+        Assert.Equal(expected, SimpleTypeNameOf(typeFullName));
+    }
+
+    // 述語を通さずに渡された宣言も fail-closed で落ち、<b>事実と違うことを言わない</b>こと。
+    //
+    // 呼び出し側は IsResponseCacheDirective で絞ってから渡すので通常は到達しないが、
+    // 「安全側へ倒す」ことと「言い当てられないことを言わない」ことの両方を固定しておく
+    // ——分類を断定する文面は、名指しした項目について事実と違うことを言う形になる(issue #256)。
+    [Fact]
+    public void JudgeDirective_FailsClosed_WithoutClaimingAKindItCannotTell()
+    {
+        // キャッシュ指示ではない属性を、述語を通さずに直接渡す
+        var verdict = ResponseCachePolicy.JudgeDirective(new UnrelatedProbeFilterAttribute());
+
+        // 中身を確かめられない以上、落ちる側であること(§9 fail-closed)
+        Assert.False(verdict.IsSuppressing);
+
+        // 何であるかを断定していないこと(「間接指定です」と名乗らない)。
+        // <b>目印は本体の定数を読む（レビュー指摘）</b> ——literal を書き写すと、
+        // 本体の文面を推敲しただけでこの検査が永久に満たされ、黙って無力化される
+        Assert.DoesNotContain(
+            ResponseCachePolicy.IndirectDirectiveClaim, verdict.Reason, StringComparison.Ordinal);
+
+        // どの宣言の話かは分かるよう、型そのものは名指ししていること
+        Assert.Contains(nameof(UnrelatedProbeFilterAttribute), verdict.Reason, StringComparison.Ordinal);
+    }
+
+    // 間接指定の解決が、<b>2 つの綴りだけ</b>を辿り、それ以外は辿らないこと。
+    //
+    // 辿る側だけを固定すると「何でも辿る」へ広げても気付けないので、辿らない側も見る。
+    [Fact]
+    public void IndirectFilterTarget_ResolvesOnlyTheTwoFrameworkSpellings()
+    {
+        // [TypeFilter(typeof(X))] は X を直接組み立てて効かせる
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new TypeFilterAttribute(typeof(IndirectLongCacheAttribute))));
+
+        // [ServiceFilter(typeof(X))] は DI から X を取り出して効かせる
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new ServiceFilterAttribute(typeof(IndirectLongCacheAttribute))));
+
+        // <b>総称の綴りも同じ枝で辿れること（レビュー指摘・実測）。</b>
+        // .NET 8 の TypeFilterAttribute<T> / ServiceFilterAttribute<T> は非総称の形を継承しており、
+        // いまの switch は<b>継承のおかげで偶然</b>当たっている。「その型ちょうど」へ狭める整理は
+        // もっともらしく見えるのに、いちばん書かれやすい綴りだけが黙って辿られなくなる
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new TypeFilterAttribute<IndirectLongCacheAttribute>()));
+
+        // DI 経由の総称の綴りも同じ
+        Assert.Equal(
+            typeof(IndirectLongCacheAttribute),
+            ResponseCachePolicy.IndirectFilterTarget(new ServiceFilterAttribute<IndirectLongCacheAttribute>()));
+
+        // 直接書かれた属性は間接指定ではない(辿る先が無い)
+        Assert.Null(ResponseCachePolicy.IndirectFilterTarget(new ResponseCacheAttribute { NoStore = true }));
     }
 }

@@ -136,16 +136,12 @@ public class ResponseCacheHeaderIntegrationTests
         // 起動済みのアプリから MVC の設定を取り出す
         var options = _factory.Services.GetRequiredService<IOptions<MvcOptions>>().Value;
 
-        // グローバルに登録された [ResponseCache] のうち、保存を許しているものを集める
-        var violations = options.Filters
-            .OfType<ResponseCacheAttribute>()
-            // 属性の走査と同じ基準で判定する(規則を 2 つ書かない)
-            .Select(filter => ResponseCachePolicy.Judge(filter))
-            // 保存を禁じていないものだけを残す
-            .Where(verdict => !verdict.IsSuppressing)
-            // 失敗文言に載せる理由を取り出す
-            .Select(verdict => verdict.Reason)
-            .ToList();
+        // グローバルに登録された指示のうち、保存を許しているものを集める。
+        // <b>型で絞り込まない(issue #281)。</b> 以前は OfType&lt;ResponseCacheAttribute&gt;() で
+        // 引いていたため、Filters.Add&lt;LongCacheAttribute&gt;() が<b>1 件も見られていなかった</b>
+        // ——FilterCollection が格納するのは TypeFilterAttribute であって属性そのものではない。
+        // 判定は属性の走査と同じ共有の純粋関数に任せる(規則を 2 つ書かない)
+        var violations = ResponseCachePolicy.CachingFilterViolations(options.Filters);
 
         // 違反が 1 件も無いことを、理由付きで確認する
         Assert.True(
@@ -674,6 +670,86 @@ public class HostFilteringShortCircuitTests
 
         // 全許可でもないので、1 本目の警告も出ないこと（2 本とも黙るのが正しい設定）
         Assert.False(AllowedHostsPolicy.IsPermissive(allowedHosts));
+    }
+
+    // <b>「角括弧で囲め」という案内が、その項目について事実かを実測で固定する（issue #269）。</b>
+    //
+    // HostString のホスト部の切り出しは、"]" を含まず<b>コロンが 2 つ以上</b>ある値を
+    // IPv6 かどうかに関係なく角括弧で包む。そのため「角括弧を足されたか」だけで理由を決めると、
+    // 末尾コロンのタイプミス（ASPNETCORE_URLS や host:port:path の写しで生まれる）が
+    // <b>UnbracketedIpv6Literal と名乗り、角括弧で囲めと案内される</b>。
+    //
+    // <b>従うと何が起きるかがこの検査の本題。</b> 囲んでも、運用者が並べたかった
+    // <c>www.example.test</c> は 400 のまま ——それでいて、以前は囲んだ綴りが
+    // 「生きている」に分類され<b>2 本目の警告が消えて</b>いた。
+    // つまり<b>案内に従うほど「警告が出ていない＝絞れている」が誤った安心になる</b> ——
+    // AllowedHostsPolicy の docstring が「見逃しより重い」と書いている、
+    // 警告が障害を作る側に回る形そのもの。
+    //
+    // <b>囲んだ綴りが「生きている」のではない（レビュー指摘）。</b> 本物の Kestrel は
+    // <c>Host: [www.example.test:8080:]</c> を<b>400 で弾く</b>（実測）ので、囲んだ項目も
+    // どの Host とも一致しえない。**この harness（TestServer）は Kestrel を通さないため
+    // 同じ Host が 200 で通る**ので、ここでその Host を送って確かめることはできない
+    // ——だから囲んだ側は<b>判定が名指しできているか</b>で押さえる
+    // （Kestrel の実測値は AllowedHostsPolicy.ContainsSpellingAHostHeaderCannotCarry の docstring が正本）。
+    //
+    // 判定側だけで固定すると、写している相手（フレームワークの切り出し）が変わったときに
+    // 気づけないので、囲んだあとも 400 のままであることは実際の HTTP で押さえる。
+    [Fact]
+    public async Task BracketingANonIpv6Entry_SilencesTheWarning_WithoutMakingTheHostReachable()
+    {
+        // 末尾にコロンが 1 つ余分に入ったタイプミス（コロンが 2 つ以上あるので角括弧で包まれる）
+        const string typo = $"{SecondHost}:8080:";
+        // 以前の案内（「角括弧で囲め」）どおりに「直した」形
+        const string bracketed = $"[{SecondHost}:8080:]";
+        // 実ホスト名と併記した一覧（片方が生きている、いちばん紛らわしい形）
+        const string listWithTypo = $"{AllowedHost};{typo}";
+        // 「直した」あとの一覧
+        const string listWithBracketed = $"{AllowedHost};{bracketed}";
+
+        // まずタイプミスのまま起動する
+        using (var fixture = new AllowedHostsFixture(listWithTypo))
+        {
+            // リダイレクトを追わないクライアントを受け取る
+            var client = fixture.CreateNonRedirectingClient();
+
+            // 1 件目（正しく書けている側）は、これまでどおり受け付けられること
+            Assert.Equal(
+                System.Net.HttpStatusCode.OK,
+                (await SendWithHostAsync(client, AllowedHost)).StatusCode);
+
+            // 2 件目に並べたホスト名は届かないこと（＝この項目は死んでいる）
+            Assert.Equal(
+                System.Net.HttpStatusCode.BadRequest,
+                (await SendWithHostAsync(client, SecondHost)).StatusCode);
+        }
+
+        // 次に、案内どおり角括弧で囲んだ一覧で起動する
+        using (var fixture = new AllowedHostsFixture(listWithBracketed))
+        {
+            // リダイレクトを追わないクライアントを受け取る
+            var client = fixture.CreateNonRedirectingClient();
+
+            // <b>本命。</b> 囲んでも、運用者が並べたかったホスト名は 400 のまま
+            Assert.Equal(
+                System.Net.HttpStatusCode.BadRequest,
+                (await SendWithHostAsync(client, SecondHost)).StatusCode);
+        }
+
+        // <b>それでいて、囲んだ項目は 1 件も名指しされない（意図した見逃し）。</b>
+        // 角括弧の中身から Kestrel の受け付け方を言い当てることはできない
+        // （実測で [a:b] ・ [...] は 200、[foo] は 400 ——IPv6 として正しいかとは無関係）ので、
+        // 「素の IPv6 でなければ死んでいる」と書くと<b>実際には一致する項目</b>を
+        // 「消してよい」と案内する側へ倒れる。見逃す側を選んでいるぶん、
+        // <b>運用者をここへ誘導しないことが唯一の守り</b>になる
+        // ——それがこの検査の本題（理由は ContainsSpellingAHostHeaderCannotCarry の docstring が正本）
+        Assert.Empty(AllowedHostsPolicy.NeverMatchingEntries(listWithBracketed));
+
+        // <b>だから、タイプミスの側を IPv6 リテラルと名乗らない。</b>
+        // 原因を言い当てられない綴りは断定せず、素のホスト名を書けとだけ案内する
+        var dead = Assert.Single(
+            AllowedHostsPolicy.InspectNeverMatchingEntries(listWithTypo).Entries);
+        Assert.Equal(AllowedHostsPolicy.DeadEntryReason.NotABareHostname, dead.Reason);
     }
 
     /// <summary>指定した <c>Host</c> ヘッダーだけを差し替えて 1 回叩く。</summary>

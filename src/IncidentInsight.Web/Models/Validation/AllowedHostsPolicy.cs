@@ -1,7 +1,13 @@
 // フレームワークと同じホスト名の正規化を通すために使う
 using Microsoft.AspNetCore.Http;
-// ログ用に制御文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
+// ログ用に読めない文字を可視化するとき、文字列を 1 文字ずつ組み立てるために使う
 using System.Text;
+// 文字が「字として現れるか」をカテゴリで判定するために使う
+using System.Globalization;
+// 項目が本当に IPv6 リテラルかを、自前の近似ではなく標準の解析で見るために使う
+using System.Net;
+// 読めたアドレスが IPv4 か IPv6 かを見分けるために使う
+using System.Net.Sockets;
 
 // この判定が属する名前空間(他の入力検証の規則と同じ場所)
 namespace IncidentInsight.Web.Models.Validation;
@@ -150,7 +156,7 @@ public static class AllowedHostsPolicy
     /// <b>宣言順に見て実際にその綴りへ到達したときだけ</b>断定をやめる ——
     /// 実測するとフレームワークの結果は<b>項目の並び順で変わる</b>ため、
     /// 到達しない壊れた項目まで「判断できない」に倒すと、確定している答えを取り落とす。
-    /// 「その項目は一致しえないか」（<see cref="IsNeverMatchingEntry"/>）は
+    /// 「その項目は一致しえないか」（<see cref="ClassifyDeadEntry"/>）は
     /// <b>どちらにも倒さず対象から外す</b> ——突き合わせる値そのものが作れない以上、
     /// 「空白のせいで一致しない」とは言えないため。</para>
     ///
@@ -310,11 +316,19 @@ public static class AllowedHostsPolicy
     /// <b>そのまま誤った安心</b>になる —— これは <c>"*;incident.example.test"</c> を
     /// 取りこぼしていた頃とまったく同じ形の穴で、向きだけが逆。</para>
     ///
-    /// <para><b>判定は「トリムすると変わるか」だけ。</b> リクエストの <c>Host</c> ヘッダーは
-    /// 解析された時点で前後に空白を持たないので、前後に空白のある項目は
-    /// <b>綴りに関係なく</b>一致しえない（<c>" * "</c> のようにワイルドカードのつもりの綴りも
-    /// ここに落ちる）。内側の空白（<c>"a b.test"</c>）は別の話なので見ない ——
-    /// そもそもホスト名として不正で、ここで扱うと「何を保証しているか」がぼやける。</para>
+    /// <para><b>判定は 2 つ。</b> (1) 正規化後の綴りが、突き合わせに使われるホスト部と
+    /// 食い違うこと（前後の空白・ポートがこれ）。(2) <c>Host</c> ヘッダーが運べない文字を
+    /// 含むこと（<b>どの文字かはここに書き写さない</b> ——文字を増減したときに
+    /// こちらだけが古くなる。一覧は下記の正本を見ること。実際、<c>/</c> を足したあとも
+    /// ここと <c>CLAUDE.md</c> は「空白・<c>%</c>」のままだった）。
+    /// リクエストの <c>Host</c> ヘッダーは解析された時点で
+    /// 前後に空白を持たないので、前後に空白のある項目は<b>綴りに関係なく</b>一致しえない
+    /// （<c>" * "</c> のようにワイルドカードのつもりの綴りもここに落ちる）。
+    /// <b>内側の空白（<c>"a b.test"</c> ・ <c>"0.0.0 .0"</c>）も (2) で拾う（issue #269）</b> ——
+    /// 以前は「別の話」として見ていなかったが、そのせいで <c>"0.0.0 .0"</c> が無警告のまま残り、
+    /// 運用者がその空白を外すと <c>0.0.0.0</c> ＝全許可になる経路が開いていた。
+    /// どこまで拾うかの線引きは
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本。</para>
     ///
     ///
     /// <para><b>起動時のチェックはここを直接は呼ばない</b>（<see cref="InspectNeverMatchingEntries"/>
@@ -333,14 +347,13 @@ public static class AllowedHostsPolicy
         [.. PartitionEntries(allowedHosts).Dead.Select(dead => dead.Value)];
 
     /// <summary>
-    /// その項目 1 件が、どの <c>Host</c> とも一致しえないかを返す。
+    /// その項目 1 件が、どの <c>Host</c> とも一致しえないか、そうなら<b>なぜか</b>を返す。
     /// </summary>
     /// <remarks>
-    /// <para><b>規則を 1 か所へ置く。</b> 「死んでいる項目」と「生きている項目」を別々の式で
-    /// 書くと、条件を広げたとき（項目の途中に紛れた制御文字まで
-    /// 「一致しえない」と数えるようにする、など）に片方だけが取り残される。そのとき <see cref="ClassifyDeadEntryDeletion"/> は
-    /// 「生きた項目が残る」と答えるのに実際には 0 件になり、
-    /// <b>削除してよいと案内した結果が全ホスト許可</b>になる。</para>
+    /// <para><b>ここが「一致しえない」の唯一の定義。</b> 「一致しえないか」（<c>bool</c>）と
+    /// 「なぜ一致しえないか」（運用者へ出す文面）を別々の式で書くと、条件を広げたときに
+    /// 片方だけが取り残され、<b>名指しした項目に付く理由が事実と違う</b>状態になる。
+    /// <see cref="DeadEntryCauseMessage"/> もここから導く。</para>
     ///
     /// <para><b>生の綴りではなく<see cref="TryNormalizeEntry">正規化後</see>を見る。</b>
     /// フレームワークが <c>Host</c> ヘッダーと突き合わせるのは<b>正規化を通したあとの値</b>で、
@@ -363,24 +376,10 @@ public static class AllowedHostsPolicy
     /// その綴りは <see cref="IsPermissive"/> 側が
     /// <see cref="PermissiveReason.UnparsableEntry"/> として専用の文面で拾う。
     /// ここで拾うと、同じ項目に対して<b>原因の違う 2 本の警告</b>が出て取り違えのもとになる。</para>
-    /// </remarks>
-    /// <param name="entry">許可リストの 1 項目（トリムしていない生の値）。</param>
-    /// <returns>どの <c>Host</c> とも一致しえないなら <c>true</c>。</returns>
-    private static bool IsNeverMatchingEntry(string entry) =>
-        // 規則そのものは ClassifyDeadEntry が 1 つだけ持つ（ここは「理由があるか」だけを見る）
-        ClassifyDeadEntry(entry) is not null;
-
-    /// <summary>
-    /// その項目 1 件が、どの <c>Host</c> とも一致しえないか、そうなら<b>なぜか</b>を返す。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>ここが「一致しえない」の唯一の定義。</b> 「一致しえないか」（<c>bool</c>）と
-    /// 「なぜ一致しえないか」（運用者へ出す文面）を別々の式で書くと、条件を広げたときに
-    /// 片方だけが取り残され、<b>名指しした項目に付く理由が事実と違う</b>状態になる。
-    /// <see cref="IsNeverMatchingEntry"/> も <see cref="DeadEntryCauseMessage"/> も
-    /// ここから導く。</para>
     ///
-    /// <para><b>理由が 2 つあるのは、突き合わせ方が 2 段階だから。</b>
+    /// <para><b>空白とポートが理由になるのは、突き合わせ方が 2 段階だから</b>
+    /// （<b>理由の一覧は <see cref="DeadEntryReason"/> が正本</b>。ここで数えて書くと、
+    /// 理由を足したときにこの数字だけが古くなる）。
     /// <c>HostString.MatchesAny</c> は (1) リクエスト側の値から<b>ポートを落とし</b>、
     /// (2) 残ったホスト名を<b>許可リストの項目とそのまま</b>比べる。つまり項目の側は
     /// トリムもされずポートも落とされないので、<b>前後に空白が残る項目</b>も
@@ -399,13 +398,19 @@ public static class AllowedHostsPolicy
     /// 角括弧の IPv6 リテラル（<c>[::1]</c> ・ <c>[::]</c>）はコロンを含むが
     /// ポートは持たず、実測でも <c>Host: [::1]</c> と正しく一致する。
     /// フレームワーク自身の分け方（<c>HostString</c> のホスト部とポート部）へ委ね、
-    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でポートの有無を見る。
+    /// <b>正規化後の綴りがホスト部と一致しないこと</b>でその項目が死んでいることを見る。
+    /// <b>ただし「死んでいる」から先の理由は、そこからは決まらない（issue #269）。</b>
+    /// ポートと名乗るのは<b>ホスト部の直後がコロン</b>のときだけ、IPv6 と名乗るのは
+    /// <b>実際に <see cref="IPAddress"/> で読める</b>ときだけにし、
+    /// どちらにも当たらない綴りは <see cref="DeadEntryReason.NotABareHostname"/> へ倒す
+    /// （理由を 2 択の当て推量で決めていた頃の壊れ方は
+    /// <see cref="IsIpv6Literal"/> の docstring が正本）。
     /// <c>HostString.Port</c> を見る形では足りない ——実測で <c>a.test:abc</c> ・
     /// <c>a.test:</c> はポート部が数値として読めないため <c>Port</c> が <c>null</c> になるが、
     /// 項目としては依然としてどの <c>Host</c> とも一致しない。</para>
     ///
     /// <para><b>生の綴りではなく<see cref="TryNormalizeEntry">正規化後</see>を見る。</b>
-    /// 理由は <see cref="IsNeverMatchingEntry"/> の docstring が正本。
+    /// 理由は <see cref="ClassifyDeadEntry"/> の docstring が正本。
     /// 正規化できない綴りはここでは死んだ項目に数えず、
     /// <see cref="PermissiveReason.UnparsableEntry"/> 側（1 本目の警告）へ任せる。</para>
     ///
@@ -423,9 +428,13 @@ public static class AllowedHostsPolicy
         // フレームワークが Host と突き合わせるときに使う綴り（ホスト部だけ）を取り出す
         var comparable = ComparableSpelling(normalized);
 
-        // 前後に空白が残っておらず、突き合わせ相手の綴りとも一致するなら、その項目は一致しうる
-        if (string.Equals(normalized, normalized.Trim(), StringComparison.Ordinal)
-            && string.Equals(normalized, comparable, StringComparison.Ordinal))
+        // 突き合わせ相手の綴りと一致し、<b>Host ヘッダーが運べない文字も含まない</b>なら、
+        // その項目は一致しうる。
+        // <b>前後の空白を別に見る必要は無い（レビュー指摘）</b> ——下の述語がどこの空白も
+        // 弾くので包含される（理由の名乗り分けは下の鎖が別に行う）
+        if (string.Equals(normalized, comparable, StringComparison.Ordinal)
+            && !ContainsSpellingAHostHeaderCannotCarry(normalized)
+            && !HasBracketsAHostHeaderCannotCarry(normalized))
         {
             // 生きている項目なので理由は無い
             return null;
@@ -433,7 +442,11 @@ public static class AllowedHostsPolicy
 
         // <b>いちばん危ない形を先に名乗る。</b> 案内どおりに直すとワイルドカードになる項目は、
         // 「直せば一致する」と読ませてはいけない（直した瞬間にホスト名の絞り込みが丸ごと消える）
-        if (Wildcards.Contains(RepairedSpelling(normalized), StringComparer.Ordinal))
+        // <b>数え上げの出発点は「運用者が書いた綴り」（レビュー指摘）。</b>
+        // 正規化そのものが角括弧を<b>補う</b>ので（" ::" → "[ ::]"）、正規化後から始めると
+        // 「空白を外すと [::] ＝全許可」という<b>運用者が実際にはしない直し</b>を数えてしまう。
+        // 実際に書き直されるのは生の綴りのほうで、" ::" の空白を外すと "::" ＝全拒否になる
+        if (RepairsToWildcard(entry))
         {
             // 直し方が「書き直す」ではなく「実ホスト名に置き換える／消す」になる唯一の形
             return DeadEntryReason.WildcardOnceRepaired;
@@ -446,12 +459,215 @@ public static class AllowedHostsPolicy
             return DeadEntryReason.SurroundingWhitespace;
         }
 
-        // 突き合わせ相手が「角括弧を足したもの」なら、原因は括弧の無い IPv6 リテラル
-        return string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
-            ? DeadEntryReason.UnbracketedIpv6Literal
-            // そうでなければ、落とされたのはポート部
-            : DeadEntryReason.PortSuffix;
+        // <b>前後以外に空白が残っている項目は、空白専用の理由で名乗る（レビュー指摘）。</b>
+        // 正規化は角括弧を補うので空白は内側へ移りうる（" ::1" → "[ ::1]"）。
+        // ここを下の NotABareHostname へ落とすと、文面が
+        // 「素の IPv6 リテラルではない・角括弧で囲んでも直らない」と<b>事実と逆</b>のことを
+        // 言い出す —— " ::1" の正しい直し方は、まさに空白を外して "[::1]" と書くこと。
+        // しかも「余分なコロンを書くな」に従うと IPv6 のコロンを消すことになる
+        if (normalized.Any(char.IsWhiteSpace))
+        {
+            // 空白が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.WhitespaceInsideEntry;
+        }
+
+        // <b>パーセント記号も専用の理由で名乗る（レビュー指摘）。</b>
+        // 下の NotABareHostname の文面は「ポートも余分なコロンも書くな」と案内するが、
+        // "www.example%2Ecom" にはどちらも無い ——名指しした項目について事実と違うことを
+        // 言う形（issue #256 が名指しした誤り）になるので、ここで分ける
+        if (normalized.Contains(PercentSign))
+        {
+            // パーセント記号が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.PercentSignInEntry;
+        }
+
+        // <b>URL として書かれた項目は、ポートの理由を名乗る前に分ける（レビュー指摘）。</b>
+        // "https://b.example.test" は "https:" がポート区切りに見えるため下の判定に当たり、
+        // ポートを 1 つも含まないのに「ポートを外せ」と案内していた ——この PR が
+        // NotABareHostname で無くしたはずの「事実と違う理由」そのもの
+        if (normalized.Contains(PathSeparator))
+        {
+            // URL ごと貼られたことを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.UrlInsteadOfHostname;
+        }
+
+        // ホスト部の直後がコロンなら、落とされたのは<b>実際にポート部</b>
+        // （"a.test:8080" ・ "a.test:" ・ "a.test:abc" がこの形）
+        if (normalized.StartsWith(comparable + PortSeparator, StringComparison.Ordinal))
+        {
+            // ポートが原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.PortSuffix;
+        }
+
+        // 突き合わせ相手が「角括弧を足したもの」で、<b>中身が実際に IPv6 として読める</b>なら、
+        // 原因は括弧の無い IPv6 リテラル（＝角括弧で囲めば本当に一致するようになる）
+        if (string.Equals(comparable, $"[{normalized}]", StringComparison.Ordinal)
+            && IsIpv6Literal(normalized))
+        {
+            // 「角括弧で囲め」という案内が、この項目については事実として正しい
+            return DeadEntryReason.UnbracketedIpv6Literal;
+        }
+
+        // <b>対になっていない角括弧は専用の理由で名乗る（レビュー指摘）。</b>
+        // NotABareHostname の文面は「角括弧で囲むな」と案内するが、"[0.0.0.0" の
+        // 正しい直し方は<b>余計な括弧を消す</b>ことなので、言い方を分ける
+        if (HasBracketsAHostHeaderCannotCarry(normalized))
+        {
+            // 括弧の形が原因であることを、そのまま運用者への文面へ運ぶ
+            return DeadEntryReason.UnpairedBrackets;
+        }
+
+        // どちらとも断定できない綴り（素のホスト名になっていない）
+        return DeadEntryReason.NotABareHostname;
     }
+
+    /// <summary>ホスト名とポートを分ける区切り。</summary>
+    /// <remarks>
+    /// 名前を付けているのは、<see cref="ClassifyDeadEntry"/> の判定と
+    /// <see cref="ComparableSpelling"/> が委ねている <see cref="HostString"/> の分け方が
+    /// <b>同じ区切り</b>の話をしていることを読み手に示すため（§6）。
+    /// </remarks>
+    private const string PortSeparator = ":";
+
+    /// <summary>
+    /// その綴りが、<b>実際に IPv6 アドレスとして読める</b>かを見る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>「角括弧を補われた」＝ IPv6 ではない（issue #269）。</b>
+    /// <see cref="HostString"/> のホスト部の切り出しは、<c>]</c> を含まず
+    /// <b>コロンが 2 つ以上ある</b>値を、IPv6 かどうかに関係なく角括弧で包む。
+    /// つまり <c>www.example.com:8080:</c>（末尾コロンのタイプミス、あるいは
+    /// <c>host:port:path</c> の写し）も「角括弧を足したもの」に一致してしまう。</para>
+    ///
+    /// <para><b>取り違えると、警告が自分で自分を黙らせる。</b> この綴りを
+    /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> と名乗ると、文面は
+    /// 「角括弧で囲め」と案内する。そのとおり <c>[www.example.test:8080:]</c> へ直すと、
+    /// 運用者が並べたかった <c>www.example.test</c> は<b>400 のまま</b>なのに
+    /// <b>2 本目の警告だけが消える</b>（囲んだ綴りはホスト部と一致するので、
+    /// この判定からは「生きている」に見える）。
+    /// <b>「実際に一致するから正しい」のではない</b> ——実測では本物の Kestrel は
+    /// <c>Host: [www.example.test:8080:]</c> も <b>400</b> で弾く。
+    /// 囲んだ綴りを名指しできないのは、角括弧の中身から Kestrel の受け付け方を
+    /// 言い当てられないための<b>意図した見逃し</b>で、理由は
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本
+    /// （この段落は一度その逆を書いていた。TestServer の実測を本番の挙動と
+    /// 取り違えたため ——レビュー指摘）。
+    /// つまり案内に従うほど「警告が出ていない＝絞れている」という
+    /// <c>docs/security.md</c> の確認手順が誤った安心になる ——
+    /// このクラスが繰り返し避けている<b>警告が障害を作る側に回る</b>形そのもの。</para>
+    ///
+    /// <para><b>スコープ付き（<c>fe80::1%eth0</c>）はここでは見ない。</b> 案内どおり
+    /// 角括弧で囲んでも Kestrel が <c>Host</c> ヘッダーごと弾くので「囲めば一致する」は
+    /// 事実にならないが、その手当ては<b>手前の <see cref="DeadEntryReason.PercentSignInEntry"/>
+    /// の分岐</b>が行う（<c>%</c> を含む項目はここへ来ない）。
+    /// <b>同じ規則を 2 か所に書かない</b> ——書くと条件を直したときに片方が取り残される
+    /// （<see cref="ClassifyDeadEntry"/> の docstring が禁じている形。レビュー指摘）。</para>
+    ///
+    /// <para><b>残っている境界: ポートを付けた IPv6 の綴り（レビュー指摘）。</b>
+    /// <c>::1:8080</c> は<b>それ自体が正しい IPv6 リテラル</b>なので、
+    /// 「ポートを書いた」のか「そういうアドレスを書いた」のかを綴りから区別できない。
+    /// 案内どおり <c>[::1:8080]</c> と書くとこの判定からは生きている項目になり、
+    /// 運用者が意図した <c>Host: [::1]:8080</c> は 400 のまま残る。
+    /// <b>診断が推測で決められる範囲の外</b>（決め打つと、本物の
+    /// <c>::1:8080</c> を使う配備で生きている項目を名指しすることになる）なので、
+    /// 見逃す側へ倒している。</para>
+    ///
+    /// <para><b>判定は自前で書かず <see cref="IPAddress"/> に委ねる。</b>
+    /// 「コロンが 2 つ以上」「16 進とコロンだけ」といった近似は、
+    /// 埋め込み IPv4（<c>::ffff:192.168.0.1</c>）やスコープ付き（<c>fe80::1%eth0</c>）で
+    /// 取りこぼすか、逆に上の <c>www.example.com:8080:</c> を拾う。</para>
+    /// </remarks>
+    /// <param name="value">正規化済みの項目。</param>
+    /// <returns>素の（スコープの付かない）IPv6 アドレスとして読めるなら <c>true</c>。</returns>
+    private static bool IsIpv6Literal(string value) =>
+        // アドレスとして読めて、かつそれが IPv6 であること（IPv4 は角括弧を取らない）
+        IPAddress.TryParse(value, out var address)
+        && address.AddressFamily == AddressFamily.InterNetworkV6;
+
+    /// <summary>
+    /// その綴りが、<c>Host</c> ヘッダーでは運べないと<b>実測した</b>文字を含むかを見る。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Kestrel の検証規則を書き写さない（レビュー指摘）。</b> 角括弧の中身について
+    /// 実測すると、Kestrel が受け付ける範囲は「IPv6 として正しいか」とは無関係だった ——
+    /// <c>[a:b]</c> ・ <c>[...]</c> ・ <c>[::1::2]</c> ・ <c>[0.0.0.0]</c> は
+    /// <b>どれも 200</b>（IPv6 としては 1 つも正しくない）で、
+    /// <c>[foo]</c> ・ <c>[]</c> ・ <c>[:]</c> は 400。つまり実際の規則は
+    /// 「16 進の数字・<c>:</c> ・ <c>.</c> だけからなり、ある程度の形を満たすこと」に近い。</para>
+    ///
+    /// <para><b>だから「素の IPv6 でなければ死んでいる」とは書けない。</b>
+    /// そう書いた版は <c>[a:b]</c> のような<b>実際には一致する項目</b>を
+    /// 「消してよい」と案内することになり、このクラスが繰り返し避けている
+    /// <b>警告が障害を作る側</b>（見逃しより重い誤り）へ倒れる。
+    /// かといって Kestrel の文字集合を推測で書き写すのは、この repo が
+    /// 何度も踏んだ「近似を育てる」道そのもの。</para>
+    ///
+    /// <para><b>そこで、実測で 400 になった原因の文字だけに絞る</b> ——
+    /// 空白（<c>[::1 ]</c> ・ <c>[:: ]</c>）、<c>%</c>（<c>[fe80::1%eth0]</c> ・
+    /// <c>[::1%25eth0]</c>）、<c>/</c>（<c>https://incident.example.test:8443</c> ・
+    /// <c>a/b.test</c>）の<b>3 つ</b>。いずれも Host ヘッダーの構文として運べないので
+    /// <b>誤検知の側へ倒れる余地が無く</b>、推測も要らない。
+    /// <b>増減するときはこの段落と実装を同じ変更セットで直すこと</b>
+    /// ——ここが「どこまで拾うか」の正本として他所から参照されている。</para>
+    ///
+    /// <para><b>実測の射程は Kestrel（レビュー指摘）。</b> 上の 400 / 200 はすべて
+    /// Kestrel の要求行の検証で測った値で、IIS / HTTP.sys の前段に置く配備では
+    /// 受け付ける集合が違いうる。空白と <c>/</c> は <c>Host</c> ヘッダーの構文として
+    /// どこでも無効だが、<c>%</c> は RFC 3986 の reg-name としては合法なので、
+    /// <b>理屈のうえでは</b>そちらで一致しうる項目を名指しする余地が残る。
+    /// それでも弾いているのは、<b>実在する DNS 名に <c>%</c> は現れず</b>、
+    /// ブラウザも <c>Host</c> を percent-encode しないため、名指しする項目が
+    /// 実際に使われている見込みが無いから。<b>IIS / HTTP.sys 配備で
+    /// <c>%</c> を含む項目を「正しく使っている」報告が出たら、この 1 文字だけを外す</b>
+    /// （空白と <c>/</c> はそのままでよい）。</para>
+    ///
+    /// <para><b>どちらも角括弧の有無を問わない（レビュー指摘）。</b> 空白が
+    /// <c>0.0.0 .0</c> のような途中の形でも運べないのは分かりやすいが、
+    /// <c>%</c> も同じだった —— 一時は「普通のホスト名では percent-encoding として
+    /// 合法だから角括弧の中だけ」としていたが、<b>実測はその逆</b>で、
+    /// <c>a%2Db.test</c> ・ <c>www.example%2Ecom</c> ・ <c>a%b.test</c> ・ <c>a%25b.test</c> は
+    /// <b>どれも 400</b>（比較のため: <c>a_b.test</c> ・ <c>a~b.test</c> ・
+    /// <c>xn--bcher-kva.test</c> は 200）。角括弧の中だけを見ていた版では
+    /// <c>AllowedHosts=…;www.example%2Ecom</c> が<b>警告 2 本とも出ないまま 400</b> になっていた
+    /// （issue #256 と同じ形の見逃し）。<b>推測ではなく実測で決めること</b>
+    /// ——この 1 行は「合法そうだから」という理屈だけで穴になっていた。</para>
+    ///
+    /// <para><b>残っている境界（意図した見逃し）:</b> <c>[foo]</c> や
+    /// <c>[www.example.com:8080:]</c> は Kestrel が 400 で弾くのに、ここでは拾えない
+    /// （中身の文字だけでは Kestrel の規則と区別できないため）。
+    /// 見逃す側なので許容する ——そのかわり、
+    /// <see cref="DeadEntryReason.NotABareHostname"/> の文面が
+    /// <b>「角括弧で囲むな」</b>と明示して、運用者をここへ誘導しないようにしてある。</para>
+    /// </remarks>
+    /// <param name="spelling">角括弧の中身（または項目そのもの）。</param>
+    /// <returns>運べない文字を含むなら <c>true</c>。</returns>
+    private static bool ContainsSpellingAHostHeaderCannotCarry(string spelling) =>
+        // 実測で Host ヘッダーに載らないと確かめた文字を 1 つでも含むか
+        spelling.Any(ch => char.IsWhiteSpace(ch) || ch == PercentSign || ch == PathSeparator);
+
+    /// <summary>URL のパスの区切り（<c>https://incident.example.test/</c> の <c>/</c>）。</summary>
+    /// <remarks>
+    /// <b>貼り付けた URL を拾うために見る（レビュー指摘）。</b> 実測では
+    /// <c>Host: https://incident.example.test:8443</c> も <c>a/b.test</c> も
+    /// <c>a.test/</c> も <b>400</b>。この形が要るのは、<c>AllowedHosts</c> へ
+    /// <b>ブラウザのアドレスバーから URL ごと貼る</b>のが自然な間違いだから ——
+    /// ポート付きの URL は正規化で <c>[https://…:8443]</c> になり、
+    /// 「正規化後の綴り＝ホスト部」に化けるので、<c>/</c> を見ないと
+    /// <b>警告 2 本とも黙ったまま</b>その名前が 400 になる。
+    /// （<c>?</c> ・ <c>@</c> ・ <c>#</c> ・ <c>,</c> も同じく 400 だったが足していない ——
+    /// 綴りを増やすほど「この版の Kestrel ではこうだった」という主張が増えるので、
+    /// <b>実際に運用者が書く形が見つかった文字だけ</b>を足す。）
+    /// </remarks>
+    private const char PathSeparator = '/';
+
+    /// <summary>
+    /// パーセント記号（IPv6 のスコープ区切り <c>fe80::1%eth0</c> と percent-encoding の両方）。
+    /// </summary>
+    /// <remarks>
+    /// <b>どちらの用途でも <c>Host</c> ヘッダーには載らない</b>（実測は
+    /// <see cref="ContainsSpellingAHostHeaderCannotCarry"/> の remarks が正本）。
+    /// </remarks>
+    private const char PercentSign = '%';
 
     /// <summary>
     /// フレームワークが <c>Host</c> と突き合わせるときに使う綴り（ホスト部）を返す。
@@ -466,7 +682,7 @@ public static class AllowedHostsPolicy
     private static string ComparableSpelling(string normalized) => new HostString(normalized).Host;
 
     /// <summary>
-    /// その項目を案内どおりに直したときに残る綴り（＝実際に突き合わされることになる綴り）を返す。
+    /// その項目を案内どおりに直したときに残りうる綴り（＝実際に突き合わされることになる綴り）を返す。
     /// </summary>
     /// <remarks>
     /// <para><b>「消したら何が起きるか」だけでは足りない。</b>
@@ -479,16 +695,524 @@ public static class AllowedHostsPolicy
     /// 前後の空白でも同じで、<c>"incident.example.com; 0.0.0.0"</c> ・
     /// <c>"incident.example.com; *"</c> は<b>以前から</b>この形だった。</para>
     ///
-    /// <para><b>だから直した結果も見る。</b> 直すとは「前後の空白を落とし、
+    /// <para><b>だから直した結果も見る。</b> 直すとは「空白を落とし、
     /// 突き合わせに使われるホスト部だけにする」こと。その結果がワイルドカードなら、
     /// その項目は <see cref="DeadEntryReason.WildcardOnceRepaired"/> として
     /// 専用の文面で名指しする。</para>
+    ///
+    /// <para><b>落とすのは前後の空白だけでは足りない（レビュー指摘）。</b>
+    /// 正規化は角括弧を<b>補う</b>ので、空白は<b>括弧の内側へ移りうる</b> ——
+    /// <c>"[ ::]"</c>（運用者が角括弧を書いた一覧の、区切りのうしろに空白が入った形）は
+    /// 空白が括弧の内側に残る。<c>Trim()</c> だけだと <c>[::]</c> と一致せず、
+    /// <b>この項目だけがワイルドカードの警告から外れる</b>。
+    /// そのとき付くのは「この項目を実ホスト名へ直せ」という<b>ごく普通の案内</b>で、
+    /// 従って空白を外すと <c>[::]</c> ＝全ホスト許可（issue #64）——
+    /// 空白 1 つで、いちばん危ない形の専用警告が<b>有害な案内</b>に入れ替わる。
+    /// 空白をすべて落としてから見れば、この抜け道は綴りに依存せず閉じる
+    /// （落として初めてワイルドカードになる項目だけが影響を受けるので、
+    /// 実ホスト名を誤って名指しすることは無い）。</para>
+    ///
+    /// <para><b>角括弧を書いていない <c>" ::"</c> は、これに当たらない（レビュー指摘）。</b>
+    /// 正規化は <c>"[ ::]"</c> を作るが、<b>運用者が空白を外して着地するのは <c>"::"</c></b>
+    /// で、実測ではそれはワイルドカードではない（理由は
+    /// <see cref="IsWildcardEntry"/> の remarks が正本）。だから数え上げの出発点は
+    /// 正規化後ではなく<b>運用者が書いた綴り</b>にしてある。</para>
+    ///
+    /// <para><b>上限を引数に取るのは、打ち切りの配線をテストから通せるようにするため。</b>
+    /// 本番の上限（<see cref="MaxRepairedSpellings"/>）は実在しうる綴りでは届きにくい値なので、
+    /// 固定したままだと「数え上げ側が打ち切りをどう伝えるか」が一度も走らず、
+    /// <b>旗を立てるのをやめても全件緑のまま</b>になる（実測）。
+    /// 判定そのものは <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> が持つ。</para>
+    /// </remarks>
+    /// <param name="entry">運用者が書いた綴り（正規化前）。</param>
+    /// <param name="limit">数え上げの上限。</param>
+    /// <returns>候補と、上限で打ち切ったかどうか。</returns>
+    private static RepairClosure RepairedSpellings(string entry, int limit)
+    {
+        // 既に出た綴り（最初は正規化済みの項目そのもの）
+        var seen = new HashSet<string>(StringComparer.Ordinal) { entry };
+
+        // これから 1 手ずつ広げる綴りの待ち行列
+        var pending = new Queue<string>(new[] { entry });
+
+        // 突き合わせに使う形（ホスト部）にした候補
+        var spellings = new List<string>();
+
+        // 待ち行列が空になる（＝新しい綴りが出なくなる）まで広げる
+        while (pending.Count > 0)
+        {
+            // 次に広げる綴りを 1 つ取り出す
+            var current = pending.Dequeue();
+
+            // 取り出した綴りを<b>そのまま</b>控える（判定側がフレームワークと同じ正規化を掛ける）
+            spellings.Add(current);
+
+            // どの直し方も 1 手ずつ試し、初めて出た綴りだけを待ち行列へ足す
+            foreach (var step in RepairSteps)
+            {
+                // 1 手だけ直した綴り
+                var next = step(current);
+
+                // まだ見ていない綴りなら、そこからさらに広げる
+                if (seen.Add(next)) pending.Enqueue(next);
+            }
+
+            // <b>上限に達したら、数え上げきれなかったことを旗で持って返す（レビュー指摘）。</b>
+            // 以前は「候補を何件返したか」で打ち切りを見分けていたが、1 回の取り出しで
+            // 1 回の取り出しで<b>手の数だけ</b> <c>seen</c> へ積まれる一方
+            // <c>spellings</c> は 1 件しか増えないため、
+            // <b>打ち切った時点の件数は上限より必ず少ない</b>。判定側の
+            // 「件数が上限に達していたら打ち切り」は<b>一度も成り立たず</b>、
+            // 打ち切った項目は「ワイルドカードは見つからなかった」として扱われていた
+            // ——上限を fail-closed にしたはずの変更が、そのまま fail-open のままだった（実測）
+            // <b>「まだ広げる先が残っている」ときだけ打ち切りと呼ぶ（レビュー指摘）。</b>
+            // pending を見ないと、ちょうど上限で数え終わった閉包まで「打ち切った」ことになり、
+            // <b>数え上げが「ワイルドカードにはならない」と示したのに「なりうる」と名指しする</b>
+            // ——issue #256 / #269 と同じ「事実と違うことを言う」形（倒れる向きは安全側だが、
+            // 名指しした項目について事実と違うことを言っているのは同じ）
+            if (pending.Count > 0 && seen.Count >= limit) return new RepairClosure(spellings, true);
+        }
+
+        // 最後まで数え上げられたので、打ち切りの旗は立てない
+        return new RepairClosure(spellings, false);
+    }
+
+    /// <summary>直し方の「1 手」の一覧（どれも綴りを伸ばさない）。</summary>
+    /// <remarks>
+    /// 毎回組み立て直さないよう <c>static readonly</c> に置く。順番は結果に影響しない
+    /// （<see cref="RepairedSpellings"/> は新しい綴りが出なくなるまで広げるため）。
+    /// </remarks>
+    private static readonly Func<string, string>[] RepairSteps =
+    {
+        // 空白を 1 つ残らず落とす（正規化が括弧を補うと空白は内側へ移る）
+        RemoveWhitespace,
+        // 対になっていない角括弧を落とす（"[0.0.0.0" → "0.0.0.0"）
+        RemoveEveryBracket,
+        // 読めない末尾ごと削る（"0.0.0.0%20" → "0.0.0.0"）
+        TruncateAtPercentSign,
+        // パーセント記号だけを抜く（"%0.0.0.0" → "0.0.0.0"）
+        RemoveEveryPercentSign,
+        // URL ごと貼られた形から、ホスト名の部分だけを取り出す
+        HostnameInsideUrlLikeSpelling,
+        // ポートも余分なコロンも書かない（"0.0.0.0:8080:" → "0.0.0.0"）
+        TruncateAtFirstColon,
+        // "//" の無いスキームを外す（"http:0.0.0.0" → "0.0.0.0"）
+        AfterBareScheme,
+        // 突き合わせに使われるホスト部だけを書く（"[::]:abc" → "[::]"）
+        HostPartUnlessItAddsBrackets,
+        // 先頭に紛れた区切りのコロンを落とす（":[::]" → "[::]"）
+        TrimLeadingColons,
+    };
+
+    /// <summary>数え上げた候補と、上限で打ち切ったかどうか。</summary>
+    /// <param name="Spellings">突き合わせに使う形にした候補。</param>
+    /// <param name="Truncated">上限で打ち切った（＝候補が出そろっていない）なら <c>true</c>。</param>
+    private readonly record struct RepairClosure(
+        IReadOnlyCollection<string> Spellings,
+        bool Truncated);
+
+    /// <summary>
+    /// <c>Host</c> ヘッダーが運べない<b>角括弧の使い方</b>かを判定する。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>実測（本物の Kestrel へ生ソケットで送った結果）。</b>
+    /// 角括弧を運べるのは<b>ホスト部の先頭に開いて 1 度だけ閉じる</b>形だけ:
+    /// <c>[a:b]</c> ・ <c>[0.0.0.0]</c> ・ <c>[::1]</c> ・ <c>[::1]:8080</c> は 200。
+    /// 対になっていない綴り —— <c>[0.0.0.0</c> ・ <c>0.0.0.0]</c> ・ <c>[*</c> ・ <c>*]</c> ・
+    /// <c>[::</c> ・ <c>::]</c> ・ <c>a]b.test</c> ・ <c>a[b.test</c> ・ <c>[[a]]</c> ・
+    /// <c>[a[b]</c> —— は<b>すべて 400</b>。</para>
+    ///
+    /// <para><b>なぜ足したか。</b> これを見る前は <c>"[0.0.0.0"</c> ・ <c>"0.0.0.0]"</c> ・
+    /// <c>"[*"</c> ・ <c>"*]"</c> が<b>警告 2 本とも出ないまま</b>毎リクエスト 400 になり、
+    /// しかも運用者が余計な括弧を消すと <c>0.0.0.0</c> ＝全ホスト許可（issue #64）だった。
+    /// さらに <c>" [0.0.0.0"</c> は前後の空白の警告が付くので、<b>案内どおり空白を外すと
+    /// その無警告の状態へ着地する</b> ——このクラスが繰り返し避けている
+    /// 「警告に従って直した先が、無警告のまま 400」の形（レビュー指摘）。</para>
+    ///
+    /// <para><b>判定は「1 組・先頭・閉じが後」だけを見る。</b> 括弧の<b>中身</b>からは
+    /// Kestrel の受け付け方を言い当てられない（<c>[a:b]</c> は 200 なのに <c>[foo]</c> は 400）
+    /// ので、中身には触れない ——ここを推測で広げると、今度は
+    /// <b>実際には一致する項目を「消してよい」と案内する</b>側（見逃しより重い誤り）へ倒れる。
+    /// <c>[a]b</c> ・ <c>[::1]x</c> は 1 組で先頭なのでここでは拾わず、
+    /// これまでどおり <see cref="DeadEntryReason.NotABareHostname"/> になる（見逃す側）。</para>
+    ///
+    /// <para>判定を掛けるのは<b>正規化後</b>の綴り。正規化が補う角括弧は必ず対になるので、
+    /// ここで拾うのは運用者が書いた括弧だけになる。</para>
+    /// </remarks>
+    /// <param name="spelling">正規化済みの綴り。</param>
+    /// <returns>運べない括弧の使い方なら <c>true</c>。</returns>
+    private static bool HasBracketsAHostHeaderCannotCarry(string spelling)
+    {
+        // 開き括弧の数を数える
+        var opens = spelling.Count(ch => ch == '[');
+
+        // 閉じ括弧の数を数える
+        var closes = spelling.Count(ch => ch == ']');
+
+        // 括弧がまったく無ければ、この判定の対象ではない
+        if (opens == 0 && closes == 0) return false;
+
+        // 1 組でなければ運べない（"[[a]]" ・ "[0.0.0.0" ・ "0.0.0.0]" がこれ）
+        if (opens != 1 || closes != 1) return true;
+
+        // 開きが先頭に無ければ運べない（"a[b.test" がこれ）
+        if (spelling[0] != '[') return true;
+
+        // ここまで来た綴りは「1 組・開きが先頭」なので、閉じは必ず後ろにある ——運べる形。
+        // （"]a[" のように閉じが先に来る綴りは、1 つ上の「開きが先頭か」で既に弾かれている。
+        //   ここで改めて前後を比べる分岐を置いていたが、<b>その条件は決して成り立たない</b>
+        //   ——守っているように読める到達しない行になっていた。レビュー指摘・§6）
+        return false;
+    }
+
+    /// <summary>先頭に紛れたコロンを落とす（<c>":[::]"</c> → <c>"[::]"</c>）。</summary>
+    /// <remarks>
+    /// <para>区切り記号を打ち間違えた一覧（<c>"a.test:[::]"</c> を <c>";"</c> で割った残り）は
+    /// 先頭にコロンが残る。運用者はそれを削るので、その着地先も候補に入れる ——
+    /// <c>":[::]"</c> の着地先は <c>"[::]"</c> ＝全ホスト許可（issue #64）。</para>
+    ///
+    /// <para><b>以前はこの形も警告できていたが、理由が間違っていた。</b>
+    /// 候補を<see cref="ComparableSpelling">ホスト部</see>で作っていた頃は、
+    /// 途中に現れる <c>"::"</c> が <c>"[::]"</c> へ化けることで<b>たまたま</b>当たっていた。
+    /// その化けは実測と食い違う（素の <c>::</c> はワイルドカードではない）ので直したが、
+    /// そのときこの綴りが巻き添えで警告を失った。<b>正しい理由で当て直す</b>のがこの手。</para>
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>先頭のコロンを落とした綴り。</returns>
+    private static string TrimLeadingColons(string value) =>
+        // 先頭に続くコロンだけを落とす（中身には触れない）
+        value.TrimStart(':');
+
+    /// <summary>
+    /// 「突き合わせに使われるホスト部だけを書く」直し方
+    /// ——ただし<b>角括弧を足す方向には働かせない</b>。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>ホスト部の切り出しは、良い直し方のモデルでもある。</b>
+    /// <c>":[::]"</c>（区切りのゴミが前に付いた形）の <c>":"</c> を落とすのは運用者が
+    /// 実際にする直しで、着地先は <c>"[::]"</c> ＝全ホスト許可（issue #64）。
+    /// これを候補に入れないと、そういう綴りが<b>ワイルドカードの注意を失う</b>（実測）。</para>
+    ///
+    /// <para><b>ただし括弧を「足した」だけの形は候補にしない。</b>
+    /// <see cref="ComparableSpelling"/> は <c>"::"</c> を <c>"[::]"</c> にするが、
+    /// 実測では<b>素の <c>::</c> はワイルドカードではない</b>（<c>AllowedHosts="::"</c> は
+    /// どのホストも 400。理由は <see cref="IsWildcardEntry"/> の remarks が正本）。
+    /// 運用者が <c>" ::"</c> の空白を外して着地するのは <c>"::"</c> であって
+    /// <c>"[::]"</c> ではないので、ここで括弧を足すと
+    /// <b>名指しした項目について事実と違うこと</b>を言うことになる。
+    /// そこで<b>元の綴りに角括弧が無いのに出力に現れた</b>ときだけ、その候補を採らない。</para>
+    ///
+    /// <para><b>「閉じ括弧の後ろを落とす」専用の手は置いていない。</b>
+    /// 一度は <c>"[::]:abc"</c>（<see cref="TruncateAtFirstColon"/> が括弧の中のコロンで
+    /// 切ってしまう形）のために足したが、ここのホスト部の切り出しが同じ結果を返すため
+    /// <b>9,549 通りの綴りで 1 件も結果が変わらなかった</b>（実測）。
+    /// <b>同じ理由で「末尾のポート番号だけを外す」手と「外側の角括弧だけを外す」手も置いていない。</b>
+    /// 前者は <c>":::8080"</c> → <c>"::"</c> のために足したが、
+    /// <b>素の <c>::</c> はワイルドカードではない</b>と実測で分かった時点で理由そのものが消えた。
+    /// 後者は <c>"[[::]]"</c> のためだったが、
+    /// <see cref="RemoveEveryBracket"/> とこの手で同じ結論に届く（構成した綴りで確認済み）。
+    /// どのテストにも守られない手は、読み手に守られていると誤解させるだけなので置かない（§6）。</para>
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>ホスト部（括弧を足すだけの形になるなら元の綴り）。</returns>
+    private static string HostPartUnlessItAddsBrackets(string value)
+    {
+        // フレームワークが Host と突き合わせるときのホスト部
+        var host = ComparableSpelling(value);
+
+        // 元に角括弧が無いのに出力へ現れたなら、それは運用者が書く直しではない
+        if (!value.Contains('[') && host.Contains('[')) return value;
+
+        // それ以外は、ホスト部だけを書いた形を候補にする
+        return host;
+    }
+
+    /// <summary>角括弧を 1 つ残らず落とす（対になっていない括弧を消す直し方のモデル）。</summary>
+    /// <remarks>
+    /// 対になっていない角括弧（<c>"[0.0.0.0"</c>）は運用者が「余計な括弧を消す」直し方を
+    /// するので、その結果も候補に入れる。<see cref="StripSurroundingBrackets"/> は
+    /// <b>対になっているときだけ</b>外すので、この形には届かない。
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>角括弧を取り除いた綴り。</returns>
+    private static string RemoveEveryBracket(string value) =>
+        // 開きと閉じの両方を空文字へ置き換える
+        value.Replace("[", string.Empty, StringComparison.Ordinal)
+             .Replace("]", string.Empty, StringComparison.Ordinal);
+
+    private static bool RepairsToWildcard(string normalized) =>
+        // 本番の上限で判定する
+        RepairsToWildcard(normalized, MaxRepairedSpellings);
+
+    /// <summary>
+    /// 上限を指定して、「直すとワイルドカードになる」かを判定する（数え上げと判定の配線）。
+    /// </summary>
+    /// <remarks>
+    /// <b>この入口はテストのためにある。</b> 本番の上限は実在しうる綴りでは届かない値なので、
+    /// これが無いと「数え上げ側が打ち切りを旗で伝え、判定側がそれを見る」という<b>配線</b>が
+    /// 一度も走らない ——実測でも、旗を立てるのをやめる変異が全件緑のまま通った。
+    /// 判定の中身は <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> が、
+    /// 数え上げは <see cref="RepairedSpellings(string, int)"/> が持つ。
     /// </remarks>
     /// <param name="normalized">正規化済みの項目。</param>
-    /// <returns>案内どおりに直したあとの綴り。</returns>
-    private static string RepairedSpelling(string normalized) =>
-        // 前後の空白を落としてからホスト部を取る（空白とポートの両方を一度に外した形）
-        ComparableSpelling(normalized.Trim());
+    /// <param name="limit">数え上げの上限。</param>
+    /// <returns>ワイルドカードに当たった、または打ち切られて判断できないなら <c>true</c>。</returns>
+    public static bool RepairsToWildcard(string normalized, int limit)
+    {
+        // 候補を先に数え上げる（打ち切ったかどうかも一緒に受け取る）
+        var closure = RepairedSpellings(normalized, limit);
+
+        // 判定そのものは純粋関数へ渡す
+        return RepairsToWildcard(closure.Spellings, closure.Truncated);
+    }
+
+    /// <summary>
+    /// 候補の並びと打ち切りの有無から、「直すとワイルドカードになる」かを決める（判定そのもの）。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>打ち切ったときは「判断できない」ので警告する側へ倒す。</b>
+    /// 打ち切った場合「ワイルドカードが見つからなかった」ことは「ワイルドカードに
+    /// ならない」ことを意味しない。見つからなかった扱いにすると、上限に届くような綴りだけが
+    /// <b>ワイルドカードの注意を持たない文面</b>になり、運用者が案内どおり直すと
+    /// 全ホスト許可（issue #64）——<b>上限そのものが fail-open の口</b>になる。
+    /// 「そのまま直すな・直した結果を確かめろ」と言うのは、判断できない項目に対しても
+    /// 害の無い案内なので、こちらへ倒す（このクラスが一貫して取っている
+    /// 「多く報告する側＝安全側」）。</para>
+    ///
+    /// <para><b>打ち切りは件数から推測せず、数え上げた側が旗で伝える（レビュー指摘）。</b>
+    /// 以前は「返ってきた候補の件数が上限に達していたら打ち切り」と見ていたが、
+    /// 1 回の取り出しで<b>手の数だけ</b>内部の集合へ積まれる一方、返る候補は 1 件しか増えないため、
+    /// <b>打ち切った時点の件数は必ず上限より少ない</b>。その条件は一度も成り立たず、
+    /// 打ち切った項目は静かに「ワイルドカードは見つからなかった」側へ落ちていた（実測）。</para>
+    ///
+    /// <para><b>合成入力で挙動を固定できるように、実際の綴りから切り離してある。</b>
+    /// 実在しうる項目で打ち切りに届くかどうかは上限の値しだいで、届かない値にしてあるほど
+    /// この分岐はテストから通らなくなる（＝どちらへ書き換えても全件緑になる）。
+    /// だから判定を純粋関数として切り出し、<c>AllowedHostsPolicyTests</c> が
+    /// 合成した候補の並びと旗で直接固定する。</para>
+    /// </remarks>
+    /// <param name="repairedSpellings">直したあとの綴りの並び。</param>
+    /// <param name="truncated">数え上げを上限で打ち切ったなら <c>true</c>。</param>
+    /// <returns>ワイルドカードに当たった、または打ち切られて判断できないなら <c>true</c>。</returns>
+    public static bool RepairsToWildcard(IEnumerable<string> repairedSpellings, bool truncated) =>
+        // 打ち切っていたら判断できないので警告する側、そうでなければ実際に当たったかどうか
+        truncated || repairedSpellings.Any(IsWildcardEntry);
+
+    /// <summary>その綴りを項目として書いたら、全ホスト許可になるかを返す。</summary>
+    /// <remarks>
+    /// <para><b>ホスト部ではなく、<see cref="TryNormalizeEntry">項目の正規化</see>で見る
+    /// （レビュー指摘）。</b> 全許可かどうかを決めるのはフレームワークの
+    /// <c>IsTopLevelWildcard</c> で、それが見るのは <c>HostString.ToUriComponent()</c> を
+    /// 通した値。<see cref="ComparableSpelling"/>（<c>HostString.Host</c>）とは<b>結果が違う</b>:
+    /// <c>"::"</c> は前者では <c>"::"</c> のまま、後者では <c>"[::]"</c> になる。</para>
+    ///
+    /// <para><b>実測（本物の Kestrel ＋ HostFiltering）。</b>
+    /// <c>AllowedHosts="[::]"</c> ・ <c>"0.0.0.0"</c> ・ <c>"*"</c> は別ホストを 200 で受けるが、
+    /// <c>AllowedHosts="::"</c> は<b>どのホストも 400</b>（<c>" ::"</c> ・ <c>"[ ::]"</c> ・
+    /// <c>"::/0"</c> も同じ）。つまり<b>素の <c>::</c> はワイルドカードではない</b>。
+    /// ホスト部の綴りで突き合わせていた頃は、<c>" ::"</c> の空白を外すと
+    /// <c>"[::]"</c> ＝全許可になると<b>事実と違うこと</b>を名指しして言っていた
+    /// （実際に着地するのは <c>"::"</c> ＝全拒否。倒れる向きは安全側でも、
+    /// issue #256 が名指しした誤りと同じ形）。</para>
+    ///
+    /// <para>正規化できない綴りはワイルドカードとは呼べないので <c>false</c>
+    /// （その項目は <see cref="PermissiveReason.UnparsableEntry"/> 側が拾う）。</para>
+    /// </remarks>
+    /// <param name="spelling">直したあとの綴り（正規化前）。</param>
+    /// <returns>項目として書くと全ホスト許可になるなら <c>true</c>。</returns>
+    private static bool IsWildcardEntry(string spelling) =>
+        // フレームワークと同じ正規化を通してから、3 つのワイルドカードの綴りと突き合わせる
+        TryNormalizeEntry(spelling, out var normalized)
+        && Wildcards.Contains(normalized, StringComparer.Ordinal);
+
+    /// <summary>「直したら何になるか」を数え上げる上限。</summary>
+    /// <remarks>
+    /// <para><see cref="RepairedSpellings"/> の閉包は、どの手も綴りを伸ばさないので必ず有限。
+    /// それでも上限を置くのは、この判定が<b>起動時と設定の再読込で走る</b>ため。</para>
+    ///
+    /// <para><b>この値に正しさを預けない（レビュー指摘）。</b> 以前は「実測の最大は 46 通りなので
+    /// 届かない前提の安全装置」と書いていたが、その実測はこちらが並べた綴りの範囲でしかなく、
+    /// レビューが探索したところ 62 文字の綴りで<b>957 通り</b>に達した
+    /// （<c>"[a:a:ab:[ b:%ba:::::…/ /[0:%1]::::…]::"</c>）。つまり上限には実際に届きうる。
+    /// 届いたときに安全側（「判断できない＝警告する」）へ倒れるのは
+    /// <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> の責任で、
+    /// <b>ここの数字は「どこまで数えるか」しか決めない</b>。
+    /// 値を大きくしても小さくしても判定が危険側へ倒れることは無く、変わるのは
+    /// 「余計な注意がどれだけ出るか」と起動時の手間だけ。</para>
+    /// </remarks>
+    private const int MaxRepairedSpellings = 4096;
+
+    /// <summary>パーセント記号だけを抜く（「'%' を書くな」という案内のモデル）。</summary>
+    /// <remarks>
+    /// <see cref="TruncateAtPercentSign"/>（読めない末尾ごと削る）と<b>両方</b>を持つのは、
+    /// 文面が「<c>'%'</c> を書かずにホスト名を書け」と案内しており、運用者がどちらの
+    /// 直し方もしうるため。<c>"%0.0.0.0"</c> は<b>抜く</b>側でしかワイルドカードに当たらない。
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns><c>%</c> を取り除いた綴り。</returns>
+    private static string RemoveEveryPercentSign(string value) =>
+        // 記号だけを空文字へ置き換える（前後の綴りはそのまま残す）
+        value.Replace(PercentSign.ToString(), string.Empty, StringComparison.Ordinal);
+
+    /// <summary>正規化が補った角括弧を外す（囲まれていなければそのまま）。</summary>
+    /// <remarks>
+    /// ホスト部の切り出しはコロンが 2 つ以上ある値を中身を問わず括弧で包むので、
+    /// 「直したら何になるか」を見るときは外しておかないと、括弧の内側で起きた直しが
+    /// 綴りとして壊れる（<c>"[::%20]"</c> の <c>%</c> 以降を削ると <c>"[::"</c>）。
+    /// </remarks>
+    /// <param name="value">綴り。</param>
+    /// <returns>角括弧を外した綴り。</returns>
+    private static string StripSurroundingBrackets(string value) =>
+        // 開きと閉じの両方で挟まれているときだけ、中身を返す
+        value.Length >= 2 && value[0] == '[' && value[^1] == ']' ? value[1..^1] : value;
+
+    /// <summary>最初のコロンより後ろを落とす（「ポートも余分なコロンも書くな」のモデル）。</summary>
+    /// <remarks>
+    /// <para><b><see cref="ComparableSpelling"/> だけでは届かない直し方がある（レビュー指摘）。</b>
+    /// ホスト部の切り出しは <c>]</c> を含まず<b>コロンが 2 つ以上</b>ある値を、中身を問わず
+    /// <b>丸ごと</b>角括弧で包む。つまり <c>"0.0.0.0:8080:"</c> ・ <c>"0.0.0.0::"</c> ・
+    /// <c>"0.0.0.0:8080:9090"</c>（末尾コロンのタイプミス、<c>host:port:path</c> の写し）では
+    /// ポートが 1 つも落ちないため、これらは
+    /// <see cref="DeadEntryReason.WildcardOnceRepaired"/> に当たらず
+    /// <see cref="DeadEntryReason.NotABareHostname"/> になっていた。
+    /// その文面は「素のホスト名を 1 つ、ポートも余分なコロンも書くな」と案内するので、
+    /// 従うと <c>0.0.0.0</c> ＝<b>ホスト名の絞り込みが丸ごと無効</b>（issue #64）。
+    /// コロンが 1 つの <c>"0.0.0.0:8080"</c> は正しく警告されていたので、<b>非対称</b>でもあった。</para>
+    ///
+    /// <para><b>誤検知の側へは倒れない。</b> 影響を受けるのは「最初のコロンの手前が
+    /// ちょうどワイルドカードの綴り」の項目だけで、その項目に「そのまま直すな」と言うのは
+    /// 正しい。<c>"0.0.0.0.example.test:8080:"</c> のような実ホスト名は
+    /// 落とした結果がワイルドカードにならないので、これまでどおりの理由で名乗る。</para>
+    /// </remarks>
+    /// <param name="value">空白・パーセント記号を処理した後の綴り。</param>
+    /// <returns>最初の <c>:</c> より前の部分（<c>:</c> が無ければ元の綴り）。</returns>
+    private static string TruncateAtFirstColon(string value)
+    {
+        // 最初のコロンの位置を探す
+        var at = value.IndexOf(PortSeparator, StringComparison.Ordinal);
+
+        // 見つからなければそのまま、見つかればその手前までを返す
+        return at < 0 ? value : value[..at];
+    }
+
+    /// <summary><c>"//" の無いスキーム</c>（<c>"http:0.0.0.0"</c>）を外す。</summary>
+    /// <remarks>
+    /// <para><b><c>"//"</c> を打ち損ねた URL には URL 用の直し方が届かない（レビュー指摘）。</b>
+    /// <c>"http:0.0.0.0"</c> はホスト部が <c>"http"</c> になるため
+    /// <see cref="HostnameInsideUrlLikeSpelling"/>（<c>"://"</c> と <c>"/"</c> を見る）では
+    /// 何も取り出せず、案内どおり「ホスト名だけを書く」と <c>0.0.0.0</c> ＝全ホスト許可
+    /// （issue #64）になるのに、注意を持たない文面が付いていた。</para>
+    ///
+    /// <para><b>スキームと見なすのは「コロンの手前が ASCII の英字だけ」のときに限る。</b>
+    /// ここを広げると <c>"a.test:8080"</c> ・ <c>"192.168.0.1:80"</c> のような
+    /// <b>ごく普通の host:port</b> まで頭を落とすことになる（ドット・数字・ハイフンを
+    /// 含む綴りは除かれるので、そうならない）。<c>"localhost:0.0.0.0"</c> のように
+    /// 英字だけの単一ラベルは残るが、そこで出るのは
+    /// <see cref="DeadEntryReason.WildcardOnceRepaired"/> ＝「そのまま直すな」という
+    /// <b>多く報告する側</b>の注意なので、害は無い。</para>
+    /// </remarks>
+    /// <param name="value">空白・パーセント記号を処理した後の綴り。</param>
+    /// <returns>スキームを外した後ろ側（スキームに見えなければ元の綴り）。</returns>
+    private static string AfterBareScheme(string value)
+    {
+        // 正規化が補った角括弧を外してから見る（コロンが 2 つ以上あると包まれるため）
+        var bare = StripSurroundingBrackets(value);
+
+        // 最初のコロンの位置を探す
+        var at = bare.IndexOf(PortSeparator, StringComparison.Ordinal);
+
+        // コロンが無い、または手前が空なら、スキームの形ではない
+        if (at <= 0) return value;
+
+        // 手前が ASCII の英字だけでなければ、ごく普通の host:port なので触らない
+        for (var i = 0; i < at; i++)
+        {
+            // 英字以外が 1 文字でもあれば、スキームとは見なさない
+            if (!char.IsAsciiLetter(bare[i])) return value;
+        }
+
+        // コロンの後ろ（スキームを外した本体）を返す。先頭の "/" は URL 用の直し方が落とす
+        return bare[(at + PortSeparator.Length)..];
+    }
+
+    /// <summary>最初のパーセント記号より後ろを落とす。</summary>
+    /// <remarks>
+    /// <para><b>空白と同じ穴が <c>%</c> 側にも残っていた（レビュー指摘）。</b>
+    /// <c>"0.0.0.0%20"</c> は、運用者が末尾の読めない部分を削れば <c>0.0.0.0</c> ＝
+    /// 全ホスト許可（issue #64）になるのに、<see cref="RemoveWhitespace"/> だけでは
+    /// <c>"0.0.0.0%20"</c> のままで <see cref="DeadEntryReason.WildcardOnceRepaired"/> に
+    /// 当たらず、<b>ごく普通の「実ホスト名へ直せ」</b>の案内が付いていた
+    /// （<c>"[::]%20"</c> のほうは括弧のおかげで当たっていたので、<b>非対称</b>でもあった）。</para>
+    ///
+    /// <para><b>落とすのは「<c>%</c> 以降」で、<c>%</c> だけを抜かない。</b>
+    /// 抜くと <c>"0.0.0.0%20"</c> は <c>"0.0.0.020"</c> になり、運用者が実際に行う直し方
+    /// （読めない末尾ごと削る）と食い違う ——この関数が答えるのは
+    /// 「直したら何になるか」なので、実際の直し方に寄せる。</para>
+    ///
+    /// <para><b>誤検知の側へは倒れない。</b> 影響を受けるのは「<c>%</c> の手前が
+    /// ちょうどワイルドカードの綴り」の項目だけで、その項目に
+    /// 「そのまま直すな」と言うのは正しい。<c>"a.test%20"</c> は落とした結果が
+    /// ワイルドカードではないので、これまでどおりの理由で名乗る
+    /// （<c>"%0.0.0.0"</c> のほうは、<see cref="RepairedSpellings"/> が別に持っている
+    /// 「<c>%</c> だけを抜く」候補で拾われる）。</para>
+    /// </remarks>
+    /// <param name="value">空白を落とした後の綴り。</param>
+    /// <returns>最初の <c>%</c> より前の部分（<c>%</c> が無ければ元の綴り）。</returns>
+    private static string TruncateAtPercentSign(string value)
+    {
+        // 最初のパーセント記号の位置を探す
+        var at = value.IndexOf(PercentSign);
+
+        // 見つからなければそのまま、見つかればその手前までを返す
+        return at < 0 ? value : value[..at];
+    }
+
+    /// <summary>URL として書かれた綴りから、ホスト名の部分だけを取り出す。</summary>
+    /// <remarks>
+    /// <b>「スキームを外して、パスを落とす」という、運用者が実際に行う直し方のモデル</b>
+    /// （<c>"http://0.0.0.0:5000"</c> → <c>"0.0.0.0:5000"</c>、
+    /// <c>"0.0.0.0/0"</c> → <c>"0.0.0.0"</c>）。ポートは呼び出し側の
+    /// <see cref="ComparableSpelling"/> が落とすので、ここでは触らない。
+    /// URL でない綴りは素通しする（<c>"//"</c> も <c>"/"</c> も無ければ元のまま）。
+    /// </remarks>
+    /// <param name="value">空白を落とした後の綴り。</param>
+    /// <returns>ホスト名にあたる部分。</returns>
+    private static string HostnameInsideUrlLikeSpelling(string value)
+    {
+        // <b>まず、正規化が補った角括弧を外す。</b> コロンが 2 つ以上あると
+        // ホスト部の切り出しが中身を問わず括弧で包むので（"http://0.0.0.0:5000" は
+        // "[http://0.0.0.0:5000]" になる）、外さないとスキームもパスも見つけられない
+        var bare = StripSurroundingBrackets(value);
+
+        // "スキーム://" があれば、その後ろから見る
+        var afterScheme = bare.IndexOf(SchemeSeparator, StringComparison.Ordinal);
+        // 見つかったぶんだけ先頭を落とす
+        var rest = afterScheme < 0 ? bare : bare[(afterScheme + SchemeSeparator.Length)..];
+
+        // <b>先頭のスラッシュは読み飛ばす（レビュー指摘）。</b> 落とさないと
+        // "//0.0.0.0" ・ "http:///0.0.0.0" が空文字になり、この直し方が答えを返せない
+        rest = rest.TrimStart(PathSeparator);
+
+        // 最初のパス区切りより後ろ（パス・クエリ）は落とす
+        var path = rest.IndexOf(PathSeparator);
+
+        // 区切りが無ければそのまま、あればその手前までを返す
+        return path < 0 ? rest : rest[..path];
+    }
+
+    /// <summary>URL のスキームと本体の区切り（<c>https://…</c> の <c>://</c>）。</summary>
+    private const string SchemeSeparator = "://";
+
+    /// <summary>綴りから空白をすべて取り除く。</summary>
+    /// <remarks>
+    /// 前後だけでなく途中の空白も落とすのは、正規化が角括弧を補うと
+    /// 空白が内側へ移るため（理由は <see cref="RepairedSpellings"/> の remarks が正本）。
+    /// </remarks>
+    /// <param name="value">元の綴り。</param>
+    /// <returns>空白を 1 つも含まない綴り。</returns>
+    private static string RemoveWhitespace(string value) =>
+        // 空白でない文字だけを連結して返す
+        string.Concat(value.Where(ch => !char.IsWhiteSpace(ch)));
 
     /// <summary>
     /// その項目が、どの <c>Host</c> とも一致しえない理由。
@@ -503,13 +1227,104 @@ public static class AllowedHostsPolicy
         /// <summary>正規化後も前後に空白が残っている（項目はトリムされない）。</summary>
         SurroundingWhitespace,
 
-        /// <summary>ポートを含んでいる（<c>Host</c> 側はポートを落としてから比べられる）。</summary>
+        /// <summary>
+        /// ホスト部の直後にコロンがあり、そこから先の綴りが残っている
+        /// （<c>Host</c> 側はポートを落としてから比べられる）。
+        /// </summary>
+        /// <remarks>
+        /// <b>「ポートを含む」と断定しない（レビュー指摘）。</b> この分岐には
+        /// <c>"a.test:8080"</c> だけでなく <c>"https:b.example.test"</c>（<c>"//"</c> を
+        /// 打ち損ねた URL）や <c>"a.test:abc"</c> も入る。どれがポートでどれがスキームかを
+        /// 綴りから当てようとすると、<c>"localhost:8080"</c>（英字だけの単一ラベル＋実ポート）を
+        /// 「URL だ」と名指しすることになり、issue #256 が名指しした<b>事実と違う理由</b>を
+        /// 向きを変えて作り直すだけになる。そこで<b>分類は 1 つのまま</b>にし、文面のほうを
+        /// 機構（「コロンから先が残っているので一致しえない」）と<b>両方の読み方の例</b>で
+        /// 書いて、運用者が自分の項目に当てはめられるようにしている。
+        /// なお「直すとワイルドカードになる」綴り（<c>"http:0.0.0.0"</c> ・
+        /// <c>"0.0.0.0:8080"</c>）は、手前の
+        /// <see cref="WildcardOnceRepaired"/> が先に名乗る。
+        /// </remarks>
         PortSuffix,
 
         /// <summary>角括弧の無い IPv6 リテラル（<c>Host</c> 側は必ず角括弧付きで届く）。</summary>
         UnbracketedIpv6Literal,
 
-        /// <summary>直すとワイルドカードになる（＝書き直すと全ホスト許可になる）。</summary>
+        /// <summary>
+        /// 前後以外の場所に空白が残っている（<c>Host</c> ヘッダーは空白を運べない）。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="SurroundingWhitespace"/> と分けてあるのは、<b>直し方の案内が違う</b>から。
+        /// あちらは「前後を落とせ」で済むが、こちらは正規化が角括弧を補った結果
+        /// 空白が<b>内側へ移った</b>形（<c>" ::1"</c> → <c>"[ ::1]"</c>）や、
+        /// 途中に空白のある形（<c>"www.example .test"</c>）を含むため、
+        /// 「どこにある空白も落とせ」と言う必要がある。
+        /// <see cref="NotABareHostname"/> へ落とすと、その文面が
+        /// 「角括弧で囲んでも直らない」と<b>事実と逆</b>のことを案内してしまう。
+        /// </remarks>
+        WhitespaceInsideEntry,
+
+        /// <summary>
+        /// パーセント記号を含む（<c>Host</c> ヘッダーはこの文字を運べない）。
+        /// </summary>
+        /// <remarks>
+        /// IPv6 のスコープ区切り（<c>[fe80::1%eth0]</c>）でも percent-encoding
+        /// （<c>www.example%2Ecom</c>）でも、実測では <c>Host</c> ヘッダーが 400 になる。
+        /// <see cref="NotABareHostname"/> へ落とすと、その文面が「ポートも余分なコロンも
+        /// 書くな」と<b>その項目には当てはまらないこと</b>を案内してしまう。
+        /// </remarks>
+        PercentSignInEntry,
+
+        /// <summary>
+        /// ホスト名ではなく URL が書かれている（スキームやパスを含む）。
+        /// </summary>
+        /// <remarks>
+        /// <c>AllowedHosts</c> へ<b>アドレスバーから URL ごと貼る</b>のは自然な間違いで、
+        /// <c>Host</c> ヘッダーは <c>/</c> を運べない（実測）。
+        /// <see cref="PortSuffix"/> と分けてあるのは、<c>"https://b.example.test"</c> の
+        /// <c>"https:"</c> がポート区切りに見えてしまい、ポートを 1 つも含まない項目に
+        /// 「ポートを外せ」と案内することになるから。
+        /// </remarks>
+        UrlInsteadOfHostname,
+
+        /// <summary>
+        /// 素のホスト名になっていない（ポートでも IPv6 リテラルでもない綴り）。
+        /// </summary>
+        /// <remarks>
+        /// <b>断定しないための値（issue #269）。</b> 以前は最後の 2 つを
+        /// 「角括弧を足されたか否か」の 2 択で決めており、どちらの側でも
+        /// 事実と違う理由が付いた: <c>www.example.com:8080:</c> は
+        /// <see cref="UnbracketedIpv6Literal"/> と名乗って<b>角括弧で囲め</b>と案内し
+        /// （従うと 2 本目の警告だけが消え、並べたかったホスト名は 400 のまま）、
+        /// <c>a]b.test</c> は <see cref="PortSuffix"/> と名乗って<b>ポートを外せ</b>と
+        /// 案内していた（その項目にポートは 1 つも無い）。
+        /// 原因を言い当てられない綴りでは、<b>言い当てないほうが安全</b>。
+        /// </remarks>
+        NotABareHostname,
+
+        /// <summary>
+        /// 角括弧が対になっていない（<c>Host</c> ヘッダーは 1 組・先頭の形しか運べない）。
+        /// </summary>
+        /// <remarks>
+        /// <see cref="NotABareHostname"/> と分けてあるのは、<b>直し方の案内が逆</b>だから。
+        /// あちらは「角括弧で囲むな」と言うが、<c>"[0.0.0.0"</c> の正しい直し方は
+        /// <b>余計な括弧を消す</b>こと。実測値は
+        /// <see cref="HasBracketsAHostHeaderCannotCarry"/> の remarks が正本。
+        /// </remarks>
+        UnpairedBrackets,
+
+        /// <summary>直すとワイルドカードになりうる（＝書き直すと全ホスト許可になりうる）。</summary>
+        /// <remarks>
+        /// <b>文面は「必ずそうなる」と断定しない（レビュー指摘）。</b> 理由が 2 つある。
+        /// (1) 直し方は複数あり、そのうち<b>少なくとも 1 つ</b>がワイルドカードへ着地する、
+        /// というのがこの分類の意味（<c>"0.0.0.0:8080:"</c> はポートだけ外せば
+        /// <c>"0.0.0.0:8080"</c> で、これはワイルドカードではない）。
+        /// (2) 数え上げを上限で打ち切った項目は「判断できない」側からここへ倒れるので、
+        /// ワイルドカードの候補が実際に見つかったとは限らない
+        /// （理由は <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> の remarks）。
+        /// どちらも「そのまま直すな・直した結果を確かめろ」という案内は正しいままなので、
+        /// <b>断定だけを外す</b>。名指しした項目について事実と違うことを言わない、という
+        /// このクラスの規則（issue #256）はこの理由にも同じく掛かる。
+        /// </remarks>
         WildcardOnceRepaired,
     }
 
@@ -623,7 +1438,7 @@ public static class AllowedHostsPolicy
     public readonly record struct DeadEntry(string Value, DeadEntryReason Reason);
 
     /// <summary>
-    /// 設定値を分割し、<see cref="IsNeverMatchingEntry"/> で 1 度だけ振り分ける。
+    /// 設定値を分割し、<see cref="ClassifyDeadEntry"/> で 1 度だけ振り分ける。
     /// </summary>
     /// <remarks>
     /// <para><b>名指しと分類の唯一の入口にする。</b> 「一致しえない項目を挙げる」
@@ -634,7 +1449,7 @@ public static class AllowedHostsPolicy
     /// （挙げていない項目を前提にした案内、あるいはその逆）。両方をここから導けば、
     /// その食い違いは<b>書こうとしても書けない</b>。</para>
     ///
-    /// <para><b>正規化を項目ごとに 1 回で済ませる。</b> <see cref="IsNeverMatchingEntry"/> は
+    /// <para><b>正規化を項目ごとに 1 回で済ませる。</b> <see cref="ClassifyDeadEntry"/> は
     /// 内部で <c>HostString.ToUriComponent()</c>（IDN の往復）を通す。2 つの公開 API を
     /// 別々に呼んでいた頃は分割が 2 回・正規化が項目ごとに 2 回走っていた。
     /// 実害の中心は速度ではなく<b>契約</b>で、「1 度に導く」と読んだ人がこの判定へ
@@ -966,24 +1781,97 @@ public static class AllowedHostsPolicy
             // 項目はトリムされないので、前後の空白がそのまま綴りの一部になっている
             DeadEntryReason.SurroundingWhitespace =>
                 "host filtering does not trim entries, so the surrounding whitespace is part of "
-                + "the entry and no Host header can ever equal it",
+                + "the entry and no Host header can ever equal it"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
 
-            // Host ヘッダー側はポートを落としてから比べられるので、ポート付きは一致しえない
+            // Host ヘッダー側はポートを落としてから比べられるので、コロンから先がある項目は
+            // 一致しえない。<b>「ポートを含む」と断定しない（レビュー指摘）</b> ——
+            // "https:b.example.test" のように、コロンの手前がスキームの綴りも同じ分岐に入る。
+            // <b>「コロンの後ろに文字がある」とも断定しない（issue #274）</b> ——
+            // "a.test:" ・ "[::1]:" のように末尾がコロンだけの綴りも同じ分岐に入る
+            // （AllowedHosts=${HOST}:${PORT} で PORT が未設定だとこの形が残る）。
+            // 断定すると、運用者は在りもしないポート番号を探すことになる（issue #256 と同じ誤り）
             DeadEntryReason.PortSuffix =>
-                "host filtering strips the port from the Host header before comparing, so an "
-                + "entry that carries a port can never be equal — list the hostname on its own",
+                "host filtering removes the port from the Host header before comparing, but it "
+                + "compares the entry exactly as written, and this entry contains a ':' that is "
+                + "kept along with everything after it — so the two can never be equal. Write "
+                + "one hostname and nothing else: "
+                + "for 'a.test:8080' that is 'a.test'; for 'https:b.example.test' (a scheme, "
+                + "not a port) it is 'b.example.test'. Take care not to end up with a wildcard: "
+                + "'0.0.0.0:8080' becomes '0.0.0.0', which disables host filtering entirely "
+                + "(issue #64)",
 
             // Host ヘッダーの IPv6 リテラルは必ず角括弧付きで届くので、括弧なしは一致しえない
             DeadEntryReason.UnbracketedIpv6Literal =>
                 "this is an IPv6 literal without brackets, but a Host header always carries one "
-                + "in brackets, so the two can never be equal — write it as '[::1]'",
+                + "in brackets, so the two can never be equal — write it as '[::1]'"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
+
+            // 空白はどこにあっても運べないので、「1 つ残らず落とせ」とだけ言う
+            DeadEntryReason.WhitespaceInsideEntry =>
+                "a Host header cannot carry whitespace, and host filtering compares it against "
+                + "the entry exactly as written, so the two can never be equal — remove every "
+                + "space from this entry (note that host filtering rewrites a bare IPv6 literal "
+                + "into brackets, so a leading space ends up inside them: ' ::1' becomes "
+                + "'[ ::1]'; write it as '[::1]')"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
+
+            // URL ごと貼られた形は、ホスト名だけを書けば直る
+            DeadEntryReason.UrlInsteadOfHostname =>
+                "this looks like a URL, but AllowedHosts takes hostnames — a Host header "
+                + "carries no scheme and no path, so the two can never be equal. Write only "
+                + "the hostname (no 'https://', no '/...', no port). Take care not to end up "
+                + "with a wildcard: 'http://0.0.0.0:5000' becomes '0.0.0.0', which disables "
+                + "host filtering entirely (issue #64)",
+
+            // パーセント記号は用途を問わず運べないので、「書かない」とだけ言う
+            DeadEntryReason.PercentSignInEntry =>
+                "a Host header cannot carry a percent sign — neither as an IPv6 scope id "
+                + "('[fe80::1%eth0]') nor as percent-encoding ('www.example%2Ecom') — and host "
+                + "filtering compares it against the entry exactly as written, so the two can "
+                + "never be equal. Do NOT simply delete the '%': for a scope id, drop the whole "
+                + "'%<zone>' part ('[fe80::1%eth0]' becomes '[fe80::1]'); for percent-encoding, "
+                + "write the character it stands for ('www.example%2Ecom' becomes "
+                + "'www.example.com'). Deleting only the '%' leaves a name that still never "
+                + "matches, and this warning cannot tell you so — '[fe80::1eth0]' looks healthy "
+                + "to it while Kestrel still rejects it"
+                + ". Check what you are left with: if it is '*', '[::]' or '0.0.0.0', do "
+                + "not write it — that disables host filtering entirely (issue #64); use a "
+                + "real hostname or delete the entry",
+
+            // 対になっていない角括弧は、消せば直るので「消せ」とだけ言う
+            DeadEntryReason.UnpairedBrackets =>
+                "the square brackets in this entry are not a matching pair — a Host header can "
+                + "only carry them as one pair opening the host ('[::1]', '[::1]:8080'), so the "
+                + "two can never be equal. Remove the stray bracket (do not add the missing one: "
+                + "brackets are only for a plain IPv6 literal). Check what you are left with: if "
+                + "it is '*', '[::]' or '0.0.0.0', do not write it — that disables host filtering "
+                + "entirely (issue #64); use a real hostname or delete the entry",
+
+            // 原因を言い当てられない綴り ——<b>断定せず、直し方だけを案内する</b>
+            DeadEntryReason.NotABareHostname =>
+                "this entry is neither a bare hostname nor a plain IPv6 literal in brackets, "
+                + "and host filtering compares the Host header's host part against the entry "
+                + "exactly as written, so the two can never be equal — write one plain hostname "
+                + "with no port and no stray colons (brackets are only for a plain IPv6 literal "
+                + "such as '[::1]'; wrapping anything else in brackets does not make the "
+                + "hostname you meant to allow reachable). Check what you are left with: if it "
+                + "is '*', '[::]' or '0.0.0.0', do not write it — that disables host filtering "
+                + "entirely (issue #64); use a real hostname or delete the entry",
 
             // <b>いちばん危ない形。</b> 「直せば一致する」と読ませると、直した瞬間に絞り込みが消える
             DeadEntryReason.WildcardOnceRepaired =>
-                "this entry does not match as written, and the hostname inside it is a wildcard "
-                + "('*', '[::]' or '0.0.0.0') — do NOT just strip the whitespace or the port, "
-                + "because the repaired entry would disable host filtering entirely (issue #64). "
-                + "Replace it with a real hostname, or delete it",
+                "this entry does not match as written, and cleaning it up (dropping whitespace, "
+                + "a port, stray colons, a '%', a scheme or a path) can land on a wildcard "
+                + "('*', '[::]' or '0.0.0.0'), which would disable host filtering entirely "
+                + "(issue #64). Do NOT tidy this entry up — check what you would be left with, "
+                + "and replace it with a real hostname or delete the entry",
 
             // 理由が増えたのに文面を足し忘れたとき（上記のとおり fail-closed）
             _ => FallbackDeadEntryCauseMessage,
@@ -1002,40 +1890,180 @@ public static class AllowedHostsPolicy
         "no Host header can ever equal this entry; inspect the entry itself";
 
     /// <summary>
-    /// 目に見えない文字（制御文字）を、ログで読める綴りへ置き換える。
+    /// 目に見えない文字（制御文字と、行区切りとして扱われうる文字）を、ログで読める綴りへ置き換える。
     /// </summary>
     /// <remarks>
-    /// <para><b>制御文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
+    /// <para><b>文字ごとの対応表を持たない。</b> <c>\t</c> / <c>\r</c> / <c>\n</c> だけを
     /// 名前付きにして残りを別扱いにすると、表と実際の文字集合が少しずつずれていく。
-    /// <c>\uXXXX</c> の 1 規則なら、どの制御文字でも同じ読み方で済む。</para>
+    /// コードポイントをそのまま書く形なら、どの文字でも同じ読み方で済む。</para>
+    ///
+    /// <para><b>綴りは 2 つある（レビュー指摘）。</b> BMP の中は <c>\uXXXX</c>（4 桁）、
+    /// BMP の外は <c>\UXXXXXXXX</c>（大文字 U ＋ 8 桁）で、C# / .NET の書き方にそろえてある。
+    /// <b>4 桁だけだと思って読み書きしないこと</b> ——たとえば <c>\U000E0001</c> を
+    /// 4 桁として解くと <c>\U000E</c> ＋ 文字列 <c>0001</c> になり、
+    /// 運用者が読む値を静かに壊す（この仕組み自体が防ごうとしていることと同じ）。</para>
     ///
     /// <para><b>逆斜線そのものも置き換える。</b> そうしないと、値に文字どおり
     /// <c>\u0009</c> と書いた場合と、タブが 1 文字入っている場合が<b>同じ見た目</b>になり、
     /// 運用者は自分の設定のどちらなのかを判別できない。ホスト名に逆斜線が
     /// 正当に現れることは無いので、読みにくくなる実害も無い。</para>
+    ///
+    /// <para><b>条件は <c>char.IsControl</c> では足りない。</b> 守りたいのは
+    /// 「1 本の警告がログ上は複数のレコードに見える」ことを防ぐ点（issue #258）で、
+    /// そこで効くのは<b>行区切りとして扱われうるか</b>であって
+    /// 「制御文字か」ではない。<c>U+2028</c>（LINE SEPARATOR）と
+    /// <c>U+2029</c>（PARAGRAPH SEPARATOR）は<b><c>char.IsControl</c> が <c>false</c></b> なのに、
+    /// これらを行の区切りとして扱う処理系が実在する（このリポジトリ自身の
+    /// <c>CSharpCommentScanner.SplitLines</c> の docstring が、解析器は
+    /// <c>\r\n</c> ・ <c>\r</c> ・ <c>\n</c> に加えて <c>U+0085</c> ・ <c>U+2028</c> ・ <c>U+2029</c> でも
+    /// 行を分けると明記している。JSON / JS ベースのログビューアも同じ）。
+    /// <b>非対称なのが要点</b>で、同じ役割の <c>U+0085</c>（NEL）は
+    /// <c>char.IsControl</c> が <c>true</c> なので以前から置き換えられており、
+    /// <c>U+2028</c> / <c>U+2029</c> だけが生のまま載っていた（issue #263）。</para>
     /// </remarks>
     /// <param name="value">可視化したい文字列。</param>
-    /// <returns>制御文字を <c>\uXXXX</c> へ、逆斜線を <c>\\</c> へ置き換えた文字列。</returns>
+    /// <returns>
+    /// 読めない文字を <c>\uXXXX</c>（BMP）または <c>\UXXXXXXXX</c>（それ以外の面）へ、
+    /// 逆斜線を <c>\\</c> へ置き換えた文字列。<b>幅は 2 通りある</b> ——
+    /// 4 桁固定と読むと、運用者が読む値を静かに壊す（詳しくは remarks）。
+    /// </returns>
     private static string MakeInvisibleCharactersVisible(string value)
     {
-        // 置き換えるものが 1 つも無い値（ほとんどの設定値）では、元の文字列をそのまま返す
-        if (!value.Any(ch => char.IsControl(ch) || ch == '\\')) return value;
-
-        // 置き換えが要るときだけ組み立てる
+        // 組み立て先（走り終えて何も置き換えていなければ捨てる）
         var builder = new StringBuilder(value.Length);
 
-        // 1 文字ずつ見て、読めない文字だけを置き換える
-        foreach (var ch in value)
+        // 1 文字でも置き換えたか（置き換えていなければ元の文字列をそのまま返す）
+        var rewritten = false;
+
+        // <b>符号単位ではなくコードポイント単位で見る（レビュー指摘）。</b>
+        // 1 文字（char）ずつ見ると、BMP の外にある文字は<b>サロゲートの片割れ</b>として
+        // 現れ、カテゴリは必ず Surrogate になる ——Format かどうかを見ても常に外れるので、
+        // <c>U+E0001</c>（Unicode Tags。見えない文字を紛れ込ませる代表的な綴り）が
+        // 生のまま載っていた。BMP の <c>U+200B</c> だけを直した形のまま、
+        // 同じ危険が「char と コードポイントの境目」へ移っていたことになる。
+        for (var index = 0; index < value.Length; index++)
         {
+            // いま見ている符号単位
+            var unit = value[index];
+
             // 逆斜線は、下の \uXXXX と取り違えられないよう二重にする
-            if (ch == '\\') builder.Append("\\\\");
-            // 制御文字は、コードポイントが読める形へ直す（大文字 4 桁の 16 進）
-            else if (char.IsControl(ch)) builder.Append("\\u").Append(((int)ch).ToString("X4"));
-            // それ以外はそのまま（ホスト名として読める文字）
-            else builder.Append(ch);
+            if (unit == Backslash)
+            {
+                // 二重化する
+                builder.Append("\\\\");
+                // 置き換えたことを控えて次へ
+                rewritten = true;
+                continue;
+            }
+
+            // 対になったサロゲート（BMP の外の 1 文字）なら、2 符号単位をまとめて見る
+            if (char.IsHighSurrogate(unit)
+                && index + 1 < value.Length
+                && char.IsLowSurrogate(value[index + 1]))
+            {
+                // 2 つの符号単位から本来の 1 文字を組み立てる
+                var rune = new Rune(unit, value[index + 1]);
+
+                // 字として現れないなら 8 桁で、そうでなければそのまま出す
+                if (NeedsEscaping(rune))
+                {
+                    // 8 桁の綴りへ置き換える
+                    builder.Append("\\U").Append(rune.Value.ToString("X8"));
+                    // 置き換えたことを控える
+                    rewritten = true;
+                }
+                // 読める文字なので 2 符号単位をそのまま出す
+                else builder.Append(unit).Append(value[index + 1]);
+
+                // 2 符号単位を消費したので 1 つ余分に進める
+                index++;
+                continue;
+            }
+
+            // <b>対になっていないサロゲートは必ず可視化する。</b> それ自体が不正な綴りで、
+            // 描画は環境任せ（多くは空白か置換文字）なので、生で出すと読み手が値を誤解する
+            if (char.IsSurrogate(unit))
+            {
+                // 片割れをそのままコードポイントとして出す
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控えて次へ
+                rewritten = true;
+                continue;
+            }
+
+            // ここへ来るのは BMP の普通の 1 文字（サロゲートでないので Rune にできる）
+            var single = new Rune(unit);
+
+            // 字として現れないなら 4 桁で、そうでなければそのまま出す
+            if (NeedsEscaping(single))
+            {
+                // 4 桁の綴りへ置き換える
+                builder.Append("\\u").Append(((int)unit).ToString("X4"));
+                // 置き換えたことを控える
+                rewritten = true;
+            }
+            // 読める文字なのでそのまま出す
+            else builder.Append(unit);
         }
 
-        // 可視化した綴りを返す
-        return builder.ToString();
+        // 1 つも置き換えていないなら、組み立てた綴りは元と同じなので元をそのまま返す
+        // （<b>ここが唯一の判定</b>。以前は「置き換えるものがあるか」を先に 1 度見てから
+        // 組み立てていたが、条件が 2 か所に分かれるため、片方だけを広げた変更が
+        // 「広げたはずの文字が早期 return に拾われて素通りする」向きに壊れうる形だった。
+        // しかも 1 文字ずつ見る述語では<b>対になったサロゲートを判断できない</b>ため、
+        // 読めるだけの絵文字 1 つで早期 return が必ず外れていた＝レビュー指摘）
+        return rewritten ? builder.ToString() : value;
     }
+
+    /// <summary>二重化して出す文字（逆斜線）。</summary>
+    /// <remarks>
+    /// 名前を付けているのは、組み立てと<b>この docstring の説明</b>が
+    /// <b>同じ文字</b>を指していることを読み手に示すため。
+    /// </remarks>
+    private const char Backslash = '\\';
+
+    /// <summary>
+    /// その 1 文字を、生のままログへ載せてはいけないか（＝可視化が要るか）を判定する。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>呼び口は組み立ての 1 か所だけにしてある。</b> 以前は
+    /// <see cref="MakeInvisibleCharactersVisible"/> が「置き換えが 1 つでもあるか」を
+    /// 先に 1 度見てから組み立てていたため、同じ条件が 2 か所に分かれていた。
+    /// 書き写した条件は<b>片方だけを広げた変更</b>で崩れ、そのとき壊れ方は
+    /// 「広げたはずの文字が、早期 return に拾われて素通りする」＝
+    /// <b>黙って元の挙動へ戻る</b>方向になる（CLAUDE.md §6 DRY）。
+    /// いまは組み立てながら「1 つでも置き換えたか」を控えるので、条件はここだけにある。</para>
+    ///
+    /// <para><b>綴りの表ではなく Unicode のカテゴリで見る。</b> 以前は
+    /// <c>char.IsControl</c> ＋ 手で並べた 2 文字（<c>U+2028</c> / <c>U+2029</c>）だったが、
+    /// それは「今まで踏んだ分だけの表」で、<b>同じ危険を持つ文字がまだ残っていた</b>
+    /// （レビュー指摘。実測で <c>U+200B</c>（幅ゼロ空白）と <c>U+202E</c>（書字方向の上書き）が
+    /// 生のまま出ていた）。前者は<b>一致しえない項目を健全な項目と見分けられなくし</b>
+    /// （<c>[ ]</c> で囲む意味が消える）、後者は<b>警告の行の残りを逆順に描かせる</b>ので、
+    /// 運用者が読む 1 行を別の内容に見せられる ——どちらも issue #263 と同じ種類の危険。
+    /// カテゴリで見れば「字として現れないもの」をまとめて捉えられ、
+    /// docstring が掲げてきた「文字ごとの対応表を持たない」にも沿う。</para>
+    ///
+    /// <para><b>私用領域（<c>Co</c>）と未割り当て（<c>Cn</c>）も含める（レビュー指摘）。</b>
+    /// どちらも表示がフォント任せで、多くの環境では空白か豆腐になる ——
+    /// <c>U+200B</c> を可視化する理由（一致しえない項目を健全な項目と見分けられなくする）が
+    /// そのまま当てはまる。ホスト名にこれらが正当に現れることは無いので、代償も無い。</para>
+    ///
+    /// <para><b>残っている境界: 幅のある空白（<c>U+00A0</c> など <c>Zs</c>）は素通しにしてある。</b>
+    /// <c>Zs</c> には普通の空白（<c>U+0020</c>）も含まれるので、カテゴリごと可視化すると
+    /// <b>ごく普通の値が読めなくなる</b>。幅のある空白は<b>空白として見える</b>ぶん、
+    /// 幅ゼロの文字より危険が小さいと判断している（前後の空白は <c>[ ]</c> の囲みが見せる）。</para>
+    /// </remarks>
+    /// <param name="ch">判定する 1 文字（符号単位ではなくコードポイント）。</param>
+    /// <returns>可視化が要るなら <c>true</c>。</returns>
+    private static bool NeedsEscaping(Rune ch) =>
+        // 画面・ログに<b>字として現れない</b>カテゴリなら可視化する
+        Rune.GetUnicodeCategory(ch)
+            is UnicodeCategory.Control        // タブ・CR / LF・NEL など
+            or UnicodeCategory.Format         // 幅ゼロの文字（U+200B）や書字方向の上書き（U+202E）
+            or UnicodeCategory.LineSeparator  // U+2028
+            or UnicodeCategory.ParagraphSeparator  // U+2029
+            or UnicodeCategory.PrivateUse          // 私用領域（表示はフォント任せ＝多くは空白か豆腐）
+            or UnicodeCategory.OtherNotAssigned;   // 未割り当て（同上）
+
 }
