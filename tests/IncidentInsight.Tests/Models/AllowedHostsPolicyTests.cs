@@ -922,14 +922,16 @@ public class AllowedHostsPolicyTests
     [Fact]
     public void RepairsToWildcard_ReportsUndecided_WhenTheSearchItselfWasTruncated()
     {
-        // ワイルドカードにはならないが、直し方が何通りもある綴り（URL ごと貼った形）
-        const string normalized = "http://b.example.test/x";
+        // ワイルドカードにはならないが、直し方が何通りもある綴り（URL ごと貼った形）。
+        // 変数名が entry なのは、この引数が受け取るのが<b>運用者が書いた綴り（正規化前）</b>
+        // だから —— 実際この値は正規化を通っていない生の綴りそのもの
+        const string entry = "http://b.example.test/x";
 
         // 上限を十分に取れば「ワイルドカードにはならない」と正しく答える
-        Assert.False(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 4096));
+        Assert.False(AllowedHostsPolicy.RepairsToWildcard(entry, limit: 4096));
 
         // 上限を下げて<b>途中で</b>打ち切らせると、同じ綴りでも「判断できない＝警告する」へ倒れる
-        Assert.True(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 3));
+        Assert.True(AllowedHostsPolicy.RepairsToWildcard(entry, limit: 3));
     }
 
     // <b>「ちょうど上限で数え終わった」ときは打ち切りではない（レビュー指摘）。</b>
@@ -941,11 +943,12 @@ public class AllowedHostsPolicyTests
     [Fact]
     public void RepairsToWildcard_DoesNotCallAFullyEnumeratedSearchTruncated()
     {
-        // 直し方が 1 通りしか無い（どの手を当てても綴りが変わらない）ホスト名
-        const string normalized = "b.example.test";
+        // 直し方が 1 通りしか無い（どの手を当てても綴りが変わらない）ホスト名。
+        // 上と同じく、受け取るのは正規化前の綴りなので変数名も entry にそろえる
+        const string entry = "b.example.test";
 
         // 上限を 1 まで下げても、広げる先が残っていないので打ち切りではない
-        Assert.False(AllowedHostsPolicy.RepairsToWildcard(normalized, limit: 1));
+        Assert.False(AllowedHostsPolicy.RepairsToWildcard(entry, limit: 1));
     }
 
     [Theory]
