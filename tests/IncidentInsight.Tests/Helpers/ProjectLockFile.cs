@@ -56,8 +56,9 @@ internal static class ProjectLockFile
         Path.Combine(projectDirectory, FileName);
 
     /// <summary>
-    /// ロックファイルの全項目を読み出す。書式が読めないときは、どのファイルかを示して
-    /// <see cref="Xunit.Assert"/> で落とす（黙って 0 件を返すと呼び出し側の検査が空振りする）。
+    /// ロックファイルの全項目を読み出す。ファイルが無い・<see cref="DependenciesKey"/> が無いといった
+    /// 「読めない」形は、どのファイルかを示して <see cref="Xunit.Assert"/> で落とす（fail-closed）。
+    /// 項目が 0 件であること自体は正当な状態なので落とさない（実装のコメントを参照）。
     /// </summary>
     /// <param name="lockFilePath">読むロックファイルの絶対パス。</param>
     internal static IReadOnlyList<Entry> ReadEntries(string lockFilePath)
@@ -96,12 +97,15 @@ internal static class ProjectLockFile
             }
         }
 
-        // 1 件も読めないのは書式変更などの異常で、放置すると呼び出し側が「違反ゼロ＝緑」になる
-        Assert.True(entries.Count > 0,
-            $"{relativePath} から項目を 1 件も読み取れませんでした。{FileName} の書式が変わった"
-            + "可能性があります(この状態では、このファイルを読む検査がすべて空振りします)。");
-
-        // 読み取った一覧を返す
+        // 読み取った一覧を返す。
+        //
+        // 【ここで「0 件なら異常」とは判定しない】PackageReference も ProjectReference も持たない
+        // プロジェクトのロックファイルは {"dependencies":{"net8.0":{}}} になり、これは正当な状態。
+        // ここで落とすと、そういうプロジェクトを 1 つ足しただけで、このファイルを読むすべての検査が
+        // 「書式が変わった」という誤った原因を名指しして赤くなる(直し方の無い赤)。
+        // 「読み取りが丸ごと空振りしていないか」は、複数のプロジェクトを束ねて見る呼び出し側が
+        // 集計に対して判定する(EfCorePackageAlignmentTests.ReadAllResolvedPackages がその形)。
+        // 本当に読めない形 ―― dependencies が無い・ファイルが無い ―― は上で fail-closed にしている
         return entries;
     }
 }
