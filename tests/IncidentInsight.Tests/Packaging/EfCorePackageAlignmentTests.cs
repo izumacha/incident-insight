@@ -158,21 +158,18 @@ public class EfCorePackageAlignmentTests
     // Dependabot で「メジャー更新」を表す update-type の名前
     private const string SemverMajorUpdateType = "version-update:semver-major";
 
-    // NuGet が解決済みの版を記録するロックファイルの名前
-    private const string LockFileName = "packages.lock.json";
+    // NuGet が解決済みの版を記録するロックファイルの名前。
+    // 書式を表すキー名と値は共有ヘルパーが唯一の参照元(§6「キー名は単一の参照元に置く」)。
+    // 読み手ごとに書き写すと、Central Package Management で type に CentralTransitive が
+    // 増えたときに片方だけが直り、もう片方はその項目を黙って読み飛ばす
+    private const string LockFileName = ProjectLockFile.FileName;
 
     // ロックファイルで、ターゲットフレームワークごとの解決結果をまとめている JSON キー
-    private const string DependenciesKey = "dependencies";
-
-    // ロックファイルで、直接参照か推移依存かを表す JSON キー
-    private const string TypeKey = "type";
-
-    // ロックファイルで、実際に解決された版を表す JSON キー
-    private const string ResolvedKey = "resolved";
+    private const string DependenciesKey = ProjectLockFile.DependenciesKey;
 
     // ロックファイルの type が「csproj に直接書かれた参照」を表すときの値
     // (推移依存なら "Transitive"、ProjectReference なら "Project" になる)
-    private const string DirectPackageKind = "Direct";
+    private const string DirectPackageKind = ProjectLockFile.DirectKind;
 
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
@@ -1239,28 +1236,15 @@ public class EfCorePackageAlignmentTests
             if (!File.Exists(lockFile)) continue;
             // 失敗メッセージ用に、リポジトリルートからの相対パスにしておく
             var project = Path.GetRelativePath(RepositoryPaths.Root, lockFile);
-            // ロックファイルを JSON として解析する
-            using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
-            // 解決結果はターゲットフレームワークごとに入れ子になっている。
-            // 書式が変わって dependencies が無いときは、素の KeyNotFoundException ではなく
-            // どのファイルが読めなかったかを示して落とす(このファイルの他の異常系と扱いを揃える)
-            Assert.True(document.RootElement.TryGetProperty(DependenciesKey, out var dependencies),
-                $"{project} に {DependenciesKey} がありません。{LockFileName} の書式が変わった可能性があります"
-                + "(読み取れないと、そのプロジェクトだけ検査対象から静かに外れます)。");
-            // ターゲットフレームワークごとに解決結果を見る
-            foreach (var framework in dependencies.EnumerateObject())
+            // ロックファイルの歩き方(フレームワークごとの入れ子を降りて type と resolved を見る)は
+            // 共有ヘルパーが持つ。書式が読めないときはヘルパーが fail-closed で落とす
+            foreach (var entry in ProjectLockFile.ReadEntries(lockFile))
             {
-                // そのフレームワーク配下のパッケージを 1 件ずつ取り出す
-                foreach (var entry in framework.Value.EnumerateObject())
-                {
-                    // 直接参照(Direct)か推移依存(Transitive)かを控える。壊れる主役は推移依存なので、
-                    // 失敗メッセージで「どこを直せばよいか」が分かるよう残しておく
-                    var kind = entry.Value.TryGetProperty(TypeKey, out var type) ? type.GetString() ?? "" : "";
-                    // 実際に解決された版を取り出す(Project 参照など resolved を持たない項目は対象外)
-                    if (!entry.Value.TryGetProperty(ResolvedKey, out var resolved)) continue;
-                    // 1 件分として記録する
-                    packages.Add(new ResolvedPackage(project, entry.Name, kind, resolved.GetString() ?? ""));
-                }
+                // 実際に解決された版を持たない項目(Project 参照など)は対象外
+                if (entry.Version is null) continue;
+                // 1 件分として記録する。直接参照か推移依存かは、失敗メッセージで
+                // 「どこを直せばよいか」が分かるよう残しておく(壊れる主役は推移依存)
+                packages.Add(new ResolvedPackage(project, entry.Id, entry.Kind, entry.Version));
             }
         }
 
