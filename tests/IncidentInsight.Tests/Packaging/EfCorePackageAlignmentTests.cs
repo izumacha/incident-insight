@@ -1163,10 +1163,10 @@ public class EfCorePackageAlignmentTests
     // そのプロジェクトの隣にあるロックファイルの絶対パスを返す。
     // 【なぜ共通化するか】同じ組み立てが「欠落の検査」「解決済みの読み出し」「除外一覧の
     // 実在検査」の 3 箇所に現れていた。ロックファイルの置き場所が変わったとき、
-    // 直し漏れた検査だけが静かに意味を変えるのを防ぐ
-    private static string LockFilePathOf(string projectFile) =>
-        // プロジェクトファイルと同じディレクトリに置かれる決まり
-        Path.Combine(Path.GetDirectoryName(projectFile)!, LockFileName);
+    // 直し漏れた検査だけが静かに意味を変えるのを防ぐ。
+    // 置き場所そのものの知識は共有ヘルパーが持つので、ここはそこへ委ねる
+    // (自分で組み立て直すと、同じ知識が 2 箇所へ戻る)
+    private static string LockFilePathOf(string projectFile) => ProjectLockFile.PathFor(projectFile);
 
     // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
     // 【なぜ共通化するか】「絶対パスを組み立てる → 存在を確かめる → 読む」の 3 行が

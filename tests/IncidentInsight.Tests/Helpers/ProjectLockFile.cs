@@ -28,11 +28,13 @@ internal static class ProjectLockFile
     /// <summary>ターゲットフレームワークごとの解決結果をまとめている JSON キー。</summary>
     internal const string DependenciesKey = "dependencies";
 
-    /// <summary>直接参照か推移依存かを表す JSON キー。</summary>
-    internal const string TypeKey = "type";
+    // 直接参照か推移依存かを表す JSON キー。
+    // 【なぜ private か】この綴りを読むのはこのクラスの走査だけで、外へ出すと
+    // 別のロックファイル走査へ書き写す足場になる(このヘルパーが止めようとしている drift そのもの)
+    private const string TypeKey = "type";
 
-    /// <summary>実際に解決された版を表す JSON キー。</summary>
-    internal const string ResolvedKey = "resolved";
+    // 実際に解決された版を表す JSON キー(private の理由は TypeKey と同じ)
+    private const string ResolvedKey = "resolved";
 
     /// <summary>
     /// <see cref="TypeKey"/> が「csproj に直接書かれた参照」を表すときの値
@@ -49,11 +51,16 @@ internal static class ProjectLockFile
     /// <param name="Version">解決済みの版。読み取れないときは <c>null</c>。</param>
     internal record Entry(string Id, string Kind, string? Version);
 
-    /// <summary>そのプロジェクトの隣にあるロックファイルの絶対パスを返す。</summary>
-    /// <param name="projectDirectory">プロジェクトファイルを置いているディレクトリ。</param>
-    internal static string PathFor(string projectDirectory) =>
+    /// <summary>
+    /// そのプロジェクトファイルの隣にあるロックファイルの絶対パスを返す。
+    /// <para><b>受け取るのはプロジェクトファイルのパスで、ディレクトリではない。</b>
+    /// 「ロックファイルがどこに置かれるか」という知識を呼び出し側へ漏らさないため
+    /// （漏らすと置き場所が変わったときに、直し漏れた呼び出し側だけが静かに意味を変える）。</para>
+    /// </summary>
+    /// <param name="projectFilePath">csproj の絶対パス。</param>
+    internal static string PathFor(string projectFilePath) =>
         // ロックファイルはプロジェクトファイルと同じディレクトリに置かれる決まり
-        Path.Combine(projectDirectory, FileName);
+        Path.Combine(Path.GetDirectoryName(projectFilePath)!, FileName);
 
     /// <summary>
     /// ロックファイルの全項目を読み出す。ファイルが無い・<see cref="DependenciesKey"/> が無いといった
@@ -90,8 +97,14 @@ internal static class ProjectLockFile
             {
                 // 直接参照か推移依存かを控える(読めない項目は空文字として扱い、呼び出し側の判定に委ねる)
                 var kind = entry.Value.TryGetProperty(TypeKey, out var type) ? type.GetString() ?? "" : "";
-                // 解決済みの版を控える(ProjectReference の項目のように持たないものは null)
-                var version = entry.Value.TryGetProperty(ResolvedKey, out var resolved) ? resolved.GetString() : null;
+                // 解決済みの版を控える。
+                // 【「キーが無い」と「キーはあるが null」を区別する】前者は ProjectReference の項目など
+                // 版を持たないもので、呼び出し側が対象外として飛ばす正当な形。後者は壊れた記録で、
+                // null と同じ扱いにすると呼び出し側が黙って読み飛ばす(fail-open)。空文字として返せば、
+                // 版を解釈する側(例: メジャー番号の読み取り)がどのパッケージかを名指しして落とせる
+                var version = entry.Value.TryGetProperty(ResolvedKey, out var resolved)
+                    ? resolved.GetString() ?? ""
+                    : null;
                 // 1 件分として記録する
                 entries.Add(new Entry(entry.Name, kind, version));
             }

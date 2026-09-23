@@ -76,8 +76,12 @@ public class ProductionDirectDependencyTests
     //
     // 【プロジェクトのパスをリテラルで書かない】リポジトリ構成の目印を書いてよいのは RepositoryPaths だけで、
     // RepositoryPathsUsageTests がそれを検査している。目印は共有ヘルパーの定数から組み立てる
-    private static readonly IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>
-        IntendedProductionDependencies =
+    // 【なぜ Lazy か】初期化子が WebProjectKey 経由で RepositoryPaths.Root を解決するため、
+    // 直接初期化すると探索が型初期化子の中で走る。失敗すると「リポジトリルートが見つかりません」という
+    // 原因を名指しした例外が TypeInitializationException に包まれ、見出しには
+    // 「型の初期化子が例外をスローしました」しか出ない(RepositoryPaths 自身が同じ理由で Lazy にしている)
+    private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>>
+        IntendedProductionDependencies = new(() =>
             // パスの綴りも NuGet の ID も、引き方は大文字小文字を区別しない
             new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase)
             {
@@ -102,7 +106,7 @@ public class ProductionDirectDependencyTests
                         ["Npgsql.EntityFrameworkCore.PostgreSQL"] =
                             "Linux / マネージド配備向けの DB プロバイダ(PostgreSQL)。",
                     },
-            };
+            });
 
     // 本番プロジェクト(テストプロジェクトでないもの)の csproj。走査は 1 回で済むので結果を保持する
     private static readonly Lazy<IReadOnlyList<string>> ProductionProjects = new(FindProductionProjects);
@@ -117,7 +121,7 @@ public class ProductionDirectDependencyTests
         // 表に無い本番プロジェクトを集める
         var unlisted = ProductionProjects.Value
             .Select(KeyOf)
-            .Where(key => !IntendedProductionDependencies.ContainsKey(key))
+            .Where(key => !IntendedProductionDependencies.Value.ContainsKey(key))
             // 失敗メッセージの再現性のため並びを固定する
             .OrderBy(key => key, StringComparer.Ordinal)
             .ToList();
@@ -144,8 +148,10 @@ public class ProductionDirectDependencyTests
         // 本番プロジェクトを 1 つずつ確認する
         foreach (var project in ProductionProjects.Value)
         {
-            // そのプロジェクトの表(未登録なら空として扱い、専任の検査に報告を任せる)
-            var intended = IntendedFor(project);
+            // 表に無いプロジェクトはここでは何も言わない。空の表として扱うと全依存が違反として並び、
+            // 「Dependabot の昇格を取り消してください」という当てはまらない直し方を案内してしまう
+            // (正しい直し方は表への登録で、EveryProductionProject_IsListedInTheTable が専任で報告する)
+            if (!IntendedProductionDependencies.Value.TryGetValue(KeyOf(project), out var intended)) continue;
             // ロックファイルに直接参照として記録されているパッケージを 1 件ずつ見る
             foreach (var id in DirectPackagesOf(project))
             {
@@ -173,7 +179,7 @@ public class ProductionDirectDependencyTests
         // ロックファイルに直接参照として残っていない表の行を集める
         var stale = new List<string>();
         // 表に登録されているプロジェクトを 1 つずつ見る
-        foreach (var (projectKey, intended) in IntendedProductionDependencies)
+        foreach (var (projectKey, intended) in IntendedProductionDependencies.Value)
         {
             // 対応する csproj を探す(見つからないなら表ごと古くなっている)
             var project = ProductionProjects.Value
@@ -207,7 +213,7 @@ public class ProductionDirectDependencyTests
     public void EveryIntendedDependency_HasAReason()
     {
         // 理由が空・空白だけの行を集める
-        var withoutReason = IntendedProductionDependencies
+        var withoutReason = IntendedProductionDependencies.Value
             .SelectMany(project => project.Value.Select(entry => (Project: project.Key, Package: entry.Key, Reason: entry.Value)))
             .Where(row => string.IsNullOrWhiteSpace(row.Reason))
             .Select(row => $"{row.Project}: {row.Package}")
@@ -222,13 +228,6 @@ public class ProductionDirectDependencyTests
             + "\n\nこの表はレビューで読むための記録なので、なぜ本番へ入れるのかを書いてください。");
     }
 
-    // 表のうち、そのプロジェクト向けの行を返す(未登録なら空)
-    private static IReadOnlyDictionary<string, string> IntendedFor(string projectPath) =>
-        IntendedProductionDependencies.TryGetValue(KeyOf(projectPath), out var intended)
-            ? intended
-            // 未登録は EveryProductionProject_IsListedInTheTable が専任で報告する
-            : new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-
     // csproj のパスを表のキー(リポジトリルートからの相対パス。区切りは '/')へ直す。
     // 区切りを正規化するのは、実行環境によって '\' と '/' が混ざるとキーが一致しなくなるため
     private static string KeyOf(string projectPath) =>
@@ -238,10 +237,16 @@ public class ProductionDirectDependencyTests
     //
     // 【0 件を異常として落とさない】PackageReference を 1 つも持たない本番プロジェクト
     // (ProjectReference と POCO だけのクラスライブラリ等)は正当な状態で、そこで落とすと
-    // 「表へ登録しても直らない赤」になる。ロックファイルそのものが読めない場合は
-    // ProjectLockFile.ReadEntries が fail-closed で落とすので、空振りの検出はそちらが受け持つ
+    // 「表へ登録しても直らない赤」になる。ロックファイルが「読めない」形(ファイルが無い /
+    // dependencies が無い)は ProjectLockFile.ReadEntries が fail-closed で落とす。
+    //
+    // 【この走査が丸ごと空振りしたときに気付けるのは EveryIntendedDependency_IsStillADirectReference だけ】
+    // 対象プロジェクトの導出が狭まったり、本番プロジェクトが誤ってテスト扱いになったりすると、
+    // 顔ぶれを見る 2 つの検査は「見るものが 0 件」で緑になる。表の行が実在することを要求する
+    // あの検査だけが、そのとき落ちる。**冗長に見えても消さないこと**(消すとこの guard 全体が
+    // 何も見ていない状態で緑になる)
     private static IReadOnlyList<string> DirectPackagesOf(string projectPath) =>
-        ProjectLockFile.ReadEntries(ProjectLockFile.PathFor(Path.GetDirectoryName(projectPath)!))
+        ProjectLockFile.ReadEntries(ProjectLockFile.PathFor(projectPath))
             // 直接参照だけが対象(推移依存はこの不変条件の対象ではない)
             .Where(entry => string.Equals(entry.Kind, ProjectLockFile.DirectKind, StringComparison.OrdinalIgnoreCase))
             // multi-target では同じ ID が複数のフレームワークに現れるので重ねない
@@ -260,9 +265,10 @@ public class ProductionDirectDependencyTests
     // その宣言は csproj の IsTestProject として構造に現れる。ディレクトリ名や命名規則で切ると、
     // 置き場所を変えた瞬間に対象から静かに外れる(この repo が繰り返し避けている形)。
     //
-    // 【残っている境界】見えるのは csproj に直接書かれた IsTestProject だけで、
-    // Directory.Build.props へ括り出した宣言や SDK が暗黙に設定する分は見えない。
-    // その場合そのプロジェクトは本番として現れるので、
+    // 【残っている境界】見えるのは csproj に無条件で書かれた IsTestProject だけで、
+    // Directory.Build.props へ括り出した宣言や SDK が暗黙に設定する分は見えない
+    // (どう切っているかと、なぜその向きへ倒すかは IsTestProject の説明が正本)。
+    // 見えない場合そのプロジェクトは本番として現れるので、
     // EveryProductionProject_IsListedInTheTable の失敗文言が「表へ登録する」と
     // 「csproj に IsTestProject を宣言する」の両方を案内する(誤って本番の表へ登録すると、
     // まさにこの検査が防ぎたいテスト専用の依存を承認してしまうため)
@@ -286,12 +292,47 @@ public class ProductionDirectDependencyTests
         return projects;
     }
 
-    // その csproj が IsTestProject を true として宣言しているかを返す
+    // その csproj が IsTestProject を「無条件に」true として宣言しているかを返す。
+    //
+    // 【なぜ Descendants でファイル全体を探さないか】そちらは条件付きの宣言も拾ってしまう。
+    // 例えば <PropertyGroup Condition="'$(Configuration)'=='Test'"><IsTestProject>true</IsTestProject>
+    // と書くと、Release ビルドでは MSBuild が一度も評価しないのに本番プロジェクトが
+    // 対象から外れる(この guard が守るべき本命の直接参照が、丸ごと検査されなくなる向き)。
+    // 条件を評価する気はないので、条件が付いていたら「宣言していない」側へ倒す。
+    // 倒す向きの代償は「条件付きで宣言した本物のテストプロジェクトが本番として現れる」ことだが、
+    // それは EveryProductionProject_IsListedInTheTable が両方の直し方を案内して止まる側の外れ方
     private static bool IsTestProject(string projectPath) =>
-        // csproj を XML として読み、プロパティ要素を局所名で探す
-        // (SDK 形式に既定の名前空間は無いが、局所名で見れば付いていても外れない)
-        XDocument.Load(projectPath).Descendants()
-            .Where(e => e.Name.LocalName == IsTestProjectProperty)
+        // ルート直下の PropertyGroup のうち、条件が付いていないものだけを見る
+        LoadProject(projectPath).Root?.Elements()
+            .Where(group => group.Name.LocalName == "PropertyGroup" && !HasCondition(group))
+            // その中の IsTestProject 要素(こちらにも条件が付いていないもの)を取り出す
+            .SelectMany(group => group.Elements()
+                .Where(e => e.Name.LocalName == IsTestProjectProperty && !HasCondition(e)))
             // MSBuild の真偽値は大文字小文字を区別しない
-            .Any(e => string.Equals(e.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase));
+            .Any(e => string.Equals(e.Value.Trim(), "true", StringComparison.OrdinalIgnoreCase)) ?? false;
+
+    // その要素に Condition 属性が付いているかを返す(名前空間が付いていても局所名で見れば外れない)
+    private static bool HasCondition(XElement element) =>
+        element.Attributes().Any(a => a.Name.LocalName == "Condition");
+
+    // csproj を XML として読む。読めないときは、どのファイルかを名指しして落とす。
+    // 素の XmlException は行と位置しか持たずファイル名を含まないため、そのまま投げると
+    // (しかも Lazy の中で投げるため)4 つの検査すべてが原因の分からない赤になる
+    private static XDocument LoadProject(string projectPath)
+    {
+        try
+        {
+            // 通常はここで読み終わる
+            return XDocument.Load(projectPath);
+        }
+        catch (System.Xml.XmlException exception)
+        {
+            // どの csproj が壊れているのかを添えて落とす(fail-closed)
+            Assert.Fail($"{KeyOf(projectPath)} を XML として読めませんでした"
+                + $"(この検査は csproj の構造を読むので、壊れていると本番かテストかを判定できません): "
+                + exception.Message);
+            // Assert.Fail は必ず例外を投げるので到達しない(コンパイラのための行)
+            throw;
+        }
+    }
 }
