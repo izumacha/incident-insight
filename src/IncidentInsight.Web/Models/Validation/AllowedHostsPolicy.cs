@@ -561,10 +561,21 @@ public static class AllowedHostsPolicy
     ///
     /// <para><b>スコープ付き（<c>fe80::1%eth0</c>）はここでは見ない。</b> 案内どおり
     /// 角括弧で囲んでも Kestrel が <c>Host</c> ヘッダーごと弾くので「囲めば一致する」は
-    /// 事実にならないが、その手当ては<b>手前の <see cref="DeadEntryReason.PercentSignInEntry"/>
-    /// の分岐</b>が行う（<c>%</c> を含む項目はここへ来ない）。
+    /// 事実にならないが、<b>理由を名乗る経路</b>での手当ては
+    /// <b>手前の <see cref="DeadEntryReason.PercentSignInEntry"/> の分岐</b>が行う。
     /// <b>同じ規則を 2 か所に書かない</b> ——書くと条件を直したときに片方が取り残される
     /// （<see cref="ClassifyDeadEntry"/> の docstring が禁じている形。レビュー指摘）。</para>
+    ///
+    /// <para><b>ただし「<c>%</c> を含む項目はここへ来ない」とは書けない（レビュー指摘）。</b>
+    /// <see cref="ClassifyDeadEntry"/> は <see cref="RepairsToWildcard(string, int)"/> を
+    /// <b><see cref="DeadEntryReason.PercentSignInEntry"/> の分岐より前</b>で評価するので、
+    /// <see cref="BracketingWouldMakeItAWildcard"/> 経由でこの述語は
+    /// <c>"::%1"</c> ・ <c>"::%eth0"</c> のような綴りでも呼ばれる（実測。
+    /// <see cref="IPAddress"/> はスコープ付きを読めるのでどちらも <c>true</c>）。
+    /// いま誤分類が出ないのは、それらを角括弧で囲んだ綴りが
+    /// ワイルドカードの 3 綴りのどれとも一致しないからで、<b>順序に依存した偶然</b>。
+    /// ここへスコープ付きに敏感な判定を足す／手前の分岐を並べ替えるときは、
+    /// この経路も一緒に確かめること。</para>
     ///
     /// <para><b>残っている境界: ポートを付けた IPv6 の綴り（レビュー指摘）。</b>
     /// <c>::1:8080</c> は<b>それ自体が正しい IPv6 リテラル</b>なので、
@@ -965,14 +976,25 @@ public static class AllowedHostsPolicy
     /// 一度も走らない ——実測でも、旗を立てるのをやめる変異が全件緑のまま通った。
     /// 判定の中身は <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> が、
     /// 数え上げは <see cref="RepairedSpellings(string, int)"/> が持つ。
+    ///
+    /// <para><b>受け取るのは「運用者が書いた綴り」で、正規化済みの値ではない（レビュー指摘）。</b>
+    /// 唯一の本番の呼び出し元（<see cref="ClassifyDeadEntry"/>）は生の項目を渡し、
+    /// <see cref="RepairedSpellings"/> も自分の引数を「正規化前」と説明している
+    /// ——数え上げの出発点を正規化後にすると、運用者がしない直しを数えてしまうため。
+    /// 以前はここだけが <c>normalized</c> という名前と「正規化済みの項目」という説明を
+    /// 持っており、<b>その食い違いが実際に欠陥を生んだ</b>: 閉包の綴りが正規化済みだと
+    /// 読んだ結果、<see cref="BracketingWouldMakeItAWildcard"/> が
+    /// 正規化しない述語（<see cref="IsIpv6Literal"/>）と正規化する述語
+    /// （<see cref="IsWildcardEntry"/>）を生の綴りへ並べて当てており、
+    /// 互換用のコロンで作った <c>"：："</c> が門番をすり抜けていた。</para>
     /// </remarks>
-    /// <param name="normalized">正規化済みの項目。</param>
+    /// <param name="entry">運用者が書いた綴り（正規化前）。</param>
     /// <param name="limit">数え上げの上限。</param>
     /// <returns>ワイルドカードに当たった、または打ち切られて判断できないなら <c>true</c>。</returns>
-    public static bool RepairsToWildcard(string normalized, int limit)
+    public static bool RepairsToWildcard(string entry, int limit)
     {
         // 候補を先に数え上げる（打ち切ったかどうかも一緒に受け取る）
-        var closure = RepairedSpellings(normalized, limit);
+        var closure = RepairedSpellings(entry, limit);
 
         // 判定そのものは純粋関数へ渡す
         return RepairsToWildcard(closure.Spellings, closure.Truncated);
@@ -1059,20 +1081,37 @@ public static class AllowedHostsPolicy
     /// 対して「囲むとワイルドカードになる」と名指しすることになり、
     /// <b>名指しした項目について事実と違うことを言う</b>（issue #256 が名指しした誤り）。</para>
     ///
-    /// <para><b>この門番は、いまのところ別の手に覆われている（実測）。</b>
-    /// 39,555 通りの綴りで <see cref="InspectNeverMatchingEntries"/> の分類を
-    /// 門番あり／なしで突き合わせたところ、<b>差は 0 件</b>だった ——
-    /// 門番が弾く綴り（<c>"::]*"</c> のように <c>"["</c> の外へ余りがある形）は、
-    /// 閉包の <see cref="HostPartUnlessItAddsBrackets"/> が先に <c>"[::]"</c> を
-    /// 作り出すため、どのみち同じ理由へ倒れる。
-    /// <b>それでも残してあるのは、この述語が自分だけで真であるようにするため。</b>
-    /// 外すと「囲めとは一度も案内していない綴りについて、囲むとワイルドカードになる」と
-    /// 言える形になり、その誤りが<b>別の手に覆われているから表に出ないだけ</b>という
-    /// 状態になる（その手が狭まった瞬間に issue #256 の誤りが現れる）。
-    /// <b>覆われていても検出網は置いてある</b> ——閉包を通さずに候補を直接渡す
-    /// <see cref="RepairsToWildcard(IEnumerable{string}, bool)"/> では差が出るので、
-    /// <c>AllowedHostsPolicyTests</c> が合成した綴り（<c>"::]*"</c>）で固定している。
-    /// 門番を外すとその 1 件が落ちる（実測）。</para>
+    /// <para><b>正規化してから見る（レビュー指摘）。</b>
+    /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> を名乗るかどうかは
+    /// <b>正規化後</b>の綴りで決まる（<see cref="ClassifyDeadEntry"/>）ので、
+    /// ここも同じ形で判定しないと<b>2 つの判断が別の綴りを見る</b>ことになる。
+    /// 生の綴りへ <see cref="IsIpv6Literal"/> を当てていた版では、
+    /// <b>互換用のコロン</b>（全角の <c>U+FF1A</c> ・ <c>U+FE55</c> ・ <c>U+FE13</c>）で
+    /// 作った <c>"：："</c> が門番をすり抜けていた ——
+    /// <see cref="IPAddress"/> はこの綴りを読めないので門番は <c>false</c> を返す一方、
+    /// 正規化は <c>"::"</c> へ畳むので分類のほうは
+    /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> に達し、
+    /// その文面（「<c>[::1]</c> のように書け」）に従うと
+    /// <b>全ホスト許可</b>になっていた（実測。issue #282 が塞いだはずの穴が、
+    /// この文字だけそのまま残っていた）。全角の綴りが全許可へ化けるのは
+    /// <c>０.０.０.０</c> で既に踏んだ形で、<c>CLAUDE.md</c> にも記録がある。</para>
+    ///
+    /// <para><b>この門番には検出網が無い。外しても全件緑になる（実測）。</b>
+    /// 正規化を先に掛けるようにした結果、門番の有無で答えが変わる綴りは
+    /// <b>1 つも見つからなくなった</b> —— <c>[n]</c> がワイルドカードになる正規化後の綴り
+    /// <c>n</c> は <c>"::"</c> だけで、それは <see cref="IsIpv6Literal"/> が読める。
+    /// 正規化前は <c>"::]*"</c>（<c>"["</c> の外へ余りがある形）が門番に掛かっていたが、
+    /// 正規化がその余りを落とすので、いまはそこへ届かない
+    /// （17 種の字句から組み立てた綴りで、門番あり／なしの差は<b>0 件</b>）。
+    /// <b>この綴りを構成して確かめたうえで、それでも残してある。</b>
+    /// 理由は、<see cref="DeadEntryReason.UnbracketedIpv6Literal"/> を名乗る条件
+    /// （<see cref="ClassifyDeadEntry"/> の <c>IsIpv6Literal(normalized)</c>）と
+    /// <b>まったく同じ手がかりで、同じ綴りに対して</b>判断していることを、
+    /// コードの上で読めるようにしておくため。
+    /// この 2 つがずれること自体が欠陥だった（上の段落の <c>"：："</c> がそれ）ので、
+    /// 条件を片側から消すのは、その欠陥を作り直しやすくする向きの変更になる。
+    /// <b>「テストが守っているから安全」とは読まないこと</b> ——守っていない。
+    /// 消すか残すかは、上の対称性を保つ別の書き方とあわせてレビューで判断する。</para>
     ///
     /// <para><b>実際に当たるのは <c>"::"</c> だけ（実測）。</b>
     /// ワイルドカードの 3 綴りのうち角括弧付きなのは <c>"[::]"</c> だけで、
@@ -1086,8 +1125,11 @@ public static class AllowedHostsPolicy
     /// <param name="spelling">直したあとの綴り（正規化前）。</param>
     /// <returns>素の IPv6 リテラルで、角括弧で囲むと全ホスト許可になるなら <c>true</c>。</returns>
     private static bool BracketingWouldMakeItAWildcard(string spelling) =>
+        // フレームワークと同じ正規化を通してから見る（下の「正規化してから」が正本）
+        TryNormalizeEntry(spelling, out var normalized)
         // 「角括弧で囲め」と案内する綴りだけを対象にし、囲んだ形が全許可かを見る
-        IsIpv6Literal(spelling) && IsWildcardEntry($"[{spelling}]");
+        && IsIpv6Literal(normalized)
+        && IsWildcardEntry($"[{normalized}]");
 
     /// <summary>その綴りを項目として書いたら、全ホスト許可になるかを返す。</summary>
     /// <remarks>

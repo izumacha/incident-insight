@@ -974,9 +974,11 @@ public class AllowedHostsPolicyTests
     // "::]*" は角括弧の外に余りがあるので素の IPv6 リテラルではなく、
     // この警告が「囲め」と案内する形でもない。ところが正規化は "[" の外の余りを落とすため、
     // 素朴に囲むと "[::]*]" → "[::]" ＝ワイルドカードに<b>見えてしまう</b>。
-    // <b>この 1 件が BracketingWouldMakeItAWildcard の IsIpv6Literal の門番を守っている</b>
-    // ——本物の設定値を通す経路では閉包の別の手に覆われて差が出ないので
-    // （実測: 39,555 通りで分類の差は 0 件）、閉包を通さないこちらで固定する
+    // <b>この 1 件は門番（IsIpv6Literal）を守ってはいない（実測）。</b> 判定が正規化を
+    // 先に掛けるようになったので、この綴りは正規化の時点で余りが落ち、門番の有無で
+    // 答えが変わらなくなった。それでも残すのは「余りのある綴りを当たりにしない」ことが
+    // この判定に期待する性質だから ——門番そのものの扱いは
+    // BracketingWouldMakeItAWildcard の docstring が正本
     [InlineData(new[] { "a.example.test", "::]*" }, false, false)]
     public void RepairsToWildcard_TreatsATruncatedSearchAsUndecided(
         string[] repairedSpellings,
@@ -1261,6 +1263,16 @@ public class AllowedHostsPolicyTests
     // 対になっていない括弧（余分な括弧を消すと "::" に着地する）
     [InlineData("[::")]
     [InlineData("::]")]
+    // <b>互換用のコロンで書いた "::"（レビュー指摘）。</b> 全角のコロン（U+FF1A）は
+    // 日本語 IME を全角のまま打つと出る綴りで、正規化は "::" へ畳む。
+    // 生の綴りへ IsIpv6Literal を当てていた版では IPAddress が読めずに門番が外れ、
+    // <b>この文字だけ issue #282 の穴がそのまま残っていた</b>（実測で
+    // UnbracketedIpv6Literal と名乗り、案内どおり囲むと全ホスト許可だった）。
+    // 全角の綴りが全許可へ化けるのは ０.０.０.０ で既に踏んだ形
+    [InlineData("\uFF1A\uFF1A")]
+    // 小字体・縦書き用のコロンも同じく "::" へ畳む
+    [InlineData("\uFE55\uFE55")]
+    [InlineData("\uFE13\uFE13")]
     public void EntriesOneRepairAwayFromAllowingEveryHost_AreNotToldToAddBrackets(string entry)
     {
         // 実ホスト名と併記する（片方が生きている、いちばん紛らわしい形）
@@ -1270,17 +1282,50 @@ public class AllowedHostsPolicyTests
         var (entries, _) = AllowedHostsPolicy.InspectNeverMatchingEntries(allowedHosts);
         var reason = Assert.Single(entries).Reason;
 
-        // <b>本命。</b>「そのまま直すな」の理由が添うこと
-        Assert.Equal(AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired, reason);
-
-        // 運用者が実際に読む文面
+        // 運用者が実際に読む文面（<b>その項目に実際に添う理由</b>から引く）
         var cause = AllowedHostsPolicy.DeadEntryCauseMessage(reason);
 
-        // <b>角括弧で囲めと案内していないこと</b>（従うと "[::]" ＝全ホスト許可）
+        // <b>文面の検査を、理由を固定するより先に置く（レビュー指摘）。</b>
+        // 後ろに置くと、理由が退行した時点で下の Assert.Equal が先に落ち、
+        // 文面の検査は<b>一度も走らない</b> ——つまり「表は理由しか見ないので、
+        // 文面のほうの退行をここで見る」という、この検査を足した理由が事実でなくなる。
+        // 先に置けば、どの行でも<b>その行の理由から引いた文面</b>が実際に評価される。
+
+        // <b>本命。角括弧で囲めと案内していないこと</b>（従うと "[::]" ＝全ホスト許可）
         Assert.DoesNotContain("write it as '[::1]'", cause, StringComparison.Ordinal);
 
         // 代わりに「そのまま直すな」と止めていること
         Assert.Contains("Do NOT repair this entry as it stands", cause, StringComparison.Ordinal);
+
+        // そのうえで、添う理由自体も「そのまま直すな」であること
+        Assert.Equal(AllowedHostsPolicy.DeadEntryReason.WildcardOnceRepaired, reason);
+    }
+
+    // <b>上の検査が「本当に危ない綴り」を並べていることを、別の手がかりで確かめる（レビュー指摘）。</b>
+    //
+    // 上の Theory は「角括弧で囲めと案内していないこと」しか見ないので、
+    // <b>囲んでも何も起きない綴り</b>を並べても緑になる ——それだと
+    // 「案内どおり囲むと全許可になる」という前提のほうが確かめられていない。
+    // ここでは<b>実際に囲んでみて</b>、その一覧が全ホスト許可になることを見る
+    // （＝この警告が必要であることの根拠そのもの）。
+    // 空白を含む綴り（" ::"）は囲んでも一致しない形（"[ ::]"）になり、
+    // 危険になるのは空白を落とした<b>次の一手</b>なので、ここには並べない。
+    [Theory]
+    // 素の "::"
+    [InlineData("::")]
+    // 互換用のコロン（正規化が "::" へ畳む綴り）
+    [InlineData("\uFF1A\uFF1A")]
+    [InlineData("\uFE55\uFE55")]
+    [InlineData("\uFE13\uFE13")]
+    public void WrappingTheseEntriesInBrackets_ReallyDoesAllowEveryHost(string entry)
+    {
+        // 運用者が「角括弧で囲め」に従ったあとの一覧
+        var wrapped = $"incident.example.test;[{entry}]";
+
+        // <b>実際に全ホスト許可になること</b>（＝上の Theory が守っている危険が実在すること）
+        Assert.True(
+            AllowedHostsPolicy.IsPermissive(wrapped),
+            $"囲んだ結果 '{wrapped}' が全許可にならないなら、この綴りは上の Theory の対象ではない");
     }
 
     // <b>いちばん危ない形: 案内どおりに直すと全ホスト許可になる項目（レビュー指摘）。</b>
