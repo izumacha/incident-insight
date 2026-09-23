@@ -10,7 +10,7 @@ namespace IncidentInsight.Tests.Helpers;
 /// <para><b>なぜ集約するか。</b> ロックファイルの書式を表すキー名（<c>dependencies</c> /
 /// <c>type</c> / <c>resolved</c>）と <c>type</c> の値（<c>Direct</c>）は、読み手ごとに
 /// 書き写すと <b>ずれても誰も落ちない</b>種類の写しになる。CLAUDE.md §6 は
-/// 「キー名は名前付き定数にし単一の参照元に置く」と、DRY とは別の項目として要求している。
+/// 「キー名は名前付き定数にし単一の参照元に置く」を DRY とは別の項目として要求している。
 /// 実際、Central Package Management を入れると <c>type</c> に <c>CentralTransitive</c> が
 /// 増えるが、そのとき片方の読み手だけを直しても、もう片方は<b>その項目を黙って読み飛ばす</b>
 /// （「違反ゼロ＝緑」へ倒れる向き）。</para>
@@ -19,6 +19,13 @@ namespace IncidentInsight.Tests.Helpers;
 /// 各パッケージの type と resolved を見る」という歩き方は、複数の guard-rail テストが
 /// 同じ形で必要とする。ここで 1 度だけ書いておけば、multi-target 化のような書式の変化に
 /// 追随する場所も 1 つに保てる。</para>
+///
+/// <para><b>「読めない」形はすべてファイル名を添えて落とす（fail-closed）。</b> ファイルが無い /
+/// <see cref="DependenciesKey"/> が無い / JSON として壊れている / 想定と違う JSON の形、のどれでも
+/// 「どのロックファイルか」を名指しする。<c>JsonException</c> は行と位置しか持たずファイル名を
+/// 含まないため、素で投げると 2 つあるロックファイルのどちらが壊れているのか分からない赤になる
+/// （Dependabot のロックファイルの取り込みは日常的に起こるので、現実的な事故）。
+/// 挙動は <see cref="ProjectLockFileTests"/> が合成した JSON で固定する。</para>
 /// </summary>
 internal static class ProjectLockFile
 {
@@ -37,18 +44,18 @@ internal static class ProjectLockFile
     private const string ResolvedKey = "resolved";
 
     /// <summary>
-    /// <see cref="TypeKey"/> が「csproj に直接書かれた参照」を表すときの値
+    /// <c>type</c> が「csproj に直接書かれた参照」を表すときの値
     /// （推移依存なら <c>Transitive</c>、ProjectReference なら <c>Project</c> になる）。
     /// </summary>
     internal const string DirectKind = "Direct";
 
     /// <summary>
     /// ロックファイルの 1 項目。<paramref name="Version"/> は解決済みの版で、
-    /// ProjectReference の項目のように <see cref="ResolvedKey"/> を持たない項目では <c>null</c>。
+    /// ProjectReference の項目のように <c>resolved</c> を持たない項目では <c>null</c>。
     /// </summary>
     /// <param name="Id">パッケージ ID。</param>
     /// <param name="Kind">直接参照か推移依存かを表す値（<see cref="DirectKind"/> 等）。</param>
-    /// <param name="Version">解決済みの版。読み取れないときは <c>null</c>。</param>
+    /// <param name="Version">解決済みの版。キーが無ければ <c>null</c>、あるが JSON の null なら空文字。</param>
     internal record Entry(string Id, string Kind, string? Version);
 
     /// <summary>
@@ -63,8 +70,7 @@ internal static class ProjectLockFile
         Path.Combine(Path.GetDirectoryName(projectFilePath)!, FileName);
 
     /// <summary>
-    /// ロックファイルの全項目を読み出す。ファイルが無い・<see cref="DependenciesKey"/> が無いといった
-    /// 「読めない」形は、どのファイルかを示して <see cref="Xunit.Assert"/> で落とす（fail-closed）。
+    /// ロックファイルの全項目を読み出す。「読めない」形はファイル名を添えて落とす（クラスの説明を参照）。
     /// 項目が 0 件であること自体は正当な状態なので落とさない（実装のコメントを参照）。
     /// </summary>
     /// <param name="lockFilePath">読むロックファイルの絶対パス。</param>
@@ -78,8 +84,8 @@ internal static class ProjectLockFile
             $"{relativePath} が見つかりません(移動・リネーム、または RestorePackagesWithLockFile が"
             + $"外れた可能性があります)。探した場所: {lockFilePath}");
 
-        // ロックファイルを JSON として解析する
-        using var document = JsonDocument.Parse(File.ReadAllText(lockFilePath));
+        // ロックファイルを JSON として解析する(壊れていればファイル名を添えて落ちる)
+        using var document = Parse(lockFilePath, relativePath);
 
         // 解決結果はターゲットフレームワークごとに入れ子になっている。
         // 書式が変わって読めないときは、素の例外ではなくどのファイルが読めなかったかを示して落とす
@@ -87,27 +93,45 @@ internal static class ProjectLockFile
             $"{relativePath} に {DependenciesKey} がありません。{FileName} の書式が変わった可能性が"
             + "あります(読み取れないと、このファイルを読む検査が静かに空振りします)。");
 
+        // フレームワークごとの入れ子を降りて項目を読み出す
+        return ReadFrameworks(dependencies, relativePath);
+    }
+
+    // ターゲットフレームワークごとの入れ子を降りて、各パッケージの項目を読み出す
+    private static IReadOnlyList<Entry> ReadFrameworks(JsonElement dependencies, string relativePath)
+    {
         // 読み取った項目を溜める入れ物
         var entries = new List<Entry>();
-        // ターゲットフレームワークごとに解決結果を見る(multi-target でも取りこぼさない)
-        foreach (var framework in dependencies.EnumerateObject())
+
+        try
         {
-            // そのフレームワーク配下のパッケージを 1 件ずつ取り出す
-            foreach (var entry in framework.Value.EnumerateObject())
+            // ターゲットフレームワークごとに解決結果を見る(multi-target でも取りこぼさない)
+            foreach (var framework in dependencies.EnumerateObject())
             {
-                // 直接参照か推移依存かを控える(読めない項目は空文字として扱い、呼び出し側の判定に委ねる)
-                var kind = entry.Value.TryGetProperty(TypeKey, out var type) ? type.GetString() ?? "" : "";
-                // 解決済みの版を控える。
-                // 【「キーが無い」と「キーはあるが null」を区別する】前者は ProjectReference の項目など
-                // 版を持たないもので、呼び出し側が対象外として飛ばす正当な形。後者は壊れた記録で、
-                // null と同じ扱いにすると呼び出し側が黙って読み飛ばす(fail-open)。空文字として返せば、
-                // 版を解釈する側(例: メジャー番号の読み取り)がどのパッケージかを名指しして落とせる
-                var version = entry.Value.TryGetProperty(ResolvedKey, out var resolved)
-                    ? resolved.GetString() ?? ""
-                    : null;
-                // 1 件分として記録する
-                entries.Add(new Entry(entry.Name, kind, version));
+                // そのフレームワーク配下のパッケージを 1 件ずつ取り出す
+                foreach (var entry in framework.Value.EnumerateObject())
+                {
+                    // 直接参照か推移依存かを控える(読めない項目は空文字として扱い、呼び出し側の判定に委ねる)
+                    var kind = entry.Value.TryGetProperty(TypeKey, out var type) ? type.GetString() ?? "" : "";
+                    // 解決済みの版を控える。
+                    // 【「キーが無い」と「キーはあるが null」を区別する】前者は ProjectReference の項目など
+                    // 版を持たないもので、呼び出し側が対象外として飛ばす正当な形。後者は壊れた記録で、
+                    // null と同じ扱いにすると呼び出し側が黙って読み飛ばす(fail-open)。空文字として返せば、
+                    // 版を解釈する側(例: メジャー番号の読み取り)がどのパッケージかを名指しして落とせる
+                    var version = entry.Value.TryGetProperty(ResolvedKey, out var resolved)
+                        ? resolved.GetString() ?? ""
+                        : null;
+                    // 1 件分として記録する
+                    entries.Add(new Entry(entry.Name, kind, version));
+                }
             }
+        }
+        catch (InvalidOperationException exception)
+        {
+            // JSON の形が想定と違う(オブジェクトでない値を列挙しようとした等)。
+            // 素の InvalidOperationException はファイル名を含まないので添えて落とす(fail-closed)
+            Assert.Fail($"{relativePath} が想定と違う JSON の形でした"
+                + $"({FileName} の書式が変わったか、取り込みで壊れた可能性があります): {exception.Message}");
         }
 
         // 読み取った一覧を返す。
@@ -117,8 +141,25 @@ internal static class ProjectLockFile
         // ここで落とすと、そういうプロジェクトを 1 つ足しただけで、このファイルを読むすべての検査が
         // 「書式が変わった」という誤った原因を名指しして赤くなる(直し方の無い赤)。
         // 「読み取りが丸ごと空振りしていないか」は、複数のプロジェクトを束ねて見る呼び出し側が
-        // 集計に対して判定する(EfCorePackageAlignmentTests.ReadAllResolvedPackages がその形)。
-        // 本当に読めない形 ―― dependencies が無い・ファイルが無い ―― は上で fail-closed にしている
+        // 集計に対して判定する(EfCorePackageAlignmentTests.ReadAllResolvedPackages がその形)
         return entries;
+    }
+
+    // ロックファイルを JSON として読む。読めないときは、どのファイルかを名指しして落とす
+    private static JsonDocument Parse(string lockFilePath, string relativePath)
+    {
+        try
+        {
+            // 通常はここで読み終わる
+            return JsonDocument.Parse(File.ReadAllText(lockFilePath));
+        }
+        catch (JsonException exception)
+        {
+            // JsonException は行と位置しか持たずファイル名を含まないので、添えて落とす
+            Assert.Fail($"{relativePath} を JSON として読めませんでした"
+                + $"(取り込みで壊れた可能性があります): {exception.Message}");
+            // Assert.Fail は必ず例外を投げるので到達しない(コンパイラのための行)
+            throw;
+        }
     }
 }

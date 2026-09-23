@@ -49,6 +49,20 @@ internal static class RepositoryPaths
     /// <summary>Web プロジェクト(src/IncidentInsight.Web)の絶対パス。</summary>
     public static string WebProject => Path.Combine(Root, SrcDirectoryName, WebProjectDirectoryName);
 
+    /// <summary>
+    /// Web プロジェクトのプロジェクトファイル（<c>src/IncidentInsight.Web/IncidentInsight.Web.csproj</c>）の絶対パス。
+    /// <para><b>ここに置く理由。</b>「csproj の名前はディレクトリ名と同じ」というのも
+    /// リポジトリ構成の知識で、呼び出し側で <c>WebProject</c> と
+    /// <see cref="WebProjectDirectoryName"/> から組み立てると、その知識が 2 か所に増える
+    /// （<c>RepositoryPathsUsageTests</c> は目印のリテラルしか見ないので、組み立てた形は素通りする）。
+    /// 改名したときに直す場所を 1 つに保つ（issue #164 と同じ理由）。</para>
+    /// </summary>
+    public static string WebProjectFile =>
+        Path.Combine(WebProject, WebProjectDirectoryName + ProjectFileExtension);
+
+    /// <summary>C# のプロジェクトファイルの拡張子。走査と名前の組み立てが同じ綴りを読むためここに置く。</summary>
+    public const string ProjectFileExtension = ".csproj";
+
     /// <summary>Razor ビュー(src/IncidentInsight.Web/Views)の絶対パス。</summary>
     public static string Views => Path.Combine(WebProject, ViewsDirectoryName);
 

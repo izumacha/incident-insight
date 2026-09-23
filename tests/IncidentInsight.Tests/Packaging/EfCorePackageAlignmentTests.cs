@@ -158,15 +158,6 @@ public class EfCorePackageAlignmentTests
     // Dependabot で「メジャー更新」を表す update-type の名前
     private const string SemverMajorUpdateType = "version-update:semver-major";
 
-    // NuGet が解決済みの版を記録するロックファイルの名前。
-    // 書式を表すキー名と値は共有ヘルパーが唯一の参照元(§6「キー名は単一の参照元に置く」)。
-    // 読み手ごとに書き写すと、Central Package Management で type に CentralTransitive が
-    // 増えたときに片方だけが直り、もう片方はその項目を黙って読み飛ばす
-    private const string LockFileName = ProjectLockFile.FileName;
-
-    // ロックファイルで、ターゲットフレームワークごとの解決結果をまとめている JSON キー
-    private const string DependenciesKey = ProjectLockFile.DependenciesKey;
-
     // ロックファイルで、1 つのパッケージが「自分が宣言している依存」を並べている JSON キー。
     // 【なぜ上の定数を使い回さないか】綴りは今のところ同じだが、指しているものは別
     // (上は「ターゲットフレームワークごとの解決結果」、こちらは「パッケージ内の依存一覧」)。
@@ -174,23 +165,11 @@ public class EfCorePackageAlignmentTests
     // 何も見つけられなくなって「パッケージ名が変わった」という誤った原因を名指しする
     private const string PackageDependenciesKey = "dependencies";
 
-    // ロックファイルの type が「csproj に直接書かれた参照」を表すときの値
-    // (推移依存なら "Transitive"、ProjectReference なら "Project" になる)
-    private const string DirectPackageKind = ProjectLockFile.DirectKind;
-
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
 
     // リポジトリの規約・不変条件をまとめたガイド(束ねる/束ねないの判断根拠が書かれている)
     private const string ClaudeGuideFileName = "CLAUDE.md";
-
-    // 「このリポジトリのプロジェクト」の正本。CI の dotnet restore / build / test もこれを対象にする
-    private const string SolutionFileName = "IncidentInsight.sln";
-
-    // ソリューションファイルからプロジェクトの相対パスを抜き出す正規表現。
-    // 行の形は Project("{型GUID}") = "表示名", "相対パス.csproj", "{GUID}"
-    private static readonly Regex SolutionProjectRegex =
-        new(@"""(?<path>[^""]+\.csproj)""", RegexOptions.None);
 
     // EF Core 系を束ねるグループの一覧(通常の版更新とセキュリティ更新)。
     // 【なぜ配列にするか】この 2 つを並べる箇所が「除外対象を拾っていないか」
@@ -226,7 +205,7 @@ public class EfCorePackageAlignmentTests
 
         // 1 件も見つからないのは検出網の劣化(ロックファイルの書式変更・探索漏れ)を疑うべき状態
         Assert.True(efCorePackages.Count > 0,
-            $"EF Core 系のパッケージが {LockFileName} から 1 件も見つかりませんでした。"
+            $"EF Core 系のパッケージが {ProjectLockFile.FileName} から 1 件も見つかりませんでした。"
             + "ロックファイルの配置・書式か dependabot.yml の patterns が変わった可能性があります。");
 
         // 版のメジャー番号だけを取り出して重複を除く(9.0.19 と 9.0.20 は「揃っている」とみなす。
@@ -283,7 +262,7 @@ public class EfCorePackageAlignmentTests
         // ロックファイルの未コミットなのに「配列を直せ」と誤って案内してしまう。
         // 検査は必ず行い、案内する原因の方を状況で切り替える
         var projectsWithoutLockFile = SolutionProjects.Value
-            .Where(project => !File.Exists(LockFilePathOf(project)))
+            .Where(project => !File.Exists(ProjectLockFile.PathFor(project)))
             .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
             .ToList();
 
@@ -295,11 +274,11 @@ public class EfCorePackageAlignmentTests
         var unknown = DotNetReleaseTrainPackages.Where(id => !resolvedIds.Contains(id)).ToList();
         // 存在しない名前が無いこと(あれば、どれが宙に浮いているかを示す)
         Assert.True(unknown.Count == 0,
-            $"{nameof(DotNetReleaseTrainPackages)} に、{LockFileName} のどこにも解決されていない"
+            $"{nameof(DotNetReleaseTrainPackages)} に、{ProjectLockFile.FileName} のどこにも解決されていない"
             + $"パッケージがあります: [{string.Join(", ", unknown)}]\n"
             + (projectsWithoutLockFile.Count > 0
                 // ロックファイルが欠けているなら、読み飛ばされたプロジェクトが原因の可能性が高い
-                ? $"ただし {LockFileName} が無いプロジェクトがあり"
+                ? $"ただし {ProjectLockFile.FileName} が無いプロジェクトがあり"
                   + $"({string.Join(" / ", projectsWithoutLockFile)})、その分が読み飛ばされています。"
                   + $"まず {nameof(EveryProject_HasCommittedLockFile)} の指摘を直してください。"
                 // すべて揃っているなら、配列側の掃除漏れ
@@ -528,7 +507,7 @@ public class EfCorePackageAlignmentTests
 
         // 隣にロックファイルが無いプロジェクト(＝版の記録が残らないプロジェクト)を集める
         var missing = projects
-            .Where(project => !File.Exists(LockFilePathOf(project)))
+            .Where(project => !File.Exists(ProjectLockFile.PathFor(project)))
             .Select(project => Path.GetRelativePath(RepositoryPaths.Root, project))
             .ToList();
 
@@ -537,7 +516,7 @@ public class EfCorePackageAlignmentTests
         // プロジェクトに対して dotnet restore --locked-mode はロックファイルを作らず正常終了する)。
         // つまり EF Core 9 を参照する新プロジェクトを足すと、版ズレが誰にも気付かれないまま通る
         Assert.True(missing.Count == 0,
-            $"{LockFileName} が無いプロジェクトがあります。ロックファイルが無いと本テストの検査対象から"
+            $"{ProjectLockFile.FileName} が無いプロジェクトがあります。ロックファイルが無いと本テストの検査対象から"
             + "外れるうえ、CI の locked-mode restore もすり抜けます(未宣言のプロジェクトに対しては"
             + "ロックファイルを生成せず正常終了するため)。csproj に RestorePackagesWithLockFile を"
             + "追加して restore し、生成されたロックファイルをコミットしてください:\n"
@@ -590,11 +569,11 @@ public class EfCorePackageAlignmentTests
 
         // 1 件も無いのは、参照そのものが消えたか検出網が劣化したかのどちらか(fail-closed)
         Assert.True(entries.Count > 0,
-            $"{LockFileName} に {SqlClientPackageId} の記録がありません。参照が外れた可能性があります。");
+            $"{ProjectLockFile.FileName} に {SqlClientPackageId} の記録がありません。参照が外れた可能性があります。");
 
         // csproj に直接書かれた参照として記録しているプロジェクトを取り出す
         var direct = entries
-            .Where(package => string.Equals(package.Kind, DirectPackageKind, StringComparison.OrdinalIgnoreCase))
+            .Where(package => string.Equals(package.Kind, ProjectLockFile.DirectKind, StringComparison.OrdinalIgnoreCase))
             .ToList();
 
         // 【なぜ「直接参照であること」まで固定するのか】
@@ -606,7 +585,7 @@ public class EfCorePackageAlignmentTests
         // ここで type が Direct であることを見ておけば、削除も「推移依存に戻す」リファクタも
         // 検出できる。期待する版をテストに書かずに済むので、期待値を宣言側から読む方針とも両立する
         Assert.True(direct.Count > 0,
-            $"{SqlClientPackageId} が {LockFileName} のどこにも {DirectPackageKind} として記録されていません。"
+            $"{SqlClientPackageId} が {ProjectLockFile.FileName} のどこにも {ProjectLockFile.DirectKind} として記録されていません。"
             + "csproj の直接参照(床値のピン)が外れた可能性があります。\n"
             + "このピンは、EF Core SqlServer が推移的に引く版が古いサービシングパッチであるために"
             + "置かれています。外すと解決版はその古い版まで落ちますが、床値検査の比較相手が"
@@ -969,13 +948,13 @@ public class EfCorePackageAlignmentTests
         foreach (var projectFile in SolutionProjects.Value)
         {
             // プロジェクトと同じディレクトリのロックファイルを指す
-            var lockFile = LockFilePathOf(projectFile);
+            var lockFile = ProjectLockFile.PathFor(projectFile);
             // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するので飛ばす
             if (!File.Exists(lockFile)) continue;
             // ロックファイルを JSON として解析する
             using var document = JsonDocument.Parse(File.ReadAllText(lockFile));
             // 解決結果が無い書式変更は ReadAllResolvedPackages が報告するのでここでは飛ばす
-            if (!document.RootElement.TryGetProperty(DependenciesKey, out var frameworks)) continue;
+            if (!document.RootElement.TryGetProperty(ProjectLockFile.DependenciesKey, out var frameworks)) continue;
             // ターゲットフレームワークごとに解決結果を見る
             foreach (var framework in frameworks.EnumerateObject())
             {
@@ -991,7 +970,7 @@ public class EfCorePackageAlignmentTests
 
         // 宣言が 1 つも読めないのは検出網の劣化(パッケージ名の変更・書式変更)なので落とす
         Assert.True(declarations.Count > 0,
-            $"{LockFileName} から {dependentId} が宣言する {dependencyId} の版を読み取れませんでした。"
+            $"{ProjectLockFile.FileName} から {dependentId} が宣言する {dependencyId} の版を読み取れませんでした。"
             + "パッケージ名かロックファイルの書式が変わった可能性があります"
             + "(読み取れないまま素通りさせると、検査があるのに何も見ていない状態になります)。");
 
@@ -1016,7 +995,7 @@ public class EfCorePackageAlignmentTests
 
         // 1 件も無いのは、参照が消えたか検出網が劣化したかのどちらか
         Assert.True(versions.Count > 0,
-            $"{LockFileName} に {packageId} の解決済みの版がありません。参照が外れた可能性があります。");
+            $"{ProjectLockFile.FileName} に {packageId} の解決済みの版がありません。参照が外れた可能性があります。");
         // 食い違う版が同居しているとどれが読み込まれるか決まらないので落とす
         Assert.True(versions.Count == 1,
             $"{packageId} の解決済みの版がロックファイル間で食い違っています: [{string.Join(", ", versions)}]");
@@ -1167,14 +1146,6 @@ public class EfCorePackageAlignmentTests
         return false;
     }
 
-    // そのプロジェクトの隣にあるロックファイルの絶対パスを返す。
-    // 【なぜ共通化するか】同じ組み立てが「欠落の検査」「解決済みの読み出し」「除外一覧の
-    // 実在検査」の 3 箇所に現れていた。ロックファイルの置き場所が変わったとき、
-    // 直し漏れた検査だけが静かに意味を変えるのを防ぐ。
-    // 置き場所そのものの知識は共有ヘルパーが持つので、ここはそこへ委ねる
-    // (自分で組み立て直すと、同じ知識が 2 箇所へ戻る)
-    private static string LockFilePathOf(string projectFile) => ProjectLockFile.PathFor(projectFile);
-
     // リポジトリルートからの相対パスでファイルを読む。存在しなければ、その事実を示して落とす。
     // 【なぜ共通化するか】「絶対パスを組み立てる → 存在を確かめる → 読む」の 3 行が
     // ソリューション・dependabot.yml・散文の 3 箇所に現れ、失敗メッセージの言い回しだけが
@@ -1237,7 +1208,7 @@ public class EfCorePackageAlignmentTests
         foreach (var projectFile in SolutionProjects.Value)
         {
             // プロジェクトと同じディレクトリのロックファイルを指す
-            var lockFile = LockFilePathOf(projectFile);
+            var lockFile = ProjectLockFile.PathFor(projectFile);
             // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するのでここでは飛ばす
             // (同じ事実で 2 つのテストが落ちると、原因が 2 種類あるように見えて読み手を惑わせる)
             if (!File.Exists(lockFile)) continue;
@@ -1257,38 +1228,16 @@ public class EfCorePackageAlignmentTests
 
         // ロックファイルが 1 つも読めないのは異常(全プロジェクトで欠落している等)なので落とす
         Assert.True(packages.Count > 0,
-            $"{LockFileName} から解決済みパッケージを 1 件も読み取れませんでした。"
+            $"{ProjectLockFile.FileName} から解決済みパッケージを 1 件も読み取れませんでした。"
             + "RestorePackagesWithLockFile が外れているか、ロックファイルがコミットされていません。");
         // 集めた一覧を返す
         return packages;
     }
 
-    // ソリューションファイルから、登録されているプロジェクトの絶対パスを読み出す。
-    // ソリューション行の形は Project("{型GUID}") = "表示名", "相対パス.csproj", "{GUID}" で、
-    // ソリューションフォルダ(仮想フォルダ)の行は .csproj を含まないため自然に除外される
-    private static IReadOnlyList<string> ReadSolutionProjects()
-    {
-        // 各行から csproj の相対パスを抜き出し、絶対パスへ直す
-        var projects = SolutionProjectRegex.Matches(ReadRepositoryFile(SolutionFileName))
-            // ソリューションは Windows 形式の区切りで書かれるため、実行環境の区切りへ直す
-            .Select(match => match.Groups["path"].Value.Replace('\\', Path.DirectorySeparatorChar))
-            // リポジトリルートからの絶対パスにする
-            .Select(relativePath => Path.Combine(RepositoryPaths.Root, relativePath))
-            // 失敗メッセージの再現性のため並びを固定する
-            .OrderBy(path => path, StringComparer.Ordinal)
-            .ToList();
-
-        // プロジェクトが 1 つも読み取れないのは書式変更などの異常なので落とす
-        Assert.True(projects.Count > 0,
-            $"{SolutionFileName} からプロジェクトを 1 つも読み取れませんでした。書式が変わった可能性があります。");
-        // 登録されているのに実体が無いプロジェクトは、ソリューションの記述ずれとして落とす
-        var missing = projects.Where(path => !File.Exists(path)).ToList();
-        Assert.True(missing.Count == 0,
-            $"{SolutionFileName} に登録されたプロジェクトが見つかりません:\n"
-            + string.Join("\n", missing.Select(path => $"  {Path.GetRelativePath(RepositoryPaths.Root, path)}")));
-        // 読み取ったプロジェクト一覧を返す
-        return projects;
-    }
+    // ソリューションに登録されたプロジェクトの絶対パスを返す。
+    // 行の書式の解釈は共有ヘルパーが持つ(読み手ごとに書き写すと、書式の解釈がずれたときに
+    // 片方だけが取りこぼす)
+    private static IReadOnlyList<string> ReadSolutionProjects() => SolutionLayout.ProjectFiles;
 
     // dependabot.yml の nuget エコシステムに定義されたグループ(名前 → 設定)。
     //

@@ -105,6 +105,28 @@ public class ProjectLockFileTests
     }
 
     [Fact]
+    public void ReadEntries_FailsWithTheFileNameWhenTheJsonIsBroken()
+    {
+        // 取り込みで壊れた(閉じ括弧が余っている)ロックファイルを模す
+        var error = Record.Exception(() => ReadSynthetic("""{"version":1,"dependencies":{"net8.0":{}}}}"""));
+
+        // JsonException は行と位置しか持たないので、どのファイルかが分かる形で落ちること
+        Assert.NotNull(error);
+        Assert.Contains(ProjectLockFile.FileName, error!.Message);
+    }
+
+    [Fact]
+    public void ReadEntries_FailsWithTheFileNameWhenTheShapeIsUnexpected()
+    {
+        // dependencies はあるが、その中身がオブジェクトではない形
+        var error = Record.Exception(() => ReadSynthetic("""{"version":1,"dependencies":{"net8.0":"oops"}}"""));
+
+        // 素の InvalidOperationException を通さず、どのファイルかを添えて落ちること
+        Assert.NotNull(error);
+        Assert.Contains(ProjectLockFile.FileName, error!.Message);
+    }
+
+    [Fact]
     public void ReadEntries_FailsWhenTheFileIsMissing()
     {
         // 実在しないパスを指す(ロックファイルがコミットされていない状態を模す)

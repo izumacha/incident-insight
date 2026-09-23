@@ -57,14 +57,24 @@ public class ProductionDirectDependencyTests
     // この宣言を持つプロジェクトは本番出力に含まれないため、この不変条件の対象外になる
     private const string IsTestProjectProperty = "IsTestProject";
 
-    // C# のプロジェクトファイルの拡張子。
-    // 【なぜ定数にするか】この綴りは「走査で何を見つけるか」と「表のキーをどう組み立てるか」の
-    // 2 か所で逆方向に効いている。別々に書くと片方を変えた瞬間にキーが一致しなくなり、
-    // 「表に無いプロジェクト」という実際の原因とは違う失敗文言になる
-    private const string ProjectFileExtension = ".csproj";
+    // 走査でプロジェクトファイルを探すときのパターン。
+    // 拡張子の綴りは RepositoryPaths が正本で、そこから組み立てて綴りを分けない
+    // (「走査で何を見つけるか」と「表のキーの組み立て」で別々に書くと、片方を変えた瞬間に
+    //  キーが一致しなくなり、「表に無いプロジェクト」という実際の原因とは違う失敗文言になる)
+    private const string ProjectFileSearchPattern = "*" + RepositoryPaths.ProjectFileExtension;
 
-    // 走査でプロジェクトファイルを探すときのパターン(拡張子から組み立てて綴りを分けない)
-    private const string ProjectFileSearchPattern = "*" + ProjectFileExtension;
+    // 走査で降りないディレクトリ（理由付き）。
+    // 【なぜ要るか】ここはリポジトリ全体を再帰で歩く唯一の走査なので、自分たちが書いていない
+    // csproj を拾いうる。拾うと「本番プロジェクトとして表へ登録するか、自分の持ち物でない
+    // ファイルへ IsTestProject を書くか」という直しようの無い要求になる
+    // (この repo が繰り返し避けている形)。wwwroot/lib を「中を見ない」と登録しているのと同じ扱い
+    private static readonly IReadOnlyDictionary<string, string> DirectoriesNotScanned =
+        new Dictionary<string, string>(StringComparer.Ordinal)
+        {
+            ["node_modules"] = "npm の取得物。CompileTypeScript が npm ci で作るので存在しうるが、"
+                + "中の csproj は自分たちの持ち物ではない。",
+            [".git"] = "Git のメタデータ。作業ツリーのファイルではない。",
+        };
 
     // MSBuild でプロパティをまとめる要素名
     private const string PropertyGroupElement = "PropertyGroup";
@@ -92,8 +102,13 @@ public class ProductionDirectDependencyTests
     // 【版はここで管理しない】メジャー版の揃えは EfCorePackageAlignmentTests、床値と保留は
     // dependabot.yml と同テストが受け持つ。ここが見るのは「本番へ入れる顔ぶれ」だけ。
     //
-    // 【プロジェクトのパスをリテラルで書かない】リポジトリ構成の目印を書いてよいのは RepositoryPaths だけで、
-    // RepositoryPathsUsageTests がそれを検査している。目印は共有ヘルパーの定数から組み立てる
+    // 【キーの比較は Ordinal にする】パッケージ ID は NuGet の規則で大文字小文字を区別しないが、
+    // パスは区別する。CI が動く Linux では src/Foo/A.csproj と src/foo/A.csproj は別のプロジェクトで、
+    // 区別せずに引くと同じバケットへ畳まれて 1 つ目の承認が 2 つ目にも黙って効く
+    // (相対パスをキーにした理由そのものが 1 段下で崩れる)。
+    //
+    // 【プロジェクトのパスをリテラルで書かない】リポジトリ構成の目印を書いてよいのは RepositoryPaths だけ。
+    // csproj のパスも構成の知識なので RepositoryPaths.WebProjectFile から読む
     // 【なぜ Lazy か】初期化子が WebProjectKey 経由で RepositoryPaths.Root を解決するため、
     // 直接初期化すると探索が型初期化子の中で走る。失敗すると「リポジトリルートが見つかりません」という
     // 原因を名指しした例外が TypeInitializationException に包まれ、見出しには
@@ -101,7 +116,7 @@ public class ProductionDirectDependencyTests
     private static readonly Lazy<IReadOnlyDictionary<string, IReadOnlyDictionary<string, string>>>
         IntendedProductionDependencies = new(() =>
             // パスの綴りも NuGet の ID も、引き方は大文字小文字を区別しない
-            new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.OrdinalIgnoreCase)
+            new Dictionary<string, IReadOnlyDictionary<string, string>>(StringComparer.Ordinal)
             {
                 [WebProjectKey] =
                     new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase)
@@ -129,9 +144,8 @@ public class ProductionDirectDependencyTests
     // 本番プロジェクト(テストプロジェクトでないもの)の csproj。走査は 1 回で済むので結果を保持する
     private static readonly Lazy<IReadOnlyList<string>> ProductionProjects = new(FindProductionProjects);
 
-    // Web プロジェクトの csproj を指す表のキー。リポジトリ構成の目印は共有ヘルパーから読む
-    private static string WebProjectKey =>
-        KeyOf(Path.Combine(RepositoryPaths.WebProject, RepositoryPaths.WebProjectDirectoryName + ProjectFileExtension));
+    // Web プロジェクトの csproj を指す表のキー。csproj のパスは共有ヘルパーが持つ
+    private static string WebProjectKey => KeyOf(RepositoryPaths.WebProjectFile);
 
     [Fact]
     public void EveryProductionProject_IsListedInTheTable()
@@ -201,7 +215,7 @@ public class ProductionDirectDependencyTests
         {
             // 対応する csproj を探す(見つからないなら表ごと古くなっている)
             var project = ProductionProjects.Value
-                .FirstOrDefault(path => string.Equals(KeyOf(path), projectKey, StringComparison.OrdinalIgnoreCase));
+                .FirstOrDefault(path => string.Equals(KeyOf(path), projectKey, StringComparison.Ordinal));
             // プロジェクトそのものが無ければ、その行すべてを古い行として報告する。
             // 【行が 0 件でも 1 件報告する】`intended.Keys` が空だと AddRange は何も足さず、
             // 「実在しないプロジェクトへの空の承認」が黙って通る。それを残すと、後でその名前の
@@ -232,6 +246,39 @@ public class ProductionDirectDependencyTests
             + "この検査は何も言いません(fail-open)。");
     }
 
+    [Fact]
+    public void ProductionProjects_CoverEveryNonTestProjectInTheSolution()
+    {
+        // 照合の手がかりは「ソリューションに登録されたプロジェクト」= CI が restore する範囲そのもの。
+        // 【なぜ導出と手がかりを分けるか】同じ手がかりで導出とガードを作ると、導出が狭まったときに
+        // ガードも一緒に狭まって「取りこぼしゼロ＝緑」で無力化される(CLAUDE.md が
+        // FieldLengthsTests.LengthGovernedTypes_CoverEveryOwnedDbSet について記録しているのと同じ理由)。
+        // 導出はファイルシステム、こちらはソリューションを読む
+        var listedInSolution = SolutionLayout.ProjectFiles
+            .Where(path => !IsTestProject(path))
+            .Select(KeyOf)
+            .OrderBy(key => key, StringComparer.Ordinal)
+            .ToList();
+
+        // 手がかりが 1 件も取れない状態では照合が空振りするので落とす(fail-closed)
+        Assert.True(listedInSolution.Count > 0,
+            $"{SolutionLayout.FileName} からテストプロジェクトでないプロジェクトを 1 つも読み取れませんでした。"
+            + "この状態では走査の網羅を照合できません。");
+
+        // 走査で見つけた本番プロジェクト(導出側)
+        var discovered = ProductionProjects.Value.Select(KeyOf).ToHashSet(StringComparer.Ordinal);
+        // ソリューションにあるのに走査で見つかっていないものを集める
+        var missed = listedInSolution.Where(key => !discovered.Contains(key)).ToList();
+
+        // 走査の起点や除外が狭まると、そのプロジェクトだけが黙って全検査から外れる
+        Assert.True(missed.Count == 0,
+            $"{SolutionLayout.FileName} に登録されている本番プロジェクトが、走査で見つかっていません:\n"
+            + string.Join("\n", missed.Select(key => $"  {key}"))
+            + $"\n\n{nameof(FindProductionProjects)} の走査の起点・除外("
+            + $"{nameof(DirectoriesNotScanned)})が狭まると、そのプロジェクトは"
+            + "この guard のすべての検査から黙って外れます(違反ゼロ＝緑になります)。");
+    }
+
     [Theory]
     // 無条件の宣言は拾う(実在する tests プロジェクトがこの形)
     [InlineData("<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>", true)]
@@ -254,6 +301,12 @@ public class ProductionDirectDependencyTests
     [InlineData("<Project><PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup></Project>", false)]
     // 宣言が無ければ本番プロジェクト(既定)
     [InlineData("<Project><PropertyGroup><TargetFramework>net8.0</TargetFramework></PropertyGroup></Project>", false)]
+    // MSBuild のプロパティは後勝ちなので、true のあとの false が効く(本番プロジェクト)
+    [InlineData("<Project><PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup>"
+        + "<PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup></Project>", false)]
+    // 逆向き(false のあとの true)も後勝ちで拾う
+    [InlineData("<Project><PropertyGroup><IsTestProject>false</IsTestProject></PropertyGroup>"
+        + "<PropertyGroup><IsTestProject>true</IsTestProject></PropertyGroup></Project>", true)]
     public void DeclaresIsTestProject_OnlyAcceptsUnconditionalDeclarations(string projectXml, bool expected) =>
         // 合成した csproj を読ませ、両方向の判定を固定する
         Assert.Equal(expected, DeclaresIsTestProject(XDocument.Parse(projectXml)));
@@ -326,6 +379,8 @@ public class ProductionDirectDependencyTests
         // リポジトリ配下の csproj をすべて集め、ビルド生成物配下は除く
         var projects = Directory.EnumerateFiles(RepositoryPaths.Root, ProjectFileSearchPattern, SearchOption.AllDirectories)
             .Where(path => !RepositoryPaths.IsBuildArtifact(path))
+            // 自分たちの持ち物でない木(取得物・VCS のメタデータ)は見ない
+            .Where(path => !IsInsideUnscannedDirectory(path))
             // テストプロジェクトは本番出力に入らないので対象外
             .Where(path => !IsTestProject(path))
             // 失敗メッセージの再現性のため並びを固定する
@@ -340,6 +395,13 @@ public class ProductionDirectDependencyTests
         // 見つかった一覧を返す
         return projects;
     }
+
+    // そのパスが「走査で降りない」と決めたディレクトリの中にあるかを返す
+    private static bool IsInsideUnscannedDirectory(string path) =>
+        // リポジトリルートからの相対パスを区切りで分解し、除外対象の名前が含まれるかを見る
+        Path.GetRelativePath(RepositoryPaths.Root, path)
+            .Split(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+            .Any(DirectoriesNotScanned.ContainsKey);
 
     // その csproj が IsTestProject を「無条件に」true として宣言しているかを返す。
     //
@@ -366,8 +428,15 @@ public class ProductionDirectDependencyTests
             // その中の IsTestProject 要素(こちらにも条件が付いていないもの)を取り出す
             .SelectMany(group => group.Elements()
                 .Where(e => e.Name.LocalName == IsTestProjectProperty && !HasCondition(e)))
-            // MSBuild の真偽値は大文字小文字を区別しない
-            .Any(e => string.Equals(e.Value.Trim(), MsBuildTrue, StringComparison.OrdinalIgnoreCase)) ?? false;
+            // 書かれた値を文書順に並べる
+            .Select(e => e.Value.Trim())
+            // 【Any ではなく最後の宣言を採る】MSBuild のプロパティは後勝ちなので、
+            // true のあとに false を書いた csproj は本番プロジェクトとして出荷される。
+            // Any で見ると「どこかに true がある」で真になり、その本番プロジェクトが
+            // 検査対象から静かに外れる(fail-open。テンプレートから作って旗を上書きする形で起こる)
+            .LastOrDefault() is { } declared
+        // MSBuild の真偽値は大文字小文字を区別しない
+        && string.Equals(declared, MsBuildTrue, StringComparison.OrdinalIgnoreCase);
 
     // その要素に Condition 属性が付いているかを返す(名前空間が付いていても局所名で見れば外れない)
     private static bool HasCondition(XElement element) =>
