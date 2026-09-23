@@ -592,7 +592,15 @@ public static class AllowedHostsPolicy
     /// 取りこぼすか、逆に上の <c>www.example.com:8080:</c> を拾う。</para>
     /// </remarks>
     /// <param name="value">正規化済みの項目。</param>
-    /// <returns>素の（スコープの付かない）IPv6 アドレスとして読めるなら <c>true</c>。</returns>
+    /// <returns><see cref="IPAddress"/> が IPv6 アドレスとして読めるなら <c>true</c>。
+    /// <b>「素の」「スコープの付かない」には絞っていない</b> ——上の段落のとおり
+    /// スコープ付き（<c>fe80::1%eth0</c>）も角括弧付き（<c>[::1]</c>）も <c>true</c> になる（実測）。
+    /// 絞っていると読むと、スコープ付きを手前で弾いているのは<b>この述語ではなく
+    /// <see cref="DeadEntryReason.PercentSignInEntry"/> の分岐</b>だという前提が見えなくなり、
+    /// 分岐を並べ替えた時点で <c>fe80::1%eth0</c> が
+    /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> を名乗る
+    /// （＝「角括弧で囲め」と案内され、従っても Kestrel が 400 で弾くので
+    /// <b>2 本目の警告だけが消えて名前は 400 のまま</b>）。</returns>
     private static bool IsIpv6Literal(string value) =>
         // アドレスとして読めて、かつそれが IPv6 であること（IPv4 は角括弧を取らない）
         IPAddress.TryParse(value, out var address)
@@ -743,7 +751,7 @@ public static class AllowedHostsPolicy
     /// <returns>候補と、上限で打ち切ったかどうか。</returns>
     private static RepairClosure RepairedSpellings(string entry, int limit)
     {
-        // 既に出た綴り（最初は正規化済みの項目そのもの）
+        // 既に出た綴り（最初は運用者が書いた綴りそのもの＝正規化前。<param> のとおり）
         var seen = new HashSet<string>(StringComparer.Ordinal) { entry };
 
         // これから 1 手ずつ広げる綴りの待ち行列
@@ -963,9 +971,9 @@ public static class AllowedHostsPolicy
         value.Replace("[", string.Empty, StringComparison.Ordinal)
              .Replace("]", string.Empty, StringComparison.Ordinal);
 
-    private static bool RepairsToWildcard(string normalized) =>
-        // 本番の上限で判定する
-        RepairsToWildcard(normalized, MaxRepairedSpellings);
+    private static bool RepairsToWildcard(string entry) =>
+        // 本番の上限で判定する（受け取るのは運用者が書いた綴り＝正規化前。公開側の引数名にそろえる）
+        RepairsToWildcard(entry, MaxRepairedSpellings);
 
     /// <summary>
     /// 上限を指定して、「直すとワイルドカードになる」かを判定する（数え上げと判定の配線）。
