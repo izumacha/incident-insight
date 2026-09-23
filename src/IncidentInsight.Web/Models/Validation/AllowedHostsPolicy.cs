@@ -595,9 +595,11 @@ public static class AllowedHostsPolicy
     /// <returns><see cref="IPAddress"/> が IPv6 アドレスとして読めるなら <c>true</c>。
     /// <b>「素の」「スコープの付かない」には絞っていない</b> ——上の段落のとおり
     /// スコープ付き（<c>fe80::1%eth0</c>）も角括弧付き（<c>[::1]</c>）も <c>true</c> になる（実測）。
-    /// 絞っていると読むと、スコープ付きを手前で弾いているのは<b>この述語ではなく
-    /// <see cref="DeadEntryReason.PercentSignInEntry"/> の分岐</b>だという前提が見えなくなり、
+    /// 絞っていると読むと、スコープ付きに<b>理由を名乗らせない</b>のが
+    /// <b>この述語ではなく <see cref="DeadEntryReason.PercentSignInEntry"/> の分岐</b>
+    /// （＝分岐の順序）だという前提が見えなくなり、
     /// 分岐を並べ替えた時点で <c>fe80::1%eth0</c> が
+    /// （この述語自体は上の段落のとおり <c>true</c> を返し続けるので）
     /// <see cref="DeadEntryReason.UnbracketedIpv6Literal"/> を名乗る
     /// （＝「角括弧で囲め」と案内され、従っても Kestrel が 400 で弾くので
     /// <b>2 本目の警告だけが消えて名前は 400 のまま</b>）。</returns>
