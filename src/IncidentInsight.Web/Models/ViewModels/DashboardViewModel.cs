@@ -11,9 +11,15 @@ public class DashboardViewModel
     public const string PeriodQuarter = "quarter"; // 直近 3 か月
     public const string PeriodYear    = "year";    // 直近 1 年(既定値)
 
-    // 週表示のトレンドチャートで並べる日数。集計ループ(HomeController)と
-    // 見出し(TrendChartTitle)の双方がこの定数から導出され、食い違いを防ぐ
-    public const int WeekDays = 7;
+    // 週表示のトレンドチャートで並べる日数。
+    //
+    // <b>選択肢の TrendDays から導く。</b> 以前はここが独立した定数で、日別で描く期間の
+    // 窓の長さを<b>この 1 つの値が全部決めて</b>いた ——実測でも、2 つ目の日別期間
+    // (TrendDays 相当が 14 日の「2週」)を足すと、KPI は 14 日ぶんを数えるのに
+    // グラフは 7 本で「直近7日間」と名乗る状態が全件緑のまま作れた。
+    // 日数も選択肢の必須メンバー(TrendDays)にしたので、日別の期間はそれぞれ自分の
+    // 窓の長さを持つ。この定数は既存の呼び出し側のために残した別名で、週の選択肢を指す
+    public static int WeekDays => DaysFor(PeriodWeek);
 
     // 集計期間の選択肢(識別子と画面のラベルの対)。<b>期間についての唯一の真実の源</b>で、
     // 許可リスト(Periods)も画面の期間切替ボタンも既定の表示名もここから導く。
@@ -50,18 +56,17 @@ public class DashboardViewModel
     public static readonly IReadOnlyList<PeriodChoice> PeriodChoices =
         new[]
         {
-            // 直近 7 暦日。トレンドは日別で描くので TrendMonths は null
-            new PeriodChoice(PeriodWeek,    "週",     "週間",
-                today => today.AddDays(-(WeekDays - 1)), TrendMonths: null),
+            // 直近 7 暦日。トレンドは日別で 7 本並べる(KPI の窓と同じ長さ)
+            new PeriodChoice(PeriodWeek,    "週",     "週間",  TrendDays: 7,   TrendMonths: null),
             // 直近 1 か月。トレンドは直近 4 か月ぶん並べる
-            new PeriodChoice(PeriodMonth,   "月",     "月間",
-                today => today.AddMonths(-1), TrendMonths: 4),
+            new PeriodChoice(PeriodMonth,   "月",     "月間",  TrendDays: null, TrendMonths: 4,
+                StartOn: today => today.AddMonths(-1)),
             // 直近 3 か月。トレンドは直近 6 か月ぶん並べる
-            new PeriodChoice(PeriodQuarter, "四半期", "四半期",
-                today => today.AddMonths(-3), TrendMonths: 6),
+            new PeriodChoice(PeriodQuarter, "四半期", "四半期", TrendDays: null, TrendMonths: 6,
+                StartOn: today => today.AddMonths(-3)),
             // 直近 1 年(既定)。トレンドは直近 12 か月ぶん並べる
-            new PeriodChoice(PeriodYear,    "1年",    "年間",
-                today => today.AddYears(-1), TrendMonths: 12),
+            new PeriodChoice(PeriodYear,    "1年",    "年間",  TrendDays: null, TrendMonths: 12,
+                StartOn: today => today.AddYears(-1)),
         }.AsReadOnly();
 
     // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
@@ -101,17 +106,23 @@ public class DashboardViewModel
     // 方針が一覧画面と同じだから(理由の正本は IncidentListViewModel.DepartmentFilterIgnored)。
     //
     // <b>この画面だけ「採用しない」では済まない。</b> ダッシュボードには「期間なし」という
-    // 状態が無い(常に何らかの窓で集計する)ので、採用しなかったときは既定の期間へ
-    // <b>差し替える</b>(「補完」と呼ばない理由は ListedValueFilterResolver の解説が正本
-    // ——表の「補完」は受け取った値を選択肢へ足して絞り込みを維持することで、ここはその逆)。
-    // 扱いが一覧画面と違っても旗は同じように立てる —— 扱いと伝え方は別の軸(issue #220)
+    // 状態が無い(常に何らかの窓で集計する)ので、採用しなかったときは既定の期間へ差し替える。
+    // 扱いが一覧画面と違っても旗は同じように立てる理由と、この操作を「補完」と呼ばない理由は
+    // Controllers/Internal/ListedValueFilterResolver の解説が正本(issue #220)
     public bool UnlistedFilterIgnored { get; set; }
 
     // 期間の識別子から選択肢を引く(見つからなければ既定の期間の選択肢)。
     //
     // 見つからないときに落とさないのは、この ViewModel が許可リストを通っていない Period を
     // 持つ経路(テストからの直接構築など)でも画面を落とさないため(§9 fail-safe)。
-    // 本番の経路では Period は必ず選択肢の 1 つになる(コントローラが解決処理を通す)
+    //
+    // <b>残っている境界。</b> この落とし先は<b>黙って</b>既定の期間の見え方になる
+    // (見出しも窓もグラフも year のもの)。いまは HomeController だけがこの ViewModel を
+    // 組み立て、必ず解決処理を通すので到達しないが、<b>Period に public の setter がある</b>
+    // 以上、将来の構築経路が許可リスト外の値を入れれば「year の見出しで year でないデータ」を
+    // 出しうる ——旗も立たない。組み立て経路を増やすときは、必ず解決処理を通すこと。
+    // 振る舞い自体は DashboardChoiceLookup_FallsBackToTheDefaultPeriod が固定してある
+    // (偶然そうなっているのではなく、決めてそうしていることを差分に残すため)
     private static PeriodChoice ChoiceFor(string period) =>
         PeriodChoices.FirstOrDefault(choice => choice.Id == period)
         ?? PeriodChoices.First(choice => choice.Id == PeriodYear);
@@ -131,10 +142,16 @@ public class DashboardViewModel
     // week だけ暦日で数えるのは、トレンドチャートが直近 7 暦日(today-6〜today)を
     // 並べるため ——KPI の合計とグラフの合計が食い違わないよう、窓を同じにしてある
     public static DateTime PeriodStart(string period, DateTime today) =>
-        ChoiceFor(period).StartOn(today);
+        ChoiceFor(period).WindowStart(today);
 
     // KPI カードの見出しに使う期間の言い回し(「週間」インシデント数 等)
     public static string KpiLabelFor(string period) => ChoiceFor(period).KpiLabel;
+
+    // 日別トレンドチャートで並べる日数(日別で描く期間だけが持つ)。
+    // 月別で描く期間は既定の日数へ落とす(画面を落とさないための fail-safe。
+    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐する)
+    public static int DaysFor(string period) =>
+        ChoiceFor(period).TrendDays ?? PeriodChoices.First(c => c.TrendDays is not null).TrendDays!.Value;
 
     // トレンドチャートを「日別」で描くかどうか(false なら月別)。
     // 選択肢の TrendMonths が null なら日別 ——判定をビューやコントローラへ直書きすると、
@@ -267,7 +284,7 @@ public class DashboardViewModel
     // 見出しの数字が常に一致することを保証する(見出しを View に直書きすると、
     // 週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
     public string TrendChartTitle => UsesDailyTrendBuckets(Period)
-        ? $"日別インシデント発生推移（直近{WeekDays}日間）"
+        ? $"日別インシデント発生推移（直近{DaysFor(Period)}日間）"
         : $"月別インシデント発生推移（直近{MonthsFor(Period)}ヶ月）";
 
     // Failed measures: RecurrenceObserved = true
@@ -313,14 +330,32 @@ public class MonthlyCount
 /// <param name="Id">クエリ文字列(<c>?period=</c>)で使う識別子。</param>
 /// <param name="Label">期間切替ボタンの文字(「週」「1年」など)。</param>
 /// <param name="KpiLabel">KPI カードの見出しに挟む言い回し(「週間」「年間」など)。</param>
-/// <param name="StartOn">KPI の集計窓の開始日を、基準日(今日)から求める。</param>
+/// <param name="TrendDays">
+/// トレンドチャートで並べる<b>日数</b>。日別で描く期間だけが値を持ち、月別なら <c>null</c>。
+/// </param>
 /// <param name="TrendMonths">
-/// トレンドチャートで並べる月数。<c>null</c> なら<b>日別</b>で描く
-/// (<see cref="DashboardViewModel.WeekDays"/> 日ぶん)。
+/// トレンドチャートで並べる<b>月数</b>。月別で描く期間だけが値を持ち、日別なら <c>null</c>。
+/// </param>
+/// <param name="StartOn">
+/// KPI の集計窓の開始日を、基準日(今日)から求める。<b>日別の期間では省略する</b> ——
+/// 省略すると <see cref="TrendDays"/> 日ぶんの窓になり、KPI とグラフの窓が必ず一致する
+/// (以前この 2 つは別々に決まっており、2 つ目の日別期間を足すと
+/// 「KPI は 14 日・グラフは 7 本で『直近7日間』」が全件緑で作れた)。
 /// </param>
 public sealed record PeriodChoice(
     string Id,
     string Label,
     string KpiLabel,
-    Func<DateTime, DateTime> StartOn,
-    int? TrendMonths);
+    int? TrendDays,
+    int? TrendMonths,
+    Func<DateTime, DateTime>? StartOn = null)
+{
+    /// <summary>KPI の集計窓の開始日。日別の期間は <see cref="TrendDays"/> から導く。</summary>
+    public DateTime WindowStart(DateTime today) =>
+        // 明示された求め方があればそれを使う(月別の期間はこちら)
+        StartOn is { } startOn ? startOn(today)
+        // 日別の期間は「その日数ぶん」の窓。today を含めて数えるので 1 を引く
+        : TrendDays is { } days ? today.AddDays(-(days - 1))
+        // どちらも無い選択肢は作れない(下のガードが落とす)が、型としては起こりうるので既定を返す
+        : today;
+}

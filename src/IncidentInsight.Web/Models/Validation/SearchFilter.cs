@@ -371,7 +371,8 @@ namespace IncidentInsight.Web.Models.Validation;
 /// <c>DashboardPeriodWindows_AreDistinctForEveryChoice</c> が「集計窓を既定から取り違えていないこと」を、
 /// <c>DashboardPeriodFilter_GoesThroughTheResolver</c> が配線漏れを落とす。
 /// <b>窓・ラベル・日別か月別かの対応付けは <c>ViewModels.PeriodChoice</c> の必須メンバー</b>
-/// なので、決めずに期間を足すこと自体はコンパイルが通らない(テストは取り違えのほうを見る)。<b>3 画面目が許可リストの絞り込みを足したときに
+/// なので、決めずに期間を足すこと自体はコンパイルが通らない(テストは取り違えのほうを見る)。
+/// 日別で描く期間は集計窓を書かず日数から導かせるので、KPI の窓とグラフの本数も必ず一致する。<b>3 画面目が許可リストの絞り込みを足したときに
 /// 「そもそも伝えない」形は機械では落ちない</b> ——規約とレビューで守る
 /// (旗を 1 つでも立てれば、そこから先は登録漏れをガードが落とす)。</para>
 ///

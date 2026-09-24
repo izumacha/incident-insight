@@ -4784,9 +4784,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "期間切替の書き方を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、手書きのボタンが全件緑のまま通る)。");
 
-        // 回しの外で書かれているもの(手書きのボタン)を集める
+        // 回しの外で書かれているもの(手書きのボタン)を集める。
+        //
+        // <b>「いまの期間のまま再読み込み」の類は通す。</b> 禁じたいのは<b>識別子を手で書く</b>
+        // ことなので、`asp-route-period="@Model.Period"` のように<b>受け取った期間をそのまま
+        // 渡す</b>形は許可リストの外の値を作りようがない。通さないと、その導線は
+        // 「回しの中から出せ」という<b>従いようのない</b>案内を受けることになり
+        // (回しに入れると 4 本のリンクになってしまい、同じ部品ではない)、
+        // 緑へ戻す道が「その導線を作らない」か「走査を緩める」しか無くなる
         var handWritten = routeKeyUses
             .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Where(m => !Regex.IsMatch(
+                source[(m.Index + m.Length)..], @"^\s*=?\s*""?\s*@Model\.Period\b"))
             .Select(m => LineAt(source, m.Index))
             .ToList();
         Assert.True(handWritten.Count == 0,
@@ -4802,8 +4811,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var wrongValue = new List<string>();
         foreach (Match use in routeKeyUses)
         {
-            // この箇所を含む回し(上で外のものは除いてあるので必ず見つかる)
-            var body = loopBodies.First(b => use.Index >= b.Start && use.Index < b.End);
+            // この箇所を含む回し。回しの外にあるものは上の (b) が「受け取った期間を
+            // そのまま渡す導線」として通したものなので、ここでは見ない
+            // (見ると「回しの中の変数の Id か」を回しの外に対して問うことになり、
+            //  その導線に対して必ず落ちる ——実測で Sequence contains no matching element)
+            var body = loopBodies.FirstOrDefault(b => use.Index >= b.Start && use.Index < b.End);
+            if (body.Item is null) continue;
             // 指定の直後に続く綴りを見る(= や引用符・@ は書き方によって付いたり付かなかったりする)
             var following = source[(use.Index + use.Length)..];
             if (!Regex.IsMatch(following, $@"^\s*=?\s*""?\s*@?{Regex.Escape(body.Item)}\.Id\b"))
@@ -4833,9 +4846,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
             .Where(m =>
             {
-                // その手前が「選択肢から導く関数への引数」になっているか
+                // その手前が「選択肢から導く関数への引数」または「期間のルート値」になっているか
+                // (後者は受け取った期間をそのまま渡す導線。識別子を手で書いてはいない)
                 var before = source[..m.Index];
-                return !Regex.IsMatch(before, $@"{nameof(DashboardViewModel)}\.\w+\(\s*$");
+                return !Regex.IsMatch(before, $@"{nameof(DashboardViewModel)}\.\w+\(\s*$")
+                    && !Regex.IsMatch(before, @"(?:\?period=|asp-route-period\s*=\s*""|\bperiod\s*=)\s*@?$",
+                        RegexOptions.IgnoreCase);
             })
             .Select(m => LineAt(source, m.Index))
             .Distinct(StringComparer.Ordinal)
@@ -4889,6 +4905,22 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"{nameof(DashboardViewModel.PeriodStart)} の既定の分岐へ落ちている可能性が高い。"
             + "期間を足したなら、その期間の集計窓も同じ変更セットで決めること"
             + "(決めないと、そのボタンが選択中のまま 1 年分の KPI が出る)。");
+
+        // 日別で描く期間のトレンド日数も、互いに違うこと
+        // (同じ日数なら窓も同じになり、上の開始日の照合で既に落ちるが、
+        //  原因を「日数の取り違え」として名指しできるのはこちらだけ)
+        var days = DashboardViewModel.Periods
+            .Where(DashboardViewModel.UsesDailyTrendBuckets)
+            .Select(period => (Period: period, Days: DashboardViewModel.DaysFor(period)))
+            .ToList();
+        var collidingDays = days
+            .GroupBy(x => x.Days)
+            .Where(g => g.Count() > 1)
+            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .ToList();
+        Assert.True(collidingDays.Count == 0,
+            $"日別トレンドの日数が同じ期間がある: {string.Join(" / ", collidingDays)}。"
+            + "期間を足したなら、その期間のグラフの窓も同じ変更セットで決めること。");
 
         // 月別で描く期間のトレンド月数
         var months = DashboardViewModel.Periods
@@ -4949,6 +4981,26 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.All(choices, choice =>
             Assert.Equal(choice.KpiLabel, DashboardViewModel.KpiLabelFor(choice.Id)));
 
+        // トレンドの窓は「日別の日数」か「月別の月数」のどちらか一方だけを持つこと。
+        // 両方あると HomeController の分岐(UsesDailyTrendBuckets)が見ないほうが黙って死に、
+        // どちらも無いと窓が決まらない
+        Assert.All(choices, choice =>
+            Assert.True(
+                (choice.TrendDays is null) != (choice.TrendMonths is null),
+                $"期間 {choice.Id} は TrendDays と TrendMonths のどちらか一方だけを持つこと"
+                + "(日別で描くなら日数、月別なら月数)。"));
+
+        // 日別で描く期間は KPI の窓の求め方を上書きしないこと。
+        //
+        // <b>これが無いと KPI とグラフの窓がずれる。</b> 実測では、2 つ目の日別期間を
+        // 「窓は 14 日・TrendDays は 7」で足すと、KPI カードは 14 日ぶんを数えるのに
+        // グラフは 7 本で「直近7日間」と名乗る状態が全件緑のまま作れた。
+        // 省略すれば WindowStart が TrendDays から導くので、両者は必ず一致する
+        Assert.All(choices.Where(c => c.TrendDays is not null), choice =>
+            Assert.True(choice.StartOn is null,
+                $"日別で描く期間 {choice.Id} は StartOn を書かないこと"
+                + "(書くと KPI の窓とグラフの本数が別々に決まり、ずれても誰も気付けない)。"));
+
         // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
         // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる
         Assert.Contains(DashboardViewModel.PeriodYear, DashboardViewModel.Periods);
@@ -4956,6 +5008,38 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 許可リストが選択肢の識別子そのもの(並びまで含めて)であること。
         // 導出を書き換えて別の一覧を返す形にすると、画面と許可リストが再び別の宣言になる
         Assert.Equal(choices.Select(c => c.Id).ToArray(), DashboardViewModel.Periods);
+    }
+
+    // 選択肢に無い期間を持つ ViewModel が、既定の期間の見え方へ落ちること。
+    //
+    // <b>なぜ固定するのか。</b> この落とし先は<b>黙って</b>効く(見出しも窓もグラフも year の
+    // もので、旗も立たない)。いまは HomeController だけがこの ViewModel を組み立て、必ず
+    // 解決処理を通すので到達しないが、Period には public の setter があるため、将来の構築
+    // 経路が許可リスト外の値を入れれば「year の見出しで year でないデータ」を出しうる。
+    // 落ちること自体は画面を落とさないための選択(§9 fail-safe)なので、<b>偶然ではなく
+    // 決めてそうしている</b>ことを差分に残す ——振る舞いを変えるならここが赤くなる。
+    [Fact]
+    public void DashboardChoiceLookup_FallsBackToTheDefaultPeriod()
+    {
+        // 許可リストに無い期間(コントローラ経由では起こらない値)
+        const string unlisted = "decade";
+        // 念のため、その値が本当に選択肢に無いことを確かめる(あると検査の意味が消える)
+        Assert.DoesNotContain(unlisted, DashboardViewModel.Periods);
+
+        // 見出し・集計窓・日別か月別か・月数のすべてが既定の期間と同じになる
+        var today = new DateTime(2026, 6, 15);
+        Assert.Equal(
+            DashboardViewModel.KpiLabelFor(DashboardViewModel.PeriodYear),
+            DashboardViewModel.KpiLabelFor(unlisted));
+        Assert.Equal(
+            DashboardViewModel.PeriodStart(DashboardViewModel.PeriodYear, today),
+            DashboardViewModel.PeriodStart(unlisted, today));
+        Assert.Equal(
+            DashboardViewModel.UsesDailyTrendBuckets(DashboardViewModel.PeriodYear),
+            DashboardViewModel.UsesDailyTrendBuckets(unlisted));
+        Assert.Equal(
+            DashboardViewModel.MonthsFor(DashboardViewModel.PeriodYear),
+            DashboardViewModel.MonthsFor(unlisted));
     }
 
     // 注意書きが案内する既定の期間名が、選択肢のラベルと同じであること。
