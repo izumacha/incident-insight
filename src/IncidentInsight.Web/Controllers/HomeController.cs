@@ -191,6 +191,12 @@ public class HomeController : Controller
         // 既定の分岐へ落ち、「10年」のボタンが選択中のまま 1 年分の KPI を見せる状態が
         // 全件緑のまま作れた。窓を決めずに期間を足せない形にするため、同じ場所へ寄せた。
         //
+        // <b>残っている境界: KPI には上限が無い。</b> 下のグラフは必ず「今日まで」で切るが、
+        // KPI の件数は periodStart 以降を数えるだけなので、<b>未来の日付で登録された
+        // インシデント</b>(年の打ち間違い等。OccurredAt に未来日の検証は無い)は KPI には
+        // 入ってグラフには出ない。窓の「始まり」をそろえる話と「終わり」の話は別で、
+        // ここでそろえているのは始まりのほう。
+        //
         // week は KPI とトレンドチャート(下の weekStart)を同じ「直近7暦日
         // (today-6〜today)」窓に揃える。month/quarter/year はチャート側の窓を意図的に
         // KPI 期間より広く取る設計(下のコメント参照)だが、week だけは "直近7日間" という
@@ -270,8 +276,9 @@ public class HomeController : Controller
         // 週表示の場合は日別集計(日別か月別かの判定は選択肢の側が持つ)
         if (DashboardViewModel.UsesDailyTrendBuckets(period))
         {
-            // 過去 7 日間の範囲を作成(日数は見出しと共通の定数から導出し食い違いを防ぐ)
-            var weekStart = today.AddDays(-(DashboardViewModel.WeekDays - 1));
+            // 日別の範囲を作成(日数は選択肢から引く ——見出し・KPI の窓と同じ源なので食い違わない)
+            var trendDays = DashboardViewModel.DaysFor(period);
+            var weekStart = today.AddDays(-(trendDays - 1));
             var weekEnd = today.AddDays(1);
             // 日付ごとの件数を SQL 側でグループ化して取得
             var dailyGroups = await incidents
@@ -282,7 +289,7 @@ public class HomeController : Controller
             // 高速検索用に辞書化
             var byDay = dailyGroups.ToDictionary(g => g.Day, g => g.Count);
             // 7 日間を古い方から順にラベル付きで並べる(無い日は 0 件として埋める)
-            for (int i = DashboardViewModel.WeekDays - 1; i >= 0; i--)
+            for (int i = trendDays - 1; i >= 0; i--)
             {
                 var day = today.AddDays(-i);
                 byDay.TryGetValue(day, out var count);

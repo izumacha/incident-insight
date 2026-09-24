@@ -4849,8 +4849,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 // その手前が「選択肢から導く関数への引数」または「期間のルート値」になっているか
                 // (後者は受け取った期間をそのまま渡す導線。識別子を手で書いてはいない)
                 var before = source[..m.Index];
+                // ルート値としてそのまま渡す形だけを通す。<b>素の `period =` を通さない</b>のが要点 ——
+                // 通していた頃は `@{ var period = Model.Period; }` と書いてから
+                // その<b>ローカル</b>で分岐する形が全件緑で通り、検査が 1 ホップで無力化された
                 return !Regex.IsMatch(before, $@"{nameof(DashboardViewModel)}\.\w+\(\s*$")
-                    && !Regex.IsMatch(before, @"(?:\?period=|asp-route-period\s*=\s*""|\bperiod\s*=)\s*@?$",
+                    && !Regex.IsMatch(
+                        before,
+                        @"(?:\?period=|asp-route-period\s*=\s*""|new\s*\{[^}]*?\bperiod\s*=)\s*@?$",
                         RegexOptions.IgnoreCase);
             })
             .Select(m => LineAt(source, m.Index))
@@ -4862,6 +4867,59 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"(実際 KPI カードの見出しがこの形だった)。対応付けは {nameof(DashboardViewModel)}."
             + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューは "
             + $"{nameof(DashboardViewModel)}.<導出>(Model.Period) の形で引くこと。");
+    }
+
+    // 期間のルート値を<b>ダッシュボード以外のビューで</b>手書きしていないこと。
+    //
+    // <b>なぜ別の検査として要るのか(実測)。</b> 上の
+    // DashboardPeriodSwitcher_IsRenderedFromTheSingleSource が見るのは
+    // Views/Home/Index.cshtml だけなので、同じリンクを _Layout.cshtml や任意のパーシャルへ
+    // 置くと<b>全件緑のまま</b>通る ——そして _Layout はダッシュボードを含む全ページに出るので、
+    // 「アプリが自分で出したリンクを、ダッシュボードが『選べる値ではない』と拒否する」
+    // 状態がそのまま起きる。この repo は同じ教訓を既に記録している
+    // (RepositoryPaths.EnumerateViewFiles の docstring:「パスの形で絞らない」)。
+    //
+    // 通すのは受け取った期間をそのまま渡す形(`@Model.Period`)だけ。<b>識別子を手で書く形</b>が
+    // 許可リストとずれる唯一の経路なので、そこだけを閉じる
+    [Fact]
+    public void PeriodRouteValues_AreNotHandWrittenInAnyOtherView()
+    {
+        // ダッシュボードのビューは上の検査が別の観点(回しから描いているか)で見るので除く
+        var dashboard = Path.Combine(RepositoryPaths.WebProject, "Views", "Home", "Index.cshtml");
+        // 走査の根は Web プロジェクト全体(Views/ の外に置いた .cshtml も対象に入る)
+        var views = RepositoryPaths.EnumerateViewFiles()
+            .Where(path => !string.Equals(path, dashboard, StringComparison.Ordinal))
+            .ToList();
+
+        // 1 つも読めないなら手がかりが死んでいる(fail-closed)
+        Assert.True(views.Count > 0, "ダッシュボード以外のビューが 1 つも見つからない。");
+
+        // 期間のルート値を手書きしている箇所を集める
+        var handWritten = new List<string>();
+        foreach (var view in views)
+        {
+            // Razor のコメントは落としてから探す(解説として綴りに触れている行を拾わない)
+            var source = RazorComment.Replace(File.ReadAllText(view), string.Empty);
+            foreach (Match use in Regex.Matches(
+                source,
+                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
+                RegexOptions.IgnoreCase))
+            {
+                // 受け取った期間をそのまま渡す形は通す(許可リストの外の値を作りようがない)
+                var following = source[(use.Index + use.Length)..];
+                if (Regex.IsMatch(following, @"^\s*=?\s*""?\s*@Model\.Period\b")) continue;
+                // それ以外は識別子を手で書いているので落とす
+                handWritten.Add($"{Path.GetFileName(view)}: {LineAt(source, use.Index)}");
+            }
+        }
+
+        Assert.True(handWritten.Count == 0,
+            $"ダッシュボード以外のビューで期間のルート値を手書きしている: "
+            + $"{string.Join(" / ", handWritten)}。許可リストに無い値を指すリンクになりうる"
+            + "(押すとダッシュボードが「選べる値ではない」と自分で拒否する)。"
+            + $"期間のリンクは {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} を回して出すか、"
+            + "受け取った期間(@Model.Period)をそのまま渡すこと。");
     }
 
     // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
@@ -4888,23 +4946,35 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Fact]
     public void DashboardPeriodWindows_AreDistinctForEveryChoice()
     {
-        // 判定が実行日に依存しないよう、固定日を基準にする
-        var today = new DateTime(2026, 6, 15);
-        // すべての期間の KPI 窓の開始日
-        var starts = DashboardViewModel.Periods
-            .Select(period => (Period: period, Start: DashboardViewModel.PeriodStart(period, today)))
+        // <b>1 日だけで確かめない。</b> 窓の求め方は暦に依存する(AddMonths / AddYears は
+        // 月の長さやうるう年で伸び縮みする)ので、ある 1 日でたまたま違っていても別の日に
+        // 重なりうる ——たとえば「31 日ぶんの日別期間」と「1 か月」は、前月が 31 日なら
+        // 1 日ずれるが、前月が 30 日ならぴたり重なる。1 年ぶんの各日で確かめる
+        var referenceDays = Enumerable.Range(0, 366)
+            .Select(offset => new DateTime(2026, 1, 1).AddDays(offset))
             .ToList();
-        // 同じ開始日になる期間の組があれば落とす
-        var collidingStarts = starts
-            .GroupBy(x => x.Start)
+
+        // すべての基準日で、同じ開始日になる期間の組があれば落とす
+        var collidingStarts = referenceDays
+            .SelectMany(today => DashboardViewModel.Periods
+                .Select(period => (Today: today, Period: period,
+                    Start: DashboardViewModel.PeriodStart(period, today))))
+            .GroupBy(x => (x.Today, x.Start))
             .Where(g => g.Count() > 1)
-            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .Select(g => $"{g.Key.Today:yyyy-MM-dd} で "
+                + string.Join(" と ", g.Select(x => x.Period)))
+            .Distinct(StringComparer.Ordinal)
+            .Take(5)
             .ToList();
         Assert.True(collidingStarts.Count == 0,
             $"集計窓の開始日が同じ期間がある: {string.Join(" / ", collidingStarts)}。"
-            + $"{nameof(DashboardViewModel.PeriodStart)} の既定の分岐へ落ちている可能性が高い。"
+            + $"{nameof(DashboardViewModel.PeriodStart)} の既定の分岐へ落ちているか、"
+            + "暦の都合で特定の日だけ重なる窓を選んでいる。"
             + "期間を足したなら、その期間の集計窓も同じ変更セットで決めること"
-            + "(決めないと、そのボタンが選択中のまま 1 年分の KPI が出る)。");
+            + "(決めないと、そのボタンが選択中のまま既定の期間の KPI が出る)。");
+
+        // 以降の日数・月数の照合は基準日に依らないので、代表の 1 日で足りる
+        var today = referenceDays[0];
 
         // 日別で描く期間のトレンド日数も、互いに違うこと
         // (同じ日数なら窓も同じになり、上の開始日の照合で既に落ちるが、

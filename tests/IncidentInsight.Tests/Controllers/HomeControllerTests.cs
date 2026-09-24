@@ -119,6 +119,52 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(1, vm.TotalIncidents);
     }
 
+    // 日別で描く期間は、KPI の集計窓とトレンドチャートの本数が必ず一致すること。
+    //
+    // <b>なぜ振る舞いで固定するのか。</b> 構造側（PeriodChoice が日数を持ち、日別の期間は
+    // 集計窓を書かない）は「2 つの値がずれないこと」までしか言えず、<b>チャートを組み立てる
+    // 側がその日数を使っているか</b>は別の話。実際、日数を選択肢へ移した直後も
+    // HomeController は固定の WeekDays を使い続けており、2 つ目の日別期間を足すと
+    // 「KPI は 14 日ぶんを数えるのにグラフは 7 本で『直近7日間』」が全件緑で作れた。
+    //
+    // 期間を名指しせず、日別で描く期間すべてについて確かめる（2 つ目が足されたら自動で対象に入る）
+    [Theory]
+    [MemberData(nameof(DailyTrendPeriods))]
+    public async Task Index_DailyPeriod_ChartCoversExactlyTheKpiWindow(string period)
+    {
+        // 窓の中に 1 件だけ置く（件数そのものはここでは見ない）
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 並べる本数が、その期間の日数と一致する
+        Assert.Equal(DashboardViewModel.DaysFor(period), vm!.MonthlyCounts.Count);
+        // 先頭のバケットの日付が、KPI の集計窓の開始日と一致する
+        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）
+        Assert.Equal(
+            DashboardViewModel.PeriodStart(period, _clock.Today).ToString("yyyy-MM-dd"),
+            vm.MonthlyCounts[0].DateFrom);
+        // 末尾のバケットは今日（グラフは必ず今日まで）
+        Assert.Equal(_clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
+    }
+
+    // 日別で描く期間の一覧（選択肢から導くので、2 つ目が足されたら自動で対象に入る）
+    public static TheoryData<string> DailyTrendPeriods()
+    {
+        // 日別で描くものだけを拾う
+        var periods = DashboardViewModel.Periods
+            .Where(DashboardViewModel.UsesDailyTrendBuckets)
+            .ToList();
+        // 1 つも無ければ「対象ゼロ＝緑」になるので落とす（fail-closed）
+        Assert.NotEmpty(periods);
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var period in periods) data.Add(period);
+        return data;
+    }
+
     // 選べる値ではない period を受け取ったら、既定へ丸めたことを画面へ伝える（issue #220 の規則）。
     //
     // 丸めるだけで黙っていると、利用者は四半期のつもりで 1 年分の KPI・トレンド・完了率を読み、

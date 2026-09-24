@@ -148,10 +148,20 @@ public class DashboardViewModel
     public static string KpiLabelFor(string period) => ChoiceFor(period).KpiLabel;
 
     // 日別トレンドチャートで並べる日数(日別で描く期間だけが持つ)。
+    //
     // 月別で描く期間は既定の日数へ落とす(画面を落とさないための fail-safe。
-    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐する)
+    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐するので、ここへは来ない)。
+    // <b>落とし先も「たまたま日別の選択肢がある」ことに頼らない</b> ——
+    // 以前は First(…) で最初の日別の選択肢を探しており、日別の期間が 1 つも無くなると
+    // 「fail-safe」と書いてあるそばから InvalidOperationException で 500 になっていた
     public static int DaysFor(string period) =>
-        ChoiceFor(period).TrendDays ?? PeriodChoices.First(c => c.TrendDays is not null).TrendDays!.Value;
+        ChoiceFor(period).TrendDays
+        ?? PeriodChoices.FirstOrDefault(c => c.TrendDays is not null)?.TrendDays
+        ?? DefaultTrendDays;
+
+    // 日別の選択肢が 1 つも無いときに使う日数。画面が落ちないことだけが目的なので、
+    // 値そのものに意味は無い(1 週間ぶん)
+    private const int DefaultTrendDays = 7;
 
     // トレンドチャートを「日別」で描くかどうか(false なら月別)。
     // 選択肢の TrendMonths が null なら日別 ——判定をビューやコントローラへ直書きすると、
@@ -162,8 +172,14 @@ public class DashboardViewModel
     // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
     // 日別で描く期間(week)はここを通らないが、万一通っても既定の期間の月数へ落とす
     // (画面を落とさないための fail-safe。本番の呼び出し元は UsesDailyTrendBuckets で分岐する)
+    // 落とし先が「既定の期間は必ず月別」に頼らないのは DaysFor と同じ理由
     public static int MonthsFor(string period) =>
-        ChoiceFor(period).TrendMonths ?? ChoiceFor(PeriodYear).TrendMonths!.Value;
+        ChoiceFor(period).TrendMonths
+        ?? PeriodChoices.FirstOrDefault(c => c.TrendMonths is not null)?.TrendMonths
+        ?? DefaultTrendMonths;
+
+    // 月別の選択肢が 1 つも無いときに使う月数(DefaultTrendDays と同じ扱い)
+    private const int DefaultTrendMonths = 12;
 
     // KPI
     // 累計インシデント数
