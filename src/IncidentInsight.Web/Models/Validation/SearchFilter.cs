@@ -363,10 +363,15 @@ namespace IncidentInsight.Web.Models.Validation;
 /// から導き、ビューはそれを回してボタンを描くので、2 つ目の宣言そのものが存在しない
 /// (当初は許可リストとビューのリンクを突き合わせる走査を置いていたが、<b>実測で穴があった</b>
 /// ——タグヘルパーや <c>Url.Action</c> で組み立てたボタンは綴りに当たらず素通りした)。
-/// 検査はその形だけを見る: <c>DashboardPeriodSwitcher_IsRenderedFromTheSingleSource</c> が
-/// 「回しから描いていること」と「回しの外で期間のルート値を作っていないこと」を、
+/// 検査はその形だけを見る:
+/// <c>DashboardPeriodSwitcher_IsRenderedFromTheSingleSource</c> が「回しから描いていること」
+/// 「回しの外で期間のルート値を作っていないこと」「渡しているのが回した変数の <c>Id</c> であること」
+/// 「回しの外で期間に分岐していないこと」を、
 /// <c>DashboardPeriodChoices_AreUsableAsTheSingleSource</c> が選択肢そのものの健全性を、
-/// <c>DashboardPeriodFilter_GoesThroughTheResolver</c> が配線漏れを落とす。<b>3 画面目が許可リストの絞り込みを足したときに
+/// <c>DashboardPeriodWindows_AreDistinctForEveryChoice</c> が「集計窓を既定から取り違えていないこと」を、
+/// <c>DashboardPeriodFilter_GoesThroughTheResolver</c> が配線漏れを落とす。
+/// <b>窓・ラベル・日別か月別かの対応付けは <c>ViewModels.PeriodChoice</c> の必須メンバー</b>
+/// なので、決めずに期間を足すこと自体はコンパイルが通らない(テストは取り違えのほうを見る)。<b>3 画面目が許可リストの絞り込みを足したときに
 /// 「そもそも伝えない」形は機械では落ちない</b> ——規約とレビューで守る
 /// (旗を 1 つでも立てれば、そこから先は登録漏れをガードが落とす)。</para>
 ///

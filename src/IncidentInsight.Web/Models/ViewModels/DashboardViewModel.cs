@@ -50,10 +50,18 @@ public class DashboardViewModel
     public static readonly IReadOnlyList<PeriodChoice> PeriodChoices =
         new[]
         {
-            new PeriodChoice(PeriodWeek,    "週",     "週間"),
-            new PeriodChoice(PeriodMonth,   "月",     "月間"),
-            new PeriodChoice(PeriodQuarter, "四半期", "四半期"),
-            new PeriodChoice(PeriodYear,    "1年",    "年間"),
+            // 直近 7 暦日。トレンドは日別で描くので TrendMonths は null
+            new PeriodChoice(PeriodWeek,    "週",     "週間",
+                today => today.AddDays(-(WeekDays - 1)), TrendMonths: null),
+            // 直近 1 か月。トレンドは直近 4 か月ぶん並べる
+            new PeriodChoice(PeriodMonth,   "月",     "月間",
+                today => today.AddMonths(-1), TrendMonths: 4),
+            // 直近 3 か月。トレンドは直近 6 か月ぶん並べる
+            new PeriodChoice(PeriodQuarter, "四半期", "四半期",
+                today => today.AddMonths(-3), TrendMonths: 6),
+            // 直近 1 年(既定)。トレンドは直近 12 か月ぶん並べる
+            new PeriodChoice(PeriodYear,    "1年",    "年間",
+                today => today.AddYears(-1), TrendMonths: 12),
         }.AsReadOnly();
 
     // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
@@ -99,48 +107,46 @@ public class DashboardViewModel
     // 扱いが一覧画面と違っても旗は同じように立てる —— 扱いと伝え方は別の軸(issue #220)
     public bool UnlistedFilterIgnored { get; set; }
 
+    // 期間の識別子から選択肢を引く(見つからなければ既定の期間の選択肢)。
+    //
+    // 見つからないときに落とさないのは、この ViewModel が許可リストを通っていない Period を
+    // 持つ経路(テストからの直接構築など)でも画面を落とさないため(§9 fail-safe)。
+    // 本番の経路では Period は必ず選択肢の 1 つになる(コントローラが解決処理を通す)
+    private static PeriodChoice ChoiceFor(string period) =>
+        PeriodChoices.FirstOrDefault(choice => choice.Id == period)
+        ?? PeriodChoices.First(choice => choice.Id == PeriodYear);
+
     // KPI の集計窓の開始日(この日以降に発生したインシデントを数える)。
     //
-    // <b>ここに置くのは、期間を足す人が窓も必ず決めることになるから。</b> 以前これは
-    // HomeController.Index のローカルの switch にあり、既定の分岐が 1 年窓だった。
-    // 選択肢を増やしただけで<b>「10年」のボタンが選択中のまま 1 年分の KPI を見せる</b>
-    // 状態が作れてしまい(実測で全件緑)、画面には食い違いを示すものが何も出ない。
-    // 選択肢のすぐ隣に置き、既定の分岐へ落ちた新しい期間が year と同じ窓になることを
-    // DashboardPeriodWindows_AreDistinctForEveryChoice が落とす。
+    // <b>対応付けを選択肢そのものに持たせてあるのが要点。</b> 以前これは HomeController の
+    // ローカルの switch で、既定の分岐が 1 年窓だった。選択肢を増やしただけで
+    // <b>「10年」のボタンが選択中のまま 1 年分の KPI を見せる</b>状態が作れ(実測で全件緑)、
+    // 画面には食い違いを示すものが何も出ない。switch を選択肢の隣へ移すだけでは
+    // 既定の分岐が残り「1 本のテストだけが頼り」になるので、<b>PeriodChoice の必須メンバー</b>に
+    // して、窓を決めずに期間を足すとコンパイルが通らない形にした
+    // (ラベルを選択肢へ寄せたのと同じ「食い違いが構造的に作れない形」)。
+    // 窓が既定と偶然同じになる取り違えは
+    // DashboardPeriodWindows_AreDistinctForEveryChoice が引き続き落とす。
     //
-    // week だけ暦日で数えるのは、下のトレンドチャートが直近 7 暦日(today-6〜today)を
+    // week だけ暦日で数えるのは、トレンドチャートが直近 7 暦日(today-6〜today)を
     // 並べるため ——KPI の合計とグラフの合計が食い違わないよう、窓を同じにしてある
-    public static DateTime PeriodStart(string period, DateTime today) => period switch
-    {
-        PeriodWeek    => today.AddDays(-(WeekDays - 1)),  // 直近 7 暦日(today-6 〜 today)
-        PeriodMonth   => today.AddMonths(-1),             // 直近 1 か月
-        PeriodQuarter => today.AddMonths(-3),             // 直近 3 か月
-        _             => today.AddYears(-1)               // 年表示(既定): 直近 1 年
-    };
+    public static DateTime PeriodStart(string period, DateTime today) =>
+        ChoiceFor(period).StartOn(today);
 
-    // KPI カードの見出しに使う期間の言い回し(「週間」インシデント数 等)。
-    //
-    // 見つからないときに既定の期間の言い回しへ落とすのは、この ViewModel が
-    // 許可リストを通っていない Period を持つ経路(テストからの直接構築など)でも
-    // 画面を落とさないため(§9 fail-safe)。本番の経路では Period は必ず選択肢の 1 つになる
-    public static string KpiLabelFor(string period) =>
-        (PeriodChoices.FirstOrDefault(choice => choice.Id == period)
-         ?? PeriodChoices.First(choice => choice.Id == PeriodYear)).KpiLabel;
+    // KPI カードの見出しに使う期間の言い回し(「週間」インシデント数 等)
+    public static string KpiLabelFor(string period) => ChoiceFor(period).KpiLabel;
 
     // トレンドチャートを「日別」で描くかどうか(false なら月別)。
-    // HomeController の集計分岐がこれを読む ——判定を向こうへ直書きすると、
+    // 選択肢の TrendMonths が null なら日別 ——判定をビューやコントローラへ直書きすると、
     // 期間を足した人が月別と日別のどちらになるかを選択肢の側から読めなくなる
-    public static bool UsesDailyTrendBuckets(string period) => period == PeriodWeek;
+    public static bool UsesDailyTrendBuckets(string period) => ChoiceFor(period).TrendMonths is null;
 
-    // 月別トレンドチャートで並べる月数(month=4, quarter=6, それ以外=12)。
+    // 月別トレンドチャートで並べる月数(month=4, quarter=6, year=12)。
     // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
-    // 日別で描く期間(week)はここを通らない
-    public static int MonthsFor(string period) => period switch
-    {
-        PeriodMonth   => 4,  // 月表示: 直近 4 ヶ月
-        PeriodQuarter => 6,  // 四半期表示: 直近 6 ヶ月
-        _             => 12  // 年表示(既定): 直近 12 ヶ月
-    };
+    // 日別で描く期間(week)はここを通らないが、万一通っても既定の期間の月数へ落とす
+    // (画面を落とさないための fail-safe。本番の呼び出し元は UsesDailyTrendBuckets で分岐する)
+    public static int MonthsFor(string period) =>
+        ChoiceFor(period).TrendMonths ?? ChoiceFor(PeriodYear).TrendMonths!.Value;
 
     // KPI
     // 累計インシデント数
@@ -307,4 +313,14 @@ public class MonthlyCount
 /// <param name="Id">クエリ文字列(<c>?period=</c>)で使う識別子。</param>
 /// <param name="Label">期間切替ボタンの文字(「週」「1年」など)。</param>
 /// <param name="KpiLabel">KPI カードの見出しに挟む言い回し(「週間」「年間」など)。</param>
-public sealed record PeriodChoice(string Id, string Label, string KpiLabel);
+/// <param name="StartOn">KPI の集計窓の開始日を、基準日(今日)から求める。</param>
+/// <param name="TrendMonths">
+/// トレンドチャートで並べる月数。<c>null</c> なら<b>日別</b>で描く
+/// (<see cref="DashboardViewModel.WeekDays"/> 日ぶん)。
+/// </param>
+public sealed record PeriodChoice(
+    string Id,
+    string Label,
+    string KpiLabel,
+    Func<DateTime, DateTime> StartOn,
+    int? TrendMonths);

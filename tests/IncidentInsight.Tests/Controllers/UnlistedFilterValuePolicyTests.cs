@@ -4814,24 +4814,38 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "ラベルや別の値を渡すと、画面が出したリンクすべてが許可リストに無い値を指し、"
             + "押すたびに「選べる値ではない」の注意書きが出る。");
 
-        // (d) 期間で分岐しているのは<b>回しの中の選択中判定だけ</b>であること。
+        // (d) 回しの外では、期間を<b>渡す</b>ことはできても<b>分岐する</b>ことはできない。
         //
-        // <b>なぜ要るのか(実測)。</b> KPI カードには「週間 / 月間 / 四半期 / 年間」を選ぶ
-        // 手書きの三項演算子の連鎖があり、既定の分岐が「年間」だった。集計窓を選択肢の側へ
-        // 移したあとも<b>この連鎖だけが残っており</b>、期間を 1 つ増やすと「10年」のボタンが
-        // 選択中のまま 10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れた
-        // (ルート値の綴りを見る上の 3 つはどれもこの行に当たらない)。
-        // 期間ごとに何かを選ぶ必要が出たら、その対応付けも選択肢(PeriodChoices)へ持たせる
-        // ——ビューで分岐すると、既定の分岐がそのまま次の取りこぼしになる
-        var periodBranches = Regex.Matches(source, @"Model\.Period\s*==")
+        // <b>なぜ「綴りの禁止」ではなくこの形か(実測)。</b> はじめは `Model.Period ==` という
+        // 綴りを禁じていたが、<b>左右を入れ替えるだけで素通りした</b>
+        // (`DashboardViewModel.PeriodWeek == Model.Period ? …`)。`!=` ・ `switch` 式 ・
+        // `string.Equals` も同じ。綴りを足していく道は、この repo が繰り返し記録しているとおり
+        // どちらかの穴が必ず残る。そこで<b>許す形のほうを決め打つ</b>:
+        // 回しの外に現れる `Model.Period` は、選択肢から導く関数
+        // (`DashboardViewModel.<何か>(Model.Period)`)の引数としてだけ書ける。
+        // 比較・分岐はその形に当たらないので、綴りが何通りあっても落ちる。
+        //
+        // これが要るのは、KPI カードに「週間 / 月間 / 四半期 / 年間」を選ぶ手書きの三項演算子の
+        // 連鎖があり、既定の分岐が「年間」だったから ——集計窓を選択肢へ移したあとも
+        // この連鎖だけが残っており、期間を 1 つ増やすと「10年」のボタンが選択中のまま
+        // 10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れた
+        var periodUses = Regex.Matches(source, @"Model\.Period\b")
             .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Where(m =>
+            {
+                // その手前が「選択肢から導く関数への引数」になっているか
+                var before = source[..m.Index];
+                return !Regex.IsMatch(before, $@"{nameof(DashboardViewModel)}\.\w+\(\s*$");
+            })
             .Select(m => LineAt(source, m.Index))
+            .Distinct(StringComparer.Ordinal)
             .ToList();
-        Assert.True(periodBranches.Count == 0,
-            $"期間での分岐が回しの外にある: {string.Join(" / ", periodBranches)}。"
+        Assert.True(periodUses.Count == 0,
+            $"期間で分岐している箇所が回しの外にある: {string.Join(" / ", periodUses)}。"
             + "既定の分岐を持つ手書きの対応付けは、期間を足したときに黙って古い値を出す"
             + $"(実際 KPI カードの見出しがこの形だった)。対応付けは {nameof(DashboardViewModel)}."
-            + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューはそこから引くこと。");
+            + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューは "
+            + $"{nameof(DashboardViewModel)}.<導出>(Model.Period) の形で引くこと。");
     }
 
     // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す

@@ -49,7 +49,9 @@
                 @foreach (var choice in DashboardViewModel.PeriodChoices)
                 {
                     @* 選択中の期間は塗りの違いだけでなく aria-current でも伝える(§7 色だけに
-                       意味を持たせない)。_Pager.cshtml が現在ページに付けているのと同じ扱い *@
+                       意味を持たせない)。_Pager.cshtml が現在ページに付けているのと同じ考え方だが、
+                       値は "page" ではなく "true" ——切り替えているのはページではなく集計期間で、
+                       "page" は「いま開いているページ」を指す語だから *@
                     <a class="btn @(Model.Period == choice.Id ? "btn-primary" : "btn-outline-secondary")"
                        aria-current="@(Model.Period == choice.Id ? "true" : null)"
                        href="?period=@choice.Id">@choice.Label</a>
@@ -70,7 +72,10 @@
 
    文面を /AuditLogs ・ /Incidents の「選べる値ではない」と一字一句そろえていないのは、
    <b>起きたことが違うから</b> ——あちらは条件を外して一覧を出す（絞り込み無し）が、
-   この画面には「期間なし」という状態が無いので既定の「1年」へ補完している。
+   この画面には「期間なし」という状態が無いので既定の期間へ差し替えている
+   （「補完」と呼ばない理由は Controllers/Internal/ListedValueFilterResolver の解説。
+   既定の期間名をここに書かないのは、ボタンのラベルを変えたときにこのコメントだけが
+   画面に無いボタンを指し続けるため ——文面と同じく PeriodChoices から引く）。
    あちらの説明文（「その条件を外して一覧を表示しています」「下の『絞り込み』から
    選び直してください」）をそのまま使うと、この画面については事実と違うことを言い、
    存在しない絞り込みパネルを探させることになる。見出しも重ねない —— 見出しが同じなら
