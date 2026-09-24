@@ -5110,15 +5110,12 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 「綴りを 1 つずつ足すのではなく本物のパーサへ移す」対処を取ってきており
     // (<c>CSharpCommentScanner</c> ・ dependabot.yml の YAML パーサ)、
     // <b>本体を読めば見える</b>ものをリフレクションの限界として放置する理由は無い。
-    // 署名を見る前半と本体を見る後半で、1 組がそろう。
     //
-    // <b>覆う範囲を正直に書いておく。</b> 見張るのは「null を既定値へ畳み戻す」3 つの形
-    // (<c>??</c> ・ <c>GetValueOrDefault</c> ・ 引数への代入)で、判定の正本は
-    // <see cref="NullCollapsingUses"/> の docstring。
-    // <b>三項演算子で書いた形(<c>status is null ? MeasureStatus.Planned : status.Value</c>)は
-    // 拾えない</b> ——「null のときは絞り込まない」という<b>正しい</b>分岐も同じ形をしており、
-    // 綴りだけでは見分けられないため。ここを推測で広げると、正しいコードで赤くなる側へ倒れる
-    // (このリポジトリが繰り返し避けている形)。<b>残るその 1 形だけは引き続きレビューで守る。</b>
+    // <b>覆う範囲は <see cref="NullCollapsingUses"/> の docstring が正本。</b>
+    // とくに<b>「1 組がそろった」とは読まないこと</b> ——この検査が見るのは
+    // <b>引数そのものに直接掛かる綴り</b>だけで、値を別の変数へ写してから畳む形は
+    // 追えない(データフロー解析が要る)。前半が機械化されたことを「規則全体が
+    // 機械化された」と読むと、覆えていない形を書き忘れても検出されると誤解する。
     [Fact]
     public void EnumActionParameters_DoNotFoldNullBackIntoADefinedDefault()
     {
@@ -5133,16 +5130,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "導出を変えたなら、この検査も同じ変更セットで直すこと"
             + "(直さないと、null を既定値へ畳み戻す形の検査が対象ゼロで全件緑になる)。");
 
-        // 拾った引数を「どのソースのどのメソッドのどの引数か」の組へ直す。
-        // 型とメソッドの綴りは<b>リフレクションが名乗るもの</b>を使う(ソース側の綴りから
-        // 組み立て直すと、名前空間の切り直しで片方だけが動いて黙って一致しなくなる)
+        // 拾った引数を「どの型のどのメソッドのどの引数か」の組へ直す
         var sites = enumParameters
-            // 宣言元の型・メソッド名・引数名の 3 つでソース上の 1 点を指す
+            // 宣言元の型・メソッド名・引数名・引数の型名の 4 つでソース上の 1 点を指す
             .Select(match => new EnumArgumentSite(
-                match.Parameter.Member.DeclaringType!.FullName!,
+                ReflectionStyleTypeName(match.Parameter.Member.DeclaringType!),
                 match.Parameter.Member.Name,
-                match.Parameter.Name!))
-            // 同じ (型, メソッド, 引数) を指す重複(型違いのオーバーロード)は 1 件に畳む
+                match.Parameter.Name!,
+                UnderlyingTypeName(match.Parameter.ParameterType)))
+            // 同じ 1 点を指す重複は 1 件に畳む
             .Distinct()
             .ToList();
 
@@ -5157,10 +5153,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 合成入力で挙動を固定する)
         var scan = NullCollapsingUses(sources, sites);
 
-        // <b>見つからなかった引数は fail-closed で落とす。</b> 黙って飛ばすと、
-        // 走査が壊れた(名前空間の組み立て・メソッドの照合・パーサの入り口)ときに
-        // 「違反 0 件＝緑」になり、この検査が<b>何も見ないまま通る</b>状態が残る。
-        // 違反が 0 件なら緑という性質は、走査が空振りしたときと見分けが付かない
+        // <b>構文として読めなかったソースは fail-closed で落とす。</b> Roslyn は壊れた
+        // ソースでもエラー付きの木を返すので例外にはならないが、そのとき本体は
+        // エラーノードの塊になり、畳み戻しの綴りは<b>構文として生まれない</b> ——
+        // 宣言だけは読めていれば下の「見つからない」検査も満たしてしまうので、
+        // 「違反 0 件＝緑」のまま何も見ないで通る(言語バージョンがパーサより新しいと起こる)
+        Assert.True(scan.Unparsable.Count == 0,
+            "Web プロジェクトの .cs を構文として読めない。"
+            + "読めないソースの本体は走査に載らないので、違反があっても 0 件として緑になる"
+            + "(テストプロジェクトの Microsoft.CodeAnalysis.CSharp より新しい言語機能を"
+            + "使うとこの状態になる。パーサ側を上げること):"
+            + Environment.NewLine + string.Join(Environment.NewLine, scan.Unparsable));
+
+        // <b>見つからなかった引数も fail-closed で落とす。</b> 黙って飛ばすと、
+        // 走査が壊れた(型名の組み立て・メソッドの照合・引数の型の突き合わせ)ときに
+        // 「違反 0 件＝緑」になり、この検査が<b>何も見ないまま通る</b>状態が残る
         Assert.True(scan.Unlocated.Count == 0,
             "enum の引数を受けるアクションの宣言がソース上に見つからない。"
             + "走査が対象を取りこぼしていると、違反があっても 0 件として緑になる:"
@@ -5170,7 +5177,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.True(scan.Violations.Count == 0,
             "enum のアクション引数が受けた null を、既定値へ畳み戻さないこと。"
             + "Nullable<T> で受ける目的は「値が届かなかったこと」を null として区別することなので、"
-            + "?? / GetValueOrDefault / 引数への代入でそれを畳むと、署名は規約どおりのまま"
+            + "?? / GetValueOrDefault / 引数への代入・書き換えでそれを畳むと、署名は規約どおりのまま"
             + "issue #233 と同じ壊れ方(送っていない既定値で保存・絞り込みが起きる)に戻る。"
             + "絞り込みなら nullable のまま UnlistedEnumFilterResolver へ渡し、"
             + "保存を伴う POST なら null を弾いて早期に返すこと:"
@@ -5178,58 +5185,97 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     }
 
     /// <summary>ソース上の「この型のこのメソッドのこの引数」を指す 1 点。</summary>
-    /// <param name="TypeFullName">宣言元の型の完全修飾名(リフレクションが名乗るもの)。</param>
+    /// <remarks>
+    /// <b>引数の型まで持つ</b>のは、同じ (型, アクション名, 引数名) で<b>型だけが違う</b>
+    /// オーバーロードを別物として扱うため。型を落とすと、<c>Index(string status, …)</c> の中の
+    /// ごく普通の <c>status ?? string.Empty</c> が enum の違反として名指しされ、
+    /// 失敗文言は「<c>UnlistedEnumFilterResolver</c> へ通せ」という<b>文字列には無意味な</b>
+    /// 直し方を案内する ——正しいコードで赤くなる側(このリポジトリが繰り返し避けている形)。
+    /// GET/POST 対がまさにこの形であることは <see cref="CollapseDuplicateActionParameters"/> の
+    /// docstring が記録している。
+    /// </remarks>
+    /// <param name="TypeFullName">宣言元の型の名前(<c>Type.FullName</c> と同じ綴り)。</param>
     /// <param name="MethodName">アクション名。</param>
     /// <param name="ParameterName">C# 上の引数名(URL 上の別名ではない)。</param>
+    /// <param name="ParameterTypeName">引数の型の単純名(<c>Nullable&lt;T&gt;</c> は中身を見る)。</param>
     private readonly record struct EnumArgumentSite(
         string TypeFullName,
         string MethodName,
-        string ParameterName);
+        string ParameterName,
+        string ParameterTypeName);
 
-    /// <summary>走査の結果(違反と、ソース上に見つけられなかった引数)。</summary>
+    /// <summary>走査の結果。</summary>
     /// <param name="Violations">null を既定値へ畳み戻している綴りの説明。</param>
     /// <param name="Unlocated">宣言をソース上に見つけられなかった引数の説明。</param>
+    /// <param name="Unparsable">構文として読めなかったソースの説明。</param>
     private readonly record struct NullCollapseScan(
         IReadOnlyList<string> Violations,
-        IReadOnlyList<string> Unlocated);
+        IReadOnlyList<string> Unlocated,
+        IReadOnlyList<string> Unparsable);
 
     /// <summary>
     /// enum のアクション引数が受けた <c>null</c> を<b>既定値へ畳み戻している</b>綴りを探す。
     /// </summary>
     /// <remarks>
-    /// <para><b>見張る綴りは 3 つ。</b> どれも「値が届かなかった」を「定義済みの enum 値」へ
+    /// <para><b>見張る綴りは 4 つ。</b> どれも「値が届かなかった」を「定義済みの enum 値」へ
     /// 変えてしまう:
     /// <list type="bullet">
     ///   <item><c>status ?? MeasureStatus.Planned</c> …… null 合体演算子。</item>
     ///   <item><c>status.GetValueOrDefault()</c> …… 引数を受け取る形も含む。</item>
     ///   <item><c>status = …</c> ・ <c>status ??= …</c> …… 引数そのものへの代入
     ///     (<c>if (status is null) status = MeasureStatus.Planned;</c> がこの形)。</item>
+    ///   <item><c>Normalize(ref status)</c> ・ <c>Try(out status)</c> …… 引数の書き換えを
+    ///     呼び先へ委ねる形。<b>代入式にならない</b>ので、綴りを増やさないと拾えない
+    ///     (レビュー指摘。実測で <c>ref</c> の助けを借りた畳み戻しが素通りしていた)。</item>
     /// </list></para>
+    ///
+    /// <para><b>照合は「綴り」ではなく<see cref="ISymbol">シンボル</see>で行う(レビュー指摘)。</b>
+    /// 当初は識別子の綴りを引数名と比べていたが、それは 2 方向に壊れていた:
+    /// <list type="bullet">
+    ///   <item><b>正しいコードで赤くなる</b> …… C# は<c>static</c> なローカル関数・
+    ///     <c>static</c> なラムダの引数が<b>外側のメソッドの引数を覆い隠すことを許す</b>
+    ///     (CS0136 は <c>static</c> なものには掛からない。実測)。
+    ///     <c>static string Label(MeasureStatus? status) =&gt; (status ?? …)</c> という
+    ///     正しい表示用ヘルパーを置くだけで違反として名指しされ、しかも失敗文言が案内する
+    ///     直し方(解決処理へ通す)は<b>既に満たされている</b>ので直しようが無かった。</item>
+    ///   <item><b>綴りを変えるだけで素通りする</b> …… <c>(status) ?? Planned</c> や
+    ///     <c>((MeasureStatus?)status).GetValueOrDefault()</c> は、左辺・受け手が
+    ///     <c>IdentifierNameSyntax</c> ではなくなるので当時の判定に一致しなかった(実測)。</item>
+    /// </list>
+    /// どちらも<b>構文の層だけを使っていた</b>ことが原因で、「本物のパーサへ移す」と言いながら
+    /// 綴りを見ていたことになる。識別子を <see cref="SemanticModel"/> で解決し、
+    /// そのメソッドの引数シンボルと<b>同一性</b>で比べれば、覆い隠しも括弧もキャストも
+    /// まとめて正しく扱える。参照アセンブリは要らない(引数の解決は字句スコープの探索なので、
+    /// 型が解決できなくても識別子は引数に結び付く)。</para>
+    ///
+    /// <para><b>覆えない形(ここが正本)。</b> 見るのは<b>引数そのものに直接掛かる</b>綴りだけで、
+    /// 値が別のところへ写った先までは追わない:
+    /// <list type="bullet">
+    ///   <item><c>var carried = status; … carried ?? Planned</c> …… ローカルへ 1 度写すだけで
+    ///     外れる(実測)。追うにはデータフロー解析が要る。</item>
+    ///   <item><c>Fold(status)</c> …… 値渡しした先で畳む形(呼び先は別のメソッドなので、
+    ///     この走査の対象外)。<c>ref</c> / <c>out</c> は書き換えが呼び出し側に及ぶので上で拾う。</item>
+    ///   <item><c>status is null ? Planned : status.Value</c> …… 三項演算子。
+    ///     「null なら絞り込まない」という<b>正しい</b>分岐と綴りで見分けが付かず、
+    ///     拾うと正しいコードで赤くなる。</item>
+    /// </list>
+    /// <b>この 3 つは引き続き規約とレビューで守る。</b> 綴りを足して埋めようとしないこと ——
+    /// このリポジトリは <c>ToUpper</c> の走査について「捕まえたい形に目印が無い」ときの
+    /// 追加は「惜しい」書き方しか拾わないと記録している。境界そのものは
+    /// <see cref="NullCollapsingUses_ReportsOnlyTheFoldingSpellings_AndLocatesEverySite"/> が
+    /// <b>テストとして固定</b>してあるので、覆う範囲が動けば差分に現れる。</para>
     ///
     /// <para><b>代入は「畳んでいるか」を調べずに一律で落とす。</b> 右辺が null を保つ代入
     /// (<c>status = Normalize(status);</c>)なら畳み戻しではないが、それを見分けるには
     /// 右辺の型とデータフローを追う必要があり、<b>追い切れなかったぶんは黙って素通りする</b>
     /// 側へ倒れる。一方このリポジトリには、束縛された引数を書き換える正当な理由が
     /// 1 つも無い(値の解釈は <c>UnlistedEnumFilterResolver</c> か本体の早期リターンで行う)。
-    /// 精度を保ったまま一律に禁じられるので、<b>調べずに落とす</b>ほうを採る
-    /// ——正当な形が実際に現れた時点で、その具体例に合わせて逃がし方を設計する
-    /// (このクラスが除外表について採っているのと同じ立場)。</para>
+    /// 精度を保ったまま一律に禁じられるので、<b>調べずに落とす</b>ほうを採る。</para>
     ///
-    /// <para><b>三項演算子は見張らない(意図的)。</b>
-    /// <c>status is null ? MeasureStatus.Planned : status.Value</c> は違反だが、
-    /// <c>status is null ? all : all.Where(…)</c>(「null なら絞り込まない」＝<b>正しい</b>形)と
-    /// 綴りの上で見分けが付かない。拾えば正しいコードで赤くなり、赤いのが常態になった検査は
-    /// いずれ緩められる ——このリポジトリが <c>ToUpper</c> の走査について記録しているのと
-    /// 同じ理由で、精度側に寄せて<b>この 1 形はレビューで守る</b>。</para>
-    ///
-    /// <para><b>名前だけで照合してよい理由。</b> C# はメソッドの引数名を、同じメソッドの中の
-    /// ローカル変数やラムダの引数で<b>覆い隠せない</b>(覆い隠すとコンパイルエラーになる)。
-    /// したがって本体に現れる同名の識別子は、必ずその引数を指す。</para>
-    ///
-    /// <para><b>見つけられなかった引数は違反と分けて返す。</b> 呼び出し側はそれを
-    /// fail-closed で落とす ——黙って飛ばすと、走査が壊れたときに「違反 0 件＝緑」になり、
-    /// この検査が何も見ないまま通る(違反が 0 件で緑になるのは正常な状態でもあるので、
-    /// 空振りと見分けが付かない)。</para>
+    /// <para><b>見つけられなかった引数・読めなかったソースは違反と分けて返す。</b>
+    /// 呼び出し側はそれぞれを fail-closed で落とす ——黙って飛ばすと、走査が壊れたときに
+    /// 「違反 0 件＝緑」になり、この検査が何も見ないまま通る(違反が 0 件で緑になるのは
+    /// 正常な状態でもあるので、空振りと見分けが付かない)。</para>
     ///
     /// <para><b>純粋関数に出す理由。</b> 呼び出し側はアプリの実際のソースを読むので、
     /// <b>実在するコードに違反が 1 件も無いかぎり、判定を潰しても全件緑のまま</b>になる
@@ -5240,7 +5286,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// </remarks>
     /// <param name="sources">走査するソース(パスと中身の対)。</param>
     /// <param name="sites">ソース上で見に行く引数の一覧。</param>
-    /// <returns>違反と、見つけられなかった引数。</returns>
+    /// <returns>違反・見つけられなかった引数・読めなかったソース。</returns>
     private static NullCollapseScan NullCollapsingUses(
         IEnumerable<(string Path, string Source)> sources,
         IReadOnlyCollection<EnumArgumentSite> sites)
@@ -5249,18 +5295,46 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var violations = new List<string>();
         // どのソースにも宣言が見つからなかった引数を数えるため、見つけた組を控える
         var located = new HashSet<EnumArgumentSite>();
+        // 構文として読めなかったソースの説明を貯める入れ物
+        var unparsable = new List<string>();
 
-        // ソースを 1 つずつ本物の C# パーサで読む
-        foreach (var (path, source) in sources)
+        // すべてのソースを本物の C# パーサで読む(シンボル解決のため先に全部そろえる)
+        var trees = sources
+            // パスを添えて解析する(失敗文言にファイル名を出すため)
+            .Select(source => CSharpSyntaxTree.ParseText(source.Source, path: source.Path))
+            .ToList();
+
+        // 構文エラーを含む木は本体が走査に載らないので、ここで控えて呼び出し側に落とさせる
+        foreach (var tree in trees)
         {
-            // 構文木へ解析する(文法として壊れていてもエラー付きの木が返るので例外にはならない)
-            var root = CSharpSyntaxTree.ParseText(source, path: path).GetRoot();
+            // 構文エラー(意味解析ではなく字句・構文の誤り)だけを見る
+            var syntaxErrors = tree.GetDiagnostics()
+                // 警告や情報は対象外。走査を空振りさせるのはエラーだけ
+                .Where(diagnostic => diagnostic.Severity == DiagnosticSeverity.Error)
+                .ToList();
+            // 1 つでもあれば、そのファイルは読めなかったものとして控える
+            if (syntaxErrors.Count > 0)
+            {
+                unparsable.Add($"{Path.GetFileName(tree.FilePath)}: {syntaxErrors[0].GetMessage()}");
+            }
+        }
+
+        // 識別子を引数シンボルへ解決するための器(参照アセンブリは要らない。docstring 参照)
+        var compilation = CSharpCompilation.Create("NullCollapseProbe", trees);
+
+        // 木を 1 つずつ、その木に対応する意味モデルと一緒に見る
+        foreach (var tree in trees)
+        {
+            // この木の識別子を解決するための意味モデル
+            var model = compilation.GetSemanticModel(tree);
 
             // その木に含まれるメソッド宣言をすべて見る
-            foreach (var method in root.DescendantNodes().OfType<MethodDeclarationSyntax>())
+            foreach (var method in tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>())
             {
-                // このメソッドを囲む型の完全修飾名をソースから組み立てる
-                var typeName = DeclaringTypeFullName(method);
+                // 宣言からメソッドのシンボルを取り出す(取れないものは照合できないので飛ばす)
+                if (model.GetDeclaredSymbol(method) is not IMethodSymbol methodSymbol) continue;
+                // 囲む型の名前を Type.FullName と同じ綴りで組み立てる
+                var typeName = ReflectionStyleTypeName(methodSymbol.ContainingType);
 
                 // 見に行く引数のうち、このメソッドが宣言しているものだけを扱う
                 foreach (var site in sites)
@@ -5268,18 +5342,21 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     // 囲む型が違えば、名前が同じでも別のメソッド
                     if (!string.Equals(site.TypeFullName, typeName, StringComparison.Ordinal)) continue;
                     // 型が同じでもアクション名が違えば対象外
-                    if (!string.Equals(site.MethodName, method.Identifier.Text, StringComparison.Ordinal)) continue;
+                    if (!string.Equals(site.MethodName, methodSymbol.Name, StringComparison.Ordinal)) continue;
 
-                    // 同名のオーバーロードがありうるので、その引数を宣言しているものに限る
-                    var declaresParameter = method.ParameterList.Parameters
-                        .Any(p => string.Equals(p.Identifier.Text, site.ParameterName, StringComparison.Ordinal));
-                    if (!declaresParameter) continue;
+                    // 名前と型の<b>両方</b>が一致する引数だけを対象にする
+                    // (名前だけで照合すると、型違いのオーバーロードを巻き込む。docstring 参照)
+                    var parameter = methodSymbol.Parameters.FirstOrDefault(p =>
+                        string.Equals(p.Name, site.ParameterName, StringComparison.Ordinal)
+                        && string.Equals(UnderlyingTypeName(p.Type), site.ParameterTypeName, StringComparison.Ordinal));
+                    // 一致する引数が無ければ、このメソッドはその 1 点ではない
+                    if (parameter is null) continue;
 
                     // 少なくとも 1 つの宣言を見つけた(fail-closed の空振り検出に使う)
                     located.Add(site);
 
                     // 本体(ブロック本体・式本体のどちらか)に現れる畳み戻しの綴りを集める
-                    violations.AddRange(FoldingUsesInMethodBody(method, site, path));
+                    violations.AddRange(FoldingUsesInMethodBody(method, parameter, model, site, tree.FilePath));
                 }
             }
         }
@@ -5294,25 +5371,31 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             .OrderBy(text => text, StringComparer.Ordinal)
             .ToList();
 
-        // 違反も並びを固定して返す(失敗文言が実行ごとに変わらないようにする)
+        // 違反と読めなかったソースも並びを固定して返す(失敗文言が実行ごとに変わらないようにする)
         return new NullCollapseScan(
             violations.OrderBy(text => text, StringComparer.Ordinal).ToList(),
-            unlocated);
+            unlocated,
+            unparsable.OrderBy(text => text, StringComparer.Ordinal).ToList());
     }
 
     /// <summary>
     /// メソッド本体に現れる「引数の null を既定値へ畳み戻す」綴りを、説明の形で返す。
     /// </summary>
     /// <remarks>
-    /// 見る範囲は<b>本体だけ</b>(引数リストの既定値は対象外)。式本体
-    /// (<c>=&gt; …</c>)のメソッドも同じように扱う。
+    /// 見る範囲は<b>本体だけ</b>(引数リストの既定値は対象外)。式本体(<c>=&gt; …</c>)も同じ。
+    /// 識別子は綴りではなくシンボルで引数と突き合わせ、括弧とキャストは<b>たどって透かす</b>
+    /// (理由は <see cref="NullCollapsingUses"/> の docstring が正本)。
     /// </remarks>
     /// <param name="method">走査するメソッドの宣言。</param>
-    /// <param name="site">見に行く引数。</param>
+    /// <param name="parameter">見に行く引数のシンボル。</param>
+    /// <param name="model">識別子を解決するための意味モデル。</param>
+    /// <param name="site">失敗文言に出す 1 点の名前。</param>
     /// <param name="path">失敗文言に出すソースのパス。</param>
     /// <returns>違反の説明(違反が無ければ空)。</returns>
     private static IEnumerable<string> FoldingUsesInMethodBody(
         MethodDeclarationSyntax method,
+        IParameterSymbol parameter,
+        SemanticModel model,
         EnumArgumentSite site,
         string path)
     {
@@ -5321,30 +5404,42 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 本体を持たない宣言(abstract / partial の宣言側)は違反のしようがない
         if (body is null) yield break;
 
-        // その識別子がこの引数を指しているかを判定する小さな述語
-        bool IsTheParameter(SyntaxNode? node) =>
-            node is IdentifierNameSyntax identifier
-            && string.Equals(identifier.Identifier.Text, site.ParameterName, StringComparison.Ordinal);
-
-        // 本体に含まれるすべてのノードを見て、3 つの綴りに当たるものを拾う
-        foreach (var node in body.DescendantNodes())
+        // 本体に現れる識別子を 1 つずつ見る
+        foreach (var identifier in body.DescendantNodes().OfType<IdentifierNameSyntax>())
         {
+            // その識別子がこの引数を指しているかをシンボルの同一性で確かめる
+            // (綴りで比べると、覆い隠したローカル関数の引数まで巻き込む)
+            if (!SymbolEqualityComparer.Default.Equals(model.GetSymbolInfo(identifier).Symbol, parameter)) continue;
+
+            // 括弧とキャストは意味を変えないので、たどって外側の使われ方を見る
+            SyntaxNode expression = identifier;
+            while (expression.Parent is ParenthesizedExpressionSyntax or CastExpressionSyntax)
+            {
+                expression = expression.Parent;
+            }
+
             // 「どの綴りに当たったか」を失敗文言へ出すための説明(当たらなければ null)
-            var spelling = node switch
+            var spelling = expression.Parent switch
             {
                 // status ?? … (null 合体演算子。左辺がこの引数なら畳み戻し)
                 BinaryExpressionSyntax binary
-                    when binary.IsKind(SyntaxKind.CoalesceExpression) && IsTheParameter(binary.Left)
+                    when binary.IsKind(SyntaxKind.CoalesceExpression) && binary.Left == expression
                     => "?? (null 合体演算子)",
                 // status = … / status ??= … (引数そのものへの代入)
-                AssignmentExpressionSyntax assignment when IsTheParameter(assignment.Left)
+                AssignmentExpressionSyntax assignment when assignment.Left == expression
                     => $"{assignment.OperatorToken.Text} (引数への代入)",
                 // status.GetValueOrDefault(…) (引数を受け取る形も含む)
-                InvocationExpressionSyntax invocation
-                    when invocation.Expression is MemberAccessExpressionSyntax access
+                MemberAccessExpressionSyntax access
+                    when access.Expression == expression
                         && string.Equals(access.Name.Identifier.Text, "GetValueOrDefault", StringComparison.Ordinal)
-                        && IsTheParameter(access.Expression)
+                        && access.Parent is InvocationExpressionSyntax
                     => "GetValueOrDefault",
+                // Normalize(ref status) / Try(out status) (書き換えを呼び先へ委ねる形。
+                // in は読み取り専用なので書き換えられず、対象にしない)
+                ArgumentSyntax argument
+                    when argument.RefKindKeyword.IsKind(SyntaxKind.RefKeyword)
+                        || argument.RefKindKeyword.IsKind(SyntaxKind.OutKeyword)
+                    => $"{argument.RefKindKeyword.Text} 引数 (引数の書き換えを呼び先へ委ねている)",
                 // それ以外は畳み戻しではない
                 _ => null,
             };
@@ -5353,57 +5448,77 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             if (spelling is null) continue;
 
             // 違反した行を開けるよう、ファイルと行番号まで名指しする(行番号は 1 始まり)
-            var line = node.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
+            var line = expression.GetLocation().GetLineSpan().StartLinePosition.Line + 1;
             yield return
                 $"{site.TypeFullName}.{site.MethodName}.{site.ParameterName}: {spelling} "
                 + $"({Path.GetFileName(path)}:{line})";
         }
     }
 
-    /// <summary>メソッドを囲む型の完全修飾名を、ソースの構文から組み立てる。</summary>
+    /// <summary>型の名前を <c>Type.FullName</c> と同じ綴りで組み立てる(ソース側・リフレクション側で共用)。</summary>
     /// <remarks>
-    /// <para><b>綴りはリフレクションが名乗る形にそろえる。</b> 入れ子の型は <c>+</c> 区切り、
-    /// 名前空間は <c>.</c> 区切り ——照合相手(<c>Type.FullName</c>)がその形なので、
-    /// ここだけ別の綴りにすると<b>どの引数も見つからなくなり</b>、
-    /// 呼び出し側の fail-closed が落ちる(黙って素通りはしない)。</para>
+    /// <para><b>総称の実引数の個数(arity)まで書く(レビュー指摘)。</b> <c>Type.FullName</c> は
+    /// 総称型に <c>`1</c> を付けるので、ソース側で付け忘れると<b>その型の引数がすべて
+    /// 「宣言が見つからない」</b>になり、fail-closed の側で赤くなる ——倒れる向きは安全でも、
+    /// 直し方が「走査を直す」ようにしか読めない<b>行き止まり</b>の赤で、このリポジトリが
+    /// 「実行不能な指示を出す検出網はいずれ緩められる」と記録している形。
+    /// 入れ子は <c>+</c>、名前空間は <c>.</c> でつなぐ綴りも <c>Type.FullName</c> に合わせる。</para>
     ///
-    /// <para>名前空間はファイルスコープ(<c>namespace X;</c>)とブロック
-    /// (<c>namespace X { }</c>)の両方を、外側から順に継ぐ。</para>
+    /// <para><b>構築済みの総称型は定義へそろえる。</b> リフレクション側の
+    /// <c>Type.FullName</c> は構築済み(<c>Foo&lt;Bar&gt;</c>)だとアセンブリ修飾名を含む長い綴りに
+    /// なるため、定義(<c>Foo&lt;&gt;</c>)へ直してから名前を取る。</para>
     /// </remarks>
-    /// <param name="method">メソッドの宣言。</param>
-    /// <returns>囲む型の完全修飾名。型に囲まれていなければ空文字。</returns>
-    private static string DeclaringTypeFullName(MethodDeclarationSyntax method)
+    /// <param name="type">リフレクション上の型。</param>
+    /// <returns><c>Type.FullName</c> と同じ綴り(取れなければ型の名前)。</returns>
+    private static string ReflectionStyleTypeName(Type type) =>
+        // 構築済みの総称型は定義へ直してから完全修飾名を取る(取れない型は名前で代用する)
+        (type.IsConstructedGenericType ? type.GetGenericTypeDefinition() : type).FullName ?? type.Name;
+
+    /// <summary>型シンボルの名前を <c>Type.FullName</c> と同じ綴りで組み立てる。</summary>
+    /// <remarks>綴りの規則は <see cref="ReflectionStyleTypeName(Type)"/> と対。</remarks>
+    /// <param name="type">ソースから解決した型シンボル。</param>
+    /// <returns><c>Type.FullName</c> と同じ綴り。</returns>
+    private static string ReflectionStyleTypeName(INamedTypeSymbol type)
     {
         // 内側から外側へ並ぶ型名を、あとで反転させるために貯める
-        var typeNames = new List<string>();
-        // 名前空間の綴り(外側から順に継ぐ)
-        var namespaceName = string.Empty;
-
-        // 宣言の祖先を内側から順にたどる
-        foreach (var ancestor in method.Ancestors())
+        var names = new List<string>();
+        // 入れ子をたどりながら、総称なら実引数の個数を添える
+        for (INamedTypeSymbol? current = type; current is not null; current = current.ContainingType)
         {
-            // 型宣言(class / struct / record)なら名前を控える
-            if (ancestor is TypeDeclarationSyntax type) typeNames.Add(type.Identifier.Text);
-            // 名前空間はファイルスコープもブロックも同じ基底型で表される
-            else if (ancestor is BaseNamespaceDeclarationSyntax ns)
-            {
-                // 外側の名前空間ほどあとに現れるので、見つけた綴りを前へ継ぐ
-                namespaceName = namespaceName.Length == 0
-                    ? ns.Name.ToString()
-                    : $"{ns.Name}.{namespaceName}";
-            }
+            names.Add(current.Arity > 0 ? $"{current.Name}`{current.Arity}" : current.Name);
         }
-
-        // 型に囲まれていない(トップレベル関数など)なら、照合する名前を作れない
-        if (typeNames.Count == 0) return string.Empty;
-
         // 内側から貯めたので反転し、入れ子は Type.FullName と同じ '+' で継ぐ
-        typeNames.Reverse();
-        var nestedName = string.Join('+', typeNames);
+        names.Reverse();
+        var nested = string.Join('+', names);
 
-        // 名前空間があれば '.' で継ぐ(無ければ型名だけ)
-        return namespaceName.Length == 0 ? nestedName : $"{namespaceName}.{nestedName}";
+        // 名前空間があれば '.' で継ぐ(グローバル名前空間なら型名だけ)
+        return type.ContainingNamespace is { IsGlobalNamespace: false } ns
+            ? $"{ns.ToDisplayString()}.{nested}"
+            : nested;
     }
+
+    /// <summary>引数の型の単純名を返す(<c>Nullable&lt;T&gt;</c> は中身を見る)。</summary>
+    /// <remarks>
+    /// <b>単純名で比べるのは、参照アセンブリを要求しないため。</b> 完全修飾名で突き合わせると
+    /// 型が解決できないソースで一致しなくなり、<b>その引数がすべて「見つからない」</b>に倒れる。
+    /// ここで分けたいのは同じ名前のオーバーロードの型違い(<c>MeasureStatus?</c> と
+    /// <c>string</c>)なので、単純名で足りる。
+    /// </remarks>
+    /// <param name="type">リフレクション上の引数の型。</param>
+    /// <returns>単純名。</returns>
+    private static string UnderlyingTypeName(Type type) =>
+        // Nullable<T> なら中身の名前、そうでなければその型自身の名前
+        (Nullable.GetUnderlyingType(type) ?? type).Name;
+
+    /// <summary>引数の型シンボルの単純名を返す(<c>Nullable&lt;T&gt;</c> は中身を見る)。</summary>
+    /// <remarks>綴りの規則は <see cref="UnderlyingTypeName(Type)"/> と対。</remarks>
+    /// <param name="type">ソースから解決した引数の型シンボル。</param>
+    /// <returns>単純名。</returns>
+    private static string UnderlyingTypeName(ITypeSymbol type) =>
+        // Nullable<T> は構築済みの総称型として現れるので、中身の名前を取る
+        type is INamedTypeSymbol { IsGenericType: true, Name: "Nullable" } nullable
+            ? nullable.TypeArguments[0].Name
+            : type.Name;
 
     /// <summary>
     /// 走査が<b>畳み戻しの綴りだけを拾い、見に行った引数を必ず見つける</b>ことを合成入力で固定する。
@@ -5414,16 +5529,15 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <see cref="EnumActionParameters_DoNotFoldNullBackIntoADefinedDefault"/> は
     /// 全件緑のまま通る。判定そのものはここで固定する。</para>
     ///
-    /// <para><b>両方向を見る。</b> 拾うべき 3 つの綴りを拾うことと、
-    /// <b>正しい書き方を拾わない</b>こと(拾うと正しいコードで赤くなり、
-    /// 赤いのが常態になった検査はいずれ緩められる)。あわせて
-    /// 「見つけられなかった引数を fail-closed の側へ返す」配線も固定する
-    /// ——本番のソースでは必ず見つかるので、ここで見ないとその枝は一度も走らない。</para>
+    /// <para><b>3 方向を見る。</b> (1) 拾うべき綴りを拾うこと、(2) <b>正しい書き方を拾わない</b>こと
+    /// (拾うと正しいコードで赤くなり、赤いのが常態になった検査はいずれ緩められる)、
+    /// (3) <b>覆えないと宣言した形が本当に覆えていない</b>こと ——(3) を固定しておくと、
+    /// 覆う範囲が動いたときに差分に現れる(docstring だけが古くなるのを防ぐ)。</para>
     /// </remarks>
     [Fact]
     public void NullCollapsingUses_ReportsOnlyTheFoldingSpellings_AndLocatesEverySite()
     {
-        // 3 つの違反の綴りと、正しい書き方を 1 つずつ並べた合成ソース
+        // 拾うべき綴り・拾ってはいけない書き方・覆えないと宣言した形を並べた合成ソース
         const string source = """
             namespace Probe.Screens;
 
@@ -5439,45 +5553,130 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                     return status.Value.ToString();
                 }
 
+                public string Parenthesised(Status? status) => ((status)) ?? Status.Planned;
+
+                public string ByRef(Status? status)
+                {
+                    Normalize(ref status);
+                    return status.Value.ToString();
+                }
+
                 public string Reject(Status? status)
                 {
                     if (status is null) return "no value";
                     return status.Value.ToString();
                 }
+
+                public string Shadowed(Status? status)
+                {
+                    static string Label(Status? status) => (status ?? Status.Planned).ToString();
+                    return Resolve(status) + Label(status);
+                }
+
+                public string Reject(string status) => status ?? string.Empty;
+
+                public string Carried(Status? status)
+                {
+                    var carried = status;
+                    return (carried ?? Status.Planned).ToString();
+                }
+
+                private static void Normalize(ref Status? status) => status ??= Status.Planned;
+
+                private static string Resolve(Status? status) => status?.ToString() ?? "";
             }
             """;
 
-        // 4 つのメソッドすべてを見に行く(正しい書き方の 1 つも含める)
-        var sites = new[] { "Coalesce", "Fallback", "Assign", "Reject" }
-            // どれも同じ型・同じ引数名なのでメソッド名だけを差し替える
-            .Select(name => new EnumArgumentSite("Probe.Screens.ProbeController", name, "status"))
+        // 並べたメソッドをすべて見に行く(正しい書き方も、覆えないと宣言した形も含める)
+        var names = new[]
+        {
+            "Coalesce", "Fallback", "Assign", "Parenthesised", "ByRef",
+            "Reject", "Shadowed", "Carried",
+        };
+        // どれも同じ型・同じ引数名・同じ引数の型なのでメソッド名だけを差し替える
+        var sites = names
+            .Select(name => new EnumArgumentSite("Probe.Screens.ProbeController", name, "status", "Status"))
             .ToList();
 
         // 合成ソース 1 本だけを走査させる
         var scan = NullCollapsingUses(new[] { (Path: "Probe.cs", Source: source) }, sites);
 
-        // 見に行った 4 つはすべてソース上に見つかるはず(見つからなければ走査が壊れている)
+        // 合成ソースは構文として読めるはず(読めなければこの検査の前提が崩れている)
+        Assert.Empty(scan.Unparsable);
+
+        // 見に行った組はすべてソース上に見つかるはず(見つからなければ走査が壊れている)
         Assert.Empty(scan.Unlocated);
 
         // 違反として名指しされたメソッドを、並べた順のまま絞り込む
-        var flagged = new[] { "Coalesce", "Fallback", "Assign", "Reject" }
+        var flagged = names
             // そのメソッドの引数を名指しする違反が 1 件でもあるか
             .Where(name => scan.Violations.Any(text => text.StartsWith(
                 $"Probe.Screens.ProbeController.{name}.status:", StringComparison.Ordinal)))
             .ToList();
 
-        // 3 つの畳み戻しだけが拾われ、null を弾いている Reject は拾われないこと
-        Assert.Equal(new[] { "Coalesce", "Fallback", "Assign" }, flagged);
+        // 拾うべき 5 つだけが拾われること。
+        //   Reject …… null を弾いている正しい形(enum 版)。加えて<b>同名で型違いの
+        //     オーバーロード</b>(string 版)が同じソースにあり、その中の
+        //     status ?? string.Empty を巻き込まないことも同時に固定している
+        //   Shadowed … static ローカル関数が同じ名前の引数で外側を覆い隠す正しい形
+        //   Carried …… ローカルへ 1 度写す形(覆えないと docstring が宣言している境界)
+        Assert.Equal(
+            new[] { "Coalesce", "Fallback", "Assign", "Parenthesised", "ByRef" },
+            flagged);
 
         // どの綴りに当たったかが失敗文言に出ること(出ないと直し方が読み取れない)
         Assert.Contains(scan.Violations, text => text.Contains("?? (null 合体演算子)", StringComparison.Ordinal));
         Assert.Contains(scan.Violations, text => text.Contains("GetValueOrDefault", StringComparison.Ordinal));
         Assert.Contains(scan.Violations, text => text.Contains("(引数への代入)", StringComparison.Ordinal));
+        Assert.Contains(scan.Violations, text => text.Contains("ref 引数", StringComparison.Ordinal));
 
         // 見に行った引数がソースに無ければ fail-closed の側へ返ること(空振り検出の配線)
         var missing = NullCollapsingUses(
             new[] { (Path: "Probe.cs", Source: source) },
-            new[] { new EnumArgumentSite("Probe.Screens.ProbeController", "NotThere", "status") });
+            new[] { new EnumArgumentSite("Probe.Screens.ProbeController", "NotThere", "status", "Status") });
         Assert.Single(missing.Unlocated);
+
+        // 構文として読めないソースは、違反ではなく「読めなかった」側へ返ること
+        var broken = NullCollapsingUses(
+            new[] { (Path: "Broken.cs", Source: "public class Broken { public void M( {") },
+            sites);
+        Assert.NotEmpty(broken.Unparsable);
+    }
+
+    /// <summary>
+    /// 総称型の名前が <c>Type.FullName</c> と同じ綴り(<c>`N</c> 付き)で組み立てられること。
+    /// </summary>
+    /// <remarks>
+    /// <b>本番のコントローラに総称型が 1 つも無いあいだは、arity を落としても全件緑になる。</b>
+    /// 落とすと<b>その型の引数がすべて「宣言が見つからない」</b>へ倒れ、直し方が読み取れない
+    /// 赤になるので、実在しない形のまま合成入力で固定しておく
+    /// (このクラスが判定を純粋関数へ出しているのとまったく同じ理由)。
+    /// </remarks>
+    [Fact]
+    public void ReflectionStyleTypeName_MatchesTypeFullName_IncludingGenericArity()
+    {
+        // 総称の入れ子を含む合成ソース(実在しない形なので、ここでしか通せない)
+        const string source = """
+            namespace Probe.Generic;
+
+            public class Outer<T>
+            {
+                public class Inner
+                {
+                    public string M(int value) => value.ToString();
+                }
+            }
+            """;
+
+        // ソースを解析して意味モデルを組み立てる
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var model = CSharpCompilation.Create("ArityProbe", new[] { tree }).GetSemanticModel(tree);
+
+        // 入れ子の内側のメソッド宣言からシンボルを取り出す
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var containingType = model.GetDeclaredSymbol(method)!.ContainingType;
+
+        // リフレクション側が名乗る綴り(総称は `1、入れ子は +)と一致すること
+        Assert.Equal("Probe.Generic.Outer`1+Inner", ReflectionStyleTypeName(containingType));
     }
 }
