@@ -132,11 +132,24 @@ public class HomeControllerTests : IDisposable
     [MemberData(nameof(DailyTrendPeriods))]
     public async Task Index_DailyPeriod_ChartCoversExactlyTheKpiWindow(string period)
     {
+        // <b>この検査だけ固定時計を使う(レビュー指摘)。</b> ここは日付の<b>文字列そのもの</b>を
+        // 突き合わせる唯一の検査で、クラス既定の実時計（SystemClock）のままだと
+        // 「コントローラが内部で読んだ今日」と「アサートで読み直した今日」が別の日になりうる
+        // ——JST の日付が境界をまたいだ瞬間だけ、コードとは無関係な理由で落ちる（CLAUDE.md §3 /
+        // issue #199 が記録している形）。この検査は実時刻でなければ意味を持たないものではない
+        // ので、規約どおり TestFixtures.Clock（実行時刻に依存しない共有の固定時計）を注入する
+        var clock = TestFixtures.Clock;
+        // 同じ時刻源を使うコントローラをこの検査のためだけに組み立てる
+        var controller = new HomeController(
+            _db, new RecurrenceService(clock, NullLogger<RecurrenceService>.Instance), clock);
+        // 既存のテストと同じく特権のある閲覧者として実行する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
         // 窓の中に 1 件だけ置く（件数そのものはここでは見ない）
-        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today));
+        _db.Incidents.Add(MakeIncident(occurredAt: clock.Today));
         await _db.SaveChangesAsync();
 
-        var result = await _controller.Index(period) as ViewResult;
+        var result = await controller.Index(period) as ViewResult;
         var vm = result?.Model as DashboardViewModel;
 
         // 並べる本数が、その期間の日数と一致する
@@ -144,13 +157,13 @@ public class HomeControllerTests : IDisposable
         // 先頭のバケットの日付が、KPI の集計窓の開始日と一致する
         // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）
         Assert.Equal(
-            DashboardViewModel.PeriodStart(period, _clock.Today).ToString("yyyy-MM-dd"),
+            DashboardViewModel.PeriodStart(period, clock.Today).ToString("yyyy-MM-dd"),
             vm.MonthlyCounts[0].DateFrom);
         // 末尾のバケットは今日（グラフは必ず今日まで）。
         // 見ているのは<b>バケットの並び</b>であって件数の合計ではない —— KPI の件数には
         // 上限が無いので、未来日で登録されたインシデントがあると合計は一致しない
         // （その境界は HomeController.Index のコメントが正本）
-        Assert.Equal(_clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
+        Assert.Equal(clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
     }
 
     // 日別で描く期間の一覧（選択肢から導くので、2 つ目が足されたら自動で対象に入る）

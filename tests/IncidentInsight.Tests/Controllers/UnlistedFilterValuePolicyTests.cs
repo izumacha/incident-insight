@@ -2609,23 +2609,37 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 3 画面目が旗を持ったときも同じく入り口を用意すること。enum の絞り込みについては
     // EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter が
     // 「用意し忘れ」自体をアプリ全体の署名から拾って落とす
-    public static TheoryData<string> IgnoredFilterFlags()
+    // 旗ごとの Theory のケースを組み立てる。<b>4 画面が同じここを読む</b>。
+    //
+    // <b>なぜ共通化したか(レビュー指摘)。</b> 以前は「旗を拾う → 0 件なら落とす →
+    // TheoryData へ詰める」という同じ本体が画面ごとに 4 つあり、違うのは拾い方と
+    // 文言の 1 文だけだった(§6「2〜3 箇所目で共通化」を 1 つ超えていた)。
+    // このファイルは同じ形の代償を既に記録している —— IgnoredFilterFlagNamesIn を
+    // 切り出した理由が「3 つ目の解決処理が旗を別の名前で返すようになったとき、
+    // 片方だけ直すともう片方は既存の旗を拾い続ける」ことだった。
+    // 0 件のときの方針(fail-closed)を 1 画面で変えると、残りが黙って古い方針のまま残る。
+    //
+    // <b>0 件で落とすのが要点。</b> 黙って 0 件の Theory にすると、旗ごとに掛かるはずの
+    // Razor の検査が「見るものゼロ」で全件緑になり、検出網がまるごと消える
+    private static TheoryData<string> IgnoredFilterFlagCases(IReadOnlyList<string> flags, string missing)
     {
-        // 命名規約に当てはまる bool のプロパティだけを拾う
-        var flags = DeclaredIgnoredFilterFlags();
-
-        // 1 つも見つからないのは「旗が無くなった」より「命名規約が変わった」可能性が高い。
-        // 黙って 0 件の Theory にすると検出網が消えるので、ここで落として人に決めさせる
+        // 1 つも拾えないのは「旗が無くなった」より「導出の前提が変わった」可能性が高いので、
+        // ここで落として人に決めさせる
         Assert.True(flags.Count > 0,
-            $"{nameof(IncidentListViewModel)} に *{IgnoredFlagSuffix} という名前の bool プロパティが 1 つも無い。"
-            + "命名規約を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+            $"{missing}。導出の前提(命名規約・書き方)を変えたなら、この導出も同じ変更セットで"
+            + "直すこと(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
         var data = new TheoryData<string>();
         foreach (var flag in flags) data.Add(flag);
         return data;
     }
+
+    public static TheoryData<string> IgnoredFilterFlags() =>
+        // 命名規約に当てはまる bool のプロパティだけを拾い、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            DeclaredIgnoredFilterFlags(),
+            $"{nameof(IncidentListViewModel)} に *{IgnoredFlagSuffix} という名前の bool プロパティが 1 つも無い");
 
     // ViewModel に宣言されている旗の名前(命名規約で拾い、並びを固定して返す)
     private static List<string> DeclaredIgnoredFilterFlags() =>
@@ -3992,22 +4006,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
     // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
-    public static TheoryData<string> MeasuresIgnoredFilterFlags()
-    {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var flags = MeasuresIgnoredFilterFlagNames();
-
-        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
-        Assert.True(flags.Count > 0,
-            $"{nameof(PreventiveMeasuresController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var flag in flags) data.Add(flag);
-        return data;
-    }
+    public static TheoryData<string> MeasuresIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            MeasuresIgnoredFilterFlagNames(),
+            $"{nameof(PreventiveMeasuresController)} に「… = ….Ignored」の代入が 1 つも見つからない");
 
     // 上の導出の本体。Theory のケース作りと下の見出し照合が同じここを読む(§6 DRY)。
     // 走査そのものは /Incidents 側と共有する(下の IgnoredFilterFlagNamesIn が正本)
@@ -4609,22 +4612,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
     // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
-    public static TheoryData<string> AuditLogsIgnoredFilterFlags()
-    {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var flags = AuditLogsIgnoredFilterFlagNames();
-
-        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
-        Assert.True(flags.Count > 0,
-            $"{nameof(AuditLogsController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var flag in flags) data.Add(flag);
-        return data;
-    }
+    public static TheoryData<string> AuditLogsIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            AuditLogsIgnoredFilterFlagNames(),
+            $"{nameof(AuditLogsController)} に「… = ….Ignored」の代入が 1 つも見つからない");
 
     // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
     private static List<string> AuditLogsIgnoredFilterFlagNames() =>
@@ -4665,22 +4657,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // ダッシュボードが立てる旗を、コントローラのソースから導く。
     // 導出の理由・fail-closed にする理由は AuditLogsIgnoredFilterFlags とまったく同じ
     // (走査は IgnoredFilterFlagNamesIn を画面名だけ変えて使い回す。§6 DRY)
-    public static TheoryData<string> DashboardIgnoredFilterFlags()
-    {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var flags = DashboardIgnoredFilterFlagNames();
-
-        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
-        Assert.True(flags.Count > 0,
-            $"{nameof(HomeController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var flag in flags) data.Add(flag);
-        return data;
-    }
+    public static TheoryData<string> DashboardIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            DashboardIgnoredFilterFlagNames(),
+            $"{nameof(HomeController)} に「… = ….Ignored」の代入が 1 つも見つからない");
 
     // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
     private static List<string> DashboardIgnoredFilterFlagNames() =>
@@ -4851,7 +4832,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 // ルート値としてそのまま渡す形だけを通す。<b>素の `period =` を通さない</b>のが要点 ——
                 // 通していた頃は `@{ var period = Model.Period; }` と書いてから
                 // その<b>ローカル</b>で分岐する形が全件緑で通り、検査が 1 ホップで無力化された
-                return !Regex.IsMatch(before, $@"{nameof(DashboardViewModel)}\.\w+\(\s*$")
+                return !IsWrittenDirectlyFromADerivation(source, m.Index)
                     && !Regex.IsMatch(
                         before,
                         @"(?:\?period=|asp-route-period\s*=\s*""|new\s*\{[^}]*?\bperiod\s*=)\s*@?$",
@@ -4937,14 +4918,51 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // そこでキーの直後が<b>ルート値の組み立て</b>である形
     // (`["period"] =` の添字代入 / `{ "period", … }` の辞書初期化子 /
     //  `Add("period", …)` のようにキーを第 1 引数へ渡す呼び出し)だけを拾う。
-    // 素のリテラルだけではルート値を作りようがないので、覆う範囲は狭まっていない
+    // 素のリテラルだけではルート値を作りようがないので、覆う範囲は狭まっていない。
+    //
+    // <b>タグヘルパーの綴りにも `=` を要求する(レビュー指摘)。</b> 以前は
+    // `asp-route-period` を前方一致で拾っていたので、期間とは別のルート値
+    // (`asp-route-periodType="comparison"` 等)まで「期間のルート値を手書きしている」と
+    // 名指しした ——`\b` では閉じない(`d` と `T` の間に境界は無い)。案内される直し方は
+    // どちらも当てはまらないので、上と同じ<b>直しようの無い赤</b>になる
     private static IEnumerable<Match> PeriodRouteKeyUses(string source) =>
         Regex.Matches(
                 source,
-                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*="
+                @"(?:\?period=|asp-route-period\s*=|new\s*\{[^}]*?\bperiod\s*="
                 + @"|\[\s*""period""\s*\]\s*=|[\{\(]\s*""period""\s*,)",
                 RegexOptions.IgnoreCase)
             .Cast<Match>();
+
+    // その `Model.Period` が「導出の引数として渡され、結果がそのまま書き出されている」形か。
+    //
+    // <b>手前の綴りだけを見てはいけない(レビュー指摘・実測)。</b> 以前は直前が
+    // `DashboardViewModel.<何か>(` であることだけを見ていたので、<b>導出の結果で分岐する</b>形
+    // ——`@(DashboardViewModel.UsesDailyTrendBuckets(Model.Period) ? "週間" : "年間")"—— が
+    // そのまま通った。これは既定の分岐を持つ手書きの対応付けそのもので、実際に当てると
+    // 月・四半期を選んでいるのに「年間インシデント数」と出るのに<b>全件緑のまま</b>だった。
+    // (d) の存在理由そのものが 1 ホップで無力化されていたことになる。
+    //
+    // <b>綴りを禁じるのではなく、書ける形を決め打つ。</b> Razor の暗黙式
+    // (`@DashboardViewModel.X(Model.Period)`)は `)` で式が終わるので、そもそも三項も
+    // `switch` 式も書けない ——安全なのは文法の性質であって、こちらが列挙した綴りではない。
+    // 分岐を書けるのは明示式 `@( … )` と `@{ … }` のほうなので、明示式は
+    // <b>中身がちょうど導出の呼び出し 1 つ</b>であることまで要求する。
+    // こうすると「知らない演算子」を足されても、正しい形が消えた時点で落ちる
+    private static bool IsWrittenDirectlyFromADerivation(string source, int index)
+    {
+        // その出現を囲む Razor の式の先頭(@)を探す(無ければ式ですらない)
+        var at = source.LastIndexOf('@', index);
+        if (at < 0) return false;
+        // 先頭から先の綴りだけを見る
+        var tail = source[at..];
+        // 通す呼び出しの形(導出の引数がちょうど Model.Period 1 つ)
+        var call = $@"{nameof(DashboardViewModel)}\.\w+\(\s*Model\.Period\s*\)";
+        // 明示式なら、丸かっこの中身がちょうどその呼び出しだけであること
+        if (at + 1 < source.Length && source[at + 1] == '(')
+            return Regex.IsMatch(tail, $@"^@\(\s*{call}\s*\)");
+        // 暗黙式なら、その呼び出しで式が終わる(Razor の文法上、分岐を書きようがない)
+        return Regex.IsMatch(tail, $@"^@{call}");
+    }
 
     // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
     private static string LineAt(string source, int index)
@@ -4974,9 +4992,19 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 月の長さやうるう年で伸び縮みする)ので、ある 1 日でたまたま違っていても別の日に
         // 重なりうる ——たとえば「31 日ぶんの日別期間」と「1 か月」は、前月が 31 日なら
         // 1 日ずれるが、前月が 30 日ならぴたり重なる。1 年ぶんの各日で確かめる
-        var referenceDays = Enumerable.Range(0, 366)
+        // <b>うるう日を必ず含める(レビュー指摘・実測)。</b> 2026 年は平年なので、
+        // 1 年ぶんだけ掃くと 2 月 29 日が 1 日も現れず、コメントが理由として挙げている
+        // <b>うるう年の重なり</b>を一度も試していなかった ——たとえば日数 30 の日別期間は
+        // `today.AddDays(-29)` なので、前月が 29 日のときだけ「1 か月」と窓がぴたり重なる
+        // (2028-03-01 等)。平年の 3 月 1 日では 1 日ずれるので、平年だけを掃くと見えない。
+        // うるう日をまたぐよう 4 年ぶんを掃く
+        var referenceDays = Enumerable.Range(0, 366 * 3 + 365)
             .Select(offset => new DateTime(2026, 1, 1).AddDays(offset))
             .ToList();
+
+        // うるう日を実際に含んでいること(掃引の起点や長さを変えたときに黙って外れないよう、
+        // 掃引そのものとは別の手がかりで照合する)
+        Assert.Contains(referenceDays, day => day is { Month: 2, Day: 29 });
 
         // すべての基準日で、同じ開始日になる期間の組があれば落とす
         var collidingStarts = referenceDays
