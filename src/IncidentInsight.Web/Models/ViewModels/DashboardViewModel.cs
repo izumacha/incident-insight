@@ -33,13 +33,20 @@ public class DashboardViewModel
     // 並びはそのまま画面の並び(週 → 月 → 四半期 → 1年)。
     // ラベルもここに持つのは §6「UI 文言は単一の参照元に集約する」に従うため
     // (注意書きが案内する既定の期間名も DefaultPeriodLabel 経由でここを読む)
-    public static readonly (string Id, string Label)[] PeriodChoices =
-    {
-        (PeriodWeek, "週"),
-        (PeriodMonth, "月"),
-        (PeriodQuarter, "四半期"),
-        (PeriodYear, "1年"),
-    };
+    //
+    // <b>読み取り専用で公開する。</b> `static readonly` が守るのは参照だけで中身は書き換えられる
+    // (`PeriodChoices[3] = (PeriodYear, "")` が通る)。許可リストがその形だと、
+    // 画面に出ない値を受け付ける状態や空ラベルのボタンをアセンブリ内のどこからでも作れて
+    // しまい、しかもどの検査も同じ書き換え後の配列を読むので気付けない
+    // (下の RecurrenceAlerts が同じ理由で ReadOnlyCollection に包まれている)
+    public static readonly IReadOnlyList<(string Id, string Label)> PeriodChoices =
+        new (string Id, string Label)[]
+        {
+            (PeriodWeek, "週"),
+            (PeriodMonth, "月"),
+            (PeriodQuarter, "四半期"),
+            (PeriodYear, "1年"),
+        }.AsReadOnly();
 
     // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
     // 選択肢から導くので、画面に出していない値を受け付ける状態は作れない。
@@ -49,8 +56,8 @@ public class DashboardViewModel
     // 型の初期化が例外になる ——ダッシュボードを開いた全員が 500 になる形で、
     // しかもコンパイルは通る。並べ替えは DashboardPeriodChoices_AreUsableAsTheSingleSource が
     // 落とす(あの検査はこの型に触るので、初期化に失敗すればそこで赤くなる)
-    public static readonly string[] Periods =
-        PeriodChoices.Select(choice => choice.Id).ToArray();
+    public static readonly IReadOnlyList<string> Periods =
+        PeriodChoices.Select(choice => choice.Id).ToArray().AsReadOnly();
 
     // 既定の集計期間の表示名。採用しなかった期間の注意書きが「既定の『◯◯』で集計しています」と
     // 案内するのに使う ——文言を注意書きへ直書きすると、ボタンのラベルを変えたときに
@@ -82,8 +89,33 @@ public class DashboardViewModel
     // 方式が一覧画面と違っても旗は同じように立てる —— 方式と伝え方は別の軸(issue #220)
     public bool UnlistedFilterIgnored { get; set; }
 
+    // KPI の集計窓の開始日(この日以降に発生したインシデントを数える)。
+    //
+    // <b>ここに置くのは、期間を足す人が窓も必ず決めることになるから。</b> 以前これは
+    // HomeController.Index のローカルの switch にあり、既定の分岐が 1 年窓だった。
+    // 選択肢を増やしただけで<b>「10年」のボタンが選択中のまま 1 年分の KPI を見せる</b>
+    // 状態が作れてしまい(実測で全件緑)、画面には食い違いを示すものが何も出ない。
+    // 選択肢のすぐ隣に置き、既定の分岐へ落ちた新しい期間が year と同じ窓になることを
+    // DashboardPeriodWindows_AreDistinctForEveryChoice が落とす。
+    //
+    // week だけ暦日で数えるのは、下のトレンドチャートが直近 7 暦日(today-6〜today)を
+    // 並べるため ——KPI の合計とグラフの合計が食い違わないよう、窓を同じにしてある
+    public static DateTime PeriodStart(string period, DateTime today) => period switch
+    {
+        PeriodWeek    => today.AddDays(-(WeekDays - 1)),  // 直近 7 暦日(today-6 〜 today)
+        PeriodMonth   => today.AddMonths(-1),             // 直近 1 か月
+        PeriodQuarter => today.AddMonths(-3),             // 直近 3 か月
+        _             => today.AddYears(-1)               // 年表示(既定): 直近 1 年
+    };
+
+    // トレンドチャートを「日別」で描くかどうか(false なら月別)。
+    // HomeController の集計分岐がこれを読む ——判定を向こうへ直書きすると、
+    // 期間を足した人が月別と日別のどちらになるかを選択肢の側から読めなくなる
+    public static bool UsesDailyTrendBuckets(string period) => period == PeriodWeek;
+
     // 月別トレンドチャートで並べる月数(month=4, quarter=6, それ以外=12)。
-    // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う
+    // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
+    // 日別で描く期間(week)はここを通らない
     public static int MonthsFor(string period) => period switch
     {
         PeriodMonth   => 4,  // 月表示: 直近 4 ヶ月
@@ -209,7 +241,7 @@ public class DashboardViewModel
     // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(WeekDays / MonthsFor)と
     // 見出しの数字が常に一致することを保証する(見出しを View に直書きすると、
     // 週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
-    public string TrendChartTitle => Period == PeriodWeek
+    public string TrendChartTitle => UsesDailyTrendBuckets(Period)
         ? $"日別インシデント発生推移（直近{WeekDays}日間）"
         : $"月別インシデント発生推移（直近{MonthsFor(Period)}ヶ月）";
 

@@ -30,12 +30,13 @@ namespace IncidentInsight.Web.Controllers;
 [Authorize]
 public class HomeController : Controller
 {
-    // 集計期間を識別する文字列定数。正本は DashboardViewModel 側
-    // (チャート見出し等の派生値と同じ場所)に一元化し、ここでは別名で参照する
-    private const string PeriodWeek    = DashboardViewModel.PeriodWeek;    // 直近 7 日間
-    private const string PeriodMonth   = DashboardViewModel.PeriodMonth;   // 直近 1 か月
-    private const string PeriodQuarter = DashboardViewModel.PeriodQuarter; // 直近 3 か月
-    private const string PeriodYear    = DashboardViewModel.PeriodYear;    // 直近 1 年（既定値）
+    // 既定の集計期間。正本は DashboardViewModel 側(選択肢・集計窓・チャート見出しと同じ場所)に
+    // 一元化し、ここでは別名で参照する。
+    // 週・月・四半期の別名を持っていないのは、集計窓の対応付け
+    // (DashboardViewModel.PeriodStart / UsesDailyTrendBuckets)をあちらへ移したことで
+    // このファイルが個々の期間を名指しする必要が無くなったため(§6 デッドコードを残さない)。
+    // ここに残るのは「採用しなかったときの落とし先」だけ
+    private const string PeriodYear = DashboardViewModel.PeriodYear; // 直近 1 年（既定値）
 
     // ダッシュボードの「期限超過の対策一覧」アラートパネルに列挙する最大件数。
     // このパネルは全件を見せる画面ではなく代表例を数件示すだけの用途で、Views/Home/Index.cshtml
@@ -183,21 +184,19 @@ public class HomeController : Controller
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
 
         // Period window for KPIs and trend chart
-        // 期間指定(week/month/quarter/year)から集計開始日を算出。
-        // week は KPI とトレンドチャート(下の weekStart = today.AddDays(-6))を
-        // 同じ「直近7暦日(today-6〜today)」窓に揃える。month/quarter/year は
-        // チャート側の窓を意図的にKPI期間より広く取る設計(下のコメント参照)だが、
-        // week だけは "直近7日間" というコメント通りの同一窓であるべきで、
-        // 以前は today.AddDays(-7) で実質8暦日分を数えており、境界日(today-7)の
-        // インシデントが KPI 合計には含まれるのに折れ線グラフには表示されない
-        // (グラフはtoday-6以降しか集計しない)という不整合があった。
-        var periodStart = period switch
-        {
-            PeriodWeek    => today.AddDays(-6),
-            PeriodMonth   => today.AddMonths(-1),
-            PeriodQuarter => today.AddMonths(-3),
-            _             => today.AddYears(-1)    // PeriodYear が既定
-        };
+        // 期間指定(week/month/quarter/year)から集計開始日を算出する。
+        // マッピングは期間の選択肢のすぐ隣(DashboardViewModel.PeriodStart)に置いてある
+        // ——ここにローカルの switch として持っていた頃は、選択肢を 1 つ増やすだけで
+        // 既定の分岐へ落ち、「10年」のボタンが選択中のまま 1 年分の KPI を見せる状態が
+        // 全件緑のまま作れた。窓を決めずに期間を足せない形にするため、同じ場所へ寄せた。
+        //
+        // week は KPI とトレンドチャート(下の weekStart)を同じ「直近7暦日
+        // (today-6〜today)」窓に揃える。month/quarter/year はチャート側の窓を意図的に
+        // KPI 期間より広く取る設計(下のコメント参照)だが、week だけは "直近7日間" という
+        // コメント通りの同一窓であるべきで、以前は today.AddDays(-7) で実質8暦日分を
+        // 数えており、境界日(today-7)のインシデントが KPI 合計には含まれるのに
+        // 折れ線グラフには表示されない(グラフはtoday-6以降しか集計しない)という不整合があった。
+        var periodStart = DashboardViewModel.PeriodStart(period, today);
 
         // Staff は自部署のデータのみ。Admin / RiskManager はフィルタなし。
         // 読み取り専用クエリをユーザー部署スコープで絞る
@@ -267,8 +266,8 @@ public class HomeController : Controller
         // controller never materializes full-table incident rows just to count them.
         // トレンドチャート用の件数バケットを溜めるリスト
         var monthlyCounts = new List<MonthlyCount>();
-        // 週表示の場合は日別集計
-        if (period == PeriodWeek)
+        // 週表示の場合は日別集計(日別か月別かの判定は選択肢の側が持つ)
+        if (DashboardViewModel.UsesDailyTrendBuckets(period))
         {
             // 過去 7 日間の範囲を作成(日数は見出しと共通の定数から導出し食い違いを防ぐ)
             var weekStart = today.AddDays(-(DashboardViewModel.WeekDays - 1));

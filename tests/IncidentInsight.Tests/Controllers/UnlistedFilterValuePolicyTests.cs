@@ -4730,68 +4730,148 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // ダッシュボードのビューを開く(Razor のコメントは落としてある)
         var source = ReadIndexViewSource("Home");
 
-        // (a) 選択肢を回していること。回していなければ、ボタンは手書きに戻っている
-        var loop = Regex.Match(
-            source,
-            $@"@foreach\s*\(\s*var\s+(?<item>\w+)\s+in\s+{nameof(DashboardViewModel)}"
-            + $@"\.{nameof(DashboardViewModel.PeriodChoices)}\s*\)");
-        Assert.True(loop.Success,
+        // (a) 選択肢を回していること。回していなければ、ボタンは手書きに戻っている。
+        // <b>回しは 1 つとは限らない</b> ——画面幅で出し分ける等で同じ回しが 2 つ並ぶのは
+        // 普通の書き方なので、先頭 1 つだけを見ると<b>正しいマークアップが赤くなる</b>
+        // (2 つ目の回しの中のリンクが「回しの外」と判定される)。すべて拾う
+        var loops = Regex.Matches(
+                source,
+                $@"@foreach\s*\(\s*var\s+(?<item>\w+)\s+in\s+{nameof(DashboardViewModel)}"
+                + $@"\.{nameof(DashboardViewModel.PeriodChoices)}\s*\)")
+            .ToList();
+        Assert.True(loops.Count > 0,
             $"Views/Home/Index.cshtml が {nameof(DashboardViewModel)}."
             + $"{nameof(DashboardViewModel.PeriodChoices)} を回して期間切替を描いていない。"
             + "手書きで並べると許可リストと画面が別々の宣言になり、ずれてもどちらの向きでも"
             + "動いてしまう(押せないのに受け付ける隠し値か、押した瞬間に自分で拒否するボタン)。"
             + "回し方を変えたなら、この照合も同じ変更セットで直すこと。");
 
-        // 回している変数の名前(この変数の Id だけが期間のルート値として許される)
-        var item = loop.Groups["item"].Value;
+        // 各回しの本体の範囲と、その回しが使っている変数名を集める
+        var loopBodies = new List<(int Start, int End, string Item)>();
+        foreach (Match loop in loops)
+        {
+            // 回しの本体を切り出す
+            var body = ExtractBraceBlock(source, loop.Index);
+            Assert.True(body != null,
+                $"Views/Home/Index.cshtml の @foreach (… in "
+                + $"{nameof(DashboardViewModel.PeriodChoices)}) に本体が無い。");
+            // 本体は source の部分文字列なので、位置は「回しの開始以降・本体の長さ分」で決まる
+            var bodyStart = source.IndexOf(body!, loop.Index, StringComparison.Ordinal);
+            loopBodies.Add((bodyStart, bodyStart + body!.Length, loop.Groups["item"].Value));
+        }
 
-        // (b) <b>この回しの外で</b>期間のルート値を作っていないこと。
+        // (b) 期間のルート値を作っている箇所を全部拾う。
         //
-        // 以前はここで「?period= / asp-route-period= の綴り」を拾って回した変数と比べていたが、
-        // <b>実測でその綴り合わせにも穴があった</b> —— `@Url.Action("Index", new { period = "decade" })`
-        // で組み立てたボタンはどちらの綴りにも当たらず、全件緑のまま「画面が自分で出した
-        // リンクを自分で拒否する」状態が作れた(asp-route-period で一度踏んだのと同じ形が、
-        // 綴りを 1 つ足しただけでは閉じないことの実例)。
+        // 以前はここで「?period= / asp-route-period= の綴り」だけを拾っていたが、
+        // <b>実測でその綴り合わせに穴があった</b> —— `@Url.Action("Index",
+        // new { period = "decade" })` で組み立てた手書きのボタンはどちらの綴りにも
+        // 当たらず、全件緑のまま「画面が自分で出したリンクを自分で拒否する」状態が作れた。
         //
-        // そこで<b>綴りを数えるのをやめ、置き場所で決める</b>: 期間のルート値を作る書き方が
-        // 何通りあっても、それが回しの中にあれば選択肢から出ているし、外にあれば手書き。
-        // 拾うのは「period という名前をルート値として書いている」形すべて
-        // (クエリ文字列・タグヘルパー・匿名オブジェクトのプロパティ・文字列キー)。
-        // `Model.Period` のような読み取りは前が `.` なので拾わない(比較の `==` も除く)
+        // 拾うのは「period をルート値の名前として書いている」形だけ:
+        // クエリ文字列・タグヘルパー・<b>匿名オブジェクトの中の</b>プロパティ・文字列キー。
+        // 匿名オブジェクトの中に限るのは、素の `period\s*=` まで拾うと
+        // `@{ var period = Model.Period; }` のような<b>ごく普通のローカル</b>で赤くなり、
+        // 案内される直し方(「回しの中から出せ」)では直らない行き止まりになるため
         var routeKeyUses = Regex.Matches(
                 source,
-                @"(?:\?period=|asp-route-period|(?<![.\w])period\s*=(?!=)|""period"")",
+                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
                 RegexOptions.IgnoreCase)
-            .Select(m => m.Index)
             .ToList();
 
-        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)。
-        // 回しているのにルート値が拾えないのは、リンクの書き方が変わったということ
+        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)
         Assert.True(routeKeyUses.Count > 0,
             "Views/Home/Index.cshtml に期間のルート値の指定が 1 つも無い。"
             + "期間切替の書き方を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、手書きのボタンが全件緑のまま通る)。");
 
-        // 回しの本体の範囲を求める(この中に入っていれば選択肢から出ている)
-        var loopBody = ExtractBraceBlock(source, loop.Index);
-        Assert.True(loopBody != null,
-            $"Views/Home/Index.cshtml の @foreach ({item} in "
-            + $"{nameof(DashboardViewModel.PeriodChoices)}) に本体が無い。");
-        // 本体は source の部分文字列なので、位置は「回しの開始以降・本体の長さ分」で判定できる
-        var bodyStart = source.IndexOf(loopBody!, loop.Index, StringComparison.Ordinal);
-        var bodyEnd = bodyStart + loopBody!.Length;
-
-        // 回しの外で書かれているものを集める
+        // 回しの外で書かれているもの(手書きのボタン)を集める
         var handWritten = routeKeyUses
-            .Where(index => index < bodyStart || index >= bodyEnd)
-            // 失敗文言で場所が分かるよう、その行を添える
-            .Select(index => source[index..Math.Min(index + 60, source.Length)].Split('\n')[0].Trim())
+            .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Select(m => LineAt(source, m.Index))
             .ToList();
         Assert.True(handWritten.Count == 0,
             $"期間のルート値が {nameof(DashboardViewModel.PeriodChoices)} の回しの外でも書かれている: "
             + $"{string.Join(" / ", handWritten)}。手書きのボタンは許可リストとずれても"
-            + $"動いてしまう(押した瞬間に「選べる値ではない」と自分で拒否する)ので、"
-            + $"回しの中から @{item}.Id で出すこと。");
+            + "動いてしまう(押した瞬間に「選べる値ではない」と自分で拒否する)ので、"
+            + "回しの中から回した変数の Id で出すこと。");
+
+        // (c) 回しの中でも、渡しているのが<b>その変数の Id</b> であること。
+        // 置き場所だけを見ていた頃は `?period=@choice.Label` が素通りし、
+        // 全部のボタンが「選べる値ではない」値を指す状態が全件緑のまま作れた
+        // (失敗文言は「@choice.Id で出せ」と言うのに、それを確かめてはいなかった)
+        var wrongValue = new List<string>();
+        foreach (Match use in routeKeyUses)
+        {
+            // この箇所を含む回し(上で外のものは除いてあるので必ず見つかる)
+            var body = loopBodies.First(b => use.Index >= b.Start && use.Index < b.End);
+            // 指定の直後に続く綴りを見る(= や引用符・@ は書き方によって付いたり付かなかったりする)
+            var following = source[(use.Index + use.Length)..];
+            if (!Regex.IsMatch(following, $@"^\s*=?\s*""?\s*@?{Regex.Escape(body.Item)}\.Id\b"))
+                wrongValue.Add(LineAt(source, use.Index));
+        }
+        Assert.True(wrongValue.Count == 0,
+            $"期間のルート値に、回した変数の Id 以外を渡している: {string.Join(" / ", wrongValue)}。"
+            + "ラベルや別の値を渡すと、画面が出したリンクすべてが許可リストに無い値を指し、"
+            + "押すたびに「選べる値ではない」の注意書きが出る。");
+    }
+
+    // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
+    private static string LineAt(string source, int index)
+    {
+        // 直前の改行の次から
+        var start = source.LastIndexOf('\n', Math.Min(index, source.Length - 1)) + 1;
+        // 次の改行まで
+        var end = source.IndexOf('\n', index);
+        if (end < 0) end = source.Length;
+        return source[start..end].Trim();
+    }
+
+    // 期間ごとの集計窓が互いに違うこと。
+    //
+    // <b>なぜ要るのか(実測)。</b> 集計窓の対応付け(PeriodStart / MonthsFor)は
+    // <b>既定の分岐を持つ switch</b> なので、選択肢を 1 つ増やしただけでは赤くならない。
+    // 実際 (PeriodDecade, "10年") を足すと全件緑のまま、画面には「10年」のボタンが出て、
+    // 押すと許可リストは通る(Periods は選択肢から導くので)のに集計窓は既定へ落ちて
+    // <b>1 年分の KPI が「10年」の選択中表示のまま出る</b> ——注意書きも出ない。
+    // 窓が year と同じになった時点でここが落ちるので、期間を足す人は窓も必ず決めることになる。
+    //
+    // 月別の月数は日別で描く期間(week)を除いて見る ——あちらは MonthsFor を通らない
+    [Fact]
+    public void DashboardPeriodWindows_AreDistinctForEveryChoice()
+    {
+        // 判定が実行日に依存しないよう、固定日を基準にする
+        var today = new DateTime(2026, 6, 15);
+        // すべての期間の KPI 窓の開始日
+        var starts = DashboardViewModel.Periods
+            .Select(period => (Period: period, Start: DashboardViewModel.PeriodStart(period, today)))
+            .ToList();
+        // 同じ開始日になる期間の組があれば落とす
+        var collidingStarts = starts
+            .GroupBy(x => x.Start)
+            .Where(g => g.Count() > 1)
+            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .ToList();
+        Assert.True(collidingStarts.Count == 0,
+            $"集計窓の開始日が同じ期間がある: {string.Join(" / ", collidingStarts)}。"
+            + $"{nameof(DashboardViewModel.PeriodStart)} の既定の分岐へ落ちている可能性が高い。"
+            + "期間を足したなら、その期間の集計窓も同じ変更セットで決めること"
+            + "(決めないと、そのボタンが選択中のまま 1 年分の KPI が出る)。");
+
+        // 月別で描く期間のトレンド月数
+        var months = DashboardViewModel.Periods
+            .Where(period => !DashboardViewModel.UsesDailyTrendBuckets(period))
+            .Select(period => (Period: period, Months: DashboardViewModel.MonthsFor(period)))
+            .ToList();
+        // 同じ月数になる期間の組があれば落とす
+        var collidingMonths = months
+            .GroupBy(x => x.Months)
+            .Where(g => g.Count() > 1)
+            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .ToList();
+        Assert.True(collidingMonths.Count == 0,
+            $"トレンドチャートの月数が同じ期間がある: {string.Join(" / ", collidingMonths)}。"
+            + $"{nameof(DashboardViewModel.MonthsFor)} の既定の分岐へ落ちている可能性が高い。"
+            + "期間を足したなら、その期間のチャートの窓も同じ変更セットで決めること。");
     }
 
     // 期間の選択肢が「唯一の源」として成立していること。
@@ -4825,8 +4905,8 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         });
 
         // 識別子・ラベルがそれぞれ重複しないこと
-        Assert.Equal(choices.Length, choices.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count());
-        Assert.Equal(choices.Length, choices.Select(c => c.Label).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(choices.Count, choices.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(choices.Count, choices.Select(c => c.Label).Distinct(StringComparer.Ordinal).Count());
 
         // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
         // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる
@@ -4849,20 +4929,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     {
         // ダッシュボードのビューを開く(Razor のコメントは落としてある)
         var source = ReadIndexViewSource("Home");
-        // 旗で出し分けている注意書きのブロックを切り出す
-        var header = Regex.Match(
-            source, $@"@if\s*\(\s*{Regex.Escape(ViewModelFlagAccessor)}\w*{IgnoredFlagSuffix}\b");
-        Assert.True(header.Success, "Views/Home/Index.cshtml に注意書きの出し分けが無い。");
-        var blockBody = ExtractBraceBlock(source, header.Index);
-        Assert.True(blockBody != null, "Views/Home/Index.cshtml の注意書きに本体が無い。");
+        // 旗で出し分けている注意書きのブロックを<b>すべて</b>拾う。
+        // 先頭 1 つだけを見ていた頃は、2 つ目の旗(例: 将来の ?dateFrom= 用)を
+        // 期間の注意書きより上へ足しただけで、期間側は正しいのにこの検査が落ち、
+        // しかも失敗文言は<b>別のブロック</b>を指して直しようが無かった
+        var blocks = Regex.Matches(
+                source, $@"@if\s*\(\s*{Regex.Escape(ViewModelFlagAccessor)}\w*{IgnoredFlagSuffix}\b")
+            .Select(header => ExtractBraceBlock(source, header.Index))
+            .Where(body => body != null)
+            .ToList();
+        Assert.True(blocks.Count > 0, "Views/Home/Index.cshtml に注意書きの出し分けが無い。");
 
-        // <b>ラベルの文字列ではなく参照そのもの</b>を見る。以前は文面に含まれるかだけを
-        // 見ていたが、それでは「1年」→「年」のような<b>部分文字列への改名</b>が素通りした
-        // (実測: ボタンが「年」になっても注意書きは「既定の『1年』で集計しています」のまま
-        //  全件緑で通る)。参照で書かれていれば、文言は定義から 1 本で決まるので比べる必要が無い
-        Assert.Contains(
-            $"{nameof(DashboardViewModel)}.{nameof(DashboardViewModel.DefaultPeriodLabel)}",
-            blockBody!, StringComparison.Ordinal);
+        // 既定の期間名を<b>参照で</b>書いているブロックがちょうど 1 つあること。
+        //
+        // ラベルの文字列ではなく参照そのものを見るのは、以前の「文面に含まれるか」では
+        // 「1年」→「年」のような<b>部分文字列への改名</b>が素通りしたため
+        // (実測: ボタンが「年」になっても注意書きは「既定の『1年』」のまま全件緑)。
+        // 参照で書かれていれば、文言は定義から 1 本で決まるので比べる必要が無い
+        var reference = $"{nameof(DashboardViewModel)}.{nameof(DashboardViewModel.DefaultPeriodLabel)}";
+        var naming = blocks.Count(body => body!.Contains(reference, StringComparison.Ordinal));
+        Assert.True(naming == 1,
+            $"既定の期間名を {reference} で書いている注意書きが {naming} 件ある(1 件であるべき)。"
+            + "期間の注意書きはラベルを直書きせずこの参照から出すこと"
+            + "(直書きすると、ボタンのラベルを変えたときに画面に無いボタンを探させる案内が残る)。");
     }
 
     // 集計期間が共有の解決処理を通っていること。
