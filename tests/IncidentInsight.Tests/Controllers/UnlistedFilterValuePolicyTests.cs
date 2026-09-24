@@ -4924,11 +4924,25 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 以前は同じ正規表現が一字一句の写しとして 2 か所にあり、新しい綴り
     // (`Url.RouteUrl` / `Html.ActionLink` 等)を片方だけに足すと、もう片方が黙って狭いまま
     // 残る形だった ——後者の検査の存在理由がまさに「片方の根しか見ていない穴」なので、
-    // 走査そのものが同じ穴を持っていては意味が無い(§6 DRY)
+    // 走査そのものが同じ穴を持っていては意味が無い(§6 DRY)。
+    //
+    // <b>文字列キーは「ルート値の文脈」ごと要求する(レビュー指摘)。</b> 以前は素のリテラル
+    // `"period"` を拾っていたが、この走査は<b>Web プロジェクトの全ビュー</b>に掛かるので、
+    // ルート値とは無関係な `ViewData["period"]` の読み出し・データ島の JSON のキー
+    // (`"period": …`)・`<input name="period">`・`asp-for="Period"`(IgnoreCase なので当たる)
+    // まで「期間のルート値を手書きしている」として名指しする。しかも失敗文言が案内する
+    // 直し方は 2 つとも当てはまらない ——そのビューは DashboardViewModel を持たないので
+    // 「PeriodChoices を回して出す」ことも「@Model.Period をそのまま渡す」こともできず、
+    // 緑へ戻す道が「無関係なキーを改名する」か「走査を緩める」しか無くなる。
+    // そこでキーの直後が<b>ルート値の組み立て</b>である形
+    // (`["period"] =` の添字代入 / `{ "period", … }` の辞書初期化子 /
+    //  `Add("period", …)` のようにキーを第 1 引数へ渡す呼び出し)だけを拾う。
+    // 素のリテラルだけではルート値を作りようがないので、覆う範囲は狭まっていない
     private static IEnumerable<Match> PeriodRouteKeyUses(string source) =>
         Regex.Matches(
                 source,
-                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
+                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*="
+                + @"|\[\s*""period""\s*\]\s*=|[\{\(]\s*""period""\s*,)",
                 RegexOptions.IgnoreCase)
             .Cast<Match>();
 
@@ -6325,13 +6339,34 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         (Nullable.GetUnderlyingType(type) ?? type).Name;
 
     /// <summary>引数の型シンボルの単純名を返す(<c>Nullable&lt;T&gt;</c> は中身を見る)。</summary>
-    /// <remarks>綴りの規則は <see cref="UnderlyingTypeName(Type)"/> と対。</remarks>
+    /// <remarks>
+    /// <para>綴りの規則は <see cref="UnderlyingTypeName(Type)"/> と対。一致は
+    /// <see cref="UnderlyingTypeName_AgreesBetweenReflectionAndSymbols"/> が固定する。</para>
+    ///
+    /// <para><b>総称の実引数の個数はシンボル側で補う(レビュー指摘)。</b>
+    /// <c>Type.Name</c> は総称だと個数を含む(<c>List`1</c>)のに <c>ISymbol.Name</c> は
+    /// 含まない(<c>List</c>)ので、補わないと<b>総称を受ける引数でだけ 2 つの綴りが割れる</b>。
+    /// 割れるとその引数は「宣言がソース上に見つからない」へ倒れ、<b>直し方が読み取れない赤</b>に
+    /// なる ——兄弟の <see cref="ReflectionStyleTypeName(INamedTypeSymbol)"/> が同じ穴を踏んで
+    /// 同じ直し方をしている。いまは見に行く引数が enum だけ(enum は総称になれない)なので
+    /// 発火しないが、綴りの写しが 2 つある状態を残さない。</para>
+    /// </remarks>
     /// <param name="type">ソースから解決した引数の型シンボル。</param>
     /// <returns>単純名。</returns>
     private static string UnderlyingTypeName(ITypeSymbol type) =>
         // Nullable<T> は構築済みの総称型として現れるので、中身の名前を取る
-        type is INamedTypeSymbol { IsGenericType: true, Name: "Nullable" } nullable
-            ? nullable.TypeArguments[0].Name
+        SimpleNameWithArity(
+            type is INamedTypeSymbol { IsGenericType: true, Name: "Nullable" } nullable
+                ? nullable.TypeArguments[0]
+                : type);
+
+    /// <summary>型シンボルの単純名を、<c>Type.Name</c> と同じく総称の個数付きで返す。</summary>
+    /// <param name="type">型シンボル。</param>
+    /// <returns>総称なら <c>名前`個数</c>、そうでなければ名前。</returns>
+    private static string SimpleNameWithArity(ITypeSymbol type) =>
+        // 総称のときだけ Type.Name と同じ '`個数' を添える
+        type is INamedTypeSymbol { Arity: > 0 } generic
+            ? $"{generic.Name}`{generic.Arity}"
             : type.Name;
 
     /// <summary>
@@ -6632,5 +6667,64 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(
             ReflectionStyleTypeName(typeof(ArityProbeOuter<>.Inner)),
             ReflectionStyleTypeName(containingType));
+    }
+
+    /// <summary>
+    /// 引数の型の単純名が、<b>リフレクション側とソース側で同じ綴り</b>になること。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか。</b> <c>Type.Name</c> は総称の実引数の個数を含む(<c>List`1</c>)
+    /// のに <c>ISymbol.Name</c> は含まない(<c>List</c>)ので、<see cref="UnderlyingTypeName(Type)"/>
+    /// と <see cref="UnderlyingTypeName(ITypeSymbol)"/> を素直に書くと<b>総称を受ける引数でだけ
+    /// 綴りが割れる</b>。割れた引数は「宣言がソース上に見つからない」へ倒れ、直し方が読み取れない
+    /// 赤になる。兄弟の
+    /// <see cref="ReflectionStyleTypeName_AgreesBetweenReflectionAndSymbols"/> は
+    /// 同じ穴を踏んで同じ形で固定してあるのに、こちらの対には照合が無かった(レビュー指摘)。</para>
+    ///
+    /// <para><b>手書きの文字列と比べない。</b> 期待値を literal で書くと、<c>Type.Name</c> の
+    /// 綴りについての思い込みが違っていても<b>ソース側と literal が揃ったまま</b>
+    /// リフレクション側とだけずれる。<b>2 つの実装どうし</b>を比べる。</para>
+    ///
+    /// <para><b>いまは発火しない。</b> 見に行く引数は enum だけで、enum は総称になれないので
+    /// 本番の署名でこの差は現れない。合成入力でしか固定できない
+    /// (だからこそ、実装から arity を落としても本番の全件は緑のままになる)。</para>
+    /// </remarks>
+    [Fact]
+    public void UnderlyingTypeName_AgreesBetweenReflectionAndSymbols()
+    {
+        // 参照アセンブリ無しで解決できるよう、型も引数の型もすべてソースの中で宣言する
+        const string source = """
+            namespace IncidentInsight.Tests.Controllers;
+
+            public class UnlistedFilterValuePolicyTests
+            {
+                private sealed class ArityProbeOuter<T>
+                {
+                    internal sealed class Inner
+                    {
+                    }
+                }
+
+                private sealed class ArityProbeHolder
+                {
+                    public void M(ArityProbeOuter<ArityProbeHolder> value)
+                    {
+                    }
+                }
+            }
+            """;
+
+        // ソースを解析して意味モデルを組み立てる
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var model = CSharpCompilation.Create("UnderlyingArityProbe", new[] { tree }).GetSemanticModel(tree);
+
+        // 総称型を受けるメソッド宣言から、その引数のシンボルを取り出す
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var parameter = model.GetDeclaredSymbol(method)!.Parameters.Single();
+
+        // ソース側の綴りが、実在する同じ形の型のリフレクション側の綴りと一致すること
+        Assert.Equal(
+            UnderlyingTypeName(typeof(ArityProbeOuter<UnlistedFilterValuePolicyTests>)),
+            UnderlyingTypeName(parameter.Type));
     }
 }
