@@ -4770,6 +4770,49 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"動いてしまうので、@{item}.Id から出すこと。");
     }
 
+    // 期間の選択肢が「唯一の源」として成立していること。
+    //
+    // <b>なぜ要るのか。</b> 許可リスト(Periods)も既定の表示名(DefaultPeriodLabel)も
+    // PeriodChoices から導いており、導出は<b>型の初期化時</b>に走る。したがって
+    // 選択肢が壊れると、赤くなるのはテストではなく<b>本番の実行時</b>になる:
+    // 既定の期間が選択肢から消えれば DefaultPeriodLabel の First が投げ、
+    // 宣言を PeriodChoices より前へ並べ替えれば PeriodChoices が null のまま評価され、
+    // どちらも型の初期化例外 ——ダッシュボードを開いた全員が 500 になり、
+    // しかもコンパイルは通る。ここで型に触っておけば、その状態は必ずテストで先に落ちる。
+    //
+    // あわせて「選択肢として成立するか」も見る: 識別子・ラベルが空でないこと
+    // (空のラベルは押せないボタンになる)、識別子が重複しないこと
+    // (同じ識別子が 2 つあると、どちらが選択中かを Period との比較で決められない)、
+    // ラベルが重複しないこと(同じ見た目のボタンが 2 つ並ぶ)。
+    [Fact]
+    public void DashboardPeriodChoices_AreUsableAsTheSingleSource()
+    {
+        // 選択肢そのものを読む(この行で型の初期化が走るので、導出の破綻はここで落ちる)
+        var choices = DashboardViewModel.PeriodChoices;
+
+        // 選択肢が空なら期間切替が画面から消える(fail-closed)
+        Assert.NotEmpty(choices);
+
+        // 識別子・ラベルがどちらも空でないこと
+        Assert.All(choices, choice =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(choice.Id));
+            Assert.False(string.IsNullOrWhiteSpace(choice.Label));
+        });
+
+        // 識別子・ラベルがそれぞれ重複しないこと
+        Assert.Equal(choices.Length, choices.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(choices.Length, choices.Select(c => c.Label).Distinct(StringComparer.Ordinal).Count());
+
+        // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
+        // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる
+        Assert.Contains(DashboardViewModel.PeriodYear, DashboardViewModel.Periods);
+
+        // 許可リストが選択肢の識別子そのもの(並びまで含めて)であること。
+        // 導出を書き換えて別の一覧を返す形にすると、画面と許可リストが再び別の宣言になる
+        Assert.Equal(choices.Select(c => c.Id).ToArray(), DashboardViewModel.Periods);
+    }
+
     // 注意書きが案内する既定の期間名が、選択肢のラベルと同じであること。
     //
     // 注意書きは「既定の『1年』で集計しています」と案内するが、その「1年」はボタンのラベルで、

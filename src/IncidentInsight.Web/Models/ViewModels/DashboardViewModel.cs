@@ -42,13 +42,20 @@ public class DashboardViewModel
     };
 
     // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
-    // 選択肢から導くので、画面に出していない値を受け付ける状態は作れない
+    // 選択肢から導くので、画面に出していない値を受け付ける状態は作れない。
+    //
+    // <b>この 2 つは PeriodChoices より後ろに置くこと。</b> static フィールドの初期化は
+    // 宣言の順に走るので、前へ移すと PeriodChoices がまだ null のまま評価され、
+    // 型の初期化が例外になる ——ダッシュボードを開いた全員が 500 になる形で、
+    // しかもコンパイルは通る。並べ替えは DashboardPeriodChoices_AreUsableAsTheSingleSource が
+    // 落とす(あの検査はこの型に触るので、初期化に失敗すればそこで赤くなる)
     public static readonly string[] Periods =
         PeriodChoices.Select(choice => choice.Id).ToArray();
 
     // 既定の集計期間の表示名。採用しなかった期間の注意書きが「既定の『◯◯』で集計しています」と
     // 案内するのに使う ——文言を注意書きへ直書きすると、ボタンのラベルを変えたときに
-    // 画面に無いボタンを探させる案内が残る(§6 UI 文言の単一参照元)
+    // 画面に無いボタンを探させる案内が残る(§6 UI 文言の単一参照元)。
+    // 既定の期間が選択肢に無ければここで例外になるが、その状態は上記の検査が先に落とす
     public static readonly string DefaultPeriodLabel =
         PeriodChoices.First(choice => choice.Id == PeriodYear).Label;
 
