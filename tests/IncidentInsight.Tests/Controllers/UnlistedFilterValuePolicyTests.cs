@@ -4772,11 +4772,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 匿名オブジェクトの中に限るのは、素の `period\s*=` まで拾うと
         // `@{ var period = Model.Period; }` のような<b>ごく普通のローカル</b>で赤くなり、
         // 案内される直し方(「回しの中から出せ」)では直らない行き止まりになるため
-        var routeKeyUses = Regex.Matches(
-                source,
-                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
-                RegexOptions.IgnoreCase)
-            .ToList();
+        var routeKeyUses = PeriodRouteKeyUses(source).ToList();
 
         // 1 つも拾えなければ手がかりが死んでいる(fail-closed)
         Assert.True(routeKeyUses.Count > 0,
@@ -4819,7 +4815,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             if (body.Item is null) continue;
             // 指定の直後に続く綴りを見る(= や引用符・@ は書き方によって付いたり付かなかったりする)
             var following = source[(use.Index + use.Length)..];
-            if (!Regex.IsMatch(following, $@"^\s*=?\s*""?\s*@?{Regex.Escape(body.Item)}\.Id\b"))
+            // `@choice.Id` と `@(choice.Id)` はどちらも普通の書き方なので両方通す
+            // (括弧付きを落としていた頃は、正しいビューが「Id 以外を渡している」という
+            //  事実と違う理由で赤くなった ——そういう検出網はいずれ緩められる)
+            if (!Regex.IsMatch(following, $@"^\s*=?\s*""?\s*@?\(?\s*{Regex.Escape(body.Item)}\.Id\b"))
                 wrongValue.Add(LineAt(source, use.Index));
         }
         Assert.True(wrongValue.Count == 0,
@@ -4900,10 +4899,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         {
             // Razor のコメントは落としてから探す(解説として綴りに触れている行を拾わない)
             var source = RazorComment.Replace(File.ReadAllText(view), string.Empty);
-            foreach (Match use in Regex.Matches(
-                source,
-                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
-                RegexOptions.IgnoreCase))
+            foreach (Match use in PeriodRouteKeyUses(source))
             {
                 // 受け取った期間をそのまま渡す形は通す(許可リストの外の値を作りようがない)
                 var following = source[(use.Index + use.Length)..];
@@ -4921,6 +4917,20 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"{nameof(DashboardViewModel.PeriodChoices)} を回して出すか、"
             + "受け取った期間(@Model.Period)をそのまま渡すこと。");
     }
+
+    // 「period をルート値の名前として書いている」箇所を拾う<b>唯一の走査</b>。
+    //
+    // <b>2 つの検査が同じここを読む</b>(ダッシュボードのビュー用と、それ以外のビュー用)。
+    // 以前は同じ正規表現が一字一句の写しとして 2 か所にあり、新しい綴り
+    // (`Url.RouteUrl` / `Html.ActionLink` 等)を片方だけに足すと、もう片方が黙って狭いまま
+    // 残る形だった ——後者の検査の存在理由がまさに「片方の根しか見ていない穴」なので、
+    // 走査そのものが同じ穴を持っていては意味が無い(§6 DRY)
+    private static IEnumerable<Match> PeriodRouteKeyUses(string source) =>
+        Regex.Matches(
+                source,
+                @"(?:\?period=|asp-route-period|new\s*\{[^}]*?\bperiod\s*=|""period"")",
+                RegexOptions.IgnoreCase)
+            .Cast<Match>();
 
     // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
     private static string LineAt(string source, int index)
@@ -5070,6 +5080,18 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             Assert.True(choice.StartOn is null,
                 $"日別で描く期間 {choice.Id} は StartOn を書かないこと"
                 + "(書くと KPI の窓とグラフの本数が別々に決まり、ずれても誰も気付けない)。"));
+
+        // 月別で描く期間は KPI の窓の求め方を<b>必ず</b>持つこと。
+        //
+        // <b>日別側と対になる検査。</b> 日別には「書くな」があるのに月別には「書け」が無く、
+        // 実測では StartOn を書き忘れた月別の選択肢が<b>全件緑のまま</b>通った ——
+        // WindowStart の最後の受け皿へ落ちて KPI が<b>当日ぶんだけ</b>になるのに、
+        // グラフは月数ぶん描かれ、ボタンは選択中に見える。窓の重なりの検査も
+        // 「today」は他と重ならないので通ってしまう
+        Assert.All(choices.Where(c => c.TrendMonths is not null), choice =>
+            Assert.True(choice.StartOn is not null,
+                $"月別で描く期間 {choice.Id} は StartOn を書くこと"
+                + "(書かないと KPI が当日ぶんだけになり、グラフとボタンだけがその期間を指す)。"));
 
         // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
         // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる

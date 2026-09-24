@@ -11,16 +11,6 @@ public class DashboardViewModel
     public const string PeriodQuarter = "quarter"; // 直近 3 か月
     public const string PeriodYear    = "year";    // 直近 1 年(既定値)
 
-    // 週表示のトレンドチャートで並べる日数。
-    //
-    // <b>選択肢の TrendDays から導く。</b> 以前はここが独立した定数で、日別で描く期間の
-    // 窓の長さを<b>この 1 つの値が全部決めて</b>いた ——実測でも、2 つ目の日別期間
-    // (TrendDays 相当が 14 日の「2週」)を足すと、KPI は 14 日ぶんを数えるのに
-    // グラフは 7 本で「直近7日間」と名乗る状態が全件緑のまま作れた。
-    // 日数も選択肢の必須メンバー(TrendDays)にしたので、日別の期間はそれぞれ自分の
-    // 窓の長さを持つ。この定数は既存の呼び出し側のために残した別名で、週の選択肢を指す
-    public static int WeekDays => DaysFor(PeriodWeek);
-
     // 集計期間の選択肢(識別子と画面のラベルの対)。<b>期間についての唯一の真実の源</b>で、
     // 許可リスト(Periods)も画面の期間切替ボタンも既定の表示名もここから導く。
     //
@@ -57,7 +47,8 @@ public class DashboardViewModel
         new[]
         {
             // 直近 7 暦日。トレンドは日別で 7 本並べる(KPI の窓と同じ長さ)
-            new PeriodChoice(PeriodWeek,    "週",     "週間",  TrendDays: 7,   TrendMonths: null),
+            new PeriodChoice(PeriodWeek,    "週",     "週間",  TrendDays: 7,   TrendMonths: null,
+                StartOn: null),
             // 直近 1 か月。トレンドは直近 4 か月ぶん並べる
             new PeriodChoice(PeriodMonth,   "月",     "月間",  TrendDays: null, TrendMonths: 4,
                 StartOn: today => today.AddMonths(-1)),
@@ -170,9 +161,10 @@ public class DashboardViewModel
 
     // 月別トレンドチャートで並べる月数(month=4, quarter=6, year=12)。
     // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
-    // 日別で描く期間(week)はここを通らないが、万一通っても既定の期間の月数へ落とす
-    // (画面を落とさないための fail-safe。本番の呼び出し元は UsesDailyTrendBuckets で分岐する)
-    // 落とし先が「既定の期間は必ず月別」に頼らないのは DaysFor と同じ理由
+    // 日別で描く期間(week)はここを通らないが、万一通っても<b>最初の月別の選択肢</b>の月数へ
+    // 落とす(画面を落とさないための fail-safe。本番の呼び出し元は UsesDailyTrendBuckets で分岐する)。
+    // 「既定の期間は必ず月別」に頼らないのは DaysFor と同じ理由 ——既定の期間を日別にしても
+    // ここが投げないようにするため。そのぶん落とし先は既定の期間の月数とは限らない
     public static int MonthsFor(string period) =>
         ChoiceFor(period).TrendMonths
         ?? PeriodChoices.FirstOrDefault(c => c.TrendMonths is not null)?.TrendMonths
@@ -296,7 +288,7 @@ public class DashboardViewModel
     public List<MonthlyCount> MonthlyCounts { get; set; } = new();
 
     // トレンドチャートの見出し。Period から導出する計算プロパティにすることで、
-    // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(WeekDays / MonthsFor)と
+    // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(DaysFor / MonthsFor)と
     // 見出しの数字が常に一致することを保証する(見出しを View に直書きすると、
     // 週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
     public string TrendChartTitle => UsesDailyTrendBuckets(Period)
@@ -364,7 +356,7 @@ public sealed record PeriodChoice(
     string KpiLabel,
     int? TrendDays,
     int? TrendMonths,
-    Func<DateTime, DateTime>? StartOn = null)
+    Func<DateTime, DateTime>? StartOn)
 {
     /// <summary>KPI の集計窓の開始日。日別の期間は <see cref="TrendDays"/> から導く。</summary>
     public DateTime WindowStart(DateTime today) =>
@@ -372,6 +364,10 @@ public sealed record PeriodChoice(
         StartOn is { } startOn ? startOn(today)
         // 日別の期間は「その日数ぶん」の窓。today を含めて数えるので 1 を引く
         : TrendDays is { } days ? today.AddDays(-(days - 1))
-        // どちらも無い選択肢は作れない(下のガードが落とす)が、型としては起こりうるので既定を返す
+        // ここへ来るのは「日別でもなく、窓の求め方も書いていない」選択肢だけ。
+        // 月別の期間が StartOn を書き忘れるとここに落ち、KPI が<b>当日ぶんだけ</b>になる
+        // (グラフは月数ぶん描かれるので、画面の上下で窓が食い違う)。
+        // 型としては表せてしまうので、DashboardPeriodChoices_AreUsableAsTheSingleSource が
+        // 「月別の選択肢は StartOn を必ず持つ」を落とす ——ここは画面を落とさないための最後の受け皿
         : today;
 }

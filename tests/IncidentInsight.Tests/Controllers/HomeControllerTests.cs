@@ -146,7 +146,10 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(
             DashboardViewModel.PeriodStart(period, _clock.Today).ToString("yyyy-MM-dd"),
             vm.MonthlyCounts[0].DateFrom);
-        // 末尾のバケットは今日（グラフは必ず今日まで）
+        // 末尾のバケットは今日（グラフは必ず今日まで）。
+        // 見ているのは<b>バケットの並び</b>であって件数の合計ではない —— KPI の件数には
+        // 上限が無いので、未来日で登録されたインシデントがあると合計は一致しない
+        // （その境界は HomeController.Index のコメントが正本）
         Assert.Equal(_clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
     }
 
