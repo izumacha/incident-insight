@@ -14,8 +14,6 @@ using System.Security.Claims;
 using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
-// 許可リストで閉じた絞り込みの共有解決処理(配線の照合で名前を借りる)
-using IncidentInsight.Web.Controllers.Internal;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
@@ -4396,13 +4394,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var unwired = AuditLogsFilterSelectNames()
             // 名前は Razor から拾った文字列なので、正規表現へ入れる前に必ずエスケープする
             // (`.` を含む name が任意の 1 文字と一致して、配線漏れを見逃すのを防ぐ)
-            .Where(name => !Regex.IsMatch(source, $@"{nameof(ListedValueFilterResolver)}\.{nameof(ListedValueFilterResolver.Resolve)}\s*\(\s*{Regex.Escape(name)}\b"))
+            .Where(name => !Regex.IsMatch(source, $@"{ListedValueFilterResolverType}\.{ListedValueFilterResolverMethod}\s*\(\s*{Regex.Escape(name)}\b"))
             .ToList();
 
         // 1 つでもあれば落とす
         Assert.True(unwired.Count == 0,
             $"許可リストの絞り込みが解決処理を通っていない: {string.Join(", ", unwired)}。"
-            + $"{nameof(ListedValueFilterResolver)}.{nameof(ListedValueFilterResolver.Resolve)} へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
+            + $"{ListedValueFilterResolverType}.{ListedValueFilterResolverMethod} へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
             + "(通さないと、許可リストに無い値で監査ログ全件が返るのに注意書きが出ない)。");
     }
 
@@ -4455,7 +4453,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.UnlistedFilterIgnored,
             $"?{parameterName}={UnlistedAuditValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
-            + $"{parameterName} を {nameof(ListedValueFilterResolver)}.{nameof(ListedValueFilterResolver.Resolve)} へ通し、その Ignored を"
+            + $"{parameterName} を {ListedValueFilterResolverType}.{ListedValueFilterResolverMethod} へ通し、その Ignored を"
             + "UnlistedFilterIgnored へ写しているか確認すること。");
 
         // 絞り込みは掛かっていない(全件が返る)。注意書きはまさにこの状態を伝えるためにある
@@ -4747,27 +4745,53 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 回している変数の名前(この変数の Id だけが期間のルート値として許される)
         var item = loop.Groups["item"].Value;
 
-        // (b) 期間のルート値の書き方を全部拾う。href のクエリ文字列とタグヘルパーの
-        // 両方を見る ——片方だけだと、もう片方の綴りで手書きのボタンを足せる(実測の穴がこれ)
-        var written = Regex.Matches(source, @"(?:\?period=|asp-route-period\s*=\s*"")(?<value>[^""&\s>]*)")
-            .Select(m => m.Groups["value"].Value)
+        // (b) <b>この回しの外で</b>期間のルート値を作っていないこと。
+        //
+        // 以前はここで「?period= / asp-route-period= の綴り」を拾って回した変数と比べていたが、
+        // <b>実測でその綴り合わせにも穴があった</b> —— `@Url.Action("Index", new { period = "decade" })`
+        // で組み立てたボタンはどちらの綴りにも当たらず、全件緑のまま「画面が自分で出した
+        // リンクを自分で拒否する」状態が作れた(asp-route-period で一度踏んだのと同じ形が、
+        // 綴りを 1 つ足しただけでは閉じないことの実例)。
+        //
+        // そこで<b>綴りを数えるのをやめ、置き場所で決める</b>: 期間のルート値を作る書き方が
+        // 何通りあっても、それが回しの中にあれば選択肢から出ているし、外にあれば手書き。
+        // 拾うのは「period という名前をルート値として書いている」形すべて
+        // (クエリ文字列・タグヘルパー・匿名オブジェクトのプロパティ・文字列キー)。
+        // `Model.Period` のような読み取りは前が `.` なので拾わない(比較の `==` も除く)
+        var routeKeyUses = Regex.Matches(
+                source,
+                @"(?:\?period=|asp-route-period|(?<![.\w])period\s*=(?!=)|""period"")",
+                RegexOptions.IgnoreCase)
+            .Select(m => m.Index)
             .ToList();
 
         // 1 つも拾えなければ手がかりが死んでいる(fail-closed)。
-        // 回しているのにリンクが拾えないのは、リンクの書き方が変わったということ
-        Assert.True(written.Count > 0,
-            "Views/Home/Index.cshtml に期間のルート値(?period= / asp-route-period=)が 1 つも無い。"
+        // 回しているのにルート値が拾えないのは、リンクの書き方が変わったということ
+        Assert.True(routeKeyUses.Count > 0,
+            "Views/Home/Index.cshtml に期間のルート値の指定が 1 つも無い。"
             + "期間切替の書き方を変えたなら、この照合も同じ変更セットで直すこと"
             + "(直さないと、手書きのボタンが全件緑のまま通る)。");
 
-        // 回した変数の Id 以外から書かれたものがあれば落とす
-        var handWritten = written
-            .Where(value => value != $"@{item}.Id")
+        // 回しの本体の範囲を求める(この中に入っていれば選択肢から出ている)
+        var loopBody = ExtractBraceBlock(source, loop.Index);
+        Assert.True(loopBody != null,
+            $"Views/Home/Index.cshtml の @foreach ({item} in "
+            + $"{nameof(DashboardViewModel.PeriodChoices)}) に本体が無い。");
+        // 本体は source の部分文字列なので、位置は「回しの開始以降・本体の長さ分」で判定できる
+        var bodyStart = source.IndexOf(loopBody!, loop.Index, StringComparison.Ordinal);
+        var bodyEnd = bodyStart + loopBody!.Length;
+
+        // 回しの外で書かれているものを集める
+        var handWritten = routeKeyUses
+            .Where(index => index < bodyStart || index >= bodyEnd)
+            // 失敗文言で場所が分かるよう、その行を添える
+            .Select(index => source[index..Math.Min(index + 60, source.Length)].Split('\n')[0].Trim())
             .ToList();
         Assert.True(handWritten.Count == 0,
-            $"期間のルート値が {nameof(DashboardViewModel.PeriodChoices)} の回し以外からも書かれている: "
-            + $"{string.Join(", ", handWritten)}。手書きのボタンは許可リストとずれても"
-            + $"動いてしまうので、@{item}.Id から出すこと。");
+            $"期間のルート値が {nameof(DashboardViewModel.PeriodChoices)} の回しの外でも書かれている: "
+            + $"{string.Join(" / ", handWritten)}。手書きのボタンは許可リストとずれても"
+            + $"動いてしまう(押した瞬間に「選べる値ではない」と自分で拒否する)ので、"
+            + $"回しの中から @{item}.Id で出すこと。");
     }
 
     // 期間の選択肢が「唯一の源」として成立していること。
@@ -4832,8 +4856,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         var blockBody = ExtractBraceBlock(source, header.Index);
         Assert.True(blockBody != null, "Views/Home/Index.cshtml の注意書きに本体が無い。");
 
-        // 既定の期間のラベルが文面に含まれていること
-        Assert.Contains(DashboardViewModel.DefaultPeriodLabel, blockBody!, StringComparison.Ordinal);
+        // <b>ラベルの文字列ではなく参照そのもの</b>を見る。以前は文面に含まれるかだけを
+        // 見ていたが、それでは「1年」→「年」のような<b>部分文字列への改名</b>が素通りした
+        // (実測: ボタンが「年」になっても注意書きは「既定の『1年』で集計しています」のまま
+        //  全件緑で通る)。参照で書かれていれば、文言は定義から 1 本で決まるので比べる必要が無い
+        Assert.Contains(
+            $"{nameof(DashboardViewModel)}.{nameof(DashboardViewModel.DefaultPeriodLabel)}",
+            blockBody!, StringComparison.Ordinal);
     }
 
     // 集計期間が共有の解決処理を通っていること。
@@ -4858,7 +4887,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 許可リストまで見るのは、別の配列を渡す形(自前で作った 4 要素の配列など)だと
         // 画面との一致を見る上の検査が効かなくなるため
         Assert.Matches(
-            $@"{nameof(ListedValueFilterResolver)}\.{nameof(ListedValueFilterResolver.Resolve)}"
+            $@"{ListedValueFilterResolverType}\.{ListedValueFilterResolverMethod}"
             + $@"\s*\(\s*period\s*,\s*{nameof(DashboardViewModel)}\.{nameof(DashboardViewModel.Periods)}\s*\)",
             source);
     }
@@ -5903,6 +5932,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     /// <summary>解決処理の型名(<c>internal</c> なので <c>nameof</c> できず綴りで持つ)。</summary>
     private const string UnlistedEnumFilterResolverType = "UnlistedEnumFilterResolver";
+
+    // 許可リストで閉じた絞り込みの共有解決処理。型名・メソッド名を<b>文字列で</b>持つのは、
+    // この helper が同じディレクトリの 4 つと同じく internal で、テストプロジェクトからは
+    // 参照できないため(UnlistedEnumFilterResolverType と同じ扱い。改名されればこの照合は
+    // 赤くなる＝素通りではないので、倒れる向きは安全側)
+    private const string ListedValueFilterResolverType = "ListedValueFilterResolver";
+    private const string ListedValueFilterResolverMethod = "Resolve";
 
     /// <summary>解決処理のメソッド名(上と同じ理由で綴りで持つ)。</summary>
     private const string UnlistedEnumFilterResolverMethod = "Resolve";

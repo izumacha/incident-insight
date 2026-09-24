@@ -23,7 +23,11 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <para><b>ここが決めるのは「採用したか」までで、採用しなかったあとの扱いは画面が決める。</b>
 /// <c>/AuditLogs</c> は<b>その条件を外して</b>一覧を出す(絞り込み無し)。
 /// ダッシュボードは「期間なし」という状態を持てない(常に何らかの窓で集計する)ので、
-/// <b>既定の期間へ補完</b>する。<see cref="ListedValueFilterSelection.Effective"/> が
+/// <b>既定の期間へ差し替える</b>。<b>これを「補完」と呼ばないこと</b> ——
+/// <see cref="SearchFilter"/> の表で「補完」は<b>受け取った値を選択肢へ足して絞り込みを維持する</b>
+/// ことを指しており(発生部署・原因分類がその方式)、ここでやるのはその逆
+/// (受け取った値を捨てて既定へ置き換える)。同じ語で逆の操作を指すと、表を読んだ人が
+/// この画面について反対の答えを得る。<see cref="ListedValueFilterSelection.Effective"/> が
 /// <c>null</c> のときに何をするかを呼び出し側へ残してあるのはこのためで、
 /// <b>方式(採用しない／補完する)が違っても旗は同じように立てる</b>
 /// ——「採用しなかったなら必ず伝える」は方式とは別の軸の規則
@@ -53,7 +57,7 @@ namespace IncidentInsight.Web.Controllers.Internal;
 /// <c>IgnoredFilterNoticeScreens_CoverEveryViewThatRendersANotice</c> が
 /// 登録漏れを落とすので、抜けるのは「そもそも伝えていない」形だけに限られる。</para>
 /// </remarks>
-public static class ListedValueFilterResolver
+internal static class ListedValueFilterResolver
 {
     /// <summary>
     /// 許可リストで閉じた絞り込み入力を解決する。
@@ -61,7 +65,7 @@ public static class ListedValueFilterResolver
     /// <param name="value">クエリ文字列から届いた絞り込み値(未指定なら <c>null</c>)。</param>
     /// <param name="allowed">その入力が取りうる値の許可リスト。</param>
     /// <returns>採用した値(採用しないなら <c>null</c>)と、受け取ったのに採用しなかったかどうか。</returns>
-    public static ListedValueFilterSelection Resolve(string? value, IReadOnlyList<string> allowed)
+    internal static ListedValueFilterSelection Resolve(string? value, IReadOnlyList<string> allowed)
     {
         // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
         // ——受け取っていないものは「採用しなかった」ではないので、旗も立てない
@@ -89,5 +93,5 @@ public static class ListedValueFilterResolver
     /// </remarks>
     /// <param name="Effective">絞り込みに使う値。採用しなかった場合は <c>null</c>。</param>
     /// <param name="Ignored"><b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。</param>
-    public readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
+    internal readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
 }

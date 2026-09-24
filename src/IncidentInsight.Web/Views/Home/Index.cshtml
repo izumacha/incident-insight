@@ -76,8 +76,9 @@
 {
     <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
         "選べる値ではない集計期間は適用していません。",
-        "指定された集計期間が選択肢に無い値だったため、既定の「1年」で集計しています。"
-        + "集計したい期間は上の期間切替から選び直してください。"))" />
+        "指定された集計期間が選択肢に無い値だったため、既定の「"
+        + DashboardViewModel.DefaultPeriodLabel
+        + "」で集計しています。集計したい期間は上の期間切替から選び直してください。"))" />
 }
 
 <!-- KPI Cards -->
