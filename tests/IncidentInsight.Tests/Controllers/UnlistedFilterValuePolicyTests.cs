@@ -2609,23 +2609,37 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 3 画面目が旗を持ったときも同じく入り口を用意すること。enum の絞り込みについては
     // EnumFilterScreens_CoverEveryActionThatAcceptsAnEnumFilter が
     // 「用意し忘れ」自体をアプリ全体の署名から拾って落とす
-    public static TheoryData<string> IgnoredFilterFlags()
+    // 旗ごとの Theory のケースを組み立てる。<b>4 画面が同じここを読む</b>。
+    //
+    // <b>なぜ共通化したか(レビュー指摘)。</b> 以前は「旗を拾う → 0 件なら落とす →
+    // TheoryData へ詰める」という同じ本体が画面ごとに 4 つあり、違うのは拾い方と
+    // 文言の 1 文だけだった(§6「2〜3 箇所目で共通化」を 1 つ超えていた)。
+    // このファイルは同じ形の代償を既に記録している —— IgnoredFilterFlagNamesIn を
+    // 切り出した理由が「3 つ目の解決処理が旗を別の名前で返すようになったとき、
+    // 片方だけ直すともう片方は既存の旗を拾い続ける」ことだった。
+    // 0 件のときの方針(fail-closed)を 1 画面で変えると、残りが黙って古い方針のまま残る。
+    //
+    // <b>0 件で落とすのが要点。</b> 黙って 0 件の Theory にすると、旗ごとに掛かるはずの
+    // Razor の検査が「見るものゼロ」で全件緑になり、検出網がまるごと消える
+    private static TheoryData<string> IgnoredFilterFlagCases(IReadOnlyList<string> flags, string missing)
     {
-        // 命名規約に当てはまる bool のプロパティだけを拾う
-        var flags = DeclaredIgnoredFilterFlags();
-
-        // 1 つも見つからないのは「旗が無くなった」より「命名規約が変わった」可能性が高い。
-        // 黙って 0 件の Theory にすると検出網が消えるので、ここで落として人に決めさせる
+        // 1 つも拾えないのは「旗が無くなった」より「導出の前提が変わった」可能性が高いので、
+        // ここで落として人に決めさせる
         Assert.True(flags.Count > 0,
-            $"{nameof(IncidentListViewModel)} に *{IgnoredFlagSuffix} という名前の bool プロパティが 1 つも無い。"
-            + "命名規約を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+            $"{missing}。導出の前提(命名規約・書き方)を変えたなら、この導出も同じ変更セットで"
+            + "直すこと(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
 
         // xUnit の [MemberData] が読める形へ詰めて返す
         var data = new TheoryData<string>();
         foreach (var flag in flags) data.Add(flag);
         return data;
     }
+
+    public static TheoryData<string> IgnoredFilterFlags() =>
+        // 命名規約に当てはまる bool のプロパティだけを拾い、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            DeclaredIgnoredFilterFlags(),
+            $"{nameof(IncidentListViewModel)} に *{IgnoredFlagSuffix} という名前の bool プロパティが 1 つも無い");
 
     // ViewModel に宣言されている旗の名前(命名規約で拾い、並びを固定して返す)
     private static List<string> DeclaredIgnoredFilterFlags() =>
@@ -2652,6 +2666,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     {
         (typeof(IncidentListViewModel), nameof(IncidentsController)),
         (typeof(AuditLogListViewModel), nameof(AuditLogsController)),
+        (typeof(DashboardViewModel), nameof(HomeController)),
     };
 
     // 上の導出(命名規約)が旗を取りこぼしていないことを、判定とは独立な手がかりで照合する。
@@ -3096,14 +3111,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(下の AssertIgnoredFilterNoticeIsRendered が正本)
+        // 走査そのものは共有する(下の AssertIgnoredFilterNoticeIsRendered が正本)
         AssertIgnoredFilterNoticeIsRendered("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
     /// 旗を <b>ビューが実際に読んでいる</b>ことを、Razor のソースから確かめる共有の走査。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜ 3 画面で共有するのか(§6 DRY)。</b> 以前この走査は
+    /// <para><b>なぜ共有するのか(§6 DRY)。</b> 以前この走査は
     /// <c>/Incidents</c> 用と <c>/PreventiveMeasures</c> 用に丸ごと写してあった。
     /// 3 画面目(<c>/AuditLogs</c>)を足す時点で 3 つ目の写しになるので、実際に重複した
     /// この時点で共通化する。写しのまま増やすと、注意書きの見せ方を変えたとき
@@ -3194,6 +3209,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         ("Incidents", ViewModelFlagAccessor),
         ("PreventiveMeasures", ViewBagFlagAccessor),
         ("AuditLogs", ViewModelFlagAccessor),
+        ("Home", ViewModelFlagAccessor),
     };
 
     // 同じ理由の注意書きは、画面をまたいで<b>一字一句そろっている</b>こと。
@@ -3494,7 +3510,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// (人のレビューでしか気付けなかった)。
     /// per-flag の検査は「見出しと説明が空でないこと」までしか見ないので、
     /// 衝突は旗をまたいで比べないと原理的に見えない。
-    /// <para>走査を 3 画面で共有する理由は
+    /// <para>走査を画面をまたいで共有する理由は
     /// <see cref="AssertIgnoredFilterNoticeIsRendered"/> と同じ(§6 DRY)。</para>
     /// </remarks>
     private static void AssertIgnoredFilterNoticeHeadingsAreDistinct(
@@ -3552,7 +3568,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 5 つ目の旗を足した人が既存の文面を写して使うと、ここで落ちる
     [Fact]
     public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "Incidents", ViewModelFlagAccessor, DeclaredIgnoredFilterFlags());
 
@@ -3570,7 +3586,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
-        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        // 走査そのものは共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
@@ -3990,22 +4006,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
     // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
-    public static TheoryData<string> MeasuresIgnoredFilterFlags()
-    {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var flags = MeasuresIgnoredFilterFlagNames();
-
-        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
-        Assert.True(flags.Count > 0,
-            $"{nameof(PreventiveMeasuresController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var flag in flags) data.Add(flag);
-        return data;
-    }
+    public static TheoryData<string> MeasuresIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            MeasuresIgnoredFilterFlagNames(),
+            $"{nameof(PreventiveMeasuresController)} に「… = ….Ignored」の代入が 1 つも見つからない");
 
     // 上の導出の本体。Theory のケース作りと下の見出し照合が同じここを読む(§6 DRY)。
     // 走査そのものは /Incidents 側と共有する(下の IgnoredFilterFlagNamesIn が正本)
@@ -4014,7 +4019,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // コントローラのソースから「<旗> = <解決結果>.Ignored」という代入を拾い、旗の名前を返す。
     //
-    // <b>2 画面で共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
+    // <b>画面をまたいで共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
     // 「ソースを開く → コメントを落とす → 並びを固定する」の手順が /Incidents 用と
     // カンバン用に写してあった。3 つ目の解決処理が旗を別の名前(<c>.WasIgnored</c> など)で
     // 返すようになったとき片方だけ直すと、<b>直さなかった側は既存の旗を拾い続けるので
@@ -4051,7 +4056,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(MeasuresIgnoredFilterFlags))]
     public void MeasuresIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)。
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)。
         // この画面は ViewModel を持たず ViewBag で渡すので、読み方だけが違う
         AssertIgnoredFilterNoticeIsRendered("PreventiveMeasures", ViewBagFlagAccessor, flag);
 
@@ -4061,7 +4066,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // (/Incidents 側で実際にこの取り違えが起き、人のレビューでしか気付けなかった)
     [Fact]
     public void MeasuresIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "PreventiveMeasures", ViewBagFlagAccessor, MeasuresIgnoredFilterFlagNames());
 
@@ -4218,7 +4223,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 許可リストで閉じた絞り込みには<b>必ずドロップダウンがある</b>。
     // Razor は本体(コントローラ)とは別の宣言箇所なので、3 つ目の許可リスト絞り込みを
     // 足した人が解決処理を通し忘れると、<b>その name が導出には現れるのに
-    // 下の対応表と ResolveListedValue のどちらにも無い</b>状態として現れる。
+    // 下の対応表と共有の解決処理のどちらにも無い</b>状態として現れる。
     //
     // 書き並べる形にしないのはこの repo が繰り返し避けている「写しを持つ」形だから
     // ——[InlineData] の手書きにすると、3 つ目を足した人が行を足し忘れた瞬間に
@@ -4275,7 +4280,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // すべて許可リストの絞り込み」という前提に立つが、それは署名からも Razor からも
     // 保証できない ——表示件数(<c>pageSize</c>)や並び順(<c>sort</c>)のような
     // <b>絞り込みでないドロップダウン</b>を足すと、ガードが
-    // 「<c>ResolveListedValue</c> を通せ」と要求し、逃げ道は
+    // 「<c>ListedValueFilterResolver.Resolve</c> を通せ」と要求し、逃げ道は
     // 「絞り込みでない入力を解決処理へ通す」か「走査ごと緩める」になる。
     // 実行不能な指示を出す検出網はいずれ緩められるので、逃げ道を<b>理由付きで</b>用意する。
     //
@@ -4388,17 +4393,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // コメントを落としてから走査する(説明コメント中の呼び出し例を配線と取り違えない)
         var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
 
-        // ドロップダウンを持つ絞り込みのうち、ResolveListedValue へ渡されていないものを集める
+        // ドロップダウンを持つ絞り込みのうち、共有の解決処理へ渡されていないものを集める
         var unwired = AuditLogsFilterSelectNames()
             // 名前は Razor から拾った文字列なので、正規表現へ入れる前に必ずエスケープする
             // (`.` を含む name が任意の 1 文字と一致して、配線漏れを見逃すのを防ぐ)
-            .Where(name => !Regex.IsMatch(source, $@"ResolveListedValue\s*\(\s*{Regex.Escape(name)}\b"))
+            .Where(name => !Regex.IsMatch(source, $@"{ListedValueFilterResolverType}\.{ListedValueFilterResolverMethod}\s*\(\s*{Regex.Escape(name)}\b"))
             .ToList();
 
         // 1 つでもあれば落とす
         Assert.True(unwired.Count == 0,
             $"許可リストの絞り込みが解決処理を通っていない: {string.Join(", ", unwired)}。"
-            + "ResolveListedValue へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
+            + $"{ListedValueFilterResolverType}.{ListedValueFilterResolverMethod} へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
             + "(通さないと、許可リストに無い値で監査ログ全件が返るのに注意書きが出ない)。");
     }
 
@@ -4451,7 +4456,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.UnlistedFilterIgnored,
             $"?{parameterName}={UnlistedAuditValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
-            + $"{parameterName} を ResolveListedValue へ通し、その Ignored を"
+            + $"{parameterName} を {ListedValueFilterResolverType}.{ListedValueFilterResolverMethod} へ通し、その Ignored を"
             + "UnlistedFilterIgnored へ写しているか確認すること。");
 
         // 絞り込みは掛かっていない(全件が返る)。注意書きはまさにこの状態を伝えるためにある
@@ -4607,22 +4612,11 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     //
     // 1 つも拾えなければ落とす(fail-closed)。書き方を変えると
     // 「対象ゼロ＝全件緑」で下の Razor 走査が黙って死ぬため
-    public static TheoryData<string> AuditLogsIgnoredFilterFlags()
-    {
-        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
-        var flags = AuditLogsIgnoredFilterFlagNames();
-
-        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
-        Assert.True(flags.Count > 0,
-            $"{nameof(AuditLogsController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
-            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
-            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
-
-        // xUnit の [MemberData] が読める形へ詰めて返す
-        var data = new TheoryData<string>();
-        foreach (var flag in flags) data.Add(flag);
-        return data;
-    }
+    public static TheoryData<string> AuditLogsIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            AuditLogsIgnoredFilterFlagNames(),
+            $"{nameof(AuditLogsController)} に「… = ….Ignored」の代入が 1 つも見つからない");
 
     // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
     private static List<string> AuditLogsIgnoredFilterFlagNames() =>
@@ -4634,14 +4628,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
     public void AuditLogsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)
         AssertIgnoredFilterNoticeIsRendered("AuditLogs", ViewModelFlagAccessor, flag);
 
     // 旗ごとの見出しが互いに違うこと(理由は他の 2 画面と同じ)。
     // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
     [Fact]
     public void AuditLogsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "AuditLogs", ViewModelFlagAccessor, AuditLogsIgnoredFilterFlagNames());
 
@@ -4655,8 +4649,616 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
     public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
-        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        // 走査そのものは共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("AuditLogs", ViewModelFlagAccessor, flag);
+
+    // --- ダッシュボード(/): 選べる値ではない集計期間(?period=) -----------------------
+
+    // ダッシュボードが立てる旗を、コントローラのソースから導く。
+    // 導出の理由・fail-closed にする理由は AuditLogsIgnoredFilterFlags とまったく同じ
+    // (走査は IgnoredFilterFlagNamesIn を画面名だけ変えて使い回す。§6 DRY)
+    public static TheoryData<string> DashboardIgnoredFilterFlags() =>
+        // コントローラのソースから拾った旗を、共通の組み立てへ渡す
+        IgnoredFilterFlagCases(
+            DashboardIgnoredFilterFlagNames(),
+            $"{nameof(HomeController)} に「… = ….Ignored」の代入が 1 つも見つからない");
+
+    // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
+    private static List<string> DashboardIgnoredFilterFlagNames() =>
+        IgnoredFilterFlagNamesIn(nameof(HomeController));
+
+    // 旗をダッシュボードのビューが実際に読んでいることを確かめる
+    // (コントローラ級の検査は ViewModel までしか見ないので、@if のブロックごと消しても
+    //  全件緑のまま通る ——他の 3 画面とまったく同じ理由・同じやり方で塞ぐ)
+    [Theory]
+    [MemberData(nameof(DashboardIgnoredFilterFlags))]
+    public void DashboardIndexView_RendersTheIgnoredFilterNotice(string flag) =>
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        AssertIgnoredFilterNoticeIsRendered("Home", ViewModelFlagAccessor, flag);
+
+    // 旗ごとの見出しが互いに違うこと(理由は他の 3 画面と同じ)。
+    // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
+    [Fact]
+    public void DashboardIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        AssertIgnoredFilterNoticeHeadingsAreDistinct(
+            "Home", ViewModelFlagAccessor, DashboardIgnoredFilterFlagNames());
+
+    // <b>この画面には「絞り込みパネルが開くこと」の検査を置かない。</b>
+    // 他の 3 画面の注意書きは「下の『絞り込み』から選び直してください」と案内するので、
+    // パネルが実際に開くことまで見ないと案内が宙に浮く。ダッシュボードには絞り込み
+    // パネルが無く、案内先は画面上部の期間切替ボタンで、それは旗と無関係に常に出ている。
+    // 無いものを見る検査を足すと「実行不能な指示」になるので置かない
+    // ——代わりに、そのボタンの識別子と許可リストが一致することを下の検査が固定する。
+
+    // 期間切替のボタンが、許可リストと<b>同じ 1 つの宣言</b>から描かれていること。
+    //
+    // <b>なぜ「一致しているか」ではなく「1 つから描いているか」を見るのか。</b>
+    // 最初はビューの <c>?period=…</c> のリンクを拾って許可リストと突き合わせていたが、
+    // <b>実測でその走査には穴があった</b> ——同じリンクをタグヘルパー
+    // (<c>asp-route-period="@DashboardViewModel.PeriodDecade"</c>)で書いた 5 つ目のボタンは
+    // 拾う綴りに当たらず、許可リストに無い識別子のボタンが出るのに<b>全件緑のまま通った</b>
+    // (押すと画面が自分で出したリンクを自分で「選べる値ではない」と拒否する)。
+    // 綴りを足していく道は取らない ——この repo が繰り返し記録しているとおり、
+    // 近似で綴りを追う限りどちらかの穴が必ず残る。代わりに<b>食い違いが構造的に作れない形</b>
+    // (ビューが PeriodChoices を回す)へ寄せ、検査はその形が保たれていることだけを見る。
+    //
+    // <b>2 つを見る。</b> (a) 選択肢を回していること、(b) 期間のルート値を<b>回した変数以外から</b>
+    // 書いていないこと。(b) が無いと、回すコードを残したまま手書きのボタンを 1 つ足せる。
+    [Fact]
+    public void DashboardPeriodSwitcher_IsRenderedFromTheSingleSource()
+    {
+        // ダッシュボードのビューを開く(Razor のコメントは落としてある)
+        var source = ReadIndexViewSource("Home");
+
+        // (a) 選択肢を回していること。回していなければ、ボタンは手書きに戻っている。
+        // <b>回しは 1 つとは限らない</b> ——画面幅で出し分ける等で同じ回しが 2 つ並ぶのは
+        // 普通の書き方なので、先頭 1 つだけを見ると<b>正しいマークアップが赤くなる</b>
+        // (2 つ目の回しの中のリンクが「回しの外」と判定される)。すべて拾う
+        var loops = Regex.Matches(
+                source,
+                $@"@foreach\s*\(\s*var\s+(?<item>\w+)\s+in\s+{nameof(DashboardViewModel)}"
+                + $@"\.{nameof(DashboardViewModel.PeriodChoices)}\s*\)")
+            .ToList();
+        Assert.True(loops.Count > 0,
+            $"Views/Home/Index.cshtml が {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} を回して期間切替を描いていない。"
+            + "手書きで並べると許可リストと画面が別々の宣言になり、ずれてもどちらの向きでも"
+            + "動いてしまう(押せないのに受け付ける隠し値か、押した瞬間に自分で拒否するボタン)。"
+            + "回し方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 各回しの本体の範囲と、その回しが使っている変数名を集める
+        var loopBodies = new List<(int Start, int End, string Item)>();
+        foreach (Match loop in loops)
+        {
+            // 回しの本体を切り出す
+            var body = ExtractBraceBlock(source, loop.Index);
+            Assert.True(body != null,
+                $"Views/Home/Index.cshtml の @foreach (… in "
+                + $"{nameof(DashboardViewModel.PeriodChoices)}) に本体が無い。");
+            // 本体は source の部分文字列なので、位置は「回しの開始以降・本体の長さ分」で決まる
+            var bodyStart = source.IndexOf(body!, loop.Index, StringComparison.Ordinal);
+            loopBodies.Add((bodyStart, bodyStart + body!.Length, loop.Groups["item"].Value));
+        }
+
+        // (b) 期間のルート値を作っている箇所を全部拾う。
+        //
+        // 以前はここで「?period= / asp-route-period= の綴り」だけを拾っていたが、
+        // <b>実測でその綴り合わせに穴があった</b> —— `@Url.Action("Index",
+        // new { period = "decade" })` で組み立てた手書きのボタンはどちらの綴りにも
+        // 当たらず、全件緑のまま「画面が自分で出したリンクを自分で拒否する」状態が作れた。
+        //
+        // 拾うのは「period をルート値の名前として書いている」形だけ:
+        // クエリ文字列・タグヘルパー・<b>匿名オブジェクトの中の</b>プロパティ・文字列キー。
+        // 匿名オブジェクトの中に限るのは、素の `period\s*=` まで拾うと
+        // `@{ var period = Model.Period; }` のような<b>ごく普通のローカル</b>で赤くなり、
+        // 案内される直し方(「回しの中から出せ」)では直らない行き止まりになるため
+        var routeKeyUses = PeriodRouteKeyUses(source).ToList();
+
+        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)
+        Assert.True(routeKeyUses.Count > 0,
+            "Views/Home/Index.cshtml に期間のルート値の指定が 1 つも無い。"
+            + "期間切替の書き方を変えたなら、この照合も同じ変更セットで直すこと"
+            + "(直さないと、手書きのボタンが全件緑のまま通る)。");
+
+        // 回しの外で書かれているもの(手書きのボタン)を集める。
+        //
+        // <b>「いまの期間のまま再読み込み」の類は通す。</b> 禁じたいのは<b>識別子を手で書く</b>
+        // ことなので、`asp-route-period="@Model.Period"` のように<b>受け取った期間をそのまま
+        // 渡す</b>形は許可リストの外の値を作りようがない。通さないと、その導線は
+        // 「回しの中から出せ」という<b>従いようのない</b>案内を受けることになり
+        // (回しに入れると 4 本のリンクになってしまい、同じ部品ではない)、
+        // 緑へ戻す道が「その導線を作らない」か「走査を緩める」しか無くなる
+        var handWritten = routeKeyUses
+            .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Where(m => !Regex.IsMatch(
+                source[(m.Index + m.Length)..], @"^\s*=?\s*""?\s*@Model\.Period\b"))
+            .Select(m => LineAt(source, m.Index))
+            .ToList();
+        Assert.True(handWritten.Count == 0,
+            $"期間のルート値が {nameof(DashboardViewModel.PeriodChoices)} の回しの外でも書かれている: "
+            + $"{string.Join(" / ", handWritten)}。手書きのボタンは許可リストとずれても"
+            + "動いてしまう(押した瞬間に「選べる値ではない」と自分で拒否する)ので、"
+            + "回しの中から回した変数の Id で出すこと。");
+
+        // (c) 回しの中でも、渡しているのが<b>その変数の Id</b> であること。
+        // 置き場所だけを見ていた頃は `?period=@choice.Label` が素通りし、
+        // 全部のボタンが「選べる値ではない」値を指す状態が全件緑のまま作れた
+        // (失敗文言は「@choice.Id で出せ」と言うのに、それを確かめてはいなかった)
+        var wrongValue = new List<string>();
+        foreach (Match use in routeKeyUses)
+        {
+            // この箇所を含む回し。回しの外にあるものは上の (b) が「受け取った期間を
+            // そのまま渡す導線」として通したものなので、ここでは見ない
+            // (見ると「回しの中の変数の Id か」を回しの外に対して問うことになり、
+            //  その導線に対して必ず落ちる ——実測で Sequence contains no matching element)
+            var body = loopBodies.FirstOrDefault(b => use.Index >= b.Start && use.Index < b.End);
+            if (body.Item is null) continue;
+            // 指定の直後に続く綴りを見る(= や引用符・@ は書き方によって付いたり付かなかったりする)
+            var following = source[(use.Index + use.Length)..];
+            // `@choice.Id` と `@(choice.Id)` はどちらも普通の書き方なので両方通す
+            // (括弧付きを落としていた頃は、正しいビューが「Id 以外を渡している」という
+            //  事実と違う理由で赤くなった ——そういう検出網はいずれ緩められる)
+            if (!Regex.IsMatch(following, $@"^\s*=?\s*""?\s*@?\(?\s*{Regex.Escape(body.Item)}\.Id\b"))
+                wrongValue.Add(LineAt(source, use.Index));
+        }
+        Assert.True(wrongValue.Count == 0,
+            $"期間のルート値に、回した変数の Id 以外を渡している: {string.Join(" / ", wrongValue)}。"
+            + "ラベルや別の値を渡すと、画面が出したリンクすべてが許可リストに無い値を指し、"
+            + "押すたびに「選べる値ではない」の注意書きが出る。");
+
+        // (d) 回しの外では、期間を<b>渡す</b>ことはできても<b>分岐する</b>ことはできない。
+        //
+        // <b>なぜ「綴りの禁止」ではなくこの形か(実測)。</b> はじめは `Model.Period ==` という
+        // 綴りを禁じていたが、<b>左右を入れ替えるだけで素通りした</b>
+        // (`DashboardViewModel.PeriodWeek == Model.Period ? …`)。`!=` ・ `switch` 式 ・
+        // `string.Equals` も同じ。綴りを足していく道は、この repo が繰り返し記録しているとおり
+        // どちらかの穴が必ず残る。そこで<b>許す形のほうを決め打つ</b>:
+        // 回しの外に現れる `Model.Period` は、選択肢から導く関数
+        // (`DashboardViewModel.<何か>(Model.Period)`)の引数としてだけ書ける。
+        // 比較・分岐はその形に当たらないので、綴りが何通りあっても落ちる。
+        //
+        // これが要るのは、KPI カードに「週間 / 月間 / 四半期 / 年間」を選ぶ手書きの三項演算子の
+        // 連鎖があり、既定の分岐が「年間」だったから ——集計窓を選択肢へ移したあとも
+        // この連鎖だけが残っており、期間を 1 つ増やすと「10年」のボタンが選択中のまま
+        // 10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れた
+        var periodUses = Regex.Matches(source, @"Model\.Period\b")
+            .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Where(m =>
+            {
+                // その手前が「選択肢から導く関数への引数」または「期間のルート値」になっているか
+                // (後者は受け取った期間をそのまま渡す導線。識別子を手で書いてはいない)
+                var before = source[..m.Index];
+                // ルート値としてそのまま渡す形だけを通す。<b>素の `period =` を通さない</b>のが要点 ——
+                // 通していた頃は `@{ var period = Model.Period; }` と書いてから
+                // その<b>ローカル</b>で分岐する形が全件緑で通り、検査が 1 ホップで無力化された
+                return !IsWrittenDirectlyFromADerivation(source, m.Index)
+                    && !Regex.IsMatch(
+                        before,
+                        @"(?:\?period=|asp-route-period\s*=\s*""|new\s*\{[^}]*?\bperiod\s*=)\s*@?$",
+                        RegexOptions.IgnoreCase);
+            })
+            .Select(m => LineAt(source, m.Index))
+            .Distinct(StringComparer.Ordinal)
+            .ToList();
+        Assert.True(periodUses.Count == 0,
+            $"期間で分岐している箇所が回しの外にある: {string.Join(" / ", periodUses)}。"
+            + "既定の分岐を持つ手書きの対応付けは、期間を足したときに黙って古い値を出す"
+            + $"(実際 KPI カードの見出しがこの形だった)。対応付けは {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューは "
+            + $"{nameof(DashboardViewModel)}.<導出>(Model.Period) の形で引くこと。");
+    }
+
+    // 期間のルート値を<b>ダッシュボード以外のビューで</b>手書きしていないこと。
+    //
+    // <b>なぜ別の検査として要るのか(実測)。</b> 上の
+    // DashboardPeriodSwitcher_IsRenderedFromTheSingleSource が見るのは
+    // Views/Home/Index.cshtml だけなので、同じリンクを _Layout.cshtml や任意のパーシャルへ
+    // 置くと<b>全件緑のまま</b>通る ——そして _Layout はダッシュボードを含む全ページに出るので、
+    // 「アプリが自分で出したリンクを、ダッシュボードが『選べる値ではない』と拒否する」
+    // 状態がそのまま起きる。この repo は同じ教訓を既に記録している
+    // (RepositoryPaths.EnumerateViewFiles の docstring:「パスの形で絞らない」)。
+    //
+    // 通すのは受け取った期間をそのまま渡す形(`@Model.Period`)だけ。<b>識別子を手で書く形</b>が
+    // 許可リストとずれる唯一の経路なので、そこだけを閉じる
+    [Fact]
+    public void PeriodRouteValues_AreNotHandWrittenInAnyOtherView()
+    {
+        // ダッシュボードのビューは上の検査が別の観点(回しから描いているか)で見るので除く
+        var dashboard = Path.Combine(RepositoryPaths.WebProject, "Views", "Home", "Index.cshtml");
+        // 走査の根は Web プロジェクト全体(Views/ の外に置いた .cshtml も対象に入る)
+        var views = RepositoryPaths.EnumerateViewFiles()
+            .Where(path => !string.Equals(path, dashboard, StringComparison.Ordinal))
+            .ToList();
+
+        // 1 つも読めないなら手がかりが死んでいる(fail-closed)
+        Assert.True(views.Count > 0, "ダッシュボード以外のビューが 1 つも見つからない。");
+
+        // 期間のルート値を手書きしている箇所を集める
+        var handWritten = new List<string>();
+        foreach (var view in views)
+        {
+            // Razor のコメントは落としてから探す(解説として綴りに触れている行を拾わない)
+            var source = RazorComment.Replace(File.ReadAllText(view), string.Empty);
+            foreach (Match use in PeriodRouteKeyUses(source))
+            {
+                // 受け取った期間をそのまま渡す形は通す(許可リストの外の値を作りようがない)
+                var following = source[(use.Index + use.Length)..];
+                if (Regex.IsMatch(following, @"^\s*=?\s*""?\s*@Model\.Period\b")) continue;
+                // それ以外は識別子を手で書いているので落とす
+                handWritten.Add($"{Path.GetFileName(view)}: {LineAt(source, use.Index)}");
+            }
+        }
+
+        Assert.True(handWritten.Count == 0,
+            $"ダッシュボード以外のビューで期間のルート値を手書きしている: "
+            + $"{string.Join(" / ", handWritten)}。許可リストに無い値を指すリンクになりうる"
+            + "(押すとダッシュボードが「選べる値ではない」と自分で拒否する)。"
+            + $"期間のリンクは {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} を回して出すか、"
+            + "受け取った期間(@Model.Period)をそのまま渡すこと。");
+    }
+
+    // 「period をルート値の名前として書いている」箇所を拾う<b>唯一の走査</b>。
+    //
+    // <b>2 つの検査が同じここを読む</b>(ダッシュボードのビュー用と、それ以外のビュー用)。
+    // 以前は同じ正規表現が一字一句の写しとして 2 か所にあり、新しい綴り
+    // (`Url.RouteUrl` / `Html.ActionLink` 等)を片方だけに足すと、もう片方が黙って狭いまま
+    // 残る形だった ——後者の検査の存在理由がまさに「片方の根しか見ていない穴」なので、
+    // 走査そのものが同じ穴を持っていては意味が無い(§6 DRY)。
+    //
+    // <b>文字列キーは「ルート値の文脈」ごと要求する(レビュー指摘)。</b> 以前は素のリテラル
+    // `"period"` を拾っていたが、この走査は<b>Web プロジェクトの全ビュー</b>に掛かるので、
+    // ルート値とは無関係な `ViewData["period"]` の読み出し・データ島の JSON のキー
+    // (`"period": …`)・`<input name="period">`・`asp-for="Period"`(IgnoreCase なので当たる)
+    // まで「期間のルート値を手書きしている」として名指しする。しかも失敗文言が案内する
+    // 直し方は 2 つとも当てはまらない ——そのビューは DashboardViewModel を持たないので
+    // 「PeriodChoices を回して出す」ことも「@Model.Period をそのまま渡す」こともできず、
+    // 緑へ戻す道が「無関係なキーを改名する」か「走査を緩める」しか無くなる。
+    // そこでキーの直後が<b>ルート値の組み立て</b>である形
+    // (`["period"] =` の添字代入 / `{ "period", … }` の辞書初期化子 /
+    //  `Add("period", …)` のようにキーを第 1 引数へ渡す呼び出し)だけを拾う。
+    // 素のリテラルだけではルート値を作りようがないので、覆う範囲は狭まっていない。
+    //
+    // <b>タグヘルパーの綴りにも `=` を要求する(レビュー指摘)。</b> 以前は
+    // `asp-route-period` を前方一致で拾っていたので、期間とは別のルート値
+    // (`asp-route-periodType="comparison"` 等)まで「期間のルート値を手書きしている」と
+    // 名指しした ——`\b` では閉じない(`d` と `T` の間に境界は無い)。案内される直し方は
+    // どちらも当てはまらないので、上と同じ<b>直しようの無い赤</b>になる
+    private static IEnumerable<Match> PeriodRouteKeyUses(string source) =>
+        Regex.Matches(
+                source,
+                @"(?:\?period=|asp-route-period\s*=|new\s*\{[^}]*?\bperiod\s*="
+                + @"|\[\s*""period""\s*\]\s*=|[\{\(]\s*""period""\s*,)",
+                RegexOptions.IgnoreCase)
+            .Cast<Match>();
+
+    // その `Model.Period` が「導出の引数として渡され、結果がそのまま書き出されている」形か。
+    //
+    // <b>手前の綴りだけを見てはいけない(レビュー指摘・実測)。</b> 以前は直前が
+    // `DashboardViewModel.<何か>(` であることだけを見ていたので、<b>導出の結果で分岐する</b>形
+    // ——`@(DashboardViewModel.UsesDailyTrendBuckets(Model.Period) ? "週間" : "年間")"—— が
+    // そのまま通った。これは既定の分岐を持つ手書きの対応付けそのもので、実際に当てると
+    // 月・四半期を選んでいるのに「年間インシデント数」と出るのに<b>全件緑のまま</b>だった。
+    // (d) の存在理由そのものが 1 ホップで無力化されていたことになる。
+    //
+    // <b>綴りを禁じるのではなく、書ける形を決め打つ。</b> Razor の暗黙式
+    // (`@DashboardViewModel.X(Model.Period)`)は `)` で式が終わるので、そもそも三項も
+    // `switch` 式も書けない ——安全なのは文法の性質であって、こちらが列挙した綴りではない。
+    // 分岐を書けるのは明示式 `@( … )` と `@{ … }` のほうなので、明示式は
+    // <b>中身がちょうど導出の呼び出し 1 つ</b>であることまで要求する。
+    // こうすると「知らない演算子」を足されても、正しい形が消えた時点で落ちる
+    private static bool IsWrittenDirectlyFromADerivation(string source, int index)
+    {
+        // その出現を囲む Razor の式の先頭(@)を探す(無ければ式ですらない)
+        var at = source.LastIndexOf('@', index);
+        if (at < 0) return false;
+        // 先頭から先の綴りだけを見る
+        var tail = source[at..];
+        // 通す呼び出しの形(導出の引数がちょうど Model.Period 1 つ)
+        var call = $@"{nameof(DashboardViewModel)}\.\w+\(\s*Model\.Period\s*\)";
+        // 明示式なら、丸かっこの中身がちょうどその呼び出しだけであること
+        if (at + 1 < source.Length && source[at + 1] == '(')
+            return Regex.IsMatch(tail, $@"^@\(\s*{call}\s*\)");
+        // 暗黙式なら、その呼び出しで式が終わる(Razor の文法上、分岐を書きようがない)
+        return Regex.IsMatch(tail, $@"^@{call}");
+    }
+
+    // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
+    private static string LineAt(string source, int index)
+    {
+        // 直前の改行の次から
+        var start = source.LastIndexOf('\n', Math.Min(index, source.Length - 1)) + 1;
+        // 次の改行まで
+        var end = source.IndexOf('\n', index);
+        if (end < 0) end = source.Length;
+        return source[start..end].Trim();
+    }
+
+    // 期間ごとの集計窓が互いに違うこと。
+    //
+    // <b>なぜ要るのか(実測)。</b> 集計窓の対応付け(PeriodStart / MonthsFor)は
+    // <b>既定の分岐を持つ switch</b> なので、選択肢を 1 つ増やしただけでは赤くならない。
+    // 実際 (PeriodDecade, "10年") を足すと全件緑のまま、画面には「10年」のボタンが出て、
+    // 押すと許可リストは通る(Periods は選択肢から導くので)のに集計窓は既定へ落ちて
+    // <b>1 年分の KPI が「10年」の選択中表示のまま出る</b> ——注意書きも出ない。
+    // 窓が year と同じになった時点でここが落ちるので、期間を足す人は窓も必ず決めることになる。
+    //
+    // 月別の月数は日別で描く期間(week)を除いて見る ——あちらは MonthsFor を通らない
+    [Fact]
+    public void DashboardPeriodWindows_AreDistinctForEveryChoice()
+    {
+        // <b>1 日だけで確かめない。</b> 窓の求め方は暦に依存する(AddMonths / AddYears は
+        // 月の長さやうるう年で伸び縮みする)ので、ある 1 日でたまたま違っていても別の日に
+        // 重なりうる ——たとえば「31 日ぶんの日別期間」と「1 か月」は、前月が 31 日なら
+        // 1 日ずれるが、前月が 30 日ならぴたり重なる。1 年ぶんの各日で確かめる
+        // <b>うるう日を必ず含める(レビュー指摘・実測)。</b> 2026 年は平年なので、
+        // 1 年ぶんだけ掃くと 2 月 29 日が 1 日も現れず、コメントが理由として挙げている
+        // <b>うるう年の重なり</b>を一度も試していなかった ——たとえば日数 30 の日別期間は
+        // `today.AddDays(-29)` なので、前月が 29 日のときだけ「1 か月」と窓がぴたり重なる
+        // (2028-03-01 等)。平年の 3 月 1 日では 1 日ずれるので、平年だけを掃くと見えない。
+        // うるう日をまたぐよう 4 年ぶんを掃く
+        var referenceDays = Enumerable.Range(0, 366 * 3 + 365)
+            .Select(offset => new DateTime(2026, 1, 1).AddDays(offset))
+            .ToList();
+
+        // うるう日を実際に含んでいること(掃引の起点や長さを変えたときに黙って外れないよう、
+        // 掃引そのものとは別の手がかりで照合する)
+        Assert.Contains(referenceDays, day => day is { Month: 2, Day: 29 });
+
+        // すべての基準日で、同じ開始日になる期間の組があれば落とす
+        var collidingStarts = referenceDays
+            .SelectMany(today => DashboardViewModel.Periods
+                .Select(period => (Today: today, Period: period,
+                    Start: DashboardViewModel.PeriodStart(period, today))))
+            .GroupBy(x => (x.Today, x.Start))
+            .Where(g => g.Count() > 1)
+            .Select(g => $"{g.Key.Today:yyyy-MM-dd} で "
+                + string.Join(" と ", g.Select(x => x.Period)))
+            .Distinct(StringComparer.Ordinal)
+            .Take(5)
+            .ToList();
+        Assert.True(collidingStarts.Count == 0,
+            $"集計窓の開始日が同じ期間がある: {string.Join(" / ", collidingStarts)}。"
+            + $"{nameof(DashboardViewModel.PeriodStart)} の既定の分岐へ落ちているか、"
+            + "暦の都合で特定の日だけ重なる窓を選んでいる。"
+            + "期間を足したなら、その期間の集計窓も同じ変更セットで決めること"
+            + "(決めないと、そのボタンが選択中のまま既定の期間の KPI が出る)。");
+
+
+        // 日別で描く期間のトレンド日数も、互いに違うこと
+        // (同じ日数なら窓も同じになり、上の開始日の照合で既に落ちるが、
+        //  原因を「日数の取り違え」として名指しできるのはこちらだけ)
+        var days = DashboardViewModel.Periods
+            .Where(DashboardViewModel.UsesDailyTrendBuckets)
+            .Select(period => (Period: period, Days: DashboardViewModel.DaysFor(period)))
+            .ToList();
+        var collidingDays = days
+            .GroupBy(x => x.Days)
+            .Where(g => g.Count() > 1)
+            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .ToList();
+        Assert.True(collidingDays.Count == 0,
+            $"日別トレンドの日数が同じ期間がある: {string.Join(" / ", collidingDays)}。"
+            + "期間を足したなら、その期間のグラフの窓も同じ変更セットで決めること。");
+
+        // 月別で描く期間のトレンド月数
+        var months = DashboardViewModel.Periods
+            .Where(period => !DashboardViewModel.UsesDailyTrendBuckets(period))
+            .Select(period => (Period: period, Months: DashboardViewModel.MonthsFor(period)))
+            .ToList();
+        // 同じ月数になる期間の組があれば落とす
+        var collidingMonths = months
+            .GroupBy(x => x.Months)
+            .Where(g => g.Count() > 1)
+            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
+            .ToList();
+        Assert.True(collidingMonths.Count == 0,
+            $"トレンドチャートの月数が同じ期間がある: {string.Join(" / ", collidingMonths)}。"
+            + $"{nameof(DashboardViewModel.MonthsFor)} の既定の分岐へ落ちている可能性が高い。"
+            + "期間を足したなら、その期間のチャートの窓も同じ変更セットで決めること。");
+    }
+
+    // 集計窓の向きを確かめるときの基準日(実行日に依存させないための固定日)
+    private static readonly DateTime WindowProbeDay = new(2026, 6, 15);
+
+    // 期間の選択肢が「唯一の源」として成立していること。
+    //
+    // <b>なぜ要るのか。</b> 許可リスト(Periods)も既定の表示名(DefaultPeriodLabel)も
+    // PeriodChoices から導いており、導出は<b>型の初期化時</b>に走る。したがって
+    // 選択肢が壊れると、赤くなるのはテストではなく<b>本番の実行時</b>になる:
+    // 既定の期間が選択肢から消えれば DefaultPeriodLabel の First が投げ、
+    // 宣言を PeriodChoices より前へ並べ替えれば PeriodChoices が null のまま評価され、
+    // どちらも型の初期化例外 ——ダッシュボードを開いた全員が 500 になり、
+    // しかもコンパイルは通る。ここで型に触っておけば、その状態は必ずテストで先に落ちる。
+    //
+    // あわせて「選択肢として成立するか」も見る: 識別子・ラベルが空でないこと
+    // (空のラベルは押せないボタンになる)、識別子が重複しないこと
+    // (同じ識別子が 2 つあると、どちらが選択中かを Period との比較で決められない)、
+    // ラベルが重複しないこと(同じ見た目のボタンが 2 つ並ぶ)。
+    [Fact]
+    public void DashboardPeriodChoices_AreUsableAsTheSingleSource()
+    {
+        // 選択肢そのものを読む(この行で型の初期化が走るので、導出の破綻はここで落ちる)
+        var choices = DashboardViewModel.PeriodChoices;
+
+        // 選択肢が空なら期間切替が画面から消える(fail-closed)
+        Assert.NotEmpty(choices);
+
+        // 識別子・2 つのラベルがいずれも空でないこと
+        // (空のラベルは押せないボタンや見出しの欠けた KPI カードになる)
+        Assert.All(choices, choice =>
+        {
+            Assert.False(string.IsNullOrWhiteSpace(choice.Id));
+            Assert.False(string.IsNullOrWhiteSpace(choice.Label));
+            Assert.False(string.IsNullOrWhiteSpace(choice.KpiLabel));
+        });
+
+        // 識別子・ボタンのラベルがそれぞれ重複しないこと。
+        // KPI の言い回しは重複を許す ——「四半期」は両方のラベルで同じ語を使うのが自然で、
+        // 禁じると意味の無い言い換えを強いることになる(識別子が重複しなければ取り違えは起きない)
+        Assert.Equal(choices.Count, choices.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count());
+        Assert.Equal(choices.Count, choices.Select(c => c.Label).Distinct(StringComparer.Ordinal).Count());
+
+        // KPI の言い回しが選択肢から引けること(引けないと見出しが既定へ黙って落ちる)
+        Assert.All(choices, choice =>
+            Assert.Equal(choice.KpiLabel, DashboardViewModel.KpiLabelFor(choice.Id)));
+
+        // トレンドの窓は「日別の日数」か「月別の月数」のどちらか一方だけを持つこと。
+        // 両方あると HomeController の分岐(UsesDailyTrendBuckets)が見ないほうが黙って死に、
+        // どちらも無いと窓が決まらない
+        Assert.All(choices, choice =>
+            Assert.True(
+                (choice.TrendDays is null) != (choice.TrendMonths is null),
+                $"期間 {choice.Id} は TrendDays と TrendMonths のどちらか一方だけを持つこと"
+                + "(日別で描くなら日数、月別なら月数)。"));
+
+        // その本数が 1 以上であること。
+        // <b>「どちらか一方だけ」では足りない</b> —— 0 はぬるぽではないので上の検査を通るが、
+        // 月数 0 だとバケットを作るループが 1 度も回らず<b>グラフが空</b>になる一方、
+        // KPI カードは窓ぶんの件数を出し、見出しは「直近0ヶ月」と名乗る(実測で全件緑)
+        Assert.All(choices, choice =>
+        {
+            Assert.True(choice.TrendDays is null or > 0,
+                $"期間 {choice.Id} の TrendDays は 1 以上であること(0 だとグラフが空になる)。");
+            Assert.True(choice.TrendMonths is null or > 0,
+                $"期間 {choice.Id} の TrendMonths は 1 以上であること(0 だとグラフが空になる)。");
+        });
+
+        // 集計窓の開始日が未来でないこと。
+        // 未来だと KPI は必ず 0 件になるのに、グラフは本数ぶん描かれる(上下で食い違う)
+        Assert.All(choices, choice =>
+            Assert.True(choice.WindowStart(WindowProbeDay) <= WindowProbeDay,
+                $"期間 {choice.Id} の集計窓の開始日が基準日より後になっている"
+                + "(KPI が必ず 0 件になるのに、グラフだけがその期間を描く)。"));
+
+        // 日別で描く期間は KPI の窓の求め方を上書きしないこと。
+        //
+        // <b>これが無いと KPI とグラフの窓がずれる。</b> 実測では、2 つ目の日別期間を
+        // 「窓は 14 日・TrendDays は 7」で足すと、KPI カードは 14 日ぶんを数えるのに
+        // グラフは 7 本で「直近7日間」と名乗る状態が全件緑のまま作れた。
+        // 省略すれば WindowStart が TrendDays から導くので、両者は必ず一致する
+        Assert.All(choices.Where(c => c.TrendDays is not null), choice =>
+            Assert.True(choice.StartOn is null,
+                $"日別で描く期間 {choice.Id} は StartOn を書かないこと"
+                + "(書くと KPI の窓とグラフの本数が別々に決まり、ずれても誰も気付けない)。"));
+
+        // 月別で描く期間は KPI の窓の求め方を<b>必ず</b>持つこと。
+        //
+        // <b>日別側と対になる検査。</b> 日別には「書くな」があるのに月別には「書け」が無く、
+        // 実測では StartOn を書き忘れた月別の選択肢が<b>全件緑のまま</b>通った ——
+        // WindowStart の最後の受け皿へ落ちて KPI が<b>当日ぶんだけ</b>になるのに、
+        // グラフは月数ぶん描かれ、ボタンは選択中に見える。窓の重なりの検査も
+        // 「today」は他と重ならないので通ってしまう
+        Assert.All(choices.Where(c => c.TrendMonths is not null), choice =>
+            Assert.True(choice.StartOn is not null,
+                $"月別で描く期間 {choice.Id} は StartOn を書くこと"
+                + "(書かないと KPI が当日ぶんだけになり、グラフとボタンだけがその期間を指す)。"));
+
+        // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
+        // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる
+        Assert.Contains(DashboardViewModel.PeriodYear, DashboardViewModel.Periods);
+
+        // 許可リストが選択肢の識別子そのもの(並びまで含めて)であること。
+        // 導出を書き換えて別の一覧を返す形にすると、画面と許可リストが再び別の宣言になる
+        Assert.Equal(choices.Select(c => c.Id).ToArray(), DashboardViewModel.Periods);
+    }
+
+    // 選択肢に無い期間を持つ ViewModel が、既定の期間の見え方へ落ちること。
+    //
+    // <b>なぜ固定するのか。</b> この落とし先は<b>黙って</b>効く(見出しも窓もグラフも year の
+    // もので、旗も立たない)。いまは HomeController だけがこの ViewModel を組み立て、必ず
+    // 解決処理を通すので到達しないが、Period には public の setter があるため、将来の構築
+    // 経路が許可リスト外の値を入れれば「year の見出しで year でないデータ」を出しうる。
+    // 落ちること自体は画面を落とさないための選択(§9 fail-safe)なので、<b>偶然ではなく
+    // 決めてそうしている</b>ことを差分に残す ——振る舞いを変えるならここが赤くなる。
+    [Fact]
+    public void DashboardChoiceLookup_FallsBackToTheDefaultPeriod()
+    {
+        // 許可リストに無い期間(コントローラ経由では起こらない値)
+        const string unlisted = "decade";
+        // 念のため、その値が本当に選択肢に無いことを確かめる(あると検査の意味が消える)
+        Assert.DoesNotContain(unlisted, DashboardViewModel.Periods);
+
+        // 見出し・集計窓・日別か月別か・月数のすべてが既定の期間と同じになる
+        var today = new DateTime(2026, 6, 15);
+        Assert.Equal(
+            DashboardViewModel.KpiLabelFor(DashboardViewModel.PeriodYear),
+            DashboardViewModel.KpiLabelFor(unlisted));
+        Assert.Equal(
+            DashboardViewModel.PeriodStart(DashboardViewModel.PeriodYear, today),
+            DashboardViewModel.PeriodStart(unlisted, today));
+        Assert.Equal(
+            DashboardViewModel.UsesDailyTrendBuckets(DashboardViewModel.PeriodYear),
+            DashboardViewModel.UsesDailyTrendBuckets(unlisted));
+        Assert.Equal(
+            DashboardViewModel.MonthsFor(DashboardViewModel.PeriodYear),
+            DashboardViewModel.MonthsFor(unlisted));
+    }
+
+    // 注意書きが案内する既定の期間名が、選択肢のラベルと同じであること。
+    //
+    // 注意書きは「既定の『1年』で集計しています」と案内するが、その「1年」はボタンのラベルで、
+    // 別々に書くと<b>画面に無いボタンを探させる案内</b>が残る(ボタンだけを「年間」へ
+    // 変えても、注意書きの文面しか見ない他の検査は全件緑のまま通る)。
+    // 既定の期間そのもの(year へ丸めること)は HomeControllerTests が固定しているので、
+    // ここが見るのは<b>ラベルの一致だけ</b>
+    [Fact]
+    public void DashboardIndexView_NoticeNamesTheDefaultPeriodLabel()
+    {
+        // ダッシュボードのビューを開く(Razor のコメントは落としてある)
+        var source = ReadIndexViewSource("Home");
+        // 旗で出し分けている注意書きのブロックを<b>すべて</b>拾う。
+        // 先頭 1 つだけを見ていた頃は、2 つ目の旗(例: 将来の ?dateFrom= 用)を
+        // 期間の注意書きより上へ足しただけで、期間側は正しいのにこの検査が落ち、
+        // しかも失敗文言は<b>別のブロック</b>を指して直しようが無かった
+        var blocks = Regex.Matches(
+                source, $@"@if\s*\(\s*{Regex.Escape(ViewModelFlagAccessor)}\w*{IgnoredFlagSuffix}\b")
+            .Select(header => ExtractBraceBlock(source, header.Index))
+            .Where(body => body != null)
+            .ToList();
+        Assert.True(blocks.Count > 0, "Views/Home/Index.cshtml に注意書きの出し分けが無い。");
+
+        // 既定の期間名を<b>参照で</b>書いているブロックがちょうど 1 つあること。
+        //
+        // ラベルの文字列ではなく参照そのものを見るのは、以前の「文面に含まれるか」では
+        // 「1年」→「年」のような<b>部分文字列への改名</b>が素通りしたため
+        // (実測: ボタンが「年」になっても注意書きは「既定の『1年』」のまま全件緑)。
+        // 参照で書かれていれば、文言は定義から 1 本で決まるので比べる必要が無い
+        var reference = $"{nameof(DashboardViewModel)}.{nameof(DashboardViewModel.DefaultPeriodLabel)}";
+        var naming = blocks.Count(body => body!.Contains(reference, StringComparison.Ordinal));
+        Assert.True(naming == 1,
+            $"既定の期間名を {reference} で書いている注意書きが {naming} 件ある(1 件であるべき)。"
+            + "期間の注意書きはラベルを直書きせずこの参照から出すこと"
+            + "(直書きすると、ボタンのラベルを変えたときに画面に無いボタンを探させる案内が残る)。");
+    }
+
+    // 集計期間が共有の解決処理を通っていること。
+    //
+    // 上の照合は「画面と許可リストが一致している」ことしか見ないので、
+    // <b>コントローラが許可リストを使っていない</b>形(自前の switch で既定へ丸めるだけ、
+    // ＝この変更の前の状態)は素通りする。そのとき壊れるのは「採用しなかったことを伝える」
+    // 側だけで、画面は正しい期間を表示し続けるため behavioural な検査以外に痕跡が出ない。
+    // 原因(配線漏れ)をコントローラのソースで名指しして落とす
+    // (/AuditLogs の AuditLogsListedFilters_AllGoThroughTheResolver と同じ形)
+    [Fact]
+    public void DashboardPeriodFilter_GoesThroughTheResolver()
+    {
+        // コントローラのソースを開く(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(HomeController)}.cs");
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        // コメントを落としてから走査する(説明コメント中の呼び出し例を配線と取り違えない)
+        var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
+
+        // 「共有の解決処理へ period と許可リストを渡している」ことを見る。
+        // 許可リストまで見るのは、別の配列を渡す形(自前で作った 4 要素の配列など)だと
+        // 画面との一致を見る上の検査が効かなくなるため
+        Assert.Matches(
+            $@"{ListedValueFilterResolverType}\.{ListedValueFilterResolverMethod}"
+            + $@"\s*\(\s*period\s*,\s*{nameof(DashboardViewModel)}\.{nameof(DashboardViewModel.Periods)}\s*\)",
+            source);
+    }
 
     /// <summary>
     /// 注意書きが案内する先(絞り込みパネル)が実際に開くこと、そして
@@ -4676,7 +5278,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 表示は<b>バッジと 0 件時の文言の 2 つ</b>で、どちらも <c>anyFilter</c> で
     /// 出し分けていることを見る(<c>showFilterPanel</c> は「開くかどうか」なので対象外)。</para>
     ///
-    /// <para><b>2 画面で共有する(§6 DRY)。</b> 以前は <c>/Incidents</c> 用の走査を
+    /// <para><b>画面をまたいで共有する(§6 DRY)。</b> 以前は <c>/Incidents</c> 用の走査を
     /// <c>/AuditLogs</c> へ手で写しており、その写しで<b>0 件時の文言の検査だけが落ちていた</b>
     /// ——同じコミットが隣の 2 つの走査を共通化したのに、これだけ写したせいで
     /// 片方の画面が守られていなかった。走査を 1 つにすれば、画面ごとに違うのは
@@ -5699,6 +6301,13 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <summary>解決処理の型名(<c>internal</c> なので <c>nameof</c> できず綴りで持つ)。</summary>
     private const string UnlistedEnumFilterResolverType = "UnlistedEnumFilterResolver";
 
+    // 許可リストで閉じた絞り込みの共有解決処理。型名・メソッド名を<b>文字列で</b>持つのは、
+    // この helper が同じディレクトリの 4 つと同じく internal で、テストプロジェクトからは
+    // 参照できないため(UnlistedEnumFilterResolverType と同じ扱い。改名されればこの照合は
+    // 赤くなる＝素通りではないので、倒れる向きは安全側)
+    private const string ListedValueFilterResolverType = "ListedValueFilterResolver";
+    private const string ListedValueFilterResolverMethod = "Resolve";
+
     /// <summary>解決処理のメソッド名(上と同じ理由で綴りで持つ)。</summary>
     private const string UnlistedEnumFilterResolverMethod = "Resolve";
 
@@ -5758,13 +6367,34 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         (Nullable.GetUnderlyingType(type) ?? type).Name;
 
     /// <summary>引数の型シンボルの単純名を返す(<c>Nullable&lt;T&gt;</c> は中身を見る)。</summary>
-    /// <remarks>綴りの規則は <see cref="UnderlyingTypeName(Type)"/> と対。</remarks>
+    /// <remarks>
+    /// <para>綴りの規則は <see cref="UnderlyingTypeName(Type)"/> と対。一致は
+    /// <see cref="UnderlyingTypeName_AgreesBetweenReflectionAndSymbols"/> が固定する。</para>
+    ///
+    /// <para><b>総称の実引数の個数はシンボル側で補う(レビュー指摘)。</b>
+    /// <c>Type.Name</c> は総称だと個数を含む(<c>List`1</c>)のに <c>ISymbol.Name</c> は
+    /// 含まない(<c>List</c>)ので、補わないと<b>総称を受ける引数でだけ 2 つの綴りが割れる</b>。
+    /// 割れるとその引数は「宣言がソース上に見つからない」へ倒れ、<b>直し方が読み取れない赤</b>に
+    /// なる ——兄弟の <see cref="ReflectionStyleTypeName(INamedTypeSymbol)"/> が同じ穴を踏んで
+    /// 同じ直し方をしている。いまは見に行く引数が enum だけ(enum は総称になれない)なので
+    /// 発火しないが、綴りの写しが 2 つある状態を残さない。</para>
+    /// </remarks>
     /// <param name="type">ソースから解決した引数の型シンボル。</param>
     /// <returns>単純名。</returns>
     private static string UnderlyingTypeName(ITypeSymbol type) =>
         // Nullable<T> は構築済みの総称型として現れるので、中身の名前を取る
-        type is INamedTypeSymbol { IsGenericType: true, Name: "Nullable" } nullable
-            ? nullable.TypeArguments[0].Name
+        SimpleNameWithArity(
+            type is INamedTypeSymbol { IsGenericType: true, Name: "Nullable" } nullable
+                ? nullable.TypeArguments[0]
+                : type);
+
+    /// <summary>型シンボルの単純名を、<c>Type.Name</c> と同じく総称の個数付きで返す。</summary>
+    /// <param name="type">型シンボル。</param>
+    /// <returns>総称なら <c>名前`個数</c>、そうでなければ名前。</returns>
+    private static string SimpleNameWithArity(ITypeSymbol type) =>
+        // 総称のときだけ Type.Name と同じ '`個数' を添える
+        type is INamedTypeSymbol { Arity: > 0 } generic
+            ? $"{generic.Name}`{generic.Arity}"
             : type.Name;
 
     /// <summary>
@@ -6065,5 +6695,64 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         Assert.Equal(
             ReflectionStyleTypeName(typeof(ArityProbeOuter<>.Inner)),
             ReflectionStyleTypeName(containingType));
+    }
+
+    /// <summary>
+    /// 引数の型の単純名が、<b>リフレクション側とソース側で同じ綴り</b>になること。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>なぜ要るのか。</b> <c>Type.Name</c> は総称の実引数の個数を含む(<c>List`1</c>)
+    /// のに <c>ISymbol.Name</c> は含まない(<c>List</c>)ので、<see cref="UnderlyingTypeName(Type)"/>
+    /// と <see cref="UnderlyingTypeName(ITypeSymbol)"/> を素直に書くと<b>総称を受ける引数でだけ
+    /// 綴りが割れる</b>。割れた引数は「宣言がソース上に見つからない」へ倒れ、直し方が読み取れない
+    /// 赤になる。兄弟の
+    /// <see cref="ReflectionStyleTypeName_AgreesBetweenReflectionAndSymbols"/> は
+    /// 同じ穴を踏んで同じ形で固定してあるのに、こちらの対には照合が無かった(レビュー指摘)。</para>
+    ///
+    /// <para><b>手書きの文字列と比べない。</b> 期待値を literal で書くと、<c>Type.Name</c> の
+    /// 綴りについての思い込みが違っていても<b>ソース側と literal が揃ったまま</b>
+    /// リフレクション側とだけずれる。<b>2 つの実装どうし</b>を比べる。</para>
+    ///
+    /// <para><b>いまは発火しない。</b> 見に行く引数は enum だけで、enum は総称になれないので
+    /// 本番の署名でこの差は現れない。合成入力でしか固定できない
+    /// (だからこそ、実装から arity を落としても本番の全件は緑のままになる)。</para>
+    /// </remarks>
+    [Fact]
+    public void UnderlyingTypeName_AgreesBetweenReflectionAndSymbols()
+    {
+        // 参照アセンブリ無しで解決できるよう、型も引数の型もすべてソースの中で宣言する
+        const string source = """
+            namespace IncidentInsight.Tests.Controllers;
+
+            public class UnlistedFilterValuePolicyTests
+            {
+                private sealed class ArityProbeOuter<T>
+                {
+                    internal sealed class Inner
+                    {
+                    }
+                }
+
+                private sealed class ArityProbeHolder
+                {
+                    public void M(ArityProbeOuter<ArityProbeHolder> value)
+                    {
+                    }
+                }
+            }
+            """;
+
+        // ソースを解析して意味モデルを組み立てる
+        var tree = CSharpSyntaxTree.ParseText(source);
+        var model = CSharpCompilation.Create("UnderlyingArityProbe", new[] { tree }).GetSemanticModel(tree);
+
+        // 総称型を受けるメソッド宣言から、その引数のシンボルを取り出す
+        var method = tree.GetRoot().DescendantNodes().OfType<MethodDeclarationSyntax>().Single();
+        var parameter = model.GetDeclaredSymbol(method)!.Parameters.Single();
+
+        // ソース側の綴りが、実在する同じ形の型のリフレクション側の綴りと一致すること
+        Assert.Equal(
+            UnderlyingTypeName(typeof(ArityProbeOuter<UnlistedFilterValuePolicyTests>)),
+            UnderlyingTypeName(parameter.Type));
     }
 }

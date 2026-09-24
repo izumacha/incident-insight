@@ -11,22 +11,158 @@ public class DashboardViewModel
     public const string PeriodQuarter = "quarter"; // 直近 3 か月
     public const string PeriodYear    = "year";    // 直近 1 年(既定値)
 
-    // 週表示のトレンドチャートで並べる日数。集計ループ(HomeController)と
-    // 見出し(TrendChartTitle)の双方がこの定数から導出され、食い違いを防ぐ
-    public const int WeekDays = 7;
+    // 集計期間の選択肢(識別子と画面のラベルの対)。<b>期間についての唯一の真実の源</b>で、
+    // 許可リスト(Periods)も画面の期間切替ボタンも既定の表示名もここから導く。
+    //
+    // <b>なぜ対にして 1 本にするのか。</b> 以前は識別子の配列(許可リスト)と、画面に
+    // 手書きで並ぶ 4 つのボタンが別々の宣言で、ずれても<b>どちらの向きでも動いてしまう</b>:
+    // 許可リストだけに増えた識別子は「押せないのに受け付ける」隠し値になり、ボタンだけに
+    // 増えた識別子は<b>押した瞬間に「選べる値ではない」の注意書きが出る</b>
+    // (画面が自分で出したリンクを自分で拒否する)。当初はその食い違いをビューのソース走査で
+    // 見張っていたが、<b>実測でその走査には穴があった</b> ——リンクをタグヘルパー
+    // (asp-route-period)で書いた 5 つ目のボタンは走査の綴りに当たらず、全件緑のまま
+    // 上の「自分で出したリンクを自分で拒否する」状態が作れた。
+    // 走査に綴りを足していく道は取らず(この repo が繰り返し記録している
+    // 「近似である限りどちらかの穴が必ず残る」形)、<b>食い違いが構造的に作れない形</b>へ寄せた
+    // ——ビューはこの配列を回してボタンを描くので、2 つ目の宣言そのものが存在しない。
+    //
+    // 並びはそのまま画面の並び(週 → 月 → 四半期 → 1年)。
+    // ラベルもここに持つのは §6「UI 文言は単一の参照元に集約する」に従うため
+    // (注意書きが案内する既定の期間名も DefaultPeriodLabel 経由でここを読む)。
+    //
+    // <b>ラベルが 2 つあるのは、画面に 2 通りの言い回しが要るから。</b> 期間切替のボタンは
+    // 「週 / 月 / 四半期 / 1年」、KPI カードの見出しは「週間インシデント数」のように
+    // 「週間 / 月間 / 四半期 / 年間」。以前この 2 つ目は KPI カードに手書きの三項演算子の
+    // 連鎖として置かれており、既定の分岐が「年間」だった ——期間を 1 つ増やすと
+    // <b>「10年」のボタンが選択中で、10 年分の件数の上に「年間インシデント数」と出る</b>
+    // 状態が全件緑のまま作れた(集計窓の対応付けを移したあとも、ラベルだけこの形で残っていた)。
+    // 言い回しが 2 通り要ること自体は正しいので、<b>2 つとも選択肢に持たせる</b>
+    //
+    // <b>読み取り専用で公開する。</b> `static readonly` が守るのは参照だけで中身は書き換えられる
+    // (`PeriodChoices[3] = (PeriodYear, "")` が通る)。許可リストがその形だと、
+    // 画面に出ない値を受け付ける状態や空ラベルのボタンをアセンブリ内のどこからでも作れて
+    // しまい、しかもどの検査も同じ書き換え後の配列を読むので気付けない
+    // (下の RecurrenceAlerts が同じ理由で ReadOnlyCollection に包まれている)
+    public static readonly IReadOnlyList<PeriodChoice> PeriodChoices =
+        new[]
+        {
+            // 直近 7 暦日。トレンドは日別で 7 本並べる(KPI の窓と同じ長さ)
+            new PeriodChoice(PeriodWeek,    "週",     "週間",  TrendDays: 7,   TrendMonths: null,
+                StartOn: null),
+            // 直近 1 か月。トレンドは直近 4 か月ぶん並べる
+            new PeriodChoice(PeriodMonth,   "月",     "月間",  TrendDays: null, TrendMonths: 4,
+                StartOn: today => today.AddMonths(-1)),
+            // 直近 3 か月。トレンドは直近 6 か月ぶん並べる
+            new PeriodChoice(PeriodQuarter, "四半期", "四半期", TrendDays: null, TrendMonths: 6,
+                StartOn: today => today.AddMonths(-3)),
+            // 直近 1 年(既定)。トレンドは直近 12 か月ぶん並べる
+            new PeriodChoice(PeriodYear,    "1年",    "年間",  TrendDays: null, TrendMonths: 12,
+                StartOn: today => today.AddYears(-1)),
+        }.AsReadOnly();
+
+    // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
+    // 選択肢から導くので、画面に出していない値を受け付ける状態は作れない。
+    //
+    // <b>この 2 つは PeriodChoices より後ろに置くこと。</b> static フィールドの初期化は
+    // 宣言の順に走るので、前へ移すと PeriodChoices がまだ null のまま評価され、
+    // 型の初期化が例外になる ——ダッシュボードを開いた全員が 500 になる形で、
+    // しかもコンパイルは通る。並べ替えは DashboardPeriodChoices_AreUsableAsTheSingleSource が
+    // 落とす(あの検査はこの型に触るので、初期化に失敗すればそこで赤くなる)
+    public static readonly IReadOnlyList<string> Periods =
+        PeriodChoices.Select(choice => choice.Id).ToArray().AsReadOnly();
+
+    // 既定の集計期間の表示名。採用しなかった期間の注意書きが「既定の『◯◯』で集計しています」と
+    // 案内するのに使う ——文言を注意書きへ直書きすると、ボタンのラベルを変えたときに
+    // 画面に無いボタンを探させる案内が残る(§6 UI 文言の単一参照元)。
+    // 既定の期間が選択肢に無ければここで例外になるが、その状態は上記の検査が先に落とす
+    public static readonly string DefaultPeriodLabel =
+        PeriodChoices.First(choice => choice.Id == PeriodYear).Label;
 
     // Period filter ("week" | "month" | "quarter" | "year")
     // 集計期間(週/月/四半期/年)のフィルタ値
     public string Period { get; set; } = PeriodYear;
 
-    // 月別トレンドチャートで並べる月数(month=4, quarter=6, それ以外=12)。
-    // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う
-    public static int MonthsFor(string period) => period switch
-    {
-        PeriodMonth   => 4,  // 月表示: 直近 4 ヶ月
-        PeriodQuarter => 6,  // 四半期表示: 直近 6 ヶ月
-        _             => 12  // 年表示(既定): 直近 12 ヶ月
-    };
+    // 集計期間の値を受け取ったが、選べる値(Periods)に無かったので採用しなかったかどうか
+    // (true なら画面で知らせる。issue #220 の規則をこの画面へ適用したもの)。
+    //
+    // <b>黙って既定へ戻さない理由。</b> ?period=quater のような打ち間違い・古いブックマークは
+    // 既定の「1年」へ丸められるが、丸めた事実はどこにも出ない ——利用者は四半期のつもりで
+    // 1 年分の KPI・トレンド・完了率を読み、期間切替は「1年」が選択中に見えるので
+    // 食い違いにも気付けない。一覧画面が ?severity=99 について注意書きを出すのと
+    // まったく同じ出来事(「受け取ったが選べる値ではない」)なので、伝え方もそろえる。
+    // 規則の正本は Models/Validation/SearchFilter の表(「採用しなかったなら必ず伝える」に
+    // 例外は無い)、判定の正本は Controllers/Internal/ListedValueFilterResolver。
+    //
+    // 値そのものではなく真偽値なのは、外部由来の文字列をアプリ自身の文章へ埋め込まない
+    // 方針が一覧画面と同じだから(理由の正本は IncidentListViewModel.DepartmentFilterIgnored)。
+    //
+    // <b>この画面だけ「採用しない」では済まない。</b> ダッシュボードには「期間なし」という
+    // 状態が無い(常に何らかの窓で集計する)ので、採用しなかったときは既定の期間へ差し替える。
+    // 扱いが一覧画面と違っても旗は同じように立てる理由と、この操作を「補完」と呼ばない理由は
+    // Controllers/Internal/ListedValueFilterResolver の解説が正本(issue #220)
+    public bool UnlistedFilterIgnored { get; set; }
+
+    // 期間の識別子から選択肢を引く(見つからなければ既定の期間の選択肢)。
+    //
+    // 見つからないときに落とさないのは、この ViewModel が許可リストを通っていない Period を
+    // 持つ経路(テストからの直接構築など)でも画面を落とさないため(§9 fail-safe)。
+    //
+    // <b>残っている境界。</b> この落とし先は<b>黙って</b>既定の期間の見え方になる
+    // (見出しも窓もグラフも year のもの)。いまは HomeController だけがこの ViewModel を
+    // 組み立て、必ず解決処理を通すので到達しないが、<b>Period に public の setter がある</b>
+    // 以上、将来の構築経路が許可リスト外の値を入れれば「year の見出しで year でないデータ」を
+    // 出しうる ——旗も立たない。組み立て経路を増やすときは、必ず解決処理を通すこと。
+    // 振る舞い自体は DashboardChoiceLookup_FallsBackToTheDefaultPeriod が固定してある
+    // (偶然そうなっているのではなく、決めてそうしていることを差分に残すため)
+    private static PeriodChoice ChoiceFor(string period) =>
+        PeriodChoices.FirstOrDefault(choice => choice.Id == period)
+        ?? PeriodChoices.First(choice => choice.Id == PeriodYear);
+
+    // KPI の集計窓の開始日(この日以降に発生したインシデントを数える)。
+    //
+    // <b>対応付けを選択肢そのものに持たせてあるのが要点。</b> 以前これは HomeController の
+    // ローカルの switch で、既定の分岐が 1 年窓だった。選択肢を増やしただけで
+    // <b>「10年」のボタンが選択中のまま 1 年分の KPI を見せる</b>状態が作れ(実測で全件緑)、
+    // 画面には食い違いを示すものが何も出ない。switch を選択肢の隣へ移すだけでは
+    // 既定の分岐が残り「1 本のテストだけが頼り」になるので、<b>PeriodChoice の必須メンバー</b>に
+    // して、窓を決めずに期間を足すとコンパイルが通らない形にした
+    // (ラベルを選択肢へ寄せたのと同じ「食い違いが構造的に作れない形」)。
+    // 窓が既定と偶然同じになる取り違えは
+    // DashboardPeriodWindows_AreDistinctForEveryChoice が引き続き落とす。
+    //
+    // week だけ暦日で数えるのは、トレンドチャートが直近 7 暦日(today-6〜today)を
+    // 並べるため ——KPI の合計とグラフの合計が食い違わないよう、窓を同じにしてある
+    public static DateTime PeriodStart(string period, DateTime today) =>
+        ChoiceFor(period).WindowStart(today);
+
+    // KPI カードの見出しに使う期間の言い回し(「週間」インシデント数 等)
+    public static string KpiLabelFor(string period) => ChoiceFor(period).KpiLabel;
+
+    // 日別トレンドチャートで並べる日数(日別で描く期間だけが持つ)。
+    //
+    // 月別で描く期間を渡されたら固定の既定値へ落とす。<b>その値に意味は無い</b> ——
+    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐するのでここへは来ず、
+    // 目的は「画面を落とさない」ことだけ(§9 fail-safe)。
+    // <b>「最初の日別の選択肢を探す」段は置かない</b> ——それが効くのは日別の期間が
+    // 1 つも無いときだけで、その状態ではこの関数自体が呼ばれない(どのテストからも
+    // 到達できない門番は、読み手に守られていると誤解させるだけ)
+    public static int DaysFor(string period) => ChoiceFor(period).TrendDays ?? DefaultTrendDays;
+
+    // 日別で描く期間以外に渡されたときの日数(1 週間ぶん。値そのものに意味は無い)
+    private const int DefaultTrendDays = 7;
+
+    // トレンドチャートを「日別」で描くかどうか(false なら月別)。
+    // 選択肢の TrendMonths が null なら日別 ——判定をビューやコントローラへ直書きすると、
+    // 期間を足した人が月別と日別のどちらになるかを選択肢の側から読めなくなる
+    public static bool UsesDailyTrendBuckets(string period) => ChoiceFor(period).TrendMonths is null;
+
+    // 月別トレンドチャートで並べる月数(month=4, quarter=6, year=12)。
+    // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
+    // 日別で描く期間を渡されたときの扱いは DaysFor とまったく同じ(固定の既定値・値に意味は無い)
+    public static int MonthsFor(string period) => ChoiceFor(period).TrendMonths ?? DefaultTrendMonths;
+
+    // 月別で描く期間以外に渡されたときの月数(1 年ぶん。値そのものに意味は無い)
+    private const int DefaultTrendMonths = 12;
 
     // KPI
     // 累計インシデント数
@@ -143,11 +279,11 @@ public class DashboardViewModel
     public List<MonthlyCount> MonthlyCounts { get; set; } = new();
 
     // トレンドチャートの見出し。Period から導出する計算プロパティにすることで、
-    // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(WeekDays / MonthsFor)と
+    // 構築側が設定し忘れて空見出しになる事故を防ぎ、バケット数(DaysFor / MonthsFor)と
     // 見出しの数字が常に一致することを保証する(見出しを View に直書きすると、
     // 週表示なのに「過去12ヶ月」と表示される等の食い違いが起きる)
-    public string TrendChartTitle => Period == PeriodWeek
-        ? $"日別インシデント発生推移（直近{WeekDays}日間）"
+    public string TrendChartTitle => UsesDailyTrendBuckets(Period)
+        ? $"日別インシデント発生推移（直近{DaysFor(Period)}日間）"
         : $"月別インシデント発生推移（直近{MonthsFor(Period)}ヶ月）";
 
     // Failed measures: RecurrenceObserved = true
@@ -180,4 +316,49 @@ public class MonthlyCount
     public string DateFrom { get; set; } = "";
     // ドリルダウン用の絞り込み終了日("yyyy-MM-dd")。Incidents 一覧の dateTo は「その日を含む」扱い
     public string DateTo { get; set; } = "";
+}
+
+/// <summary>
+/// 集計期間の選択肢 1 件分(識別子と、画面で使う 2 通りの言い回し)。
+/// </summary>
+/// <remarks>
+/// 3 つ組のタプルではなく型にしてあるのは、<c>Item3</c> のような名前で読まれる余地を
+/// 無くすため。<see cref="DashboardViewModel.PeriodChoices"/> が期間についての唯一の源で、
+/// 許可リスト・期間切替ボタン・KPI カードの見出し・既定の表示名がすべてここから導かれる。
+/// </remarks>
+/// <param name="Id">クエリ文字列(<c>?period=</c>)で使う識別子。</param>
+/// <param name="Label">期間切替ボタンの文字(「週」「1年」など)。</param>
+/// <param name="KpiLabel">KPI カードの見出しに挟む言い回し(「週間」「年間」など)。</param>
+/// <param name="TrendDays">
+/// トレンドチャートで並べる<b>日数</b>。日別で描く期間だけが値を持ち、月別なら <c>null</c>。
+/// </param>
+/// <param name="TrendMonths">
+/// トレンドチャートで並べる<b>月数</b>。月別で描く期間だけが値を持ち、日別なら <c>null</c>。
+/// </param>
+/// <param name="StartOn">
+/// KPI の集計窓の開始日を、基準日(今日)から求める。<b>日別の期間では省略する</b> ——
+/// 省略すると <see cref="TrendDays"/> 日ぶんの窓になり、KPI とグラフの窓が必ず一致する
+/// (以前この 2 つは別々に決まっており、2 つ目の日別期間を足すと
+/// 「KPI は 14 日・グラフは 7 本で『直近7日間』」が全件緑で作れた)。
+/// </param>
+public sealed record PeriodChoice(
+    string Id,
+    string Label,
+    string KpiLabel,
+    int? TrendDays,
+    int? TrendMonths,
+    Func<DateTime, DateTime>? StartOn)
+{
+    /// <summary>KPI の集計窓の開始日。日別の期間は <see cref="TrendDays"/> から導く。</summary>
+    public DateTime WindowStart(DateTime today) =>
+        // 明示された求め方があればそれを使う(月別の期間はこちら)
+        StartOn is { } startOn ? startOn(today)
+        // 日別の期間は「その日数ぶん」の窓。today を含めて数えるので 1 を引く
+        : TrendDays is { } days ? today.AddDays(-(days - 1))
+        // ここへ来るのは「日別でもなく、窓の求め方も書いていない」選択肢だけ。
+        // 月別の期間が StartOn を書き忘れるとここに落ち、KPI が<b>当日ぶんだけ</b>になる
+        // (グラフは月数ぶん描かれるので、画面の上下で窓が食い違う)。
+        // 型としては表せてしまうので、DashboardPeriodChoices_AreUsableAsTheSingleSource が
+        // 「月別の選択肢は StartOn を必ず持つ」を落とす ——ここは画面を落とさないための最後の受け皿
+        : today;
 }

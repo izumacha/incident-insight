@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 // 部署スコープ拡張メソッドを使う
 using IncidentInsight.Web.Authorization;
+// 許可リストで閉じた絞り込み入力の共有解決処理を使う
+using IncidentInsight.Web.Controllers.Internal;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // モデル(Incidentなど)を使う
@@ -28,12 +30,13 @@ namespace IncidentInsight.Web.Controllers;
 [Authorize]
 public class HomeController : Controller
 {
-    // 集計期間を識別する文字列定数。正本は DashboardViewModel 側
-    // (チャート見出し等の派生値と同じ場所)に一元化し、ここでは別名で参照する
-    private const string PeriodWeek    = DashboardViewModel.PeriodWeek;    // 直近 7 日間
-    private const string PeriodMonth   = DashboardViewModel.PeriodMonth;   // 直近 1 か月
-    private const string PeriodQuarter = DashboardViewModel.PeriodQuarter; // 直近 3 か月
-    private const string PeriodYear    = DashboardViewModel.PeriodYear;    // 直近 1 年（既定値）
+    // 既定の集計期間。正本は DashboardViewModel 側(選択肢・集計窓・チャート見出しと同じ場所)に
+    // 一元化し、ここでは別名で参照する。
+    // 週・月・四半期の別名を持っていないのは、集計窓の対応付け
+    // (DashboardViewModel.PeriodStart / UsesDailyTrendBuckets)をあちらへ移したことで
+    // このファイルが個々の期間を名指しする必要が無くなったため(§6 デッドコードを残さない)。
+    // ここに残るのは「採用しなかったときの落とし先」だけ
+    private const string PeriodYear = DashboardViewModel.PeriodYear; // 直近 1 年（既定値）
 
     // ダッシュボードの「期限超過の対策一覧」アラートパネルに列挙する最大件数。
     // このパネルは全件を見せる画面ではなく代表例を数件示すだけの用途で、Views/Home/Index.cshtml
@@ -157,34 +160,55 @@ public class HomeController : Controller
     // ダッシュボード画面。period で集計期間を切り替える
     public async Task<IActionResult> Index(string? period)
     {
-        // period はクエリ文字列由来の外部入力なので、既知の 4 値以外は既定の「year」へ丸める
-        // (§9 入力は信用しない / 不正値はフォールバックする)。未指定も同じ経路で既定値になる。
-        // 丸めずに素通しすると、集計側は switch の既定分岐で 1 年窓になるのに、
-        // ViewModel の Period には "bogus" のような未知の値が残るため、ダッシュボードの
-        // 期間切替ボタン(週/月/四半期/1年)がどれも選択中に見えない状態になり、
-        // 表示中のデータ(1 年分)と UI の状態が食い違ってしまう
-        period = NormalizePeriod(period);
+        // period はクエリ文字列由来の外部入力なので、許可リスト(DashboardViewModel.Periods)を
+        // 通してから使う(§9 入力は信用しない)。判定は /AuditLogs の許可リスト絞り込みと
+        // まったく同じ共有処理へ通す ——同じ出来事(「受け取ったが選べる値ではない」)に
+        // 画面ごとに別の判定を書くと、いずれ答えが割れる(issue #220)。
+        //
+        // 素通しすると、ViewModel の Period に "bogus" のような未知の値が残る。
+        // 期間切替ボタンは選択肢を回して描き、選択中かどうかを Period との一致で決めるので、
+        // どのボタンも選択中に見えない状態になり、表示中のデータと UI の状態が食い違う
+        // (集計窓のほうは選択肢から引けない値なので既定の期間へ落ちる)。
+        //
+        // <b>採用しなかったことは画面へ伝える。</b> この画面には「期間なし」という状態が
+        // 無いので、採用しなかったときは既定の期間へ差し替えたうえで旗を立てる。
+        // 扱い(差し替える / 採用しない)と伝え方(知らせる / 黙る)が別の軸であること、
+        // この操作を「補完」と呼ばない理由、伝える側に例外が無いことは、いずれも
+        // Controllers/Internal/ListedValueFilterResolver の解説が正本
+        // (ここへ書き写すと、方針を変えたときに片方だけが古くなる。§6)
+        var periodFilter = ListedValueFilterResolver.Resolve(period, DashboardViewModel.Periods);
+        // 採用できた値だけを使い、採用しなかった(または未指定の)ときは既定の期間にする
+        period = periodFilter.Effective ?? PeriodYear;
         // 今日の日付(JST)
         var today = _clock.Today;
         // 今月の 1 日(月次集計の基準)
         var thisMonthStart = new DateTime(today.Year, today.Month, 1);
 
         // Period window for KPIs and trend chart
-        // 期間指定(week/month/quarter/year)から集計開始日を算出。
-        // week は KPI とトレンドチャート(下の weekStart = today.AddDays(-6))を
-        // 同じ「直近7暦日(today-6〜today)」窓に揃える。month/quarter/year は
-        // チャート側の窓を意図的にKPI期間より広く取る設計(下のコメント参照)だが、
-        // week だけは "直近7日間" というコメント通りの同一窓であるべきで、
-        // 以前は today.AddDays(-7) で実質8暦日分を数えており、境界日(today-7)の
-        // インシデントが KPI 合計には含まれるのに折れ線グラフには表示されない
-        // (グラフはtoday-6以降しか集計しない)という不整合があった。
-        var periodStart = period switch
-        {
-            PeriodWeek    => today.AddDays(-6),
-            PeriodMonth   => today.AddMonths(-1),
-            PeriodQuarter => today.AddMonths(-3),
-            _             => today.AddYears(-1)    // PeriodYear が既定
-        };
+        // 期間指定(week/month/quarter/year)から集計開始日を算出する。
+        // マッピングは期間の選択肢のすぐ隣(DashboardViewModel.PeriodStart)に置いてある
+        // ——ここにローカルの switch として持っていた頃は、選択肢を 1 つ増やすだけで
+        // 既定の分岐へ落ち、「10年」のボタンが選択中のまま 1 年分の KPI を見せる状態が
+        // 全件緑のまま作れた。窓を決めずに期間を足せない形にするため、同じ場所へ寄せた。
+        //
+        // <b>残っている境界: KPI には上限が無い。</b> 日別のグラフは「今日まで」で切り、
+        // 月別のグラフも描くのは今月までなので、<b>未来の日付で登録されたインシデント</b>
+        // (年の打ち間違い等。OccurredAt に未来日の検証は無い)は KPI には入るのにグラフには
+        // 出ず、同じ画面の上下で合計がずれる。
+        // <b>直していないのは、直し方が期間によって違うから</b> ——日別なら「今日まで」で
+        // 切ればグラフと一致するが、月別のグラフは今月ぶんを丸ごと描くので、同じ切り方をすると
+        // 今度は「今月の未来日」で逆向きにずれる。どちらに寄せるかは
+        // 「未来日のインシデントをどう扱うか」(そもそも登録を許すか)を決める話で、
+        // 期間の絞り込みの範囲を越えるためここでは触れない。
+        // 窓の「始まり」をそろえる話と「終わり」の話は別で、ここでそろえているのは始まりのほう。
+        //
+        // week は KPI とトレンドチャート(下の weekStart)を同じ「直近7暦日
+        // (today-6〜today)」窓に揃える。month/quarter/year はチャート側の窓を意図的に
+        // KPI 期間より広く取る設計(下のコメント参照)だが、week だけは "直近7日間" という
+        // コメント通りの同一窓であるべきで、以前は today.AddDays(-7) で実質8暦日分を
+        // 数えており、境界日(today-7)のインシデントが KPI 合計には含まれるのに
+        // 折れ線グラフには表示されない(グラフはtoday-6以降しか集計しない)という不整合があった。
+        var periodStart = DashboardViewModel.PeriodStart(period, today);
 
         // Staff は自部署のデータのみ。Admin / RiskManager はフィルタなし。
         // 読み取り専用クエリをユーザー部署スコープで絞る
@@ -254,11 +278,12 @@ public class HomeController : Controller
         // controller never materializes full-table incident rows just to count them.
         // トレンドチャート用の件数バケットを溜めるリスト
         var monthlyCounts = new List<MonthlyCount>();
-        // 週表示の場合は日別集計
-        if (period == PeriodWeek)
+        // 週表示の場合は日別集計(日別か月別かの判定は選択肢の側が持つ)
+        if (DashboardViewModel.UsesDailyTrendBuckets(period))
         {
-            // 過去 7 日間の範囲を作成(日数は見出しと共通の定数から導出し食い違いを防ぐ)
-            var weekStart = today.AddDays(-(DashboardViewModel.WeekDays - 1));
+            // 日別の範囲を作成(日数は選択肢から引く ——見出し・KPI の窓と同じ源なので食い違わない)
+            var trendDays = DashboardViewModel.DaysFor(period);
+            var weekStart = today.AddDays(-(trendDays - 1));
             var weekEnd = today.AddDays(1);
             // 日付ごとの件数を SQL 側でグループ化して取得
             var dailyGroups = await incidents
@@ -269,7 +294,7 @@ public class HomeController : Controller
             // 高速検索用に辞書化
             var byDay = dailyGroups.ToDictionary(g => g.Day, g => g.Count);
             // 7 日間を古い方から順にラベル付きで並べる(無い日は 0 件として埋める)
-            for (int i = DashboardViewModel.WeekDays - 1; i >= 0; i--)
+            for (int i = trendDays - 1; i >= 0; i--)
             {
                 var day = today.AddDays(-i);
                 byDay.TryGetValue(day, out var count);
@@ -325,6 +350,8 @@ public class HomeController : Controller
         var vm = new DashboardViewModel
         {
             Period = period,
+            // 受け取ったのに採用しなかった期間があれば画面で知らせる(旗の説明は ViewModel 側が正本)
+            UnlistedFilterIgnored = periodFilter.Ignored,
             TotalIncidents = totalIncidents,
             ThisMonthIncidents = thisMonthIncidents,
             OpenMeasures = openMeasures,
@@ -344,22 +371,6 @@ public class HomeController : Controller
         // ダッシュボードビューへモデルを渡して描画
         return View(vm);
     }
-
-    // クエリ文字列で渡された集計期間を、既知の 4 値(week/month/quarter/year)のいずれかへ丸める。
-    // 未指定・未知の値はすべて既定値の year にフォールバックする(fail-safe)。
-    // 判定に使う定数は DashboardViewModel 側の唯一の真実の源を参照しているため、
-    // 期間の種類を増やすときはこのメソッドと定数定義の両方を更新すれば足りる(§6)。
-    private static string NormalizePeriod(string? period) => period switch
-    {
-        // 直近 7 日間
-        PeriodWeek => PeriodWeek,
-        // 直近 1 か月
-        PeriodMonth => PeriodMonth,
-        // 直近 3 か月
-        PeriodQuarter => PeriodQuarter,
-        // 上記以外(null・空文字・未知の文字列)はすべて既定の直近 1 年として扱う
-        _ => PeriodYear
-    };
 
     // エラーページ。匿名アクセス可、キャッシュさせない
     [AllowAnonymous]

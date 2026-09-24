@@ -41,11 +41,21 @@
             @* 集計期間(週/月/四半期/年)の切り替えボタン群 *@
             <div class="btn-group btn-group-sm" role="group" aria-label="期間選択">
                 @* 各期間ボタン: アクティブなら btn-primary(白塗り)、非アクティブなら btn-outline-secondary(半透明白枠)。
-                   期間の識別子は DashboardViewModel の定数(唯一の真実の源)を参照し、直書きしない *@
-                <a class="btn @(Model.Period == DashboardViewModel.PeriodWeek ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodWeek">週</a>
-                <a class="btn @(Model.Period == DashboardViewModel.PeriodMonth ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodMonth">月</a>
-                <a class="btn @(Model.Period == DashboardViewModel.PeriodQuarter ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodQuarter">四半期</a>
-                <a class="btn @(Model.Period == DashboardViewModel.PeriodYear ? "btn-primary" : "btn-outline-secondary")" href="?period=@DashboardViewModel.PeriodYear">1年</a>
+                   識別子もラベルも DashboardViewModel.PeriodChoices(唯一の真実の源)を回して出す。
+                   ボタンを手書きで並べると、許可リスト(Periods)と画面が別々の宣言になり、
+                   ずれてもどちらの向きでも動いてしまう ——押せないのに受け付ける隠し値か、
+                   押した瞬間に「選べる値ではない」と自分で拒否するボタンのどちらかになる。
+                   回して出せばその 2 つ目の宣言自体が無くなる(理由の正本は PeriodChoices の解説) *@
+                @foreach (var choice in DashboardViewModel.PeriodChoices)
+                {
+                    @* 選択中の期間は塗りの違いだけでなく aria-current でも伝える(§7 色だけに
+                       意味を持たせない)。_Pager.cshtml が現在ページに付けているのと同じ考え方だが、
+                       値は "page" ではなく "true" ——切り替えているのはページではなく集計期間で、
+                       "page" は「いま開いているページ」を指す語だから *@
+                    <a class="btn @(Model.Period == choice.Id ? "btn-primary" : "btn-outline-secondary")"
+                       aria-current="@(Model.Period == choice.Id ? "true" : null)"
+                       href="?period=@choice.Id">@choice.Label</a>
+                }
             </div>
             @* 新規登録ボタン(主要 CTA): 白塗りでプライマリ文字 *@
             <a asp-controller="Incidents" asp-action="Create" class="btn btn-light btn-sm">
@@ -54,6 +64,31 @@
         </div>
     </div>
 </section>
+
+@* 「受け取ったのに採用しなかった」集計期間の注意書き。枠のマークアップは共有パーシャル
+   _FilterIgnoredNotice が持ち、ここは「どの旗のときに、どの文面を出すか」だけを決める。
+   出し分けの @@if をこちらに残しているのは、旗が実際に読まれていることを
+   UnlistedFilterValuePolicyTests が Index.cshtml 上で固定しているため。
+
+   文面を /AuditLogs ・ /Incidents の「選べる値ではない」と一字一句そろえていないのは、
+   <b>起きたことが違うから</b> ——あちらは条件を外して一覧を出す（絞り込み無し）が、
+   この画面には「期間なし」という状態が無いので既定の期間へ差し替えている
+   （「補完」と呼ばない理由は Controllers/Internal/ListedValueFilterResolver の解説。
+   既定の期間名をここに書かないのは、ボタンのラベルを変えたときにこのコメントだけが
+   画面に無いボタンを指し続けるため ——文面と同じく PeriodChoices から引く）。
+   あちらの説明文（「その条件を外して一覧を表示しています」「下の『絞り込み』から
+   選び直してください」）をそのまま使うと、この画面については事実と違うことを言い、
+   存在しない絞り込みパネルを探させることになる。見出しも重ねない —— 見出しが同じなら
+   説明も同じであることを IgnoredFilterNotices_UseTheSameWordingAcrossScreens が
+   要求しており、同じ見出しで別の説明を出すのはまさにその検査が禁じている形 *@
+@if (Model.UnlistedFilterIgnored)
+{
+    <partial name="_FilterIgnoredNotice" model="@(new FilterIgnoredNotice(
+        "選べる値ではない集計期間は適用していません。",
+        "指定された集計期間が選択肢に無い値だったため、既定の「"
+        + DashboardViewModel.DefaultPeriodLabel
+        + "」で集計しています。集計したい期間は上の期間切替から選び直してください。"))" />
+}
 
 <!-- KPI Cards -->
 @* KPI カード4枚(総件数/今月件数/未完了対策/期限超過対策) — 新デザインの kpi-card クラスを利用 *@
@@ -68,7 +103,10 @@
                 </div>
                 <div>
                     @* 期間ラベル(週/月/四半期/年)。期間の識別子は DashboardViewModel の定数を参照する *@
-                    <div class="kpi-label">@(Model.Period == DashboardViewModel.PeriodWeek ? "週間" : Model.Period == DashboardViewModel.PeriodMonth ? "月間" : Model.Period == DashboardViewModel.PeriodQuarter ? "四半期" : "年間")インシデント数</div>
+                    @* 期間の言い回しは選択肢から引く。手書きの三項演算子の連鎖に戻さないこと
+                       ——既定の分岐があるため、期間を 1 つ増やすと「10年」のボタンが選択中のまま
+                       10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れる *@
+                    <div class="kpi-label">@DashboardViewModel.KpiLabelFor(Model.Period)インシデント数</div>
                     @* 件数の大きな数値表示(.kpi-hero の修飾で 3.5rem 相当) *@
                     <div class="kpi-value">@Model.TotalIncidents<span class="unit">件</span></div>
                 </div>
