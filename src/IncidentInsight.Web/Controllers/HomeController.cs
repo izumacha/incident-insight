@@ -171,10 +171,14 @@ public class HomeController : Controller
         // 表示中のデータ(1 年分)と UI の状態が食い違ってしまう。
         //
         // <b>採用しなかったことは画面へ伝える。</b> この画面には「期間なし」という状態が
-        // 無いので、採用しなかったときは既定の「1年」へ補完する(方式は補完)。ただし
-        // 補完したことを黙っていると、四半期のつもりで 1 年分の KPI を読んだうえ、
-        // 期間切替は「1年」が選択中に見えるので食い違いにも気付けない。方式(補完する /
-        // 採用しない)と伝え方は別の軸で、伝える側に例外は無い(規則の正本は SearchFilter の表)
+        // 無いので、採用しなかったときは既定の期間へ<b>差し替える</b>。
+        // (「補完」と呼ばないこと ——SearchFilter の表で「補完」は受け取った値を選択肢へ
+        //  足して絞り込みを維持することを指しており、ここはその逆。理由の正本は
+        //  Controllers/Internal/ListedValueFilterResolver の解説)
+        // ただし差し替えたことを黙っていると、四半期のつもりで 1 年分の KPI を読んだうえ、
+        // 期間切替は既定の期間が選択中に見えるので食い違いにも気付けない。
+        // 採用しなかったあとの扱いと伝え方は別の軸で、伝える側に例外は無い
+        // (規則の正本は SearchFilter の表)
         var periodFilter = ListedValueFilterResolver.Resolve(period, DashboardViewModel.Periods);
         // 採用できた値だけを使い、採用しなかった(または未指定の)ときは既定の期間にする
         period = periodFilter.Effective ?? PeriodYear;

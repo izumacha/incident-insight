@@ -4813,6 +4813,25 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"期間のルート値に、回した変数の Id 以外を渡している: {string.Join(" / ", wrongValue)}。"
             + "ラベルや別の値を渡すと、画面が出したリンクすべてが許可リストに無い値を指し、"
             + "押すたびに「選べる値ではない」の注意書きが出る。");
+
+        // (d) 期間で分岐しているのは<b>回しの中の選択中判定だけ</b>であること。
+        //
+        // <b>なぜ要るのか(実測)。</b> KPI カードには「週間 / 月間 / 四半期 / 年間」を選ぶ
+        // 手書きの三項演算子の連鎖があり、既定の分岐が「年間」だった。集計窓を選択肢の側へ
+        // 移したあとも<b>この連鎖だけが残っており</b>、期間を 1 つ増やすと「10年」のボタンが
+        // 選択中のまま 10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れた
+        // (ルート値の綴りを見る上の 3 つはどれもこの行に当たらない)。
+        // 期間ごとに何かを選ぶ必要が出たら、その対応付けも選択肢(PeriodChoices)へ持たせる
+        // ——ビューで分岐すると、既定の分岐がそのまま次の取りこぼしになる
+        var periodBranches = Regex.Matches(source, @"Model\.Period\s*==")
+            .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
+            .Select(m => LineAt(source, m.Index))
+            .ToList();
+        Assert.True(periodBranches.Count == 0,
+            $"期間での分岐が回しの外にある: {string.Join(" / ", periodBranches)}。"
+            + "既定の分岐を持つ手書きの対応付けは、期間を足したときに黙って古い値を出す"
+            + $"(実際 KPI カードの見出しがこの形だった)。対応付けは {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューはそこから引くこと。");
     }
 
     // 失敗文言に場所を添えるため、その位置を含む 1 行を取り出す
@@ -4897,16 +4916,24 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 選択肢が空なら期間切替が画面から消える(fail-closed)
         Assert.NotEmpty(choices);
 
-        // 識別子・ラベルがどちらも空でないこと
+        // 識別子・2 つのラベルがいずれも空でないこと
+        // (空のラベルは押せないボタンや見出しの欠けた KPI カードになる)
         Assert.All(choices, choice =>
         {
             Assert.False(string.IsNullOrWhiteSpace(choice.Id));
             Assert.False(string.IsNullOrWhiteSpace(choice.Label));
+            Assert.False(string.IsNullOrWhiteSpace(choice.KpiLabel));
         });
 
-        // 識別子・ラベルがそれぞれ重複しないこと
+        // 識別子・ボタンのラベルがそれぞれ重複しないこと。
+        // KPI の言い回しは重複を許す ——「四半期」は両方のラベルで同じ語を使うのが自然で、
+        // 禁じると意味の無い言い換えを強いることになる(識別子が重複しなければ取り違えは起きない)
         Assert.Equal(choices.Count, choices.Select(c => c.Id).Distinct(StringComparer.Ordinal).Count());
         Assert.Equal(choices.Count, choices.Select(c => c.Label).Distinct(StringComparer.Ordinal).Count());
+
+        // KPI の言い回しが選択肢から引けること(引けないと見出しが既定へ黙って落ちる)
+        Assert.All(choices, choice =>
+            Assert.Equal(choice.KpiLabel, DashboardViewModel.KpiLabelFor(choice.Id)));
 
         // 既定の期間が選択肢に実在すること。無いと DefaultPeriodLabel が投げるだけでなく、
         // 採用しなかったときの補完先が画面のどのボタンとも一致しなくなる

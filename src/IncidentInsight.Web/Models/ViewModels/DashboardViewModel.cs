@@ -32,20 +32,28 @@ public class DashboardViewModel
     //
     // 並びはそのまま画面の並び(週 → 月 → 四半期 → 1年)。
     // ラベルもここに持つのは §6「UI 文言は単一の参照元に集約する」に従うため
-    // (注意書きが案内する既定の期間名も DefaultPeriodLabel 経由でここを読む)
+    // (注意書きが案内する既定の期間名も DefaultPeriodLabel 経由でここを読む)。
+    //
+    // <b>ラベルが 2 つあるのは、画面に 2 通りの言い回しが要るから。</b> 期間切替のボタンは
+    // 「週 / 月 / 四半期 / 1年」、KPI カードの見出しは「週間インシデント数」のように
+    // 「週間 / 月間 / 四半期 / 年間」。以前この 2 つ目は KPI カードに手書きの三項演算子の
+    // 連鎖として置かれており、既定の分岐が「年間」だった ——期間を 1 つ増やすと
+    // <b>「10年」のボタンが選択中で、10 年分の件数の上に「年間インシデント数」と出る</b>
+    // 状態が全件緑のまま作れた(集計窓の対応付けを移したあとも、ラベルだけこの形で残っていた)。
+    // 言い回しが 2 通り要ること自体は正しいので、<b>2 つとも選択肢に持たせる</b>
     //
     // <b>読み取り専用で公開する。</b> `static readonly` が守るのは参照だけで中身は書き換えられる
     // (`PeriodChoices[3] = (PeriodYear, "")` が通る)。許可リストがその形だと、
     // 画面に出ない値を受け付ける状態や空ラベルのボタンをアセンブリ内のどこからでも作れて
     // しまい、しかもどの検査も同じ書き換え後の配列を読むので気付けない
     // (下の RecurrenceAlerts が同じ理由で ReadOnlyCollection に包まれている)
-    public static readonly IReadOnlyList<(string Id, string Label)> PeriodChoices =
-        new (string Id, string Label)[]
+    public static readonly IReadOnlyList<PeriodChoice> PeriodChoices =
+        new[]
         {
-            (PeriodWeek, "週"),
-            (PeriodMonth, "月"),
-            (PeriodQuarter, "四半期"),
-            (PeriodYear, "1年"),
+            new PeriodChoice(PeriodWeek,    "週",     "週間"),
+            new PeriodChoice(PeriodMonth,   "月",     "月間"),
+            new PeriodChoice(PeriodQuarter, "四半期", "四半期"),
+            new PeriodChoice(PeriodYear,    "1年",    "年間"),
         }.AsReadOnly();
 
     // 集計期間として受け付ける値の許可リスト(クエリ文字列の ?period= を照合する唯一の源)。
@@ -85,8 +93,10 @@ public class DashboardViewModel
     // 方針が一覧画面と同じだから(理由の正本は IncidentListViewModel.DepartmentFilterIgnored)。
     //
     // <b>この画面だけ「採用しない」では済まない。</b> ダッシュボードには「期間なし」という
-    // 状態が無い(常に何らかの窓で集計する)ので、採用しなかったときは既定の期間へ補完する。
-    // 方式が一覧画面と違っても旗は同じように立てる —— 方式と伝え方は別の軸(issue #220)
+    // 状態が無い(常に何らかの窓で集計する)ので、採用しなかったときは既定の期間へ
+    // <b>差し替える</b>(「補完」と呼ばない理由は ListedValueFilterResolver の解説が正本
+    // ——表の「補完」は受け取った値を選択肢へ足して絞り込みを維持することで、ここはその逆)。
+    // 扱いが一覧画面と違っても旗は同じように立てる —— 扱いと伝え方は別の軸(issue #220)
     public bool UnlistedFilterIgnored { get; set; }
 
     // KPI の集計窓の開始日(この日以降に発生したインシデントを数える)。
@@ -107,6 +117,15 @@ public class DashboardViewModel
         PeriodQuarter => today.AddMonths(-3),             // 直近 3 か月
         _             => today.AddYears(-1)               // 年表示(既定): 直近 1 年
     };
+
+    // KPI カードの見出しに使う期間の言い回し(「週間」インシデント数 等)。
+    //
+    // 見つからないときに既定の期間の言い回しへ落とすのは、この ViewModel が
+    // 許可リストを通っていない Period を持つ経路(テストからの直接構築など)でも
+    // 画面を落とさないため(§9 fail-safe)。本番の経路では Period は必ず選択肢の 1 つになる
+    public static string KpiLabelFor(string period) =>
+        (PeriodChoices.FirstOrDefault(choice => choice.Id == period)
+         ?? PeriodChoices.First(choice => choice.Id == PeriodYear)).KpiLabel;
 
     // トレンドチャートを「日別」で描くかどうか(false なら月別)。
     // HomeController の集計分岐がこれを読む ——判定を向こうへ直書きすると、
@@ -276,3 +295,16 @@ public class MonthlyCount
     // ドリルダウン用の絞り込み終了日("yyyy-MM-dd")。Incidents 一覧の dateTo は「その日を含む」扱い
     public string DateTo { get; set; } = "";
 }
+
+/// <summary>
+/// 集計期間の選択肢 1 件分(識別子と、画面で使う 2 通りの言い回し)。
+/// </summary>
+/// <remarks>
+/// 3 つ組のタプルではなく型にしてあるのは、<c>Item3</c> のような名前で読まれる余地を
+/// 無くすため。<see cref="DashboardViewModel.PeriodChoices"/> が期間についての唯一の源で、
+/// 許可リスト・期間切替ボタン・KPI カードの見出し・既定の表示名がすべてここから導かれる。
+/// </remarks>
+/// <param name="Id">クエリ文字列(<c>?period=</c>)で使う識別子。</param>
+/// <param name="Label">期間切替ボタンの文字(「週」「1年」など)。</param>
+/// <param name="KpiLabel">KPI カードの見出しに挟む言い回し(「週間」「年間」など)。</param>
+public sealed record PeriodChoice(string Id, string Label, string KpiLabel);

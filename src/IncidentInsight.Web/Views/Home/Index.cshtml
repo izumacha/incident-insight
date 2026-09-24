@@ -48,7 +48,11 @@
                    回して出せばその 2 つ目の宣言自体が無くなる(理由の正本は PeriodChoices の解説) *@
                 @foreach (var choice in DashboardViewModel.PeriodChoices)
                 {
-                    <a class="btn @(Model.Period == choice.Id ? "btn-primary" : "btn-outline-secondary")" href="?period=@choice.Id">@choice.Label</a>
+                    @* 選択中の期間は塗りの違いだけでなく aria-current でも伝える(§7 色だけに
+                       意味を持たせない)。_Pager.cshtml が現在ページに付けているのと同じ扱い *@
+                    <a class="btn @(Model.Period == choice.Id ? "btn-primary" : "btn-outline-secondary")"
+                       aria-current="@(Model.Period == choice.Id ? "true" : null)"
+                       href="?period=@choice.Id">@choice.Label</a>
                 }
             </div>
             @* 新規登録ボタン(主要 CTA): 白塗りでプライマリ文字 *@
@@ -94,7 +98,10 @@
                 </div>
                 <div>
                     @* 期間ラベル(週/月/四半期/年)。期間の識別子は DashboardViewModel の定数を参照する *@
-                    <div class="kpi-label">@(Model.Period == DashboardViewModel.PeriodWeek ? "週間" : Model.Period == DashboardViewModel.PeriodMonth ? "月間" : Model.Period == DashboardViewModel.PeriodQuarter ? "四半期" : "年間")インシデント数</div>
+                    @* 期間の言い回しは選択肢から引く。手書きの三項演算子の連鎖に戻さないこと
+                       ——既定の分岐があるため、期間を 1 つ増やすと「10年」のボタンが選択中のまま
+                       10 年分の件数の上に「年間インシデント数」と出る状態が全件緑で作れる *@
+                    <div class="kpi-label">@DashboardViewModel.KpiLabelFor(Model.Period)インシデント数</div>
                     @* 件数の大きな数値表示(.kpi-hero の修飾で 3.5rem 相当) *@
                     <div class="kpi-value">@Model.TotalIncidents<span class="unit">件</span></div>
                 </div>
