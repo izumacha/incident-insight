@@ -3097,14 +3097,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(下の AssertIgnoredFilterNoticeIsRendered が正本)
+        // 走査そのものは共有する(下の AssertIgnoredFilterNoticeIsRendered が正本)
         AssertIgnoredFilterNoticeIsRendered("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
     /// 旗を <b>ビューが実際に読んでいる</b>ことを、Razor のソースから確かめる共有の走査。
     /// </summary>
     /// <remarks>
-    /// <para><b>なぜ 3 画面で共有するのか(§6 DRY)。</b> 以前この走査は
+    /// <para><b>なぜ共有するのか(§6 DRY)。</b> 以前この走査は
     /// <c>/Incidents</c> 用と <c>/PreventiveMeasures</c> 用に丸ごと写してあった。
     /// 3 画面目(<c>/AuditLogs</c>)を足す時点で 3 つ目の写しになるので、実際に重複した
     /// この時点で共通化する。写しのまま増やすと、注意書きの見せ方を変えたとき
@@ -3496,7 +3496,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// (人のレビューでしか気付けなかった)。
     /// per-flag の検査は「見出しと説明が空でないこと」までしか見ないので、
     /// 衝突は旗をまたいで比べないと原理的に見えない。
-    /// <para>走査を 3 画面で共有する理由は
+    /// <para>走査を画面をまたいで共有する理由は
     /// <see cref="AssertIgnoredFilterNoticeIsRendered"/> と同じ(§6 DRY)。</para>
     /// </remarks>
     private static void AssertIgnoredFilterNoticeHeadingsAreDistinct(
@@ -3554,7 +3554,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 5 つ目の旗を足した人が既存の文面を写して使うと、ここで落ちる
     [Fact]
     public void IncidentsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "Incidents", ViewModelFlagAccessor, DeclaredIgnoredFilterFlags());
 
@@ -3572,7 +3572,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(IgnoredFilterFlags))]
     public void IncidentsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
-        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        // 走査そのものは共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("Incidents", ViewModelFlagAccessor, flag);
 
     /// <summary>
@@ -4016,7 +4016,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
 
     // コントローラのソースから「<旗> = <解決結果>.Ignored」という代入を拾い、旗の名前を返す。
     //
-    // <b>2 画面で共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
+    // <b>画面をまたいで共有する(レビュー指摘で共通化)。</b> 以前は同じ正規表現・同じ
     // 「ソースを開く → コメントを落とす → 並びを固定する」の手順が /Incidents 用と
     // カンバン用に写してあった。3 つ目の解決処理が旗を別の名前(<c>.WasIgnored</c> など)で
     // 返すようになったとき片方だけ直すと、<b>直さなかった側は既存の旗を拾い続けるので
@@ -4053,7 +4053,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(MeasuresIgnoredFilterFlags))]
     public void MeasuresIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)。
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)。
         // この画面は ViewModel を持たず ViewBag で渡すので、読み方だけが違う
         AssertIgnoredFilterNoticeIsRendered("PreventiveMeasures", ViewBagFlagAccessor, flag);
 
@@ -4063,7 +4063,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // (/Incidents 側で実際にこの取り違えが起き、人のレビューでしか気付けなかった)
     [Fact]
     public void MeasuresIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "PreventiveMeasures", ViewBagFlagAccessor, MeasuresIgnoredFilterFlagNames());
 
@@ -4636,14 +4636,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
     public void AuditLogsIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)
         AssertIgnoredFilterNoticeIsRendered("AuditLogs", ViewModelFlagAccessor, flag);
 
     // 旗ごとの見出しが互いに違うこと(理由は他の 2 画面と同じ)。
     // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
     [Fact]
     public void AuditLogsIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 3 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "AuditLogs", ViewModelFlagAccessor, AuditLogsIgnoredFilterFlagNames());
 
@@ -4657,7 +4657,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(AuditLogsIgnoredFilterFlags))]
     public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
-        // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
+        // 走査そのものは共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("AuditLogs", ViewModelFlagAccessor, flag);
 
     // --- ダッシュボード(/): 選べる値ではない集計期間(?period=) -----------------------
@@ -4692,14 +4692,14 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     [Theory]
     [MemberData(nameof(DashboardIgnoredFilterFlags))]
     public void DashboardIndexView_RendersTheIgnoredFilterNotice(string flag) =>
-        // 走査そのものは 4 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeIsRendered が正本)
         AssertIgnoredFilterNoticeIsRendered("Home", ViewModelFlagAccessor, flag);
 
     // 旗ごとの見出しが互いに違うこと(理由は他の 3 画面と同じ)。
     // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
     [Fact]
     public void DashboardIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
-        // 走査そのものは 4 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        // 走査そのものは共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
         AssertIgnoredFilterNoticeHeadingsAreDistinct(
             "Home", ViewModelFlagAccessor, DashboardIgnoredFilterFlagNames());
 
@@ -4983,8 +4983,6 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + "期間を足したなら、その期間の集計窓も同じ変更セットで決めること"
             + "(決めないと、そのボタンが選択中のまま既定の期間の KPI が出る)。");
 
-        // 以降の日数・月数の照合は基準日に依らないので、代表の 1 日で足りる
-        var today = referenceDays[0];
 
         // 日別で描く期間のトレンド日数も、互いに違うこと
         // (同じ日数なら窓も同じになり、上の開始日の照合で既に落ちるが、
@@ -5018,6 +5016,9 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"{nameof(DashboardViewModel.MonthsFor)} の既定の分岐へ落ちている可能性が高い。"
             + "期間を足したなら、その期間のチャートの窓も同じ変更セットで決めること。");
     }
+
+    // 集計窓の向きを確かめるときの基準日(実行日に依存させないための固定日)
+    private static readonly DateTime WindowProbeDay = new(2026, 6, 15);
 
     // 期間の選択肢が「唯一の源」として成立していること。
     //
@@ -5069,6 +5070,25 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 (choice.TrendDays is null) != (choice.TrendMonths is null),
                 $"期間 {choice.Id} は TrendDays と TrendMonths のどちらか一方だけを持つこと"
                 + "(日別で描くなら日数、月別なら月数)。"));
+
+        // その本数が 1 以上であること。
+        // <b>「どちらか一方だけ」では足りない</b> —— 0 はぬるぽではないので上の検査を通るが、
+        // 月数 0 だとバケットを作るループが 1 度も回らず<b>グラフが空</b>になる一方、
+        // KPI カードは窓ぶんの件数を出し、見出しは「直近0ヶ月」と名乗る(実測で全件緑)
+        Assert.All(choices, choice =>
+        {
+            Assert.True(choice.TrendDays is null or > 0,
+                $"期間 {choice.Id} の TrendDays は 1 以上であること(0 だとグラフが空になる)。");
+            Assert.True(choice.TrendMonths is null or > 0,
+                $"期間 {choice.Id} の TrendMonths は 1 以上であること(0 だとグラフが空になる)。");
+        });
+
+        // 集計窓の開始日が未来でないこと。
+        // 未来だと KPI は必ず 0 件になるのに、グラフは本数ぶん描かれる(上下で食い違う)
+        Assert.All(choices, choice =>
+            Assert.True(choice.WindowStart(WindowProbeDay) <= WindowProbeDay,
+                $"期間 {choice.Id} の集計窓の開始日が基準日より後になっている"
+                + "(KPI が必ず 0 件になるのに、グラフだけがその期間を描く)。"));
 
         // 日別で描く期間は KPI の窓の求め方を上書きしないこと。
         //
@@ -5216,7 +5236,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// 表示は<b>バッジと 0 件時の文言の 2 つ</b>で、どちらも <c>anyFilter</c> で
     /// 出し分けていることを見る(<c>showFilterPanel</c> は「開くかどうか」なので対象外)。</para>
     ///
-    /// <para><b>2 画面で共有する(§6 DRY)。</b> 以前は <c>/Incidents</c> 用の走査を
+    /// <para><b>画面をまたいで共有する(§6 DRY)。</b> 以前は <c>/Incidents</c> 用の走査を
     /// <c>/AuditLogs</c> へ手で写しており、その写しで<b>0 件時の文言の検査だけが落ちていた</b>
     /// ——同じコミットが隣の 2 つの走査を共通化したのに、これだけ写したせいで
     /// 片方の画面が守られていなかった。走査を 1 つにすれば、画面ごとに違うのは

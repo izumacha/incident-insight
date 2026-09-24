@@ -140,18 +140,15 @@ public class DashboardViewModel
 
     // 日別トレンドチャートで並べる日数(日別で描く期間だけが持つ)。
     //
-    // 月別で描く期間は既定の日数へ落とす(画面を落とさないための fail-safe。
-    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐するので、ここへは来ない)。
-    // <b>落とし先も「たまたま日別の選択肢がある」ことに頼らない</b> ——
-    // 以前は First(…) で最初の日別の選択肢を探しており、日別の期間が 1 つも無くなると
-    // 「fail-safe」と書いてあるそばから InvalidOperationException で 500 になっていた
-    public static int DaysFor(string period) =>
-        ChoiceFor(period).TrendDays
-        ?? PeriodChoices.FirstOrDefault(c => c.TrendDays is not null)?.TrendDays
-        ?? DefaultTrendDays;
+    // 月別で描く期間を渡されたら固定の既定値へ落とす。<b>その値に意味は無い</b> ——
+    // 本番の呼び出し元は UsesDailyTrendBuckets で分岐するのでここへは来ず、
+    // 目的は「画面を落とさない」ことだけ(§9 fail-safe)。
+    // <b>「最初の日別の選択肢を探す」段は置かない</b> ——それが効くのは日別の期間が
+    // 1 つも無いときだけで、その状態ではこの関数自体が呼ばれない(どのテストからも
+    // 到達できない門番は、読み手に守られていると誤解させるだけ)
+    public static int DaysFor(string period) => ChoiceFor(period).TrendDays ?? DefaultTrendDays;
 
-    // 日別の選択肢が 1 つも無いときに使う日数。画面が落ちないことだけが目的なので、
-    // 値そのものに意味は無い(1 週間ぶん)
+    // 日別で描く期間以外に渡されたときの日数(1 週間ぶん。値そのものに意味は無い)
     private const int DefaultTrendDays = 7;
 
     // トレンドチャートを「日別」で描くかどうか(false なら月別)。
@@ -161,16 +158,10 @@ public class DashboardViewModel
 
     // 月別トレンドチャートで並べる月数(month=4, quarter=6, year=12)。
     // 集計バケット数(HomeController)と見出しの双方がこのマッピングを使う。
-    // 日別で描く期間(week)はここを通らないが、万一通っても<b>最初の月別の選択肢</b>の月数へ
-    // 落とす(画面を落とさないための fail-safe。本番の呼び出し元は UsesDailyTrendBuckets で分岐する)。
-    // 「既定の期間は必ず月別」に頼らないのは DaysFor と同じ理由 ——既定の期間を日別にしても
-    // ここが投げないようにするため。そのぶん落とし先は既定の期間の月数とは限らない
-    public static int MonthsFor(string period) =>
-        ChoiceFor(period).TrendMonths
-        ?? PeriodChoices.FirstOrDefault(c => c.TrendMonths is not null)?.TrendMonths
-        ?? DefaultTrendMonths;
+    // 日別で描く期間を渡されたときの扱いは DaysFor とまったく同じ(固定の既定値・値に意味は無い)
+    public static int MonthsFor(string period) => ChoiceFor(period).TrendMonths ?? DefaultTrendMonths;
 
-    // 月別の選択肢が 1 つも無いときに使う月数(DefaultTrendDays と同じ扱い)
+    // 月別で描く期間以外に渡されたときの月数(1 年ぶん。値そのものに意味は無い)
     private const int DefaultTrendMonths = 12;
 
     // KPI
