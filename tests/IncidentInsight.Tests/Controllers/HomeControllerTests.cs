@@ -95,9 +95,12 @@ public class HomeControllerTests : IDisposable
     // ViewModel.Period まで既定値 "year" へ丸められることを確認する。丸めないと
     // ダッシュボードの期間切替ボタンがどれも選択中に見えず、表示中のデータ（1 年分）と
     // UI の状態が食い違ってしまう
+    // 空文字はここに置かない ——「受け取っていない」側（旗を立てない）なので、
+    // 下の Index_PeriodNotSupplied_DoesNotReportAnIgnoredFilter が丸めまで含めて見る。
+    // 同じ入力を 2 つの Theory が別々の説明で主張していると、空文字の扱いを変える人が
+    // どちらが意図した規則か決められなくなる
     [Theory]
     [InlineData("bogus")]   // 未知の文字列
-    [InlineData("")]        // 空文字
     [InlineData("Year")]    // 大文字違い（定数と完全一致しないので既定へ丸める）
     public async Task Index_UnknownPeriod_FallsBackToYear(string period)
     {
@@ -114,6 +117,73 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(DashboardViewModel.PeriodYear, vm!.Period);
         // 集計窓も 1 年として扱われる（2 年前の 1 件は数えない）
         Assert.Equal(1, vm.TotalIncidents);
+    }
+
+    // 選べる値ではない period を受け取ったら、既定へ丸めたことを画面へ伝える（issue #220 の規則）。
+    //
+    // 丸めるだけで黙っていると、利用者は四半期のつもりで 1 年分の KPI・トレンド・完了率を読み、
+    // 期間切替は「1年」が選択中に見えるので食い違いにも気付けない。一覧画面が ?severity=99 に
+    // ついて注意書きを出すのとまったく同じ出来事なので、伝える側に例外は置かない。
+    //
+    // 上の Index_UnknownPeriod_FallsBackToYear と分けてあるのは、見ているものが違うから
+    // ——あちらは「丸まること」、こちらは「丸めたことを伝えること」。同じテストにまとめると、
+    // 旗を落とす変異が「丸まっている」ほうのアサートで隠れる
+    [Theory]
+    [InlineData("bogus")]   // 未知の文字列
+    [InlineData("quater")]  // quarter の打ち間違い（現実に起きる形）
+    [InlineData("Year")]    // 大文字違い（定数と完全一致しないので採用しない）
+    public async Task Index_UnlistedPeriod_ReportsThatItWasNotApplied(string period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddMonths(-6)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 「受け取ったのに採用しなかった」ことが画面へ伝わる
+        Assert.True(vm!.UnlistedFilterIgnored);
+    }
+
+    // 選べる値を受け取ったときは旗を立てない。
+    // 立ててしまうと、正しく期間を切り替えただけの画面に警告が出続け、読まれなくなる
+    [Theory]
+    [InlineData(DashboardViewModel.PeriodWeek)]
+    [InlineData(DashboardViewModel.PeriodMonth)]
+    [InlineData(DashboardViewModel.PeriodQuarter)]
+    [InlineData(DashboardViewModel.PeriodYear)]
+    public async Task Index_ListedPeriod_DoesNotReportAnIgnoredFilter(string period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddDays(-1)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 採用した値なので旗は立たず、画面にもその値が残る
+        Assert.False(vm!.UnlistedFilterIgnored);
+        Assert.Equal(period, vm.Period);
+    }
+
+    // 未指定・空白のみは「受け取っていない」ので、採用しなかったことにはしない。
+    // ここを旗の対象にすると、ダッシュボードを普通に開いただけで毎回警告が出る
+    [Theory]
+    [InlineData(null)]   // ?period= を付けずに開いた（いちばん普通の経路）
+    [InlineData("")]     // ?period= を空で送った
+    [InlineData("   ")]  // 空白のみ（SearchFilter.HasValue が「空」と判定する形）
+    public async Task Index_PeriodNotSupplied_DoesNotReportAnIgnoredFilter(string? period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddDays(-1)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 旗は立たず、既定の「1年」で集計される
+        Assert.False(vm!.UnlistedFilterIgnored);
+        Assert.Equal(DashboardViewModel.PeriodYear, vm.Period);
     }
 
     [Fact]

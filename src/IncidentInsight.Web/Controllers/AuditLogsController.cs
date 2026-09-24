@@ -99,8 +99,8 @@ public class AuditLogsController : Controller
         // (どちらも絞り込んだつもりで監査ログ全件が返る)、どちらも古いブックマークか
         // 改ざんでしか起きない。規制対応の証跡画面で「その条件の証跡はこれで全部」と
         // 読まれるのは重い(規則と理由の正本は SearchFilter の解説)
-        var entityNameFilter = ResolveListedValue(entityName, AllowedEntityNames);
-        var operationFilter = ResolveListedValue(operation, AllowedOperations);
+        var entityNameFilter = ListedValueFilterResolver.Resolve(entityName, AllowedEntityNames);
+        var operationFilter = ListedValueFilterResolver.Resolve(operation, AllowedOperations);
         // 絞り込みに実際に使う値(採用しなかったときは null)
         var effectiveEntityName = entityNameFilter.Effective;
         var effectiveOperation = operationFilter.Effective;
@@ -199,59 +199,11 @@ public class AuditLogsController : Controller
         return View(vm);
     }
 
-    /// <summary>
-    /// 許可リストで閉じた絞り込み入力について、<b>実際に絞り込みへ使う値</b>と
-    /// <b>受け取ったのに採用しなかったか</b>を同時に決める。
-    /// </summary>
-    /// <remarks>
-    /// <para><b>なぜ 2 つを一緒に返すのか。</b> 採用した値と「採用しなかった」の判定は
-    /// <b>必ず整合していなければならない</b>。別々に書くと、片方だけ直したときに
-    /// 「絞り込みは効いていないのに旗が立たない(黙って落ちる)」か
-    /// 「効いているのに旗が立つ(嘘の注意書き)」のどちらかになる。
-    /// 既存の <see cref="Internal.DepartmentFilterResolver.DepartmentFilterSelection"/> や
-    /// <c>IncidentsController.CauseCategoryFilterSelection</c> と同じ形にしてあるのは、
-    /// 旗の一覧をコントローラのソースから(<c>… = ….Ignored</c> という代入の形で)導いている
-    /// <c>UnlistedFilterValuePolicyTests</c> がこの旗も自動で拾えるようにするため
-    /// ——書き方を揃えること自体が検出網の一部になっている。</para>
-    ///
-    /// <para><b>方式は「採用しない」(補完しない)。</b> エンティティ名は
-    /// <see cref="AuditSaveChangesInterceptor.AuditedEntities"/>、操作種別は
-    /// <see cref="AllowedOperations"/> という<b>コード側で閉じた語彙</b>なので、
-    /// 発生部署(自由記述＝実データにあれば選択肢へ補完する)のような逃げ道は採れない
-    /// ——選択肢に無い値を足すと、ドロップダウンに実在しない対象が並ぶ。
-    /// 方式の選び方そのものは <see cref="Models.Validation.SearchFilter"/> の表が正本。</para>
-    ///
-    /// <para><b>共有ヘルパーへ出していない</b>のは、いまの利用側がこの画面の 2 つだけだから
-    /// (§6「将来を見越した過度な抽象化を避ける」)。<b>2 画面目が同じ形を必要としたら
-    /// <c>Controllers/Internal/</c> へ移す</b>(この判断は CLAUDE.md §3 にも同じ形で
-    /// 書いてある。片方だけ違う条件を書くと、次の人がどちらに従うか決められない)。</para>
-    /// </remarks>
-    /// <param name="value">クエリ文字列から届いた絞り込み値(未指定なら <c>null</c>)。</param>
-    /// <param name="allowed">その入力が取りうる値の許可リスト。</param>
-    /// <returns>採用した値(採用しないなら <c>null</c>)と、受け取ったのに採用しなかったかどうか。</returns>
-    private static ListedValueFilterSelection ResolveListedValue(string? value, string[] allowed)
-    {
-        // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
-        // ——受け取っていないものは「採用しなかった」ではないので、旗も立てない
-        // (立てると、絞り込みを使っていない普通の一覧で警告が出続け、読まれなくなる)
-        if (!SearchFilter.HasValue(value))
-            return new ListedValueFilterSelection(null, Ignored: false);
-
-        // 許可リストに載っていればそのまま採用する(比較は序数＝完全一致)
-        if (allowed.Contains(value))
-            return new ListedValueFilterSelection(value, Ignored: false);
-
-        // 載っていない値は採用しない。絞り込みも掛けず、画面へも値を返さない
-        // ——これで「絞り込み無し・バッジ非表示・select は全て」の三者が揃う
-        return new ListedValueFilterSelection(null, Ignored: true);
-    }
-
-    /// <summary>
-    /// <see cref="ResolveListedValue"/> の結果。
-    /// </summary>
-    /// <param name="Effective">絞り込みに使う値。採用しなかった場合は <c>null</c>。</param>
-    /// <param name="Ignored"><b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。</param>
-    private readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
+    // 許可リストで閉じた絞り込み入力(エンティティ名・操作種別)の解決は
+    // Controllers/Internal/ListedValueFilterResolver に集約してある。
+    // かつてはこのクラスの private だったが、ダッシュボードの ?period= が 2 画面目に
+    // なった時点で、当時のコメントが宣言していた条件どおり共有ヘルパーへ移した
+    // (方式・旗の理由・残る境界の正本はそちらの解説)。
 
     // GET /AuditLogs/Details/123
     // 監査ログ 1 件の詳細。ChangesJson をプロパティ単位にパースして表示する

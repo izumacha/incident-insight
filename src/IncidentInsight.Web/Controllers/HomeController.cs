@@ -4,6 +4,8 @@ using System.Diagnostics;
 using System.Globalization;
 // 部署スコープ拡張メソッドを使う
 using IncidentInsight.Web.Authorization;
+// 許可リストで閉じた絞り込み入力の共有解決処理を使う
+using IncidentInsight.Web.Controllers.Internal;
 // DbContext を使う
 using IncidentInsight.Web.Data;
 // モデル(Incidentなど)を使う
@@ -157,13 +159,24 @@ public class HomeController : Controller
     // ダッシュボード画面。period で集計期間を切り替える
     public async Task<IActionResult> Index(string? period)
     {
-        // period はクエリ文字列由来の外部入力なので、既知の 4 値以外は既定の「year」へ丸める
-        // (§9 入力は信用しない / 不正値はフォールバックする)。未指定も同じ経路で既定値になる。
+        // period はクエリ文字列由来の外部入力なので、許可リスト(DashboardViewModel.Periods)を
+        // 通してから使う(§9 入力は信用しない)。判定は /AuditLogs の許可リスト絞り込みと
+        // まったく同じ共有処理へ通す ——同じ出来事(「受け取ったが選べる値ではない」)に
+        // 画面ごとに別の判定を書くと、いずれ答えが割れる(issue #220)。
+        //
         // 丸めずに素通しすると、集計側は switch の既定分岐で 1 年窓になるのに、
         // ViewModel の Period には "bogus" のような未知の値が残るため、ダッシュボードの
         // 期間切替ボタン(週/月/四半期/1年)がどれも選択中に見えない状態になり、
-        // 表示中のデータ(1 年分)と UI の状態が食い違ってしまう
-        period = NormalizePeriod(period);
+        // 表示中のデータ(1 年分)と UI の状態が食い違ってしまう。
+        //
+        // <b>採用しなかったことは画面へ伝える。</b> この画面には「期間なし」という状態が
+        // 無いので、採用しなかったときは既定の「1年」へ補完する(方式は補完)。ただし
+        // 補完したことを黙っていると、四半期のつもりで 1 年分の KPI を読んだうえ、
+        // 期間切替は「1年」が選択中に見えるので食い違いにも気付けない。方式(補完する /
+        // 採用しない)と伝え方は別の軸で、伝える側に例外は無い(規則の正本は SearchFilter の表)
+        var periodFilter = ListedValueFilterResolver.Resolve(period, DashboardViewModel.Periods);
+        // 採用できた値だけを使い、採用しなかった(または未指定の)ときは既定の期間にする
+        period = periodFilter.Effective ?? PeriodYear;
         // 今日の日付(JST)
         var today = _clock.Today;
         // 今月の 1 日(月次集計の基準)
@@ -325,6 +338,8 @@ public class HomeController : Controller
         var vm = new DashboardViewModel
         {
             Period = period,
+            // 受け取ったのに採用しなかった期間があれば画面で知らせる(旗の説明は ViewModel 側が正本)
+            UnlistedFilterIgnored = periodFilter.Ignored,
             TotalIncidents = totalIncidents,
             ThisMonthIncidents = thisMonthIncidents,
             OpenMeasures = openMeasures,
@@ -344,22 +359,6 @@ public class HomeController : Controller
         // ダッシュボードビューへモデルを渡して描画
         return View(vm);
     }
-
-    // クエリ文字列で渡された集計期間を、既知の 4 値(week/month/quarter/year)のいずれかへ丸める。
-    // 未指定・未知の値はすべて既定値の year にフォールバックする(fail-safe)。
-    // 判定に使う定数は DashboardViewModel 側の唯一の真実の源を参照しているため、
-    // 期間の種類を増やすときはこのメソッドと定数定義の両方を更新すれば足りる(§6)。
-    private static string NormalizePeriod(string? period) => period switch
-    {
-        // 直近 7 日間
-        PeriodWeek => PeriodWeek,
-        // 直近 1 か月
-        PeriodMonth => PeriodMonth,
-        // 直近 3 か月
-        PeriodQuarter => PeriodQuarter,
-        // 上記以外(null・空文字・未知の文字列)はすべて既定の直近 1 年として扱う
-        _ => PeriodYear
-    };
 
     // エラーページ。匿名アクセス可、キャッシュさせない
     [AllowAnonymous]

@@ -14,6 +14,8 @@ using System.Security.Claims;
 using System.Text.RegularExpressions;
 using IncidentInsight.Tests.Helpers;
 using IncidentInsight.Web.Controllers;
+// 許可リストで閉じた絞り込みの共有解決処理(配線の照合で名前を借りる)
+using IncidentInsight.Web.Controllers.Internal;
 using IncidentInsight.Web.Data;
 using IncidentInsight.Web.Models;
 using IncidentInsight.Web.Models.Enums;
@@ -2652,6 +2654,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     {
         (typeof(IncidentListViewModel), nameof(IncidentsController)),
         (typeof(AuditLogListViewModel), nameof(AuditLogsController)),
+        (typeof(DashboardViewModel), nameof(HomeController)),
     };
 
     // 上の導出(命名規約)が旗を取りこぼしていないことを、判定とは独立な手がかりで照合する。
@@ -3194,6 +3197,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         ("Incidents", ViewModelFlagAccessor),
         ("PreventiveMeasures", ViewBagFlagAccessor),
         ("AuditLogs", ViewModelFlagAccessor),
+        ("Home", ViewModelFlagAccessor),
     };
 
     // 同じ理由の注意書きは、画面をまたいで<b>一字一句そろっている</b>こと。
@@ -4218,7 +4222,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // 許可リストで閉じた絞り込みには<b>必ずドロップダウンがある</b>。
     // Razor は本体(コントローラ)とは別の宣言箇所なので、3 つ目の許可リスト絞り込みを
     // 足した人が解決処理を通し忘れると、<b>その name が導出には現れるのに
-    // 下の対応表と ResolveListedValue のどちらにも無い</b>状態として現れる。
+    // 下の対応表と共有の解決処理のどちらにも無い</b>状態として現れる。
     //
     // 書き並べる形にしないのはこの repo が繰り返し避けている「写しを持つ」形だから
     // ——[InlineData] の手書きにすると、3 つ目を足した人が行を足し忘れた瞬間に
@@ -4275,7 +4279,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     // すべて許可リストの絞り込み」という前提に立つが、それは署名からも Razor からも
     // 保証できない ——表示件数(<c>pageSize</c>)や並び順(<c>sort</c>)のような
     // <b>絞り込みでないドロップダウン</b>を足すと、ガードが
-    // 「<c>ResolveListedValue</c> を通せ」と要求し、逃げ道は
+    // 「<c>ListedValueFilterResolver.Resolve</c> を通せ」と要求し、逃げ道は
     // 「絞り込みでない入力を解決処理へ通す」か「走査ごと緩める」になる。
     // 実行不能な指示を出す検出網はいずれ緩められるので、逃げ道を<b>理由付きで</b>用意する。
     //
@@ -4388,17 +4392,17 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // コメントを落としてから走査する(説明コメント中の呼び出し例を配線と取り違えない)
         var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
 
-        // ドロップダウンを持つ絞り込みのうち、ResolveListedValue へ渡されていないものを集める
+        // ドロップダウンを持つ絞り込みのうち、共有の解決処理へ渡されていないものを集める
         var unwired = AuditLogsFilterSelectNames()
             // 名前は Razor から拾った文字列なので、正規表現へ入れる前に必ずエスケープする
             // (`.` を含む name が任意の 1 文字と一致して、配線漏れを見逃すのを防ぐ)
-            .Where(name => !Regex.IsMatch(source, $@"ResolveListedValue\s*\(\s*{Regex.Escape(name)}\b"))
+            .Where(name => !Regex.IsMatch(source, $@"{nameof(ListedValueFilterResolver)}\.{nameof(ListedValueFilterResolver.Resolve)}\s*\(\s*{Regex.Escape(name)}\b"))
             .ToList();
 
         // 1 つでもあれば落とす
         Assert.True(unwired.Count == 0,
             $"許可リストの絞り込みが解決処理を通っていない: {string.Join(", ", unwired)}。"
-            + "ResolveListedValue へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
+            + $"{nameof(ListedValueFilterResolver)}.{nameof(ListedValueFilterResolver.Resolve)} へ通し、その Ignored を UnlistedFilterIgnored へ写すこと"
             + "(通さないと、許可リストに無い値で監査ログ全件が返るのに注意書きが出ない)。");
     }
 
@@ -4451,7 +4455,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 受け取ったのに採用しなかったことを画面へ伝えている
         Assert.True(vm.UnlistedFilterIgnored,
             $"?{parameterName}={UnlistedAuditValue}(許可リストに無い値)を受け取ったのに注意書きが出ない。"
-            + $"{parameterName} を ResolveListedValue へ通し、その Ignored を"
+            + $"{parameterName} を {nameof(ListedValueFilterResolver)}.{nameof(ListedValueFilterResolver.Resolve)} へ通し、その Ignored を"
             + "UnlistedFilterIgnored へ写しているか確認すること。");
 
         // 絞り込みは掛かっていない(全件が返る)。注意書きはまさにこの状態を伝えるためにある
@@ -4657,6 +4661,164 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     public void AuditLogsIndexView_OpensTheFilterPanelForAnIgnoredValue_ButDoesNotCallItActive(string flag) =>
         // 走査そのものは 2 画面で共有する(AssertIgnoredFlagOpensThePanelButIsNotCalledActive が正本)
         AssertIgnoredFlagOpensThePanelButIsNotCalledActive("AuditLogs", ViewModelFlagAccessor, flag);
+
+    // --- ダッシュボード(/): 選べる値ではない集計期間(?period=) -----------------------
+
+    // ダッシュボードが立てる旗を、コントローラのソースから導く。
+    // 導出の理由・fail-closed にする理由は AuditLogsIgnoredFilterFlags とまったく同じ
+    // (走査は IgnoredFilterFlagNamesIn を画面名だけ変えて使い回す。§6 DRY)
+    public static TheoryData<string> DashboardIgnoredFilterFlags()
+    {
+        // コントローラのソースを読む(ビルド出力にはコピーされないので絶対パスで開く)
+        var flags = DashboardIgnoredFilterFlagNames();
+
+        // 0 件は「旗が無くなった」より「書き方が変わった」可能性が高い
+        Assert.True(flags.Count > 0,
+            $"{nameof(HomeController)} に「… = ….Ignored」の代入が 1 つも見つからない。"
+            + "書き方を変えたなら、この導出も同じ変更セットで直すこと"
+            + "(直さないと、旗ごとに掛かるはずの Razor の検査が対象ゼロで全件緑になる)。");
+
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var flag in flags) data.Add(flag);
+        return data;
+    }
+
+    // 上の導出の本体。Theory のケース作りと見出しの照合が同じここを読む(§6 DRY)
+    private static List<string> DashboardIgnoredFilterFlagNames() =>
+        IgnoredFilterFlagNamesIn(nameof(HomeController));
+
+    // 旗をダッシュボードのビューが実際に読んでいることを確かめる
+    // (コントローラ級の検査は ViewModel までしか見ないので、@if のブロックごと消しても
+    //  全件緑のまま通る ——他の 3 画面とまったく同じ理由・同じやり方で塞ぐ)
+    [Theory]
+    [MemberData(nameof(DashboardIgnoredFilterFlags))]
+    public void DashboardIndexView_RendersTheIgnoredFilterNotice(string flag) =>
+        // 走査そのものは 4 画面で共有する(AssertIgnoredFilterNoticeIsRendered が正本)
+        AssertIgnoredFilterNoticeIsRendered("Home", ViewModelFlagAccessor, flag);
+
+    // 旗ごとの見出しが互いに違うこと(理由は他の 3 画面と同じ)。
+    // 現在この画面の旗は 1 つだが、2 つ目を足した人が既存の文面を写すとここで落ちる
+    [Fact]
+    public void DashboardIndexView_GivesEachIgnoredFilterNoticeItsOwnHeading() =>
+        // 走査そのものは 4 画面で共有する(AssertIgnoredFilterNoticeHeadingsAreDistinct が正本)
+        AssertIgnoredFilterNoticeHeadingsAreDistinct(
+            "Home", ViewModelFlagAccessor, DashboardIgnoredFilterFlagNames());
+
+    // <b>この画面には「絞り込みパネルが開くこと」の検査を置かない。</b>
+    // 他の 3 画面の注意書きは「下の『絞り込み』から選び直してください」と案内するので、
+    // パネルが実際に開くことまで見ないと案内が宙に浮く。ダッシュボードには絞り込み
+    // パネルが無く、案内先は画面上部の期間切替ボタンで、それは旗と無関係に常に出ている。
+    // 無いものを見る検査を足すと「実行不能な指示」になるので置かない
+    // ——代わりに、そのボタンの識別子と許可リストが一致することを下の検査が固定する。
+
+    // 期間切替のボタンが、許可リストと<b>同じ 1 つの宣言</b>から描かれていること。
+    //
+    // <b>なぜ「一致しているか」ではなく「1 つから描いているか」を見るのか。</b>
+    // 最初はビューの <c>?period=…</c> のリンクを拾って許可リストと突き合わせていたが、
+    // <b>実測でその走査には穴があった</b> ——同じリンクをタグヘルパー
+    // (<c>asp-route-period="@DashboardViewModel.PeriodDecade"</c>)で書いた 5 つ目のボタンは
+    // 拾う綴りに当たらず、許可リストに無い識別子のボタンが出るのに<b>全件緑のまま通った</b>
+    // (押すと画面が自分で出したリンクを自分で「選べる値ではない」と拒否する)。
+    // 綴りを足していく道は取らない ——この repo が繰り返し記録しているとおり、
+    // 近似で綴りを追う限りどちらかの穴が必ず残る。代わりに<b>食い違いが構造的に作れない形</b>
+    // (ビューが PeriodChoices を回す)へ寄せ、検査はその形が保たれていることだけを見る。
+    //
+    // <b>2 つを見る。</b> (a) 選択肢を回していること、(b) 期間のルート値を<b>回した変数以外から</b>
+    // 書いていないこと。(b) が無いと、回すコードを残したまま手書きのボタンを 1 つ足せる。
+    [Fact]
+    public void DashboardPeriodSwitcher_IsRenderedFromTheSingleSource()
+    {
+        // ダッシュボードのビューを開く(Razor のコメントは落としてある)
+        var source = ReadIndexViewSource("Home");
+
+        // (a) 選択肢を回していること。回していなければ、ボタンは手書きに戻っている
+        var loop = Regex.Match(
+            source,
+            $@"@foreach\s*\(\s*var\s+(?<item>\w+)\s+in\s+{nameof(DashboardViewModel)}"
+            + $@"\.{nameof(DashboardViewModel.PeriodChoices)}\s*\)");
+        Assert.True(loop.Success,
+            $"Views/Home/Index.cshtml が {nameof(DashboardViewModel)}."
+            + $"{nameof(DashboardViewModel.PeriodChoices)} を回して期間切替を描いていない。"
+            + "手書きで並べると許可リストと画面が別々の宣言になり、ずれてもどちらの向きでも"
+            + "動いてしまう(押せないのに受け付ける隠し値か、押した瞬間に自分で拒否するボタン)。"
+            + "回し方を変えたなら、この照合も同じ変更セットで直すこと。");
+
+        // 回している変数の名前(この変数の Id だけが期間のルート値として許される)
+        var item = loop.Groups["item"].Value;
+
+        // (b) 期間のルート値の書き方を全部拾う。href のクエリ文字列とタグヘルパーの
+        // 両方を見る ——片方だけだと、もう片方の綴りで手書きのボタンを足せる(実測の穴がこれ)
+        var written = Regex.Matches(source, @"(?:\?period=|asp-route-period\s*=\s*"")(?<value>[^""&\s>]*)")
+            .Select(m => m.Groups["value"].Value)
+            .ToList();
+
+        // 1 つも拾えなければ手がかりが死んでいる(fail-closed)。
+        // 回しているのにリンクが拾えないのは、リンクの書き方が変わったということ
+        Assert.True(written.Count > 0,
+            "Views/Home/Index.cshtml に期間のルート値(?period= / asp-route-period=)が 1 つも無い。"
+            + "期間切替の書き方を変えたなら、この照合も同じ変更セットで直すこと"
+            + "(直さないと、手書きのボタンが全件緑のまま通る)。");
+
+        // 回した変数の Id 以外から書かれたものがあれば落とす
+        var handWritten = written
+            .Where(value => value != $"@{item}.Id")
+            .ToList();
+        Assert.True(handWritten.Count == 0,
+            $"期間のルート値が {nameof(DashboardViewModel.PeriodChoices)} の回し以外からも書かれている: "
+            + $"{string.Join(", ", handWritten)}。手書きのボタンは許可リストとずれても"
+            + $"動いてしまうので、@{item}.Id から出すこと。");
+    }
+
+    // 注意書きが案内する既定の期間名が、選択肢のラベルと同じであること。
+    //
+    // 注意書きは「既定の『1年』で集計しています」と案内するが、その「1年」はボタンのラベルで、
+    // 別々に書くと<b>画面に無いボタンを探させる案内</b>が残る(ボタンだけを「年間」へ
+    // 変えても、注意書きの文面しか見ない他の検査は全件緑のまま通る)。
+    // 既定の期間そのもの(year へ丸めること)は HomeControllerTests が固定しているので、
+    // ここが見るのは<b>ラベルの一致だけ</b>
+    [Fact]
+    public void DashboardIndexView_NoticeNamesTheDefaultPeriodLabel()
+    {
+        // ダッシュボードのビューを開く(Razor のコメントは落としてある)
+        var source = ReadIndexViewSource("Home");
+        // 旗で出し分けている注意書きのブロックを切り出す
+        var header = Regex.Match(
+            source, $@"@if\s*\(\s*{Regex.Escape(ViewModelFlagAccessor)}\w*{IgnoredFlagSuffix}\b");
+        Assert.True(header.Success, "Views/Home/Index.cshtml に注意書きの出し分けが無い。");
+        var blockBody = ExtractBraceBlock(source, header.Index);
+        Assert.True(blockBody != null, "Views/Home/Index.cshtml の注意書きに本体が無い。");
+
+        // 既定の期間のラベルが文面に含まれていること
+        Assert.Contains(DashboardViewModel.DefaultPeriodLabel, blockBody!, StringComparison.Ordinal);
+    }
+
+    // 集計期間が共有の解決処理を通っていること。
+    //
+    // 上の照合は「画面と許可リストが一致している」ことしか見ないので、
+    // <b>コントローラが許可リストを使っていない</b>形(自前の switch で既定へ丸めるだけ、
+    // ＝この変更の前の状態)は素通りする。そのとき壊れるのは「採用しなかったことを伝える」
+    // 側だけで、画面は正しい期間を表示し続けるため behavioural な検査以外に痕跡が出ない。
+    // 原因(配線漏れ)をコントローラのソースで名指しして落とす
+    // (/AuditLogs の AuditLogsListedFilters_AllGoThroughTheResolver と同じ形)
+    [Fact]
+    public void DashboardPeriodFilter_GoesThroughTheResolver()
+    {
+        // コントローラのソースを開く(ビルド出力にはコピーされないので絶対パスで開く)
+        var controllerPath = Path.Combine(
+            RepositoryPaths.WebProject, "Controllers", $"{nameof(HomeController)}.cs");
+        Assert.True(File.Exists(controllerPath), $"コントローラのソースが見つからない: {controllerPath}");
+        // コメントを落としてから走査する(説明コメント中の呼び出し例を配線と取り違えない)
+        var source = CSharpComment.Replace(File.ReadAllText(controllerPath), string.Empty);
+
+        // 「共有の解決処理へ period と許可リストを渡している」ことを見る。
+        // 許可リストまで見るのは、別の配列を渡す形(自前で作った 4 要素の配列など)だと
+        // 画面との一致を見る上の検査が効かなくなるため
+        Assert.Matches(
+            $@"{nameof(ListedValueFilterResolver)}\.{nameof(ListedValueFilterResolver.Resolve)}"
+            + $@"\s*\(\s*period\s*,\s*{nameof(DashboardViewModel)}\.{nameof(DashboardViewModel.Periods)}\s*\)",
+            source);
+    }
 
     /// <summary>
     /// 注意書きが案内する先(絞り込みパネル)が実際に開くこと、そして
