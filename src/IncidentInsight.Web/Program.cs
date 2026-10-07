@@ -3,6 +3,8 @@ using IncidentInsight.Web.Authorization;
 // DbContext / 監査インターセプタ / Seeder を使う
 using IncidentInsight.Web.Data;
 // ApplicationUser / AppRoles を使う
+// AllowedHosts が実質全許可かの判定を使う
+using IncidentInsight.Web.Models.Validation;
 using IncidentInsight.Web.Models;
 // AuditOptions(監査ログ用設定)を使う
 using IncidentInsight.Web.Models.Auditing;
@@ -14,6 +16,8 @@ using IncidentInsight.Web.Services;
 using Microsoft.AspNetCore.Authorization;
 // リバースプロキシの転送ヘッダ復元(ForwardedHeaders / ForwardedHeadersOptions)
 using Microsoft.AspNetCore.HttpOverrides;
+// AllowedHosts の再束縛を引き金にするため、ホスト名フィルタの設定型を使う
+using Microsoft.AspNetCore.HostFiltering;
 // セキュリティ関連 HTTP ヘッダー(X-Frame-Options 等)を全レスポンスへ付与するミドルウェア
 using IncidentInsight.Web.Middleware;
 // ASP.NET Core Identity(認証・ユーザー管理)
@@ -340,24 +344,185 @@ if (!app.Environment.IsDevelopment())
     // HTTP → HTTPS リダイレクト
     app.UseHttpsRedirection();
 
-    // 本番で AllowedHosts が "*"(全ホスト許可)のままだと、Host ヘッダ偽装
+    // 本番で AllowedHosts が全許可のままだと、Host ヘッダ偽装
     // (キャッシュ汚染・パスワード再設定リンク汚染等)の余地が残る(issue #64)。
     // 値を発明できないため起動は止めず、運用者に実ホスト名へ絞るよう警告する。
-    var allowedHosts = app.Configuration["AllowedHosts"];
-    // 未設定・空・ワイルドカードのいずれかなら警告ログを出す
-    if (string.IsNullOrWhiteSpace(allowedHosts) || allowedHosts.Trim() == "*")
+    //
+    // <b>検査と文面は AllowedHostsWarningReporter が持つ。</b> ここは
+    // if (!IsDevelopment()) の中なのでテストから 1 行も走らず、書くと
+    // 「文面を反対の意味へ差し替えても全件緑」の状態に戻る(実測)。
+    // 規則の正本は AllowedHostsPolicy、境界は AllowedHostsPolicyTests、
+    // フレームワーク側の前提は HostFilteringShortCircuitTests が固定する。
+    //
+    // <b>値そのものではなく「読み方」を渡す。</b> 呼び出し側が読んでから渡すと
+    // 読み取りが Reporter の錠の外になり、再読み込みが立て続けに届いたときに
+    // 記憶が実際の設定とずれる ——そのとき次に本当に緩めても重複抑止に当たって
+    // 1 本も出ない（issue #264 が塞いだ fail-open が競合の形で戻る。レビュー指摘）。
+    //
+    // <b>読み方は起動時と再読み込みで同じ。</b> HostFilteringOptions.AllowedHosts は
+    // 既に分割され、0 件なら ["*"] へ落とされた後の一覧なので、未設定で起動した場合に
+    // 起動時とは違う原因("1 件も残らない" ではなく "ワイルドカード")を名乗ることになる。
+    // 同じ設定について 2 つの説明が出るのを避けるため、設定から素の値を読む。
+    var allowedHostsWarnings = new AllowedHostsWarningReporter(
+        app.Logger,
+        app.Environment.EnvironmentName,
+        () => app.Configuration["AllowedHosts"]);
+
+    // 診断（AllowedHosts の検査）の失敗を、<b>絶対に例外を通さずに</b>記録する。
+    //
+    // <b>呼び出し口が 2 つあるので 1 か所に寄せてある</b>（検査そのものの失敗と、
+    // 再読み込みの購読を張れなかった失敗）。書き写すと、片方にだけ守りが残る形になる ——
+    // 実際レビューで「購読側の catch が素の LogError を呼んでいる」と指摘された（§6 DRY）。
+    void ReportDiagnosticFailure(Exception failure, string message)
     {
-        // 運用者が気づけるよう Warning レベルで通知する
-        app.Logger.LogWarning(
-            "AllowedHosts is '*' in Production. Set it to the real hostname(s) via the " +
-            "AllowedHosts setting or environment variable (semicolon-separated) to prevent " +
-            "Host-header spoofing, especially behind a reverse proxy (issue #64).");
+        // まずは通常のログへ残す
+        try
+        {
+            // 失敗の事実と例外を、文脈付きで記録する
+            app.Logger.LogError(failure, "{Message}", message);
+        }
+        catch (Exception loggingFailure)
+        {
+            // <b>ログの出力先そのものが落ちているときの最後の手段。</b>
+            // ここから投げると起動が失敗するか、ファイル監視のスレッドまで例外が戻り、
+            // 設定ファイルに触れただけでプロセスが落ちる ——このはしごを
+            // 置いた理由そのものなので、別の出力先へ吐いて必ず戻る。
+            //
+            // <b>元の失敗（failure）も必ず一緒に出す。</b> 出力先が落ちた理由
+            // （loggingFailure）だけを書くと、<b>肝心の「検査が失敗した」事実が
+            // どこにも残らない</b> ——運用者は docs/security.md の
+            // 「2 本とも出ていないことの確認」をきれいなログで通してしまい、
+            // 絞り込みが緩んだ可能性に気づけない。
+            try
+            {
+                // 元の失敗と、記録できなかった理由の両方を出す
+                Console.Error.WriteLine(
+                    message + " The failure could not be logged. Original failure: " + failure
+                    + " | Logging failure: " + loggingFailure);
+            }
+            catch (Exception)
+            {
+                // <b>意図して何もしない（§6 の「空の catch」の唯一の例外）。</b>
+                // ここは「通常のログ」も「標準エラー」も落ちている状態で、
+                // <b>残せる先がもう 1 つも無い</b>。それでも投げないのは、
+                // 投げた先が起動処理か設定ファイルの監視スレッドで、
+                // <b>診断を残せないという理由だけでアプリが止まる</b>ことになるから
+                // （§9「例外時はクラッシュではなく機能を縮退して継続する」）。
+                // 握り潰しているのは「記録の失敗」であって、業務上の失敗ではない。
+            }
+        }
     }
+
+    // <b>検査で例外を出さない（§9 fail-safe）。</b> 呼び出し口は 2 つあり、
+    // どちらも「診断のための警告がアプリを止める」形になってはいけない:
+    //   - 起動時 …… ログの出力先が落ちていると、警告を書けないだけで<b>起動そのものが失敗</b>する。
+    //   - 再読み込み …… 変更トークンの発火は CancellationTokenSource.Cancel() 経由で
+    //     例外を呼び出し元へ投げ直すので、本番ではファイル監視のスレッドで
+    //     <b>設定ファイルに触れただけでプロセスが落ちる</b>。
+    //     <b>打ち切りの範囲は「設定トークンに連なる全部」ではない（レビュー指摘）。</b>
+    //     Cancel() は throwOnFirstException: false なので、登録された購読は最後まで呼ばれ、
+    //     例外はまとめて投げ直される。打ち切られるのは<b>同じ OptionsMonitor の
+    //     マルチキャスト</b>のほう ——HostFilteringOptions の購読はここと同じ連鎖に載っており、
+    //     マルチキャストの呼び出しは最初に投げたところで止まるので、
+    //     <b>ミドルウェア自身の再束縛が走らず古い許可リストのまま残る</b>。
+    // 2 か所へ書き写すと片方にだけ手当てが残るので、1 つの関数に寄せる（§6 DRY。
+    // レビューで実際に「起動時だけ素通し」の非対称が指摘された）。
+    void CheckAllowedHosts()
+    {
+        // 検査そのものは Reporter に任せる（同じ値なら Reporter 側が黙る）
+        try
+        {
+            // 現在の設定で 2 本の警告を出し直す
+            allowedHostsWarnings.ReportIfValueChanged();
+        }
+        catch (Exception ex)
+        {
+            // 握り潰さず、文脈を付けて残す(§6「エラーを握り潰さない」)
+            ReportDiagnosticFailure(
+                ex,
+                AllowedHostsWarningReporter.CheckFailedMessage);
+        }
+    }
+
+    // <b>購読を先に張ってから、起動時の検査をする（レビュー指摘）。</b>
+    // 逆順にすると、その 2 文の間に届いた再読み込みを拾う購読がまだ無く、
+    // しかも Reporter は「前回と同じ値」を覚えているので<b>以降も出し直さない</b> ——
+    // ConfigMap やボリュームの投影がちょうどその瞬間に着地して "*" へ変わると、
+    // 全許可のまま 1 本も警告が出ない状態が固定される。先に張る代償は無い
+    // （購読が起動時の値で鳴っても、下の検査と同じ値なので Reporter 側が黙る）。
+    //
+    // <b>引き金はフレームワーク自身の再束縛にそろえる。</b> 設定の再読み込みトークンを
+    // 直接見ると、将来フレームワークが追随をやめたときに<b>こちらだけが鳴り続け</b>、
+    // ミドルウェアは古い一覧のままなのに「全許可になった」と言い出す ——
+    // 警告が障害を作る側に回る形で、見逃しより重い。
+    //
+    // <b>戻り値の購読は破棄しない。</b> ここで解除するとアプリが生きている間の
+    // 再読み込みを 1 度も拾えなくなる(監視そのものがアプリと同じ寿命)。
+    // <b>配線そのものも診断の一部なので、ここで起動を止めない（レビュー指摘）。</b>
+    // 下の CheckAllowedHosts は 3 重の try/catch で守ってあるのに、購読を張る
+    // この 1 文が素通しだと、将来ホスト名フィルタを条件付きにした人の変更で
+    // GetRequiredService が投げ、<b>警告を配線できないというだけでアプリが起動しない</b> ——
+    // この PR が消したはずの非対称が 2 行ずれて戻ることになる。
+    try
+    {
+        // 設定の再読み込みごとに検査し直す
+        app.Services.GetRequiredService<IOptionsMonitor<HostFilteringOptions>>()
+            .OnChange(_ => CheckAllowedHosts());
+    }
+    catch (Exception ex)
+    {
+        // 握り潰さず、何が縮退したのかまで残す（§6）——
+        // このとき起動時の 1 回だけは下で検査されるが、以降の再読み込みは拾えない。
+        // <b>記録も同じはしごを通す（レビュー指摘）。</b> ここで素の LogError を呼ぶと、
+        // 出力先が落ちている状況で<b>この catch 自体が起動を止める</b> ——
+        // 「警告を配線できないというだけでアプリが起動しない」を避けるために
+        // 置いた catch が、まさにその形になる
+        ReportDiagnosticFailure(
+            ex,
+            AllowedHostsWarningReporter.SubscribeFailedMessage);
+    }
+
+    // まず起動時の値で検査する(ここで出る 2 本が docs/security.md の確認手順の対象)
+    CheckAllowedHosts();
 }
 
-// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)を
-// 静的ファイルを含む全レスポンスに付与する。認証・ルーティングより前に置き、
-// 例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする。
+// セキュリティ関連 HTTP ヘッダー(X-Content-Type-Options / X-Frame-Options / Referrer-Policy)と
+// キャッシュ抑止の既定値を、静的ファイルを含む「ここより後ろへ届いた」全レスポンスに付与する。
+// 認証・ルーティングより前に置き、例外ハンドラ経由のエラーページ応答にも確実に適用されるようにする
+// (例外時は ExceptionHandlerMiddleware がこれより後ろを再実行するので、ここは必ず通る)。
+//
+// これより手前で応答が完結する経路が 2 つあり、どちらもこのヘッダー群が付かない。
+// どちらもこのアプリのデータを 1 文字も載せないので実害は無いと判断している。
+//   1. 本番の UseHttpsRedirection …… http:// へのリクエストに 307 + Location を返して
+//      短絡する。本文を持たず、307 は明示的な指示が無ければキャッシュされない。
+//      ただし Location は Request.Host から組み立てるので、要求元の Host をそのまま含む。
+//      つまりこの経路だけは「リクエスト由来の値を映し返さない」が成り立たない ——
+//      塞ぐのは AllowedHosts の絞り込み(issue #64)で、既定の "*" のままだと
+//      Host: evil.example が Location: https://evil.example/... として返る。
+//      詳細は docs/security.md「レスポンスヘッダー」の例外 1 が正本。
+//   2. HostFiltering …… AllowedHosts を実ホスト名へ絞ると(docs/security.md が
+//      運用者にそう指示している)、Host ヘッダーが一致しないリクエストへ 400 を返して
+//      短絡する。これは汎用ホストが IStartupFilter として登録するミドルウェアなので、
+//      Program.cs のどこに何を書いても必ずこれより手前にいる。
+//      実測: 400 が返り Cache-Control は付かないが、本文は空ではない ——
+//      フレームワークの定型ページ("Bad Request - Invalid Hostname")が返る。
+//      安全な理由は「空だから」ではなく「定型文で、要求元のホスト名も業務データも
+//      含まないから」で、その 2 点は HostFilteringShortCircuitTests が固定している。
+//
+// <b>この行が UseStaticFiles より前にいることは、配信された応答のヘッダーで固定してある</b>
+// (ResponseCacheHeaderIntegrationTests.StaticAsset_StillGetsTheSecurityHeaders)。
+// UseStaticFiles は一致したファイルに対して終端なので、この行をその後ろへ動かすと
+// wwwroot 配下のすべての資産がこのヘッダー群を一斉に失う ——
+// 以前はそれを守るものが何も無く、実測で全件緑のまま通った(issue #257)。
+//
+// 覆いたくなったときに「この行を移す」で済ませないこと。 UseExceptionHandler /
+// UseHsts / UseHttpsRedirection は上の if (!IsDevelopment()) の中にあるので、
+// この行をそこへ移すと Development ではミドルウェアが 1 度も登録されず、
+// セキュリティヘッダーもキャッシュ抑止の既定値も丸ごと消える。
+// 1 を覆うなら、ここの無条件登録は残したまま本番ブロックの UseHsts の手前へ
+// もう 1 度登録する(二重登録でも、既に指示がある応答へは触れない設計なので安全)か、
+// リダイレクトをこの行より後ろへ出す。2 は上記のとおり順序では覆えないため、
+// 覆うには IStartupFilter で HostFiltering より前へ差し込む必要がある。
 app.UseMiddleware<SecurityHeadersMiddleware>();
 
 // 静的ファイル(wwwroot)配信を有効化。
