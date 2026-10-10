@@ -65,7 +65,7 @@ internal static class ListedValueFilterResolver
     /// <param name="value">クエリ文字列から届いた絞り込み値(未指定なら <c>null</c>)。</param>
     /// <param name="allowed">その入力が取りうる値の許可リスト。</param>
     /// <returns>採用した値(採用しないなら <c>null</c>)と、受け取ったのに採用しなかったかどうか。</returns>
-    internal static ListedValueFilterSelection Resolve(string? value, IReadOnlyList<string> allowed)
+    public static ListedValueFilterSelection Resolve(string? value, IReadOnlyList<string> allowed)
     {
         // 空・空白のみは「絞り込み無し」。判定は SearchFilter.HasValue に集約してある
         // ——受け取っていないものは「採用しなかった」ではないので、旗も立てない
@@ -93,5 +93,5 @@ internal static class ListedValueFilterResolver
     /// </remarks>
     /// <param name="Effective">絞り込みに使う値。採用しなかった場合は <c>null</c>。</param>
     /// <param name="Ignored"><b>値を受け取ったのに採用しなかった</b>とき <c>true</c>。</param>
-    internal readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
+    public readonly record struct ListedValueFilterSelection(string? Effective, bool Ignored);
 }
