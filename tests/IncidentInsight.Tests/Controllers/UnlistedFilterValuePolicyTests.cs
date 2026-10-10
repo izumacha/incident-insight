@@ -4771,8 +4771,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 緑へ戻す道が「その導線を作らない」か「走査を緩める」しか無くなる
         var handWritten = routeKeyUses
             .Where(m => !loopBodies.Any(body => m.Index >= body.Start && m.Index < body.End))
-            .Where(m => !Regex.IsMatch(
-                source[(m.Index + m.Length)..], @"^\s*=?\s*""?\s*@Model\.Period\b"))
+            .Where(m => !PassesTheReceivedPeriodThrough(source, m))
             .Select(m => LineAt(source, m.Index))
             .ToList();
         Assert.True(handWritten.Count == 0,
@@ -4847,6 +4846,111 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             + $"(実際 KPI カードの見出しがこの形だった)。対応付けは {nameof(DashboardViewModel)}."
             + $"{nameof(DashboardViewModel.PeriodChoices)} へ持たせ、ビューは "
             + $"{nameof(DashboardViewModel)}.<導出>(Model.Period) の形で引くこと。");
+
+        // (e) KPI カードの見出しに<b>いまの期間から導いたもの</b>が残っていること。
+        //
+        // <b>(d) は「分岐を禁じる」だけで「導出を要求」してはいなかった(レビュー指摘・実測)。</b>
+        // 集計期間に連動する見出しを `年間インシデント数` という<b>リテラル</b>に戻すと、
+        // `Model.Period` が 1 つ減るだけなので (d) は当然通り、<b>全件緑・テスト件数も不変</b>の
+        // まま「四半期を選んでいるのに『年間インシデント数』の下に 3 か月分の件数が出る」
+        // ——この変更が閉じたと書いている状態そのものが再現した。
+        // `KpiLabelFor(DashboardViewModel.PeriodYear)` と固定の期間を渡す形も同じく通る。
+        //
+        // <b>「すべての見出しが導出」ではなく「1 つは導出」を要求する。</b> KPI カードには
+        // 期間に連動しない見出し(「今月の発生件数」「未完了対策」「期限超過対策」)も並んでおり、
+        // 全数を要求すると<b>正しい固定の見出しが赤くなる</b>(実測で 3 件)。
+        // 閉じたいのは「連動していた見出しが固定文へ戻る」形なので、導出が 1 つも無くなった
+        // 時点で落とせば足りる
+        var kpiHeadingLines = source
+            .Split('\n')
+            .Where(line => line.Contains(KpiHeadingMarker, StringComparison.Ordinal))
+            .ToList();
+        // 1 行も無ければ手がかりが死んでいる(マークアップを変えたなら照合も直す。fail-closed)
+        Assert.True(kpiHeadingLines.Count > 0,
+            $"Views/Home/Index.cshtml に KPI カードの見出し({KpiHeadingMarker})が無い。"
+            + "印を変えたなら、この照合も同じ変更セットで直すこと"
+            + "(直さないと、見出しがリテラルに戻っても全件緑のまま通る)。");
+        // 導出の呼び出しの綴り（行に直接書く形と、ローカルへ代入する形の両方で使う）
+        var derivation = $@"{nameof(DashboardViewModel)}\.\w+\(\s*Model\.Period\s*\)";
+        // <b>括り出したローカルも通す。</b> `@{{ var kpiLabel = 導出(Model.Period); }}` と
+        // 書いて `@kpiLabel` を出すのはごく普通の形で、(d) がこれを通すようにしたのに
+        // ここで落とすと<b>同じ「直しようの無い赤」を 1 つ隣に作り直す</b>ことになる
+        // （実測で、(d) は通るのにこの (e) だけが落ちた）
+        var derivedLocals = Regex.Matches(source, $@"(?:var|string)\s+(?<name>\w+)\s*=\s*{derivation}")
+            .Select(m => m.Groups["name"].Value)
+            .ToList();
+        // そのうち「導出の結果」を書き出している行を数える（直接書く形か、上のローカル経由）
+        var derivedHeadings = kpiHeadingLines
+            .Count(line => Regex.IsMatch(line, derivation)
+                || derivedLocals.Any(name => Regex.IsMatch(line, $@"@\(?\s*{Regex.Escape(name)}\b")));
+        Assert.True(derivedHeadings > 0,
+            "KPI カードの見出しが 1 つも期間から導かれていない。集計期間に連動する見出しは "
+            + $"{nameof(DashboardViewModel)}.<導出>(Model.Period) で引くこと"
+            + "(リテラルや固定の期間を渡すと、別の期間を選んでいるのに前の言い回しが残り、"
+            + "しかも件数だけが変わるので利用者からは食い違いが見えない)。");
+
+        // (f) 「選択中」の見せ方が<b>受け取った期間と回した変数の Id の突き合わせ</b>であること。
+        //
+        // <b>これも (d) の守備範囲の外だった(レビュー指摘・実測)。</b> 回しの<b>中</b>は
+        // (d) の対象外なので、2 つの比較を `choice.Id == DashboardViewModel.PeriodWeek` に
+        // 変えると<b>全件緑</b>のまま「どの期間を集計していても『週』が塗られ
+        // `aria-current` も『週』に付く」状態になる ——HomeController.Index のコメントが
+        // 「表示中のデータと UI の状態が食い違う」として挙げている、この変更の動機そのもの。
+        // 回しの中では比較が必要なので (d) のように禁じることはできない。代わりに
+        // <b>比較の両辺を決め打つ</b>: 片方が `Model.Period` か `<変数>.Id` なら、
+        // もう片方は必ずその相手。定数・リテラル・別の変数はすべて落ちる
+        var wrongComparison = new List<string>();
+        var comparisons = 0;
+        foreach (var body in loopBodies)
+        {
+            // この回しの本体と、回した変数の `Id`
+            var text = source[body.Start..body.End];
+            var itemId = $"{body.Item}.Id";
+            foreach (var (left, right) in ComparisonOperands(text))
+            {
+                // 期間の突き合わせに関わらない比較（他の属性など）は見ない
+                var touchesPeriod = left is "Model.Period" || right is "Model.Period"
+                    || left == itemId || right == itemId;
+                if (!touchesPeriod) continue;
+                comparisons++;
+                // 両辺がちょうど「受け取った期間」と「回した変数の Id」であること
+                if (!(left is "Model.Period" && right == itemId)
+                    && !(left == itemId && right is "Model.Period"))
+                    wrongComparison.Add($"{left} == {right}");
+            }
+        }
+        // 1 つも無ければ選択中の見せ方が消えている（§7 色だけに意味を持たせない以前の問題）
+        Assert.True(comparisons > 0,
+            "期間切替に「選択中」の判定が 1 つも無い。塗りと aria-current は"
+            + "「受け取った期間」と「回した変数の Id」の突き合わせで決めること"
+            + "(無いと、どのボタンも選択中に見えないか、常に同じボタンが選択中に見える)。");
+        Assert.True(wrongComparison.Count == 0,
+            $"「選択中」の判定が受け取った期間と回した変数の Id の突き合わせになっていない: "
+            + $"{string.Join(" / ", wrongComparison)}。定数やリテラルと比べると、"
+            + "集計している期間と塗り・aria-current が食い違う"
+            + "(表示中のデータと UI の状態が食い違うのは、この画面がいちばん避けたい状態)。");
+    }
+
+    // KPI カードの見出しを指す印（マークアップ側の綴り。変えたら (e) の照合も同じ変更セットで）
+    private const string KpiHeadingMarker = "kpi-label";
+
+    // 比較の両辺のトークンを拾う（`==` / `!=` の前後にある識別子・ドット・引用符の塊）。
+    //
+    // 構文解析まではしない ——Razor の属性値の中なので C# のパーサには読めず、ここで要るのは
+    // 「両辺が何か」だけ。拾えなかった側は空文字になるので、決め打ちの照合には必ず落ちる
+    // （取りこぼしても<b>誤って赤くなる側</b>に倒れ、黙って通る側には倒れない）
+    private static IEnumerable<(string Left, string Right)> ComparisonOperands(string body)
+    {
+        // `==` と `!=` の位置を順に見る
+        foreach (Match op in Regex.Matches(body, @"[!=]="))
+        {
+            // 直前の塊（末尾から）
+            var left = Regex.Match(body[..op.Index], @"[\w.""]+\s*$").Value.Trim();
+            // 直後の塊（先頭から）
+            var right = Regex.Match(body[(op.Index + op.Length)..], @"^\s*[\w.""]+").Value.Trim();
+            // 両辺を返す
+            yield return (left, right);
+        }
     }
 
     // 期間のルート値を<b>ダッシュボード以外のビューで</b>手書きしていないこと。
@@ -4883,8 +4987,7 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             foreach (Match use in PeriodRouteKeyUses(source))
             {
                 // 受け取った期間をそのまま渡す形は通す(許可リストの外の値を作りようがない)
-                var following = source[(use.Index + use.Length)..];
-                if (Regex.IsMatch(following, @"^\s*=?\s*""?\s*@Model\.Period\b")) continue;
+                if (PassesTheReceivedPeriodThrough(source, use)) continue;
                 // それ以外は識別子を手で書いているので落とす
                 handWritten.Add($"{Path.GetFileName(view)}: {LineAt(source, use.Index)}");
             }
@@ -4933,6 +5036,29 @@ public class UnlistedFilterValuePolicyTests : IDisposable
                 RegexOptions.IgnoreCase)
             .Cast<Match>();
 
+    // その指定が「受け取った期間をそのまま渡している」形か(識別子を手で書いていない)。
+    //
+    // <b>`@` の有無は書き方で決まる(レビュー指摘・実測)。</b> クエリ文字列やタグヘルパーでは
+    // Razor の式なので `@Model.Period` と書くが、<b>匿名オブジェクトの中は既に C#</b> なので
+    // `new {{ period = Model.Period }}` ——`@` を書くと構文エラーになる。`@` を必須にしていた
+    // 頃は、この<b>唯一書ける形</b>が「識別子を手で書いている」として落ち、案内される直し方
+    // (「回しの中から回した変数の Id で出すこと」)はそのリンク(「いまの期間のまま再読み込み」)
+    // には当てはまらないので、緑へ戻す道が「その導線を消す」か「走査を緩める」しか無かった。
+    //
+    // <b>`@` を一律で省略可にはしない。</b> クエリ文字列やタグヘルパーで `@` を落とすと
+    // <b>リテラルの "Model.Period"</b> を渡すことになり、それはまさに許可リストに無い値を
+    // 指すリンク ——この検査が閉じたい形そのものなので、そこは引き続き `@` を要求する
+    private static bool PassesTheReceivedPeriodThrough(string source, Match use)
+    {
+        // 匿名オブジェクトの中（`new { period = … }`）だけは `@` を書けない
+        var insideAnonymousObject = use.Value.TrimStart().StartsWith("new", StringComparison.OrdinalIgnoreCase);
+        // 指定の直後に続く綴り（= や引用符は書き方によって付いたり付かなかったりする）
+        var following = source[(use.Index + use.Length)..];
+        // 匿名オブジェクトなら `@` は任意、それ以外は必須
+        var at = insideAnonymousObject ? "@?" : "@";
+        return Regex.IsMatch(following, $@"^\s*=?\s*""?\s*{at}Model\.Period\b");
+    }
+
     // その `Model.Period` が「導出の引数として渡され、結果がそのまま書き出されている」形か。
     //
     // <b>手前の綴りだけを見てはいけない(レビュー指摘・実測)。</b> 以前は直前が
@@ -4960,6 +5086,20 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 明示式なら、丸かっこの中身がちょうどその呼び出しだけであること
         if (at + 1 < source.Length && source[at + 1] == '(')
             return Regex.IsMatch(tail, $@"^@\(\s*{call}\s*\)");
+        // コードブロックなら、<b>導出の呼び出しがちょうど代入の右辺全体</b>であること。
+        //
+        // <b>これを通さないと直しようの無い赤になる(レビュー指摘・実測)。</b>
+        // `@{{ var kpiLabel = DashboardViewModel.KpiLabelFor(Model.Period); }}` は分岐を
+        // 1 つも持たないごく普通の括り出しだが、通していなかった頃は「期間で分岐している」として
+        // 落ち、しかも案内される直し方(「<導出>(Model.Period) の形で引くこと」)を
+        // <b>その行が既に満たしている</b>ので、緑へ戻す道が「正しい括り出しを戻す」か
+        // 「走査を緩める」しか無かった。
+        //
+        // 右辺<b>全体</b>であることまで要求するのが要点 ——`var isYear = 導出(Model.Period) == "年間";`
+        // のように結果で分岐する形は「代入の右辺が呼び出しだけ」に当たらないので引き続き落ちる
+        // (明示式で中身をちょうど 1 つの呼び出しに限っているのと同じ理由・同じ強さ)
+        if (at + 1 < source.Length && source[at + 1] == '{')
+            return Regex.IsMatch(tail, $@"(?:var|string)\s+\w+\s*=\s*{call}\s*;");
         // 暗黙式なら、その呼び出しで式が終わる(Razor の文法上、分岐を書きようがない)
         return Regex.IsMatch(tail, $@"^@{call}");
     }
@@ -5042,21 +5182,16 @@ public class UnlistedFilterValuePolicyTests : IDisposable
             $"日別トレンドの日数が同じ期間がある: {string.Join(" / ", collidingDays)}。"
             + "期間を足したなら、その期間のグラフの窓も同じ変更セットで決めること。");
 
-        // 月別で描く期間のトレンド月数
-        var months = DashboardViewModel.Periods
-            .Where(period => !DashboardViewModel.UsesDailyTrendBuckets(period))
-            .Select(period => (Period: period, Months: DashboardViewModel.MonthsFor(period)))
-            .ToList();
-        // 同じ月数になる期間の組があれば落とす
-        var collidingMonths = months
-            .GroupBy(x => x.Months)
-            .Where(g => g.Count() > 1)
-            .Select(g => string.Join(" と ", g.Select(x => x.Period)))
-            .ToList();
-        Assert.True(collidingMonths.Count == 0,
-            $"トレンドチャートの月数が同じ期間がある: {string.Join(" / ", collidingMonths)}。"
-            + $"{nameof(DashboardViewModel.MonthsFor)} の既定の分岐へ落ちている可能性が高い。"
-            + "期間を足したなら、その期間のチャートの窓も同じ変更セットで決めること。");
+        // <b>月数の相異は要求しない(レビュー指摘)。</b> 日数のほうは「同じ日数なら集計窓も同じ」
+        // ——日別の期間は窓を日数から導くので、重なりは上の開始日の照合でも必ず現れる。
+        // 月数はそうではない: 窓を決めるのは `StartOn` で、`TrendMonths` はグラフの<b>横幅</b>を
+        // 決めるだけなので、たとえば「半年」(窓は 6 か月・グラフは 12 か月ぶん)のように
+        // <b>別の窓で同じ横幅</b>は正当な選択肢になりうる。相異を求めると、その選択肢が
+        // 「`MonthsFor` の既定の分岐へ落ちている可能性が高い」という<b>事実と違う理由</b>で
+        // 落ちる ——`TrendMonths` は `PeriodChoice` の必須メンバーなので既定の分岐はそもそも無く、
+        // 緑へ戻す道が「正当な選択肢をやめる」か「この検査を緩める」しか無くなる。
+        // 既定の取り違えを捕まえているのは<b>集計窓</b>のほう(下の
+        // DashboardPeriodWindows_AreDistinctForEveryChoice)で、ここは日数だけを見る
     }
 
     // 集計窓の向きを確かめるときの基準日(実行日に依存させないための固定日)
@@ -5180,8 +5315,10 @@ public class UnlistedFilterValuePolicyTests : IDisposable
         // 念のため、その値が本当に選択肢に無いことを確かめる(あると検査の意味が消える)
         Assert.DoesNotContain(unlisted, DashboardViewModel.Periods);
 
-        // 見出し・集計窓・日別か月別か・月数のすべてが既定の期間と同じになる
-        var today = new DateTime(2026, 6, 15);
+        // 見出し・集計窓・日別か月別か・月数のすべてが既定の期間と同じになる。
+        // 基準日は同じ目的の定数を使う（同じ日付を 2 か所に書くと、片方だけ動かしたときに
+        // もう片方が黙って古い日付のまま残る＝§6）
+        var today = WindowProbeDay;
         Assert.Equal(
             DashboardViewModel.KpiLabelFor(DashboardViewModel.PeriodYear),
             DashboardViewModel.KpiLabelFor(unlisted));
