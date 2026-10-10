@@ -155,15 +155,24 @@ public class HomeControllerTests : IDisposable
         // 並べる本数が、その期間の日数と一致する
         Assert.Equal(DashboardViewModel.DaysFor(period), vm!.MonthlyCounts.Count);
         // 先頭のバケットの日付が、KPI の集計窓の開始日と一致する
-        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）
+        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）。
+        //
+        // <b>書式は本体と同じ InvariantCulture で作る。</b> 本体（HomeController.Index）は
+        // `ToString("yyyy-MM-dd", CultureInfo.InvariantCulture)` で書くので、ここで
+        // 実行環境の文化を使うと<b>暦が違う文化でだけ落ちる</b>テストになる
+        // （実測: `LC_ALL=th_TH.UTF-8` で期待値が仏暦の "2569-06-05" になり 1 件失敗。
+        //  §10「特定 OS でしか通らないテストを作らない」の文化版）
         Assert.Equal(
-            DashboardViewModel.PeriodStart(period, clock.Today).ToString("yyyy-MM-dd"),
+            DashboardViewModel.PeriodStart(period, clock.Today)
+                .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             vm.MonthlyCounts[0].DateFrom);
         // 末尾のバケットは今日（グラフは必ず今日まで）。
         // 見ているのは<b>バケットの並び</b>であって件数の合計ではない —— KPI の件数には
         // 上限が無いので、未来日で登録されたインシデントがあると合計は一致しない
         // （その境界は HomeController.Index のコメントが正本）
-        Assert.Equal(clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
+        Assert.Equal(
+            clock.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            vm.MonthlyCounts[^1].DateTo);
     }
 
     // 日別で描く期間の一覧（選択肢から導くので、2 つ目が足されたら自動で対象に入る）

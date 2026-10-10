@@ -39,7 +39,9 @@ public class DashboardViewModel
     // 言い回しが 2 通り要ること自体は正しいので、<b>2 つとも選択肢に持たせる</b>
     //
     // <b>読み取り専用で公開する。</b> `static readonly` が守るのは参照だけで中身は書き換えられる
-    // (`PeriodChoices[3] = (PeriodYear, "")` が通る)。許可リストがその形だと、
+    // ——配列のまま公開すると
+    // `PeriodChoices[3] = new PeriodChoice(PeriodYear, "", "", null, 1, _ => default)` が通る
+    // (要素の差し替えは配列の添字への代入で、`readonly` はこれを止めない)。許可リストがその形だと、
     // 画面に出ない値を受け付ける状態や空ラベルのボタンをアセンブリ内のどこからでも作れて
     // しまい、しかもどの検査も同じ書き換え後の配列を読むので気付けない
     // (下の RecurrenceAlerts が同じ理由で ReadOnlyCollection に包まれている)
