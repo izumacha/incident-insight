@@ -48,18 +48,28 @@ public class HomeControllerTests : IDisposable
             Incident.Departments.Length >= required,
             $"テストに必要な部署数が足りない(必要: {required} / 定義: {Incident.Departments.Length})");
 
+    // 時刻源は呼び出し側が差し替えられる（省略時はクラス既定の実時計）。
+    // 固定時計を注入したテストは必ずその時計を渡すこと ——渡さないと本体とデータで
+    // 時刻源が 2 つに割れる（上のフィールドのコメントと ReportedAt の行が理由の正本）
     private Incident MakeIncident(string dept = "内科病棟",
         IncidentTypeKind type = IncidentTypeKind.Medication,
         IncidentSeverity severity = IncidentSeverity.Level2,
-        DateTime? occurredAt = null) => new()
+        DateTime? occurredAt = null,
+        IClock? clock = null) => new()
     {
         Department = dept,
         IncidentType = type,
         Severity = severity,
         Description = "テスト",
         ReporterName = "テスト太郎",
-        OccurredAt = occurredAt ?? _clock.Now,
-        ReportedAt = _clock.Now
+        OccurredAt = occurredAt ?? (clock ?? _clock).Now,
+        // <b>報告日時も呼び出し側が指定した時刻源から取る（レビュー指摘）。</b>
+        // クラス既定は実時計（SystemClock）なので、固定時計を注入したテストが
+        // 既定のまま種データを作ると「本体は固定日・データは実時刻」で時刻源が割れる。
+        // いま読まれているのは OccurredAt だけなので無害だが、ReportedAt を見る窓や
+        // アサートを足した瞬間に issue #199 の形（JST と OS ローカルの最大 9 時間差で、
+        // 月末の限られた時間帯だけ落ちる）が戻る。割れを作れない形にしておく
+        ReportedAt = (clock ?? _clock).Now
     };
 
     [Fact]
@@ -95,9 +105,12 @@ public class HomeControllerTests : IDisposable
     // ViewModel.Period まで既定値 "year" へ丸められることを確認する。丸めないと
     // ダッシュボードの期間切替ボタンがどれも選択中に見えず、表示中のデータ（1 年分）と
     // UI の状態が食い違ってしまう
+    // 空文字はここに置かない ——「受け取っていない」側（旗を立てない）なので、
+    // 下の Index_PeriodNotSupplied_DoesNotReportAnIgnoredFilter が丸めまで含めて見る。
+    // 同じ入力を 2 つの Theory が別々の説明で主張していると、空文字の扱いを変える人が
+    // どちらが意図した規則か決められなくなる
     [Theory]
     [InlineData("bogus")]   // 未知の文字列
-    [InlineData("")]        // 空文字
     [InlineData("Year")]    // 大文字違い（定数と完全一致しないので既定へ丸める）
     public async Task Index_UnknownPeriod_FallsBackToYear(string period)
     {
@@ -114,6 +127,160 @@ public class HomeControllerTests : IDisposable
         Assert.Equal(DashboardViewModel.PeriodYear, vm!.Period);
         // 集計窓も 1 年として扱われる（2 年前の 1 件は数えない）
         Assert.Equal(1, vm.TotalIncidents);
+    }
+
+    // 日別で描く期間は、KPI の集計窓とトレンドチャートの本数が必ず一致すること。
+    //
+    // <b>なぜ振る舞いで固定するのか。</b> 構造側（PeriodChoice が日数を持ち、日別の期間は
+    // 集計窓を書かない）は「2 つの値がずれないこと」までしか言えず、<b>チャートを組み立てる
+    // 側がその日数を使っているか</b>は別の話。実際、日数を選択肢へ移した直後も
+    // HomeController は固定の WeekDays を使い続けており、2 つ目の日別期間を足すと
+    // 「KPI は 14 日ぶんを数えるのにグラフは 7 本で『直近7日間』」が全件緑で作れた。
+    //
+    // 期間を名指しせず、日別で描く期間すべてについて確かめる（2 つ目が足されたら自動で対象に入る）
+    [Theory]
+    [MemberData(nameof(DailyTrendPeriods))]
+    public async Task Index_DailyPeriod_ChartCoversExactlyTheKpiWindow(string period)
+    {
+        // <b>この検査だけ固定時計を使う(レビュー指摘)。</b> ここは日付の<b>文字列そのもの</b>を
+        // 突き合わせる唯一の検査で、クラス既定の実時計（SystemClock）のままだと
+        // 「コントローラが内部で読んだ今日」と「アサートで読み直した今日」が別の日になりうる
+        // ——JST の日付が境界をまたいだ瞬間だけ、コードとは無関係な理由で落ちる（CLAUDE.md §3 /
+        // issue #199 が記録している形）。この検査は実時刻でなければ意味を持たないものではない
+        // ので、規約どおり TestFixtures.Clock（実行時刻に依存しない共有の固定時計）を注入する
+        var clock = TestFixtures.Clock;
+        // 同じ時刻源を使うコントローラをこの検査のためだけに組み立てる
+        var controller = new HomeController(
+            _db, new RecurrenceService(clock, NullLogger<RecurrenceService>.Instance), clock);
+        // 既存のテストと同じく特権のある閲覧者として実行する
+        UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
+
+        // 窓の中に 1 件だけ置く（件数そのものはここでは見ない）。
+        // 時刻源は上で組み立てた固定時計を渡す（本体とデータで割れないようにする）
+        _db.Incidents.Add(MakeIncident(occurredAt: clock.Today, clock: clock));
+        await _db.SaveChangesAsync();
+
+        var result = await controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 並べる本数が、その期間の日数と一致する
+        Assert.Equal(DashboardViewModel.DaysFor(period), vm!.MonthlyCounts.Count);
+        // 先頭のバケットの日付が、KPI の集計窓の開始日と一致する
+        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）。
+        // <b>書式は本体と同じ InvariantCulture で作る（レビュー指摘・実測）。</b>
+        // HomeController は CultureInfo.InvariantCulture で "yyyy-MM-dd" へ整形するので、
+        // こちら側で指定を省くと実行機の既定のカレンダーで整形される ——
+        // th-TH（タイ仏暦）では 2026-06-15 が "2569-06-15"、ar-SA（ヒジュラ暦）では
+        // "1447-12-29" になり、<b>コードが正しいのに落ちる</b>（§10 / §11）。
+        // このファイルが System.Globalization を取り込んでいるのはまさにこのため
+        Assert.Equal(
+            DashboardViewModel.PeriodStart(period, clock.Today)
+                .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            vm.MonthlyCounts[0].DateFrom);
+        // 末尾のバケットは今日（グラフは必ず今日まで）。
+        // 見ているのは<b>バケットの並び</b>であって件数の合計ではない —— KPI の件数には
+        // 上限が無いので、未来日で登録されたインシデントがあると合計は一致しない
+        // （その境界は HomeController.Index のコメントが正本）
+        Assert.Equal(
+            clock.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            vm.MonthlyCounts[^1].DateTo);
+    }
+
+    // 日別で描く期間の一覧（選択肢から導くので、2 つ目が足されたら自動で対象に入る）
+    public static TheoryData<string> DailyTrendPeriods()
+    {
+        // 日別で描くものだけを拾う
+        var periods = DashboardViewModel.Periods
+            .Where(DashboardViewModel.UsesDailyTrendBuckets)
+            .ToList();
+        // 1 つも無ければ「対象ゼロ＝緑」になるので落とす（fail-closed）
+        Assert.NotEmpty(periods);
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var period in periods) data.Add(period);
+        return data;
+    }
+
+    // 選べる値の一覧（選択肢から導くので、5 つ目が足されたら自動で対象に入る）
+    public static TheoryData<string> ListedPeriods()
+    {
+        // 許可リストそのものを読む（ここが画面のボタンと旗の判定の唯一の源）
+        var periods = DashboardViewModel.Periods;
+        // 1 つも無ければ「対象ゼロ＝緑」になるので落とす（fail-closed）
+        Assert.NotEmpty(periods);
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var period in periods) data.Add(period);
+        return data;
+    }
+
+    // 選べる値ではない period を受け取ったら、既定へ丸めたことを画面へ伝える（issue #220 の規則）。
+    //
+    // 丸めるだけで黙っていると、利用者は四半期のつもりで 1 年分の KPI・トレンド・完了率を読み、
+    // 期間切替は「1年」が選択中に見えるので食い違いにも気付けない。一覧画面が ?severity=99 に
+    // ついて注意書きを出すのとまったく同じ出来事なので、伝える側に例外は置かない。
+    //
+    // 上の Index_UnknownPeriod_FallsBackToYear と分けてあるのは、見ているものが違うから
+    // ——あちらは「丸まること」、こちらは「丸めたことを伝えること」。同じテストにまとめると、
+    // 旗を落とす変異が「丸まっている」ほうのアサートで隠れる
+    [Theory]
+    [InlineData("bogus")]   // 未知の文字列
+    [InlineData("quater")]  // quarter の打ち間違い（現実に起きる形）
+    [InlineData("Year")]    // 大文字違い（定数と完全一致しないので採用しない）
+    public async Task Index_UnlistedPeriod_ReportsThatItWasNotApplied(string period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddMonths(-6)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 「受け取ったのに採用しなかった」ことが画面へ伝わる
+        Assert.True(vm!.UnlistedFilterIgnored);
+    }
+
+    // 選べる値を受け取ったときは旗を立てない。
+    // 立ててしまうと、正しく期間を切り替えただけの画面に警告が出続け、読まれなくなる
+    //
+    // <b>ケースは選択肢から導く（レビュー指摘）。</b> 以前は 4 つの定数を手で並べていたので、
+    // 5 つ目の期間を足しても Theory は 4 件のまま走り、その値について
+    // 「選べる値なら旗は立たない」を一度も確かめないまま出荷できた（痕跡はテスト件数だけ）。
+    // 同じコミットで足した DailyTrendPeriods が選択肢から導いているのと同じ理由・同じやり方
+    [Theory]
+    [MemberData(nameof(ListedPeriods))]
+    public async Task Index_ListedPeriod_DoesNotReportAnIgnoredFilter(string period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddDays(-1)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 採用した値なので旗は立たず、画面にもその値が残る
+        Assert.False(vm!.UnlistedFilterIgnored);
+        Assert.Equal(period, vm.Period);
+    }
+
+    // 未指定・空白のみは「受け取っていない」ので、採用しなかったことにはしない。
+    // ここを旗の対象にすると、ダッシュボードを普通に開いただけで毎回警告が出る
+    [Theory]
+    [InlineData(null)]   // ?period= を付けずに開いた（いちばん普通の経路）
+    [InlineData("")]     // ?period= を空で送った
+    [InlineData("   ")]  // 空白のみ（SearchFilter.HasValue が「空」と判定する形）
+    public async Task Index_PeriodNotSupplied_DoesNotReportAnIgnoredFilter(string? period)
+    {
+        // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く
+        _db.Incidents.Add(MakeIncident(occurredAt: _clock.Today.AddDays(-1)));
+        await _db.SaveChangesAsync();
+
+        var result = await _controller.Index(period) as ViewResult;
+        var vm = result?.Model as DashboardViewModel;
+
+        // 旗は立たず、既定の「1年」で集計される
+        Assert.False(vm!.UnlistedFilterIgnored);
+        Assert.Equal(DashboardViewModel.PeriodYear, vm.Period);
     }
 
     [Fact]

@@ -46,7 +46,7 @@
 
 @* 許可リストに無い値（?entityName=Bogus / ?operation=Bogus）: 上の「読めない値」と
    文面を分けているのは理由が違うから ——あちらは「値として読み取れない」、
-   こちらは「選べる値ではない」（理由の正本は AuditLogsController.ResolveListedValue
+   こちらは「選べる値ではない」（理由の正本は Controllers/Internal/ListedValueFilterResolver
    の解説。issue #220）。見出しも重ねない —— 2 つの旗は同時に立ちうる
    （?entityName=Bogus&dateFrom=abc）ので、同じ見出しにするとほぼ同一の警告が
    2 つ並び、二重描画の不具合に見える。

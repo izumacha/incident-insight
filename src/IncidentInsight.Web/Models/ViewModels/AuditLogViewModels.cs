@@ -53,7 +53,7 @@ public class AuditLogListViewModel
     // (?entityName=Bogus)。逆に対象の 2 つ(entityName / operation)で旗を分けていないのは、
     // その 2 つでは理由が同一だから。旗を分ける / まとめるの基準は
     // 「採用しなかった理由が同じかどうか」で、/Incidents の 4 つの旗と共通。
-    // 判定と理由の正本は AuditLogsController.ResolveListedValue の解説。
+    // 判定と理由の正本は Controllers/Internal/ListedValueFilterResolver の解説。
     //
     // 値そのものではなく真偽値なのも、黙って落とさない理由も、上の旗と同じ
     public bool UnlistedFilterIgnored { get; set; }
