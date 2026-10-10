@@ -48,18 +48,28 @@ public class HomeControllerTests : IDisposable
             Incident.Departments.Length >= required,
             $"テストに必要な部署数が足りない(必要: {required} / 定義: {Incident.Departments.Length})");
 
+    // 時刻源は呼び出し側が差し替えられる（省略時はクラス既定の実時計）。
+    // 固定時計を注入したテストは必ずその時計を渡すこと ——渡さないと本体とデータで
+    // 時刻源が 2 つに割れる（上のフィールドのコメントと ReportedAt の行が理由の正本）
     private Incident MakeIncident(string dept = "内科病棟",
         IncidentTypeKind type = IncidentTypeKind.Medication,
         IncidentSeverity severity = IncidentSeverity.Level2,
-        DateTime? occurredAt = null) => new()
+        DateTime? occurredAt = null,
+        IClock? clock = null) => new()
     {
         Department = dept,
         IncidentType = type,
         Severity = severity,
         Description = "テスト",
         ReporterName = "テスト太郎",
-        OccurredAt = occurredAt ?? _clock.Now,
-        ReportedAt = _clock.Now
+        OccurredAt = occurredAt ?? (clock ?? _clock).Now,
+        // <b>報告日時も呼び出し側が指定した時刻源から取る（レビュー指摘）。</b>
+        // クラス既定は実時計（SystemClock）なので、固定時計を注入したテストが
+        // 既定のまま種データを作ると「本体は固定日・データは実時刻」で時刻源が割れる。
+        // いま読まれているのは OccurredAt だけなので無害だが、ReportedAt を見る窓や
+        // アサートを足した瞬間に issue #199 の形（JST と OS ローカルの最大 9 時間差で、
+        // 月末の限られた時間帯だけ落ちる）が戻る。割れを作れない形にしておく
+        ReportedAt = (clock ?? _clock).Now
     };
 
     [Fact]
@@ -145,8 +155,9 @@ public class HomeControllerTests : IDisposable
         // 既存のテストと同じく特権のある閲覧者として実行する
         UserContextHelper.AttachUser(controller, UserContextHelper.Admin());
 
-        // 窓の中に 1 件だけ置く（件数そのものはここでは見ない）
-        _db.Incidents.Add(MakeIncident(occurredAt: clock.Today));
+        // 窓の中に 1 件だけ置く（件数そのものはここでは見ない）。
+        // 時刻源は上で組み立てた固定時計を渡す（本体とデータで割れないようにする）
+        _db.Incidents.Add(MakeIncident(occurredAt: clock.Today, clock: clock));
         await _db.SaveChangesAsync();
 
         var result = await controller.Index(period) as ViewResult;
@@ -155,15 +166,24 @@ public class HomeControllerTests : IDisposable
         // 並べる本数が、その期間の日数と一致する
         Assert.Equal(DashboardViewModel.DaysFor(period), vm!.MonthlyCounts.Count);
         // 先頭のバケットの日付が、KPI の集計窓の開始日と一致する
-        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）
+        // （ずれていると「KPI に入っているのにグラフに出ない日」が生まれる）。
+        // <b>書式は本体と同じ InvariantCulture で作る（レビュー指摘・実測）。</b>
+        // HomeController は CultureInfo.InvariantCulture で "yyyy-MM-dd" へ整形するので、
+        // こちら側で指定を省くと実行機の既定のカレンダーで整形される ——
+        // th-TH（タイ仏暦）では 2026-06-15 が "2569-06-15"、ar-SA（ヒジュラ暦）では
+        // "1447-12-29" になり、<b>コードが正しいのに落ちる</b>（§10 / §11）。
+        // このファイルが System.Globalization を取り込んでいるのはまさにこのため
         Assert.Equal(
-            DashboardViewModel.PeriodStart(period, clock.Today).ToString("yyyy-MM-dd"),
+            DashboardViewModel.PeriodStart(period, clock.Today)
+                .ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
             vm.MonthlyCounts[0].DateFrom);
         // 末尾のバケットは今日（グラフは必ず今日まで）。
         // 見ているのは<b>バケットの並び</b>であって件数の合計ではない —— KPI の件数には
         // 上限が無いので、未来日で登録されたインシデントがあると合計は一致しない
         // （その境界は HomeController.Index のコメントが正本）
-        Assert.Equal(clock.Today.ToString("yyyy-MM-dd"), vm.MonthlyCounts[^1].DateTo);
+        Assert.Equal(
+            clock.Today.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture),
+            vm.MonthlyCounts[^1].DateTo);
     }
 
     // 日別で描く期間の一覧（選択肢から導くので、2 つ目が足されたら自動で対象に入る）
@@ -173,6 +193,19 @@ public class HomeControllerTests : IDisposable
         var periods = DashboardViewModel.Periods
             .Where(DashboardViewModel.UsesDailyTrendBuckets)
             .ToList();
+        // 1 つも無ければ「対象ゼロ＝緑」になるので落とす（fail-closed）
+        Assert.NotEmpty(periods);
+        // xUnit の [MemberData] が読める形へ詰めて返す
+        var data = new TheoryData<string>();
+        foreach (var period in periods) data.Add(period);
+        return data;
+    }
+
+    // 選べる値の一覧（選択肢から導くので、5 つ目が足されたら自動で対象に入る）
+    public static TheoryData<string> ListedPeriods()
+    {
+        // 許可リストそのものを読む（ここが画面のボタンと旗の判定の唯一の源）
+        var periods = DashboardViewModel.Periods;
         // 1 つも無ければ「対象ゼロ＝緑」になるので落とす（fail-closed）
         Assert.NotEmpty(periods);
         // xUnit の [MemberData] が読める形へ詰めて返す
@@ -209,11 +242,13 @@ public class HomeControllerTests : IDisposable
 
     // 選べる値を受け取ったときは旗を立てない。
     // 立ててしまうと、正しく期間を切り替えただけの画面に警告が出続け、読まれなくなる
+    //
+    // <b>ケースは選択肢から導く（レビュー指摘）。</b> 以前は 4 つの定数を手で並べていたので、
+    // 5 つ目の期間を足しても Theory は 4 件のまま走り、その値について
+    // 「選べる値なら旗は立たない」を一度も確かめないまま出荷できた（痕跡はテスト件数だけ）。
+    // 同じコミットで足した DailyTrendPeriods が選択肢から導いているのと同じ理由・同じやり方
     [Theory]
-    [InlineData(DashboardViewModel.PeriodWeek)]
-    [InlineData(DashboardViewModel.PeriodMonth)]
-    [InlineData(DashboardViewModel.PeriodQuarter)]
-    [InlineData(DashboardViewModel.PeriodYear)]
+    [MemberData(nameof(ListedPeriods))]
     public async Task Index_ListedPeriod_DoesNotReportAnIgnoredFilter(string period)
     {
         // 期間の絞り込みとは無関係に一覧が成り立つよう、1 件だけ置く

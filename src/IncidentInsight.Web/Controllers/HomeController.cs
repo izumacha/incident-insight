@@ -283,7 +283,12 @@ public class HomeController : Controller
         {
             // 日別の範囲を作成(日数は選択肢から引く ——見出し・KPI の窓と同じ源なので食い違わない)
             var trendDays = DashboardViewModel.DaysFor(period);
-            var weekStart = today.AddDays(-(trendDays - 1));
+            // 開始日は<b>上で求めた KPI の集計窓をそのまま使う</b>(レビュー指摘)。
+            // 同じ式(today.AddDays(-(日数 - 1)))をここへ書き写すと導出が 2 つになり、
+            // PeriodChoice.WindowStart の日別の求め方を直したときに KPI だけが新しい窓、
+            // グラフが古い窓になる ——「KPI は 14 日・グラフは 7 本」の食い違いを
+            // 選択肢へ集約して閉じたはずなのに、同じ割れをここで作り直すことになる
+            var weekStart = periodStart;
             var weekEnd = today.AddDays(1);
             // 日付ごとの件数を SQL 側でグループ化して取得
             var dailyGroups = await incidents

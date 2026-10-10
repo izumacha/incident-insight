@@ -6301,15 +6301,20 @@ public class UnlistedFilterValuePolicyTests : IDisposable
     /// <summary>解決処理の型名(<c>internal</c> なので <c>nameof</c> できず綴りで持つ)。</summary>
     private const string UnlistedEnumFilterResolverType = "UnlistedEnumFilterResolver";
 
+    /// <summary>解決処理のメソッド名(上と同じ理由で綴りで持つ)。</summary>
+    private const string UnlistedEnumFilterResolverMethod = "Resolve";
+
     // 許可リストで閉じた絞り込みの共有解決処理。型名・メソッド名を<b>文字列で</b>持つのは、
     // この helper が同じディレクトリの 4 つと同じく internal で、テストプロジェクトからは
     // 参照できないため(UnlistedEnumFilterResolverType と同じ扱い。改名されればこの照合は
-    // 赤くなる＝素通りではないので、倒れる向きは安全側)
+    // 赤くなる＝素通りではないので、倒れる向きは安全側)。
+    //
+    // <b>対になる 2 つは隣り合わせで宣言する(レビュー指摘)。</b> 以前はこの 2 行を
+    // UnlistedEnumFilterResolver の型名とメソッド名の<b>あいだ</b>へ入れていたため、
+    // あちらの「上と同じ理由で綴りで持つ」という説明が<b>こちらの宣言</b>を指してしまい、
+    // 読み手がどちらの組の理由なのか決められなくなっていた
     private const string ListedValueFilterResolverType = "ListedValueFilterResolver";
     private const string ListedValueFilterResolverMethod = "Resolve";
-
-    /// <summary>解決処理のメソッド名(上と同じ理由で綴りで持つ)。</summary>
-    private const string UnlistedEnumFilterResolverMethod = "Resolve";
 
     /// <summary>型の名前を <c>Type.FullName</c> と同じ綴りで組み立てる(ソース側・リフレクション側で共用)。</summary>
     /// <remarks>
