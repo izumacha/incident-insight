@@ -614,6 +614,11 @@ public class ResponseCacheAttributePolicyTests
                 + "「出現回数が … 回ではなく … 回です」と出ている場合は、許可済みの行が複製されています"
                 + "(2 つ目の静的ファイル配信など)。複製先が PHI を配らないことを確かめたうえで、"
                 + "許可表の ExpectedCount を実際の回数へ直してください。"
+                + "名指しされた場所が .cshtml の // ・ /* */ のコメントの中なら、原因はそれで合っています —— "
+                + "この走査は Razor の規則どおり // と /* をコメントとして扱わないので"
+                + "(マークアップでそれらはコメントではない)、コメントに書いた綴りも実コードとして現れます。"
+                + "直し方は 2 つ: CLAUDE.md §3 のとおり inline script を Scripts/*.ts へ出す、"
+                + "またはコメントの言い回しを変えてその綴りを使わない。"
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, violations));
     }
@@ -3400,14 +3405,14 @@ public class ResponseCacheAttributePolicyTests
         Assert.Equal(expected, ContainsCacheControlToken(code));
     }
 
-    // 複数行にまたがるコメントの中身を、実コードと取り違えないこと。
+    // 複数行にまたがる<b>Razor コメント</b>の中身を、実コードと取り違えないこと。
     //
-    // <b>なぜ行単位の検査では足りないのか。</b> @*…*@ も /*…*/ も複数行にまたがれる。
+    // <b>なぜ行単位の検査では足りないのか。</b> @*…*@ は複数行にまたがれる。
     // 「行頭が * ならコメントの続き」という当て方は、このリポジトリで実際に使われている
     // 書き方(@* だけの行で始めて次の行から本文を書く形。Views/Incidents/Create.cshtml の
     // 大半がこれ)を拾えず、規約どおりの日本語コメントで CI が赤くなる(実測)。
     [Fact]
-    public void CodeScan_CarriesBlockCommentStateAcrossLines()
+    public void CodeScan_CarriesRazorCommentStateAcrossLines()
     {
         // Razor の複数行コメント(本文の行頭に記号が無い形)は、すべてコメントとして扱う
         Assert.Empty(ScanLines(
@@ -3415,11 +3420,17 @@ public class ResponseCacheAttributePolicyTests
             "  この画面は Cache-Control をミドルウェアの既定に任せる",
             "*@"));
 
-        // C# の複数行コメントも同じ
-        Assert.Empty(ScanLines(
-            "/*",
-            "  Cache-Control はここでは書かない",
-            "*/"));
+        // <b>C# のブロックコメント /*…*/ は、ビューではコメントとして扱わない</b>
+        // (issue #260。Razor のマークアップで /* はコメントの開きではないため)。
+        // 中身は実コードとして走査されるので、走査対象の綴りがあれば報告される。
+        // <b>これは「多く報告する側」への意図した変更</b> ——扱っていた頃は、
+        // 表示テキストの /* が閉じ綴りまで(無ければファイル末尾まで)飲み込んでいた
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "/*",
+                "  Cache-Control はここでは書かない",
+                "*/"));
 
         // コメントが閉じたあとの実コードは、行をまたいでいても拾う
         Assert.Equal(
@@ -3429,13 +3440,22 @@ public class ResponseCacheAttributePolicyTests
                 "  メモ",
                 "*@ @{ Context.Response.Headers.CacheControl = \"public\"; }"));
 
-        // 閉じていないコメントの中で終わっても、実コードを拾わない。
-        // <b>ここで落とす(fail-closed)形は試して戻した</b> ——正しいビュー
-        // (表示テキストの incident_/*.csv)を赤くするうえ、取り違えた開きを
-        // 後ろの本物の閉じ綴りが閉じてしまうと何も言わない。理由は ReadCodeLines の解説が正本
+        // <b>閉じない Razor コメントの中で終わったら、その先は拾わない</b>(従来どおり)。
+        // ここで落とす(fail-closed)形は試して戻した ——取り違えた開きを後ろの本物の
+        // 閉じ綴りが閉じてしまうと何も言わないため。理由は ReadCodeLines の解説が正本
         Assert.Empty(ScanLines(
-            "/*",
+            "@*",
             "  Response.Headers.CacheControl = \"public\";"));
+
+        // <b>閉じない /* は、もう何も飲み込まない</b>(issue #260 の (c) 前半)。
+        // 扱っていた頃は、この 2 行目の本物の書き込みが<b>報告されなかった</b>(実測)——
+        // 表示テキストに incident_/*.csv のような綴りが 1 つあるだけで、そこから
+        // ファイル末尾までが走査から落ちていた
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "<p>出力先: incident_/*.csv</p>",
+                "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
     // C# の 3 つの文字列リテラルすべてで、リテラルの終わりを取り違えないこと。
@@ -3666,21 +3686,37 @@ public class ResponseCacheAttributePolicyTests
                 "@{ Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
-    // ビューの inline script に書いた <c>//</c> のコメントを、実コードとして読まないこと。
+    // ビューでは <c>//</c> を行コメントとして扱わないこと(issue #260 の (a)(b))。
     //
-    // <b>なぜ要るのか。</b> §5 は 1 行ごとの日本語コメントを求めており、
-    // <c>Views/Incidents/Create.cshtml</c> の inline script には実際に数十本の
-    // <c>//</c> コメントがある。ここを実コードとして読むと、その中に走査対象の綴りを
-    // 1 つ書いただけで<b>「キャッシュ指示を直接書いた」と報告される</b> ——
-    // 直し方は「規約が求めるコメントを消す」しかなく、実行不能な指示になる（実測）。
+    // <b>なぜ扱わないのか。</b> Razor のマークアップで <c>//</c> はコメントではない。
+    // C# の規則を当てていたため、<c>//</c> に出会った時点で<b>その行の残りを捨てて</b>いた
+    // ——URL が同じ行にあるだけで本物のキャッシュ指示が見逃されていた(どちらも実測)。
+    //
+    // <b>代償は「多く報告する側」。</b> Razor のコードブロックや inline script に書いた
+    // <c>//</c> のコメントは実コードとして走査されるので、そこに走査対象の綴りを書くと
+    // <b>「許可表に無いキャッシュ指示の書き込み」として報告される</b>。直し方は実行可能
+    // (CLAUDE.md §3 のとおり inline script を <c>Scripts/*.ts</c> へ出すか、言い回しを変える)ので、
+    // <b>その案内は報告する側の失敗文言が持つ</b>
+    // (<see cref="OnlyIntendedWriters_SetCacheControlDirectly"/>)。
+    //
+    // <b>専用の先回りガードは置かない(試して外した)。</b> 「ビューの行で <c>//</c> より後ろに
+    // 走査対象の綴りがあれば落とす」形を書いたが、綴りだけを見るので<b>誤検知が 2 通り</b>できた:
+    // <c>//</c> の後ろにある<b>実コード</b>(マークアップの裸の URL と同じ行に書いた指示。
+    // まさに下の (b) の形)と、<c>//</c> を含む<b>Razor コメント</b>の中の綴り
+    // (走査側は正しくコメントとして落とすのに、ガードだけが赤くなる)。
+    // どちらも「コメントに綴りがある」と事実と違うことを名指しする形で、
+    // 正しく避けるには結局パーサが要る ——近似をもう 1 つ増やすことになる。
+    // 報告する側は<b>まさに報告する場面でだけ</b>鳴るので、説明はそちらに置くのが正確。
     [Fact]
-    public void RazorScan_DoesNotReadScriptCommentsAsCode()
+    public void RazorScan_DoesNotTreatSlashCommentsAsComments()
     {
-        // inline script の中のコメントは拾わない
-        Assert.Empty(ScanLines(
-            "<script>",
-            "    // Cache-Control はミドルウェアの既定に任せる（この画面では触らない）",
-            "</script>"));
+        // inline script の中の <c>//</c> も実コードとして読む(= 報告される)
+        Assert.Equal(
+            new[] { 2 },
+            ScanLines(
+                "<script>",
+                "    // Cache-Control はミドルウェアの既定に任せる（この画面では触らない）",
+                "</script>"));
 
         // 同じ行でも、コメントの<b>前</b>に実コードがあれば拾う(見逃す側へ倒れないこと)
         Assert.Equal(
@@ -3689,7 +3725,24 @@ public class ResponseCacheAttributePolicyTests
                 "<script>",
                 "    @{ Context.Response.Headers.CacheControl = \"public\"; } // メモ",
                 "</script>"));
+
+        // <b>(a) 開きと見なされないリテラルの中の <c>//</c> で行が切れないこと。</b>
+        // <c>return "…"</c> は IsQuoteOpener が開きと認めない位置なので、中身が
+        // 1 文字ずつ実コードとして読まれる ——扱っていた頃は URL の <c>//</c> で
+        // <b>その行の残りが落ち</b>、後ろの本物の書き込みが報告されなかった(実測)
+        Assert.Equal(
+            new[] { 1 },
+            ScanLines(
+                "@{ string Url() => \"https://example.test\"; Context.Response.Headers.CacheControl = \"public\"; }"));
+
+        // <b>(b) マークアップの地の文の裸の URL でも行が切れないこと。</b>
+        // リテラルですらないので、開きの判定をどう直しても拾えなかった形
+        Assert.Equal(
+            new[] { 1 },
+            ScanLines(
+                "<p>詳しくは https://example.test を参照</p> @{ Context.Response.Headers.CacheControl = \"public\"; }"));
     }
+
 
     /// <summary>
     /// 合成した複数行の<b>C# の</b>ソースを走査し、該当した行番号を返す(検査用の入り口)。
@@ -3961,19 +4014,29 @@ public class ResponseCacheAttributePolicyTests
     /// 改行をまたげない(またいだら文法として壊れている)ので持ち越さない ——
     /// 持ち越すと、閉じ忘れの 1 行がファイルの残り全部をリテラルの中へ引きずり込む。</para>
     /// </remarks>
-    /// <param name="PendingCloser">
-    /// 持ち越したブロックコメントの閉じ綴り(コメントの外なら <c>null</c>)。
+    /// <param name="InRazorComment">
+    /// Razor コメント(<c>@* … *@</c>)の途中で行が終わったかどうか。
+    /// <para><b>閉じ綴りを文字列で持たない。</b> 扱うコメントは Razor の 1 種類だけなので、
+    /// 綴りを状態として持つと「<c>*/</c> を持ち越す」という<b>書けてはいけない状態</b>が
+    /// 型として表現できてしまう(<c>/*</c> を扱わなくした issue #260 の対処で、
+    /// その状態に意味が無くなった)。</para>
     /// </param>
     /// <param name="PendingFence">
     /// 持ち越したリテラルの終端の形。<c>0</c> はリテラルの外、
     /// <see cref="VerbatimFence"/> は逐語的リテラル、
     /// <see cref="CSharpLiteral.RawStringFenceLength"/> 以上は生文字列の開始フェンスの長さ。
     /// </param>
-    private readonly record struct RazorScanCarry(string? PendingCloser, int PendingFence)
+    private readonly record struct RazorScanCarry(bool InRazorComment, int PendingFence)
     {
         /// <summary>コメントの外・リテラルの外(行の走査を素直に始めてよい状態)。</summary>
-        public static RazorScanCarry None => new(null, 0);
+        public static RazorScanCarry None => new(false, 0);
     }
+
+    /// <summary>Razor コメントの開き綴り。</summary>
+    private const string RazorCommentOpener = "@*";
+
+    /// <summary>Razor コメントの閉じ綴り(探す位置と進める長さの両方で使う)。</summary>
+    private const string RazorCommentCloser = "*@";
 
     /// <summary>
     /// 逐語的リテラル(<c>@"…"</c>)を持ち越していることを表す <c>PendingFence</c> の値。
@@ -3996,8 +4059,8 @@ public class ResponseCacheAttributePolicyTests
         var code = new System.Text.StringBuilder();
         // 読み取り位置
         var i = 0;
-        // 持ち越したブロックコメントの閉じ綴り(この行の中で書き換える)
-        var pendingCloser = carry.PendingCloser;
+        // Razor コメントの途中かどうか(この行の中で書き換える)
+        var inRazorComment = carry.InRazorComment;
 
         // <b>リテラルの途中から始まる行は、まず終端を探す。</b> ここを飛ばすと
         // リテラルの中身が実コードとして解釈され、中の /* や @* でファイルの残りが潰れる
@@ -4024,17 +4087,17 @@ public class ResponseCacheAttributePolicyTests
         // 行の終わりまで 1 文字ずつ進む
         while (i < line.Length)
         {
-            // ブロックコメントの途中なら、閉じ綴りを探す
-            if (pendingCloser is not null)
+            // Razor コメントの途中なら、閉じ綴りを探す
+            if (inRazorComment)
             {
                 // この行に閉じ綴りがあるかを見る
-                var close = line.IndexOf(pendingCloser, i, StringComparison.Ordinal);
+                var close = line.IndexOf(RazorCommentCloser, i, StringComparison.Ordinal);
                 // 無ければ、この行はすべてコメント(状態は持ち越す)
-                if (close < 0) return (code.ToString(), new RazorScanCarry(pendingCloser, 0));
+                if (close < 0) return (code.ToString(), new RazorScanCarry(true, 0));
                 // あれば、その直後から実コードとして読み直す
-                i = close + pendingCloser.Length;
+                i = close + RazorCommentCloser.Length;
                 // コメントの外へ戻る
-                pendingCloser = null;
+                inRazorComment = false;
                 // 続きを見る
                 continue;
             }
@@ -4122,7 +4185,7 @@ public class ResponseCacheAttributePolicyTests
                         // 中身をすべて貯めて、フェンスの長さを持ち越す
                         code.Append(line, i, line.Length - i);
                         // 生文字列の中のまま次の行へ
-                        return (code.ToString(), new RazorScanCarry(pendingCloser, fence));
+                        return (code.ToString(), new RazorScanCarry(inRazorComment, fence));
                     }
 
                     // 逐語的リテラルなら、重ねていない " が終端になる
@@ -4131,7 +4194,7 @@ public class ResponseCacheAttributePolicyTests
                         // 中身をすべて貯めて、逐語的であることを持ち越す
                         code.Append(line, i, line.Length - i);
                         // 逐語的リテラルの中のまま次の行へ
-                        return (code.ToString(), new RazorScanCarry(pendingCloser, VerbatimFence));
+                        return (code.ToString(), new RazorScanCarry(inRazorComment, VerbatimFence));
                     }
 
                     // ふつうの "…" は改行をまたげないので持ち越さない
@@ -4148,8 +4211,32 @@ public class ResponseCacheAttributePolicyTests
                 continue;
             }
 
-            // 行コメントが始まったら、そこから先は読まない
-            if (StartsWithAt(line, i, "//")) break;
+            // <b>ここで <c>//</c> を行コメントとして扱わない(意図的)。</b>
+            //
+            // <b>Razor のマークアップで <c>//</c> はコメントではない。</b> C# の規則を
+            // そのまま当てていたため、次の 2 つが<b>見逃す側</b>へ落ちていた(issue #260 の
+            // (a)(b)。どちらも実測):
+            //  - 開きと見なされないリテラル(<c>return "…"</c> / <c>=> "…"</c>)の中身に
+            //    <c>//</c> があると、<b>その行の残りが走査から落ちる</b>。URL 文字列が
+            //    まさにこの形(<c>return "https://example.test"</c>)。
+            //  - マークアップの地の文の裸の URL(<c>詳しくは https://example.test を参照</c>)も
+            //    同じく <c>//</c> で行が切れる。<b>リテラルですらない</b>ので、開きの判定を
+            //    どう直しても拾えない。
+            //
+            // <b>扱わないことの代償は「多く報告する側」。</b> Razor のコードブロック
+            // (<c>@{ … }</c>)の中では <c>//</c> は本物のコメントなので、そこに書いた
+            // コメントは実コードとして走査される。<b>実測で、ビューのコメントに
+            // 走査対象の綴り(<c>Cache-Control</c> / <c>UseStaticFiles</c> 等)を
+            // 含むものは 1 つも無い</b>ので今は誤検知ゼロで、増えたときも
+            // 「許可表に無い書き込み」として<b>赤くなって気付ける</b>。
+            // 直し方も実行可能で、§3 が inline <c>&lt;script&gt;</c> を禁じているとおり
+            // その JS を <c>Scripts/*.ts</c> へ出すか、コメントの言い回しを変える。
+            //
+            // <b>姉妹の走査が同じ判断を先に記録している</b> ——
+            // <c>Views.ModelStateKeyPrefixMatchTests.Neutralize</c> は
+            // 「ビューでは行コメント・ブロックコメントを扱わず <c>@* *@</c> だけを潰す」
+            // とし、<c>Helpers/RazorSource.Comment</c> は最初から <c>@* *@</c> だけを見る。
+            // <b>3 つの走査でこの軸の規則が揃った</b>(残る違いはリテラルの扱いだけ)。
 
             // <b>@@ は Razor の「@ そのもの」のエスケープなので、2 文字まとめて読む。</b>
             // 1 文字ずつ進めると、support@@*.example.com のような<b>正しいビュー</b>で
@@ -4183,9 +4270,17 @@ public class ResponseCacheAttributePolicyTests
             }
 
             // Razor のブロックコメントが始まったら、閉じ綴りを待つ状態にする
-            if (StartsWithAt(line, i, "@*")) { pendingCloser = "*@"; i += 2; continue; }
-            // C# のブロックコメントも同様
-            if (StartsWithAt(line, i, "/*")) { pendingCloser = "*/"; i += 2; continue; }
+            if (StartsWithAt(line, i, RazorCommentOpener)) { inRazorComment = true; i += RazorCommentOpener.Length; continue; }
+
+            // <b><c>/*</c> もコメントとして扱わない(意図的。上の <c>//</c> と同じ理由)。</b>
+            // 扱っていた頃は、表示テキストの <c>/*</c> や開きと見なされないリテラルの中の
+            // <c>/*</c> が<b>閉じ綴りが現れるまで(現れなければファイル末尾まで)黙って
+            // 飲み込んで</b>いた(issue #260 の (c) 前半。実測)。
+            //
+            // <b>副産物として、この関数の末尾が記録していた「fail-closed にできない理由」が
+            // 1 つ消える。</b> 表示テキストの <c>incident_/*.csv</c> は、もう
+            // 閉じないブロックコメントを開かない(もう 1 つの
+            // <c>support@@*.example.com</c> は <c>@@</c> の手当てが受け持つ)。
 
             // ここまで来た文字は実コードなので貯める
             code.Append(line[i]);
@@ -4195,7 +4290,7 @@ public class ResponseCacheAttributePolicyTests
 
         // 実コードと、次の行へ持ち越す状態を返す
         // (ここに来た時点でリテラルは閉じているので、持ち越すのはコメントの状態だけ)
-        return (code.ToString(), new RazorScanCarry(pendingCloser, 0));
+        return (code.ToString(), new RazorScanCarry(inRazorComment, 0));
     }
 
     /// <summary>
