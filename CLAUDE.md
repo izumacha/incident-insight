@@ -190,7 +190,8 @@ catch (DbUpdateConcurrencyException) { TempData["Warning"] = "..."; return ...; 
 - **「ビルド設定を足して直す」としない。** .NET を動かすランタイムが Vercel に無いので、設定を足しても赤が緑になることはない。直し方は「デプロイを起こさない」の一通り。
 - **赤が常態化していることの害は見た目ではない。** Vercel が出すのは check run ではなく**旧来の commit status** なので、`check-runs` API だけを見ると**この 2 本が一覧に出てこない** — 「全チェック緑」と読んだ判断がそのまま誤りになる（§13 の「CI の成否を GitHub MCP で取得して報告する」が静かに壊れる）。加えて `mergeable_state` が `unstable` のまま残り、常に赤い signal は「赤を無視する」習慣を作る（この CLAUDE.md が繰り返し記録している「赤が常態になった検査はいずれ緩められる」）。
 - **効いているかは実測でしか確かめられない。** `vercel.json` は Vercel が**各プロジェクトの Root Directory 配下から**読むので、Root Directory が別フォルダに設定されていれば**この 1 行は黙って無効**になる（設定の有無は API の応答に現れないため断定できない）。したがって判断材料は「PR に `Vercel – …` の status が立たなくなったこと」だけで、立ち続けるなら手当ては Vercel 側（プロジェクトの削除か連携の解除）になる。**実測の結果は PR #293 に記録した。**
-- **`.vercel/` はコミットしない**（`.gitignore` に登録済み）。ローカルの Vercel CLI が作るリンク情報で、プロジェクト ID と組織 ID を含む（§9 の最小公開）。
+- **`.vercel/` はコミットせず、ビルドコンテキストにも載せない**（`.gitignore` と `.dockerignore` の**両方**に登録済み）。ローカルの Vercel CLI が作るリンク情報で、プロジェクト ID と組織 ID を含む（§9 の最小公開）。`.gitignore` だけだと `Dockerfile` の `COPY . .` が build ステージのレイヤへ焼き込む — 最終イメージには残らないが、レイヤキャッシュや `--target build` のエクスポート経由で外へ出得る（`.dockerignore` が `var/backups/` について先に記録している経路と同じ）。
+- **設定が黙って外れることは `VercelDeploymentDisabledTests` が落とす。** `vercel.json` はどの csproj の glob にも入らずどの本番コードも読まないので、**ファイルを消す差分もフラグを反転する差分も `dotnet build` / `dotnet test` を 1 件も落とさずに通る**（実測）。しかも復活する赤は上のとおり commit status なので、`check-runs` API だけを見たレビュアーには「全チェック緑」と映る。検査が閉じているのは**「ファイルが消えた」「フラグが反転した」「真偽値ではなく文字列を書いた」「`.vercel/` の除外が片方だけになった」**まで（5 つの変異すべてで落ちることを実測した）。**Root Directory 側で無効化される形は原理的に見えない**ので、そこは上の実測で守る。
 
 ### 見せ方（§15 の具体化）
 
