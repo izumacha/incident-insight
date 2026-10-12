@@ -108,9 +108,6 @@ public class ProductionDirectDependencyTests
                     {
                         ["Microsoft.AspNetCore.Identity.EntityFrameworkCore"] =
                             "ASP.NET Core Identity を EF Core で永続化する(ApplicationUser と 3 ロールの基盤)。",
-                        ["Microsoft.Data.SqlClient"] =
-                            "SQL Server 配備向け ADO.NET ドライバ。セキュリティ更新の床値として直接参照で"
-                            + "ピンしている(理由は csproj のコメントと CLAUDE.md §3 が正本)。",
                         ["Microsoft.EntityFrameworkCore.Design"] =
                             "EF Core マイグレーションの追加に必要。ビルド時にしか使わないつもりの依存で、"
                             + "資産の流れ方は csproj の IncludeAssets / ExcludeAssets が決める"
