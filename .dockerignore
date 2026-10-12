@@ -30,6 +30,12 @@
 # エクスポート経由で外部へ出得るため、ビルドコンテキストに載せない。
 var/backups/
 
+# Vercel CLI が作るリンク情報 (projectId / orgId を含む)。.gitignore でも除外している。
+# 除外しないと `COPY . .` が ID を build ステージのレイヤへ焼き込んでしまう。
+# 最終イメージには残らないが、ローカルのレイヤキャッシュや --cache-to/--target build の
+# エクスポート経由で外部へ出得るため、ビルドコンテキストに載せない (上の var/backups/ と同じ理由)。
+.vercel/
+
 # Git and CI artifacts
 .git/
 .github/
