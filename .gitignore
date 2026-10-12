@@ -37,3 +37,6 @@ Thumbs.db
 
 ## バックアップダンプ (PHI を含むためコミットしない。docs/backup.md 参照)
 var/backups/
+
+# Vercel CLI が作るリンク情報（プロジェクト ID・組織 ID を含む）はコミットしない
+.vercel/
