@@ -137,6 +137,19 @@ public class EfCorePackageAlignmentTests
         "Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" // DbContext ヘルスチェック
     };
 
+    // SQL Server 用の ADO.NET ドライバ。EF Core の SqlServer プロバイダが内部で使う実体
+    private const string SqlClientPackageId = "Microsoft.Data.SqlClient";
+
+    // 上のドライバを推移的に要求する EF Core の SqlServer プロバイダ
+    private const string EfCoreSqlServerPackageId = "Microsoft.EntityFrameworkCore.SqlServer";
+
+    // ロックファイルで、1 つのパッケージが「自分が宣言している依存」を並べている JSON キー。
+    // 【なぜ解決結果のキーを使い回さないか】綴りは今のところ同じだが、指しているものは別
+    // (あちらは「ターゲットフレームワークごとの解決結果」、こちらは「パッケージ内の依存一覧」)。
+    // 共有すると、片方だけが改名されたときに一緒に動いてしまい、こちらの走査が
+    // 何も見つけられなくなって「パッケージ名が変わった」という誤った原因を名指しする
+    private const string PackageDependenciesKey = "dependencies";
+
     // Dependabot 設定ファイルのリポジトリルートからの位置
     private static readonly string DependabotConfigPath = Path.Combine(".github", "dependabot.yml");
 
@@ -492,6 +505,43 @@ public class EfCorePackageAlignmentTests
             + string.Join("\n", missing.Select(path => $"  {path}")));
     }
 
+    // SQL Server 用 ADO.NET ドライバ(Microsoft.Data.SqlClient)の解決版が、EF Core の
+    // SqlServer プロバイダが宣言するメジャー版と一致していることを確かめる。
+    //
+    // 【床値ピンを撤去しても残す検査】issue #232 でこのドライバの直接参照(床値ピン)を撤去したが、
+    // この検査は**ピンの有無に依存しない** —— 宣言側も解決側もロックファイルから読むので、
+    // EF Core を上げれば期待値が自動で追随する。撤去と同時に消したのは、同じテストが持っていた
+    // もう半分「解決版 >= 宣言版」(床値の後退検知)だけで、そちらはピン固有かつ現在は
+    // 解決版＝宣言版なので恒真になった。
+    //
+    // 【何を守るのか】いまドライバの版を決めているのは EF Core の宣言 1 か所だけだが、それは
+    // 「他に宣言する者がいない」という*現在の*事実でしかない。NuGet は全要求者のうち最上位を採るので、
+    // 別メジャーを要求する推移依存が将来 1 つ増えるだけで、そちらが勝ってプロバイダが保証しない
+    // ドライバが載る。しかも type は Transitive のままなので、昇格を見張る
+    // ProductionDirectDependencyTests には映らない。
+    //
+    // 【実測】ロックファイルの解決版を 7.0.2 にして type を Transitive のまま残すと、
+    // この検査が無い状態では 1385 件すべて緑のまま通った(同じロックファイルで type を Direct に
+    // すると ProductionDirectDependencyTests が 1 件落ちる)。つまり昇格の検査は代わりにならない。
+    [Fact]
+    public void SqlClientResolvedMajor_MatchesWhatEfCoreDeclares()
+    {
+        // EF Core の SqlServer プロバイダが「自分はこの版のドライバを前提にしている」と
+        // 宣言している版を、ロックファイルから読む(期待値はテストに書かない)
+        var declared = ReadDeclaredDependencyVersion(EfCoreSqlServerPackageId, SqlClientPackageId);
+        // 実際に解決されているドライバの版を読む
+        var resolved = ReadResolvedVersion(SqlClientPackageId);
+
+        // メジャー版が一致していることを確かめる。
+        // 動作保証があるのはプロバイダが宣言したメジャー版に対してだけで、ずれても
+        // ビルドも全テストも緑のまま通り、SQL Server 配備でだけ実行時に壊れる
+        Assert.True(MajorOf(resolved) == MajorOf(declared),
+            $"{SqlClientPackageId} の解決版 {resolved} が、{EfCoreSqlServerPackageId} の宣言する "
+            + $"{declared} と別のメジャー版です。このドライバはプロバイダの実体で、動作保証があるのは"
+            + "宣言されたメジャー版に対してだけです。上げたいときは、そのメジャーを宣言する版の "
+            + $"{EfCoreSqlServerPackageId} へ同じ変更セットで上げてください。");
+    }
+
     [Fact]
     public void DependabotConfig_BundlesEfCorePackagesForVersionAndSecurityUpdates()
     {
@@ -771,6 +821,96 @@ public class EfCorePackageAlignmentTests
         if (prefix is { Length: > 0 } && !prefix.Contains('*')) representatives.Add(prefix);
         // 集めた代表値を返す
         return representatives;
+    }
+
+    // 指定パッケージについて、別パッケージが宣言している依存の版を読み出す。
+    // 【なぜ宣言側から読むか】期待値をテストに書くと、EF Core を上げたときに 2 か所を直す
+    // 必要が生まれ、直し忘れた側が静かに古い前提を主張し続ける(§6 の唯一の真実の源)
+    private static string ReadDeclaredDependencyVersion(string dependentId, string dependencyId)
+    {
+        // 見つかった宣言を溜める入れ物(プロジェクトごとに別々に書かれうるので集めて突き合わせる)
+        var declarations = new List<string>();
+        // 各プロジェクトの隣にあるロックファイルを 1 つずつ読む
+        foreach (var projectFile in SolutionLayout.ProjectFiles)
+        {
+            // プロジェクトと同じディレクトリのロックファイルを指す
+            var lockFile = ProjectLockFile.PathFor(projectFile);
+            // 欠けている場合は EveryProject_HasCommittedLockFile が専任で報告するので飛ばす
+            if (!File.Exists(lockFile)) continue;
+            // ロックファイルを JSON として解析する。
+            // 共有の入口を通すのは、壊れたロックファイルでファイル名の無い素の JsonException が
+            // 飛ぶのを避けるため(2 つあるロックファイルのどちらが壊れたのか分からなくなる)
+            using var document = ProjectLockFile.ReadDocument(lockFile);
+            // 解決結果が無い書式変更は ReadAllResolvedPackages が報告するのでここでは飛ばす
+            if (!document.RootElement.TryGetProperty(ProjectLockFile.DependenciesKey, out var frameworks)) continue;
+            // ターゲットフレームワークごとに解決結果を見る
+            foreach (var framework in frameworks.EnumerateObject())
+            {
+                // 対象パッケージの項目が無ければ、このフレームワークには宣言が無い
+                if (!framework.Value.TryGetProperty(dependentId, out var dependent)) continue;
+                // その項目が持つ依存の一覧を引く(依存を持たないパッケージもある)
+                if (!dependent.TryGetProperty(PackageDependenciesKey, out var declared)) continue;
+                // 探している依存の版が書かれていれば控える
+                if (declared.TryGetProperty(dependencyId, out var version))
+                    declarations.Add(version.GetString() ?? "");
+            }
+        }
+
+        // 宣言が 1 つも読めないのは検出網の劣化(パッケージ名の変更・書式変更)なので落とす
+        Assert.True(declarations.Count > 0,
+            $"{ProjectLockFile.FileName} から {dependentId} が宣言する {dependencyId} の版を読み取れませんでした。"
+            + "パッケージ名かロックファイルの書式が変わった可能性があります"
+            + "(読み取れないまま素通りさせると、検査があるのに何も見ていない状態になります)。");
+
+        // 複数のプロジェクトで宣言が食い違う場合、どれを正とするか決められないので落とす(fail-closed)
+        var distinct = declarations.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+        Assert.True(distinct.Count == 1,
+            $"{dependentId} が宣言する {dependencyId} の版がロックファイル間で食い違っています: "
+            + $"[{string.Join(", ", distinct)}]");
+
+        // 一意に定まった宣言版を返す
+        return distinct[0];
+    }
+
+    // 指定パッケージの解決済みの版を読み出す(複数プロジェクトで食い違えば落とす)
+    private static string ReadResolvedVersion(string packageId)
+    {
+        // 全ロックファイルから、その ID で解決されている版を集める
+        var versions = LockEntriesFor(packageId)
+            .Select(package => package.Version)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+
+        // 1 件も無いのは、参照が消えたか検出網が劣化したかのどちらか
+        Assert.True(versions.Count > 0,
+            $"{ProjectLockFile.FileName} に {packageId} の解決済みの版がありません。参照が外れた可能性があります。");
+        // 食い違う版が同居しているとどれが読み込まれるか決まらないので落とす
+        Assert.True(versions.Count == 1,
+            $"{packageId} の解決済みの版がロックファイル間で食い違っています: [{string.Join(", ", versions)}]");
+
+        // 一意に定まった解決版を返す
+        return versions[0];
+    }
+
+    // 指定パッケージが全ロックファイルでどう記録されているかを集める。
+    // 照合規則(大文字小文字を無視する等)を 1 か所に置くための切り出し
+    private static IReadOnlyList<ResolvedPackage> LockEntriesFor(string packageId) =>
+        // ID が一致する行だけを残して一覧にする
+        ResolvedPackages.Value
+            .Where(package => string.Equals(package.Id, packageId, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+
+    // 版文字列からメジャー版(最初のドットまで)を取り出す
+    private static int MajorOf(string version)
+    {
+        // 先頭からドットまでを切り出す(ドットが無ければ全体をメジャーとみなす)
+        var dot = version.IndexOf('.');
+        var head = dot < 0 ? version : version[..dot];
+        // 数値として読めなければ、版の書式が想定外なので落とす(fail-closed)
+        Assert.True(int.TryParse(head, out var major),
+            $"版 \"{version}\" からメジャー版を読み取れませんでした。");
+        // 読み取ったメジャー版を返す
+        return major;
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する

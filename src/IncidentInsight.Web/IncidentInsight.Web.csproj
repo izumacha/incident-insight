@@ -29,10 +29,19 @@
          5.1 は LTS として保守が続き EF Core 9.0.20 の宣言が 5.1.9（2026-01-13）へ上がったため、
          このピンは「後退を防ぐ」どころか**保守の続く系列を押しとどめる**側に反転していた。
          しかも 5.2.3 >= 5.1.9 が数値として成立するので、どの検査も緑のまま気付けなかった。
-         【ピンを戻すときは何が失われるかを確認する】撤去によって検査 3 つ
-         （メジャー一致・床値の後退・直接参照の維持）と dependabot.yml の major 保留が不要になった。
-         戻すとその 3 つを書き直す必要があり、また「ピンの値を EF の宣言版以上・現ピン未満へ
-         下げると検査が全て素通りする」穴（CLAUDE.md §3 に記録）も一緒に戻ってくる。 -->
+         【メジャー一致は今も検査している】SqlClientResolvedMajor_MatchesWhatEfCoreDeclares が
+         「解決版のメジャー == EF の宣言のメジャー」を見る（宣言側も解決側もロックファイルから
+         読むのでピンの有無に依存しない）。撤去で不要になったのは「床値の後退」と「直接参照の維持」
+         を見ていた 2 つと、dependabot.yml の major 保留。
+         【5.1.x にセキュリティ修正が出たときの取り込み方】推移依存なので Dependabot は直接の
+         更新を提案できず、唯一の経路は「推移依存を上げるついでに直接参照へ昇格させる PR」で、
+         それは ProductionDirectDependencyTests が落とす。取り込むときは直接参照を戻すと同時に
+         同テストの理由付きの表へ登録する（登録の 1 行がレビューに現れるのが狙い）。その際は
+         「ピンの値を EF の宣言版以上・現ピン未満へ下げると検査が素通りする」穴
+         （CLAUDE.md §3 に記録）も一緒に戻ってくることを承知のうえで決める。
+         【メジャーを上げたいとき】そのメジャーを宣言する版の
+         Microsoft.EntityFrameworkCore.SqlServer へ同じ変更セットで上げる。EF Core 9.0.x は
+         9.0.20 が最後なので、実際には EF Core 10＝net10.0 移行と束ねる話になる。 -->
     <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks.EntityFrameworkCore" Version="8.0.31" />
     <PackageReference Include="Npgsql.EntityFrameworkCore.PostgreSQL" Version="9.0.4" />
   </ItemGroup>
