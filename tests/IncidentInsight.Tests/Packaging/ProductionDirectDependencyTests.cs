@@ -84,8 +84,11 @@ public class ProductionDirectDependencyTests
     // 「キーは完全修飾名にする — 単純名だと同名のものが同じバケットに畳まれ、既存エントリの除外が
     // 新しいものにも黙って効く」と記録しているのと同じ理由(issue #227)。
     //
-    // 【版はここで管理しない】メジャー版の揃えは EfCorePackageAlignmentTests、床値と保留は
-    // dependabot.yml と同テストが受け持つ。ここが見るのは「本番へ入れる顔ぶれ」だけ。
+    // 【版はここで管理しない】メジャー版の揃えは EfCorePackageAlignmentTests が受け持つ
+    // (EF Core 系どうしは EfCorePackages_ShareTheSameMajorVersion、SQL Server のドライバは
+    //  SqlClientResolvedMajor_MatchesWhatEfCoreDeclares)。ここが見るのは「本番へ入れる顔ぶれ」だけ。
+    // 床値のピンと dependabot.yml の保留は issue #232 で撤去したので、もう受け持ち手はいない
+    // (ドライバの版は EF Core の宣言 1 か所が決める)。
     //
     // 【キーの比較は Ordinal にする】パッケージ ID は NuGet の規則で大文字小文字を区別しないが、
     // パスは区別する。CI が動く Linux では src/Foo/A.csproj と src/foo/A.csproj は別のプロジェクトで、
@@ -108,9 +111,6 @@ public class ProductionDirectDependencyTests
                     {
                         ["Microsoft.AspNetCore.Identity.EntityFrameworkCore"] =
                             "ASP.NET Core Identity を EF Core で永続化する(ApplicationUser と 3 ロールの基盤)。",
-                        ["Microsoft.Data.SqlClient"] =
-                            "SQL Server 配備向け ADO.NET ドライバ。セキュリティ更新の床値として直接参照で"
-                            + "ピンしている(理由は csproj のコメントと CLAUDE.md §3 が正本)。",
                         ["Microsoft.EntityFrameworkCore.Design"] =
                             "EF Core マイグレーションの追加に必要。ビルド時にしか使わないつもりの依存で、"
                             + "資産の流れ方は csproj の IncludeAssets / ExcludeAssets が決める"

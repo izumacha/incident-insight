@@ -143,24 +143,9 @@ public class EfCorePackageAlignmentTests
     // 上のドライバを推移的に要求する EF Core の SqlServer プロバイダ
     private const string EfCoreSqlServerPackageId = "Microsoft.EntityFrameworkCore.SqlServer";
 
-    // Dependabot 設定で、更新を無視する対象を並べるキー
-    private const string IgnoreKey = "ignore";
-
-    // ignore の各エントリで、対象パッケージを指定するキー
-    private const string DependencyNameKey = "dependency-name";
-
-    // ignore の各エントリで、無視する更新の種別を並べるキー
-    private const string IgnoreUpdateTypesKey = "update-types";
-
-    // ignore の各エントリで、版の範囲を絞り込むキー(保留の範囲を静かに変えるので置かせない)
-    private const string IgnoreVersionsKey = "versions";
-
-    // Dependabot で「メジャー更新」を表す update-type の名前
-    private const string SemverMajorUpdateType = "version-update:semver-major";
-
     // ロックファイルで、1 つのパッケージが「自分が宣言している依存」を並べている JSON キー。
-    // 【なぜ上の定数を使い回さないか】綴りは今のところ同じだが、指しているものは別
-    // (上は「ターゲットフレームワークごとの解決結果」、こちらは「パッケージ内の依存一覧」)。
+    // 【なぜ解決結果のキーを使い回さないか】綴りは今のところ同じだが、指しているものは別
+    // (あちらは「ターゲットフレームワークごとの解決結果」、こちらは「パッケージ内の依存一覧」)。
     // 共有すると、片方だけが改名されたときに一緒に動いてしまい、こちらの走査が
     // 何も見つけられなくなって「パッケージ名が変わった」という誤った原因を名指しする
     private const string PackageDependenciesKey = "dependencies";
@@ -520,116 +505,41 @@ public class EfCorePackageAlignmentTests
             + string.Join("\n", missing.Select(path => $"  {path}")));
     }
 
+    // SQL Server 用 ADO.NET ドライバ(Microsoft.Data.SqlClient)の解決版が、EF Core の
+    // SqlServer プロバイダが宣言するメジャー版と一致していることを確かめる。
+    //
+    // 【床値ピンを撤去しても残す検査】issue #232 でこのドライバの直接参照(床値ピン)を撤去したが、
+    // この検査は**ピンの有無に依存しない** —— 宣言側も解決側もロックファイルから読むので、
+    // EF Core を上げれば期待値が自動で追随する。撤去と同時に消したのは、同じテストが持っていた
+    // もう半分「解決版 >= 宣言版」(床値の後退検知)だけで、そちらはピン固有かつ現在は
+    // 解決版＝宣言版なので恒真になった。
+    //
+    // 【何を守るのか】いまドライバの版を決めているのは EF Core の宣言 1 か所だけだが、それは
+    // 「他に宣言する者がいない」という*現在の*事実でしかない。NuGet は全要求者のうち最上位を採るので、
+    // 別メジャーを要求する推移依存が将来 1 つ増えるだけで、そちらが勝ってプロバイダが保証しない
+    // ドライバが載る。しかも type は Transitive のままなので、昇格を見張る
+    // ProductionDirectDependencyTests には映らない。
+    //
+    // 【実測】ロックファイルの解決版を 7.0.2 にして type を Transitive のまま残すと、
+    // この検査が無い状態では 1385 件すべて緑のまま通った(同じロックファイルで type を Direct に
+    // すると ProductionDirectDependencyTests が 1 件落ちる)。つまり昇格の検査は代わりにならない。
     [Fact]
-    public void SqlClientPin_StaysWithinEfCoreDeclaredMajor()
+    public void SqlClientResolvedMajor_MatchesWhatEfCoreDeclares()
     {
         // EF Core の SqlServer プロバイダが「自分はこの版のドライバを前提にしている」と
-        // 宣言している版を、ロックファイルの dependencies から読み出す
+        // 宣言している版を、ロックファイルから読む(期待値はテストに書かない)
         var declared = ReadDeclaredDependencyVersion(EfCoreSqlServerPackageId, SqlClientPackageId);
-        // 実際に解決されている(= 実行時に読み込まれる)ドライバの版を読み出す
+        // 実際に解決されているドライバの版を読む
         var resolved = ReadResolvedVersion(SqlClientPackageId);
 
-        // メジャー版が一致していること。
-        // 【なぜメジャーを固定するのか】EF Core の SqlServer プロバイダはドライバの内部挙動に
-        // 結び付いており、動作保証があるのは自分が宣言したメジャー版に対してだけ。ところが
-        // このリポジトリのテストは InMemory / SQLite しか触らないため、ドライバだけを別メジャーへ
-        // 上げても「ビルドも全テストも緑のまま、SQL Server 配備でだけ実行時に壊れる」。
-        // これは EF Core 本体とプロバイダ実装を 1 本の PR に束ねている理由(このファイル冒頭)と
-        // まったく同じ無言の破壊で、違うのは壊れる層がドライバだという点だけ。
-        // dependabot.yml の ignore で major を保留しているのはこの検査と対になっている
+        // メジャー版が一致していることを確かめる。
+        // 動作保証があるのはプロバイダが宣言したメジャー版に対してだけで、ずれても
+        // ビルドも全テストも緑のまま通り、SQL Server 配備でだけ実行時に壊れる
         Assert.True(MajorOf(resolved) == MajorOf(declared),
             $"{SqlClientPackageId} の解決版 {resolved} が、{EfCoreSqlServerPackageId} の宣言する "
-            + $"{declared} と別のメジャー版になっています。\n"
-            + "EF Core の SqlServer プロバイダが動作保証するのは、自身が宣言したメジャー版の"
-            + "ドライバに対してだけです。テストは InMemory / SQLite しか触らないため、ここがずれても"
-            + "ビルドもテストも緑のまま、SQL Server 配備でだけ実行時に壊れます。\n"
-            + $"ドライバのメジャーを上げたいときは、それを宣言する版の {EfCoreSqlServerPackageId} へ"
-            + "同じ変更セットで上げてください(この検査は期待値を宣言側から読むので自動で追随します)。");
-
-        // 解決版が宣言版を下回らないこと(csproj の直接参照は「床値のピン留め」が目的)。
-        // 【なぜ下限も見るのか】この直接参照は、EF Core が推移的に引く版が古いサービシング
-        // パッチだったため、セキュリティ更新を後退させない床値として置かれている(csproj の
-        // コメント参照)。同じメジャーの中で下げる変更はメジャー一致の検査を素通りするため、
-        // 「なぜこのピンがあるのか」の側もここで固定する
-        Assert.True(CompareVersions(resolved, declared) >= 0,
-            $"{SqlClientPackageId} の解決版 {resolved} が、{EfCoreSqlServerPackageId} の宣言する "
-            + $"{declared} を下回っています。\n"
-            + "この直接参照は、推移的に引かれる版が古いサービシングパッチであるために"
-            + "セキュリティ更新を後退させない床値として置かれています。下げないでください。");
-    }
-
-    [Fact]
-    public void SqlClientPin_StaysADirectReference()
-    {
-        // 全ロックファイルから、このドライバの記録(どのプロジェクトが・直接か推移か)を集める
-        var entries = LockEntriesFor(SqlClientPackageId);
-
-        // 1 件も無いのは、参照そのものが消えたか検出網が劣化したかのどちらか(fail-closed)
-        Assert.True(entries.Count > 0,
-            $"{ProjectLockFile.FileName} に {SqlClientPackageId} の記録がありません。参照が外れた可能性があります。");
-
-        // csproj に直接書かれた参照として記録しているプロジェクトを取り出す
-        var direct = entries
-            .Where(package => string.Equals(package.Kind, ProjectLockFile.DirectKind, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-
-        // 【なぜ「直接参照であること」まで固定するのか】
-        // 上の SqlClientPin_StaysWithinEfCoreDeclaredMajor が床値の比較相手にするのは
-        // EF Core SqlServer の宣言(現在 5.1.9)であって、csproj に書かれたピンの値ではない。
-        // そのためピンを「冗長だから」と削除すると、解決版が EF Core の宣言どおりに落ちても
-        // 5.1.9 >= 5.1.9 で床値検査を素通りし、ビルドもテストも緑のまま SQL Server 配備だけが
-        // 古いドライバに戻る(このリポジトリで最も起きやすい形の無言の後退)。
-        // ここで type が Direct であることを見ておけば、削除も「推移依存に戻す」リファクタも
-        // 検出できる。期待する版をテストに書かずに済むので、期待値を宣言側から読む方針とも両立する
-        Assert.True(direct.Count > 0,
-            $"{SqlClientPackageId} が {ProjectLockFile.FileName} のどこにも {ProjectLockFile.DirectKind} として記録されていません。"
-            + "csproj の直接参照(床値のピン)が外れた可能性があります。\n"
-            + "このピンは、EF Core SqlServer が推移的に引く版が古いサービシングパッチであるために"
-            + "置かれています。外すと解決版はその古い版まで落ちますが、床値検査の比較相手が"
-            + "EF Core の宣言そのものであるため検査は素通りし、SQL Server 配備でだけ古いドライバが"
-            + "読み込まれます。\n"
-            + "意図して外すのであれば、EF Core SqlServer の宣言版が十分新しくなったことを確認し、"
-            + "csproj のコメントと本テストを同じ変更セットで畳んでください。\n"
-            + "現在の記録:\n" + Describe(entries));
-    }
-
-    [Fact]
-    public void DependabotConfig_HoldsSqlClientMajorUpdates()
-    {
-        // nuget エコシステムの ignore: からドライバの保留エントリを集める
-        var entries = ReadIgnoreEntriesFor(SqlClientPackageId);
-
-        // エントリがちょうど 1 件あること。
-        // 0 件なら保留が消えて major の単独 PR が再び作られる。2 件以上は Dependabot が
-        // すべて適用するため、意図より広い範囲が止まる(minor / patch のセキュリティ修正まで
-        // 届かなくなる)。どちらも静かに壊れるので件数まで固定する
-        Assert.True(entries.Count == 1,
-            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} の {IgnoreKey}: に "
-            + $"{SqlClientPackageId} の保留がちょうど 1 件あることを期待しましたが {entries.Count} 件でした。\n"
-            + $"0 件なら保留の消失({nameof(SqlClientPin_StaysWithinEfCoreDeclaredMajor)} が守る不変条件を"
-            + "破る PR が毎週作られます)。2 件以上は Dependabot が全て適用するため効きすぎです。");
-
-        // 唯一のエントリを取り出して中身を検査する
-        var entry = entries[0];
-
-        // update-types が書かれていること。省くと「全ての更新を無視」になり、
-        // 同じメジャー内のセキュリティ修正(床値を上げる更新)まで届かなくなる
-        Assert.True(entry.Children.TryGetValue(new YamlScalarNode(IgnoreUpdateTypesKey), out var updateTypesNode)
-            && updateTypesNode is YamlSequenceNode,
-            $"dependabot.yml の {SqlClientPackageId} の保留に {IgnoreUpdateTypesKey}: がありません。"
-            + "省くと全ての更新の無視になり、同じメジャー内のセキュリティ修正まで止まります。");
-
-        // 止めるのは major だけであること(他の種別まで並べると効きすぎる)
-        var updateTypes = ((YamlSequenceNode)updateTypesNode!).Children
-            .OfType<YamlScalarNode>()
-            .Select(node => node.Value ?? "")
-            .ToList();
-        Assert.Equal(new[] { SemverMajorUpdateType }, updateTypes);
-
-        // versions による追加の絞り込みが無いこと(保留の範囲を静かに変えるため置かせない)
-        Assert.False(entry.Children.ContainsKey(new YamlScalarNode(IgnoreVersionsKey)),
-            $"dependabot.yml の {SqlClientPackageId} の保留に {IgnoreVersionsKey}: を足さないでください。"
-            + $"{IgnoreUpdateTypesKey} だけでメジャー更新を止めます。");
+            + $"{declared} と別のメジャー版です。このドライバはプロバイダの実体で、動作保証があるのは"
+            + "宣言されたメジャー版に対してだけです。上げたいときは、そのメジャーを宣言する版の "
+            + $"{EfCoreSqlServerPackageId} へ同じ変更セットで上げてください。");
     }
 
     [Fact]
@@ -913,30 +823,9 @@ public class EfCorePackageAlignmentTests
         return representatives;
     }
 
-    // 指定パッケージについて、nuget エコシステムの ignore: に書かれたエントリを集める。
-    // ignore: 自体が無ければ空一覧を返す(「保留が消えた」ことは呼び出し側が件数で報告する)
-    private static IReadOnlyList<YamlMappingNode> ReadIgnoreEntriesFor(string packageId)
-    {
-        // エントリ直下の ignore: を引く。無ければ保留が 1 つも無い状態
-        if (!NuGetEcosystemEntry.Value.Children.TryGetValue(new YamlScalarNode(IgnoreKey), out var ignore))
-            return Array.Empty<YamlMappingNode>();
-        // 一覧として書かれていることを確かめる(単一値なら設定ミスなので場所を示して落とす)
-        Assert.True(ignore is YamlSequenceNode,
-            $"dependabot.yml の {EcosystemKey}: {NuGetEcosystem} の {IgnoreKey}: が一覧ではありません。");
-        // 対象パッケージ名が一致するエントリだけを集める。
-        // NuGet のパッケージ ID は大文字小文字を区別しないので比較も区別しない
-        return ((YamlSequenceNode)ignore!).Children
-            .OfType<YamlMappingNode>()
-            .Where(entry => entry.Children.TryGetValue(new YamlScalarNode(DependencyNameKey), out var name)
-                && string.Equals((name as YamlScalarNode)?.Value, packageId, StringComparison.OrdinalIgnoreCase))
-            .ToList();
-    }
-
-    // あるパッケージが「自分はこの版を前提にしている」と宣言している依存の版を、
-    // ロックファイルの dependencies から読み出す。
-    // 【なぜ resolved ではなく宣言側を読むのか】期待値をテストへ書き写すと、EF Core を
-    // 上げたときに 2 か所を直す必要が生まれ、直し忘れた側が静かに古い前提を主張し続ける。
-    // 宣言側から読めば、EF Core の更新に検査が自動で追随する(§6 の唯一の真実の源)
+    // 指定パッケージについて、別パッケージが宣言している依存の版を読み出す。
+    // 【なぜ宣言側から読むか】期待値をテストに書くと、EF Core を上げたときに 2 か所を直す
+    // 必要が生まれ、直し忘れた側が静かに古い前提を主張し続ける(§6 の唯一の真実の源)
     private static string ReadDeclaredDependencyVersion(string dependentId, string dependencyId)
     {
         // 見つかった宣言を溜める入れ物(プロジェクトごとに別々に書かれうるので集めて突き合わせる)
@@ -1004,9 +893,7 @@ public class EfCorePackageAlignmentTests
     }
 
     // 指定パッケージが全ロックファイルでどう記録されているかを集める。
-    // 【なぜ切り出すか】「ID で照合して該当行を集める」は解決版の読み出しと
-    // 直接参照の検査の 2 箇所で必要になる。照合規則(大文字小文字を無視する等)を
-    // 書き写すと、片方だけ直したときにもう片方の検査が静かに意味を変える(§6 DRY)
+    // 照合規則(大文字小文字を無視する等)を 1 か所に置くための切り出し
     private static IReadOnlyList<ResolvedPackage> LockEntriesFor(string packageId) =>
         // ID が一致する行だけを残して一覧にする
         ResolvedPackages.Value
@@ -1024,33 +911,6 @@ public class EfCorePackageAlignmentTests
             $"版 \"{version}\" からメジャー版を読み取れませんでした。");
         // 読み取ったメジャー版を返す
         return major;
-    }
-
-    // 2 つの版文字列を数値として比較する(左が大きければ正、等しければ 0、小さければ負)。
-    // 【なぜ文字列比較にしないか】"5.1.10" と "5.1.7" を文字列で比べると前者が小さくなり、
-    // 床値が下がったことを見逃す
-    private static int CompareVersions(string left, string right)
-    {
-        // プレリリース表記(-preview 等)を落としてから数値部分だけを比べる
-        static int[] Parts(string version) => version.Split('-')[0]
-            .Split('.')
-            .Select(part => int.TryParse(part, out var value) ? value : 0)
-            .ToArray();
-
-        // 左右それぞれの数値列を得る
-        var l = Parts(left);
-        var r = Parts(right);
-        // 長い方の桁数まで、上位から順に比べる(足りない桁は 0 として扱う)
-        for (var i = 0; i < Math.Max(l.Length, r.Length); i++)
-        {
-            // その桁の値を取り出す(範囲外は 0)
-            var a = i < l.Length ? l[i] : 0;
-            var b = i < r.Length ? r[i] : 0;
-            // 差があればその時点で大小が決まる
-            if (a != b) return a.CompareTo(b);
-        }
-        // すべての桁が等しければ同じ版
-        return 0;
     }
 
     // EF Core 系グループに、許可したキー以外が書かれていないことを確認する
@@ -1381,10 +1241,11 @@ public class EfCorePackageAlignmentTests
     }
 
     // dependabot.yml から nuget エコシステムの設定エントリそのものを読み出す。
-    // 【なぜ groups: の取り出しと分けるか】エントリ直下には groups: のほかに ignore: も置かれ、
-    // 後者は SqlClient の major 保留(SqlClientPin_StaysWithinEfCoreDeclaredMajor 参照)が読む。
-    // 以前はこの関数が groups: だけを返してエントリを捨てていたため、同じ YAML を
-    // もう一度解析しないと ignore: へ辿り着けなかった(§6 DRY)
+    // 【なぜ groups: の取り出しと分けるか】エントリ直下には groups: 以外のキーも置かれるので、
+    // 解析結果はエントリの単位で返し、どのキーを降りるかは呼び出し側に決めさせる。
+    // (以前は ignore: の読み出しも利用者だったが、issue #232 で SqlClient の major 保留を
+    //  撤去したため現在の読み手は ReadNuGetGroups だけ。同じ YAML を二度解析しない形は
+    //  そのまま残している。§6 DRY)
     private static YamlMappingNode ReadNuGetEcosystemEntry()
     {
         // YAML として解析する。同名キーの重複などで解析できない場合は、原因を添えて落とす
