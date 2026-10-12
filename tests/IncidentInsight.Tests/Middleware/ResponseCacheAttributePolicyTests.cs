@@ -614,6 +614,11 @@ public class ResponseCacheAttributePolicyTests
                 + "「出現回数が … 回ではなく … 回です」と出ている場合は、許可済みの行が複製されています"
                 + "(2 つ目の静的ファイル配信など)。複製先が PHI を配らないことを確かめたうえで、"
                 + "許可表の ExpectedCount を実際の回数へ直してください。"
+                + "名指しされた場所が .cshtml の // ・ /* */ のコメントの中なら、原因はそれで合っています —— "
+                + "この走査は Razor の規則どおり // と /* をコメントとして扱わないので"
+                + "(マークアップでそれらはコメントではない)、コメントに書いた綴りも実コードとして現れます。"
+                + "直し方は 2 つ: CLAUDE.md §3 のとおり inline script を Scripts/*.ts へ出す、"
+                + "またはコメントの言い回しを変えてその綴りを使わない。"
                 + Environment.NewLine
                 + string.Join(Environment.NewLine, violations));
     }
@@ -3689,9 +3694,19 @@ public class ResponseCacheAttributePolicyTests
     //
     // <b>代償は「多く報告する側」。</b> Razor のコードブロックや inline script に書いた
     // <c>//</c> のコメントは実コードとして走査されるので、そこに走査対象の綴りを書くと
-    // 報告される。<b>それを早く・はっきり落とすのが
-    // <see cref="ViewComments_DoNotCarryWatchedSpellings"/></b> で、直し方も実行可能
-    // (§3 のとおり inline script を <c>Scripts/*.ts</c> へ出すか、言い回しを変える)。
+    // <b>「許可表に無いキャッシュ指示の書き込み」として報告される</b>。直し方は実行可能
+    // (CLAUDE.md §3 のとおり inline script を <c>Scripts/*.ts</c> へ出すか、言い回しを変える)ので、
+    // <b>その案内は報告する側の失敗文言が持つ</b>
+    // (<see cref="OnlyIntendedWriters_SetCacheControlDirectly"/>)。
+    //
+    // <b>専用の先回りガードは置かない(試して外した)。</b> 「ビューの行で <c>//</c> より後ろに
+    // 走査対象の綴りがあれば落とす」形を書いたが、綴りだけを見るので<b>誤検知が 2 通り</b>できた:
+    // <c>//</c> の後ろにある<b>実コード</b>(マークアップの裸の URL と同じ行に書いた指示。
+    // まさに下の (b) の形)と、<c>//</c> を含む<b>Razor コメント</b>の中の綴り
+    // (走査側は正しくコメントとして落とすのに、ガードだけが赤くなる)。
+    // どちらも「コメントに綴りがある」と事実と違うことを名指しする形で、
+    // 正しく避けるには結局パーサが要る ——近似をもう 1 つ増やすことになる。
+    // 報告する側は<b>まさに報告する場面でだけ</b>鳴るので、説明はそちらに置くのが正確。
     [Fact]
     public void RazorScan_DoesNotTreatSlashCommentsAsComments()
     {
@@ -3728,98 +3743,6 @@ public class ResponseCacheAttributePolicyTests
                 "<p>詳しくは https://example.test を参照</p> @{ Context.Response.Headers.CacheControl = \"public\"; }"));
     }
 
-    // ビューの <c>//</c> ・ <c>/* */</c> のコメントに、走査対象の綴りを書かせないこと。
-    //
-    // <b>なぜ要るのか。</b> 上の走査は Razor の規則どおり <c>//</c> と <c>/*</c> を
-    // コメントとして扱わないので、そこに書いた綴りは<b>実コードとして報告される</b>。
-    // この検査が無いと、その報告は「許可表に無いキャッシュ指示の書き込み」という
-    // <b>原因から遠い失敗</b>として別のテストから出てきて、読み手が理由をたどれない。
-    // ここで先に落として、直し方(§3 のとおり inline script を <c>Scripts/*.ts</c> へ
-    // 出すか、コメントの言い回しを変える)を名指しする。
-    //
-    // <b>この検査が「無くてよい」状態にする方法が 1 つある。</b> ビューから inline の
-    // JS を無くせば <c>//</c> のコメント自体が消える ——実測で、ビューの <c>//</c> は
-    // <b>すべて inline <c>&lt;script&gt;</c> の中</b>にある。§3 は既にそれを禁じており、
-    // 現状は 3 つのビューが違反している(別 issue で追う)。
-    [Fact]
-    public void ViewComments_DoNotCarryWatchedSpellings()
-    {
-        // ビューを 1 枚も読めないなら前提が崩れているので落とす(fail-closed)
-        var views = RepositoryPaths.EnumerateViewFiles().ToList();
-        Assert.True(views.Count > 0, "ビューを 1 枚も読めない。走査の導出が壊れている。");
-
-        // 走査対象の綴り(キャッシュ指示と静的ファイル配信の配線)をまとめて見る。
-        // <b>一覧は本番の検査と同じものを読む</b> ——書き写すと、綴りを足したときに
-        // こちらだけが古くなり、この検査が守るはずの範囲が黙って狭まる
-        var watched = new List<string>(CacheControlTokens);
-        watched.AddRange(StaticFileWiringTokens);
-
-        // 違反(ファイル・行番号・綴り・その行)を貯める
-        var offenders = new List<string>();
-
-        // ビューを 1 枚ずつ見る
-        foreach (var view in views)
-        {
-            // 行に分ける(行番号を失わないため)
-            var lines = CSharpCommentScanner.SplitLines(File.ReadAllText(view));
-
-            // 1 行ずつ、コメントの開始より後ろに綴りが無いかを見る
-            for (var i = 0; i < lines.Count; i++)
-            {
-                // この行で <c>//</c> か <c>/*</c> が最初に現れる位置を求める(無ければ -1)
-                var commentAt = FirstSlashCommentIndex(lines[i]);
-                // どちらも無ければ次の行へ
-                if (commentAt < 0) continue;
-
-                // コメントの開始より後ろの綴り(ここが実コードとして走査される部分)
-                var tail = lines[i][commentAt..];
-
-                // 走査対象の綴りが混じっていないかを見る(大文字小文字は無視する)
-                foreach (var token in watched)
-                {
-                    // 含まれていなければ次の綴りへ
-                    if (!tail.Contains(token, StringComparison.OrdinalIgnoreCase)) continue;
-                    // 含まれていたら、場所と綴りを控える
-                    offenders.Add($"{Path.GetRelativePath(RepositoryPaths.Root, view)}:{i + 1} [{token}] {lines[i].Trim()}");
-                }
-            }
-        }
-
-        // 1 件もないことを要求する(あれば直し方まで案内する)
-        Assert.True(
-            offenders.Count == 0,
-            "ビューの // ・ /* */ のコメントに、走査対象の綴りが含まれています。\n"
-            + "この走査は Razor の規則どおり // と /* をコメントとして扱わないため、\n"
-            + "ここに書いた綴りは実コードとして「キャッシュ指示の書き込み」として報告されます。\n"
-            + "直し方は 2 つ: (1) §3 のとおり inline script を Scripts/*.ts へ出す、\n"
-            + "(2) コメントの言い回しを変えてその綴りを使わない。\n"
-            + string.Join("\n", offenders));
-    }
-
-    /// <summary>
-    /// 1 行の中で <c>//</c> か <c>/*</c> が最初に現れる位置を返す(無ければ <c>-1</c>)。
-    /// </summary>
-    /// <remarks>
-    /// <b>綴りの判定だけで、文脈は見ない。</b> 文脈(リテラルの中か・マークアップか)を
-    /// 当てるのはまさに近似が失敗してきたところなので、ここでは当てない ——
-    /// 多めに拾って<b>赤くなる側</b>へ倒す(見逃すと、原因から遠い失敗として
-    /// 別のテストから出てくる)。
-    /// </remarks>
-    private static int FirstSlashCommentIndex(string line)
-    {
-        // 行コメントの開きの位置(無ければ -1)
-        var lineComment = line.IndexOf("//", StringComparison.Ordinal);
-        // ブロックコメントの開きの位置(無ければ -1)
-        var blockComment = line.IndexOf("/*", StringComparison.Ordinal);
-
-        // どちらも無ければ -1
-        if (lineComment < 0 && blockComment < 0) return -1;
-        // 片方だけなら、そちら
-        if (lineComment < 0) return blockComment;
-        if (blockComment < 0) return lineComment;
-        // 両方あれば先に現れるほう
-        return Math.Min(lineComment, blockComment);
-    }
 
     /// <summary>
     /// 合成した複数行の<b>C# の</b>ソースを走査し、該当した行番号を返す(検査用の入り口)。
